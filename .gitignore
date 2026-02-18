@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets & sensitive files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.sqlite
+*.db
+
+# Config (live configs — only .example files are committed)
+lucyd.toml
+lucyd.service
+providers.d/*.toml
+!providers.d/*.toml.example
+
+# Testing & coverage
+.coverage
+.pytest_cache/
+.mutmut-cache/
+mutants/
+htmlcov/
+
+# Build & tool caches
+.mypy_cache/
+.ruff_cache/
+ruff.toml
+
+# Claude Code
+.claude/
+
+# OS & editor artifacts
+.DS_Store
+.nfs*
+
+# Logs
+*.log

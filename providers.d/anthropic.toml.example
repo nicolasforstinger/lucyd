@@ -1,0 +1,25 @@
+# Anthropic — official API (direct)
+# Copy to anthropic.toml (or edit in place — this file is committed).
+type = "anthropic-compat"
+api_key_env = "LUCYD_ANTHROPIC_KEY"
+
+[models.primary]
+model = "claude-sonnet-4-6"
+max_tokens = 65536
+max_context_tokens = 200000
+cost_per_mtok = [3.0, 15.0, 0.3]   # [input, output, cache_read]
+cache_control = true
+thinking_enabled = true
+thinking_mode = "adaptive"          # "adaptive" | "budgeted" | "disabled"
+# thinking_budget = 10000           # Only used when thinking_mode = "budgeted"
+# thinking_effort = "high"          # Only used with adaptive: "high" | "medium" | "low"
+
+[models.subagent]
+model = "claude-haiku-4-5-20251001"
+max_tokens = 4096
+cost_per_mtok = [1.0, 5.0, 0.1]
+
+[models.compaction]
+model = "claude-sonnet-4-6"
+max_tokens = 4096
+cost_per_mtok = [3.0, 15.0, 0.3]
