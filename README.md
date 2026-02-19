@@ -38,7 +38,7 @@ sudo systemctl enable --now lucyd
 
 ## Testing
 
-**916 tests**, all passing in ~16 seconds. Three testing strategies:
+**1020 tests**, all passing in ~16 seconds. Four testing strategies:
 
 ```bash
 # Run the full suite
@@ -57,10 +57,11 @@ mutmut run
 
 | Layer | Tests | Strategy |
 |-------|-------|----------|
-| Component tests | ~750 | Direct function/class tests, mutation-verified where applicable |
+| Component tests | ~770 | Direct function/class tests, mutation-verified where applicable |
 | Contract tests | ~50 | `_process_message` side effects verified through mocks |
-| Extracted logic | ~35 | Pure functions pulled from orchestrator, tested directly |
-| Integration | ~80 | Full daemon wiring with mocked providers |
+| Dependency chain | ~54 | Indexer pipeline: chunk, embed, write, FTS rebuild, round-trip |
+| Extracted logic | ~48 | Pure functions pulled from orchestrator, tested directly |
+| Integration | ~98 | Full daemon wiring with mocked providers |
 
 ### Coverage by Module
 

@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from memory_schema import ensure_schema
+
 # ─── tools/status.py ─────────────────────────────────────────────
 
 
@@ -182,6 +184,126 @@ class TestToolMemorySearch:
             assert "Error searching memory" in result
         finally:
             mod._memory = original
+
+    @pytest.mark.asyncio
+    async def test_structured_recall_path_with_vector_results(self):
+        """With _conn and _config set, structured recall path is exercised."""
+        import tools.memory_tools as mod
+        mock_mem = AsyncMock()
+        mock_mem.search.return_value = [
+            {"text": "vector result about nicolas", "score": 0.9, "days_old": 1},
+        ]
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        ensure_schema(conn)
+
+        class FakeConfig:
+            recall_max_facts = 20
+            recall_decay_rate = 0.03
+            recall_max_dynamic_tokens = 1000
+
+        original = (mod._memory, mod._conn, mod._config)
+        mod._memory = mock_mem
+        mod._conn = conn
+        mod._config = FakeConfig()
+        try:
+            result = await mod.tool_memory_search("nicolas")
+            # Structured recall returns inject_recall() format
+            assert "[Memory search]" in result
+            mock_mem.search.assert_awaited_once()
+        finally:
+            mod._memory, mod._conn, mod._config = original
+            conn.close()
+
+    @pytest.mark.asyncio
+    async def test_structured_recall_empty_returns_fallback(self):
+        """Empty structured recall returns EMPTY_RECALL_FALLBACK."""
+        import tools.memory_tools as mod
+        mock_mem = AsyncMock()
+        mock_mem.search.return_value = []
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        ensure_schema(conn)
+
+        class FakeConfig:
+            recall_max_facts = 20
+            recall_decay_rate = 0.03
+            recall_max_dynamic_tokens = 1000
+
+        original = (mod._memory, mod._conn, mod._config)
+        mod._memory = mock_mem
+        mod._conn = conn
+        mod._config = FakeConfig()
+        try:
+            result = await mod.tool_memory_search("xyznonexistent")
+            assert "No results found in structured memory" in result
+        finally:
+            mod._memory, mod._conn, mod._config = original
+            conn.close()
+
+    @pytest.mark.asyncio
+    async def test_structured_recall_with_facts(self):
+        """Structured recall includes facts from the DB."""
+        import tools.memory_tools as mod
+        mock_mem = AsyncMock()
+        mock_mem.search.return_value = []
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        ensure_schema(conn)
+        # Seed a fact and alias
+        conn.execute(
+            "INSERT INTO facts (entity, attribute, value, confidence, source_session, accessed_at) "
+            "VALUES ('nicolas', 'lives_in', 'Austria', 1.0, 'test', datetime('now'))"
+        )
+        conn.execute(
+            "INSERT INTO entity_aliases (alias, canonical) VALUES ('nicolas', 'nicolas')"
+        )
+        conn.commit()
+
+        class FakeConfig:
+            recall_max_facts = 20
+            recall_decay_rate = 0.03
+            recall_max_dynamic_tokens = 1000
+
+        original = (mod._memory, mod._conn, mod._config)
+        mod._memory = mock_mem
+        mod._conn = conn
+        mod._config = FakeConfig()
+        try:
+            result = await mod.tool_memory_search("nicolas")
+            assert "[Known facts]" in result
+            assert "Austria" in result
+        finally:
+            mod._memory, mod._conn, mod._config = original
+            conn.close()
+
+    @pytest.mark.asyncio
+    async def test_structured_recall_fallback_on_error(self):
+        """When structured recall raises, falls back to vector search."""
+        import tools.memory_tools as mod
+        mock_mem = AsyncMock()
+        mock_mem.search.return_value = [
+            {"source": "test.md", "text": "fallback result", "score": 0.7},
+        ]
+        # Use a closed connection to trigger an error in structured recall
+        conn = sqlite3.connect(":memory:")
+        conn.close()
+
+        class FakeConfig:
+            recall_max_facts = 20
+            recall_decay_rate = 0.03
+            recall_max_dynamic_tokens = 1000
+
+        original = (mod._memory, mod._conn, mod._config)
+        mod._memory = mock_mem
+        mod._conn = conn
+        mod._config = FakeConfig()
+        try:
+            result = await mod.tool_memory_search("query")
+            # Should fall back to vector format
+            assert "fallback result" in result
+        finally:
+            mod._memory, mod._conn, mod._config = original
 
 
 class TestToolMemoryGet:
