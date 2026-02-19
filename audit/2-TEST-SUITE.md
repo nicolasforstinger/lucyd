@@ -45,6 +45,13 @@ If Stage 1 found and fixed duplicate class/function names, verify the test count
 ### P-006: Dead data pipeline (fixture check)
 During Phase 1 inventory, note any test files that create pre-populated fixtures (test databases, pre-written files). For each, ask: "In production, what process creates this data?" If the answer is "nothing" or "a process that was removed," flag for Stage 5 (Dependency Chain) verification. If no round-trip test exists that covers both the write and read path, note as a finding.
 
+### P-013: None-defaulted dependency hides untested code branch
+During Phase 1 inventory and Phase 3 health checks, scan for test fixtures that pass `None` for dependency parameters:
+```bash
+grep -rn "=None\|= None" tests/test_*.py | grep -v "__pycache__"
+```
+For each, ask: "Does this `None` cause an entire code branch to be skipped in the function under test?" If the source has `if param is not None: <significant logic>` and the test passes `None`, that logic has zero coverage. Flag for mock coverage in Stage 3 (Mutation Testing).
+
 ---
 
 ## Phase 1: Discovery — Inventory the Test Suite

@@ -178,6 +178,7 @@ class LucydDaemon:
         self.tool_registry: ToolRegistry | None = None
         self._fifo_task: asyncio.Task | None = None
         self._http_api: Any = None
+        self._memory_conn: Any = None
         self._last_inbound_ts: dict[str, int] = {}  # sender → ms timestamp
 
     def _setup_logging(self) -> None:
@@ -243,7 +244,10 @@ class LucydDaemon:
         self.channel = create_channel(self.config)
 
     def _init_sessions(self) -> None:
-        self.session_mgr = SessionManager(self.config.sessions_dir)
+        self.session_mgr = SessionManager(
+            self.config.sessions_dir,
+            agent_name=self.config.agent_name,
+        )
 
     def _init_tools(self) -> None:
         """Register enabled tools."""
@@ -306,6 +310,10 @@ class LucydDaemon:
                 top_k=self.config.memory_top_k,
             )
             set_memory(mem)
+            # Wire structured recall if consolidation enabled
+            if self.config.consolidation_enabled:
+                from tools.memory_tools import set_structured_memory
+                set_structured_memory(self._get_memory_conn(), self.config)
             for t in mem_tools:
                 if t["name"] in enabled:
                     self.tool_registry.register_many([t])
@@ -368,7 +376,31 @@ class LucydDaemon:
             )
             self.tool_registry.register_many(status_tools)
 
+        # Structured memory tools
+        if enabled & {"memory_write"} and self.config.memory_db:
+            from tools import structured_memory
+            structured_memory.configure(conn=self._get_memory_conn())
+            self.tool_registry.register_many(structured_memory.TOOLS)
+
         log.info("Registered tools: %s", ", ".join(self.tool_registry.tool_names))
+
+    def _get_memory_conn(self):
+        """Get or create the memory DB connection.
+
+        Connection is created once and reused for the daemon's lifetime.
+        Uses WAL mode and Row factory.
+        """
+        if self._memory_conn is None:
+            import sqlite3
+
+            from memory_schema import ensure_schema
+            self._memory_conn = sqlite3.connect(
+                self.config.memory_db, timeout=30,
+            )
+            self._memory_conn.execute("PRAGMA journal_mode=WAL")
+            self._memory_conn.row_factory = sqlite3.Row
+            ensure_schema(self._memory_conn)
+        return self._memory_conn
 
     def _init_context(self) -> None:
         self.context_builder = ContextBuilder(
@@ -490,9 +522,26 @@ class LucydDaemon:
         skill_bodies = self.skill_loader.get_bodies(always_on) if self.skill_loader else {}
 
         # Inject recall from previous session if this one is fresh
-        recall = ""
+        recall_text = ""
         if len(session.messages) <= 1:
-            recall = self.session_mgr.build_recall(sender)
+            recall_text = self.session_mgr.build_recall(sender)
+            # Structured memory context
+            if self.config.consolidation_enabled:
+                try:
+                    from memory import get_session_start_context
+                    conn = self._get_memory_conn()
+                    memory_context = get_session_start_context(
+                        conn=conn,
+                        max_facts=self.config.recall_max_facts,
+                        max_tokens=self.config.recall_max_dynamic_tokens,
+                    )
+                    if memory_context:
+                        if recall_text:
+                            recall_text = f"{recall_text}\n\n{memory_context}"
+                        else:
+                            recall_text = memory_context
+                except Exception:
+                    log.exception("structured recall at session start failed")
 
         system_blocks = self.context_builder.build(
             tier=tier,
@@ -501,7 +550,7 @@ class LucydDaemon:
             skill_index=skill_index,
             always_on_skills=always_on,
             skill_bodies=skill_bodies,
-            extra_dynamic=recall,
+            extra_dynamic=recall_text,
         )
         fmt_system = provider.format_system(system_blocks)
 
@@ -675,14 +724,63 @@ class LucydDaemon:
             log.info("Compaction warning set for session %s at %d tokens",
                      session.id, session.last_input_tokens)
 
+        # Pre-compaction consolidation: extract structured data before compaction
+        if (session.needs_compaction(self.config.compaction_threshold)
+                and self.config.consolidation_enabled):
+            try:
+                import consolidation
+                conn = self._get_memory_conn()
+                result = await consolidation.consolidate_session(
+                    session_id=session.id,
+                    messages=session.messages,
+                    compaction_count=session.compaction_count,
+                    config=self.config,
+                    subagent_provider=self.providers.get("subagent"),
+                    primary_provider=self.providers.get("primary"),
+                    context_builder=self.context_builder,
+                    conn=conn,
+                )
+                if result["facts_added"] or result.get("episode_id"):
+                    log.info(
+                        "consolidation: %d facts, episode=%s",
+                        result["facts_added"], result.get("episode_id"),
+                    )
+            except Exception:
+                log.exception("consolidation failed, continuing without")
+
         # Check for compaction
         if session.needs_compaction(self.config.compaction_threshold):
             compaction_model = self.config.compaction_model
             compaction_provider = self.providers.get(compaction_model)
             if compaction_provider:
-                await self.session_mgr.compact_session(
-                    session, compaction_provider, self.config.compaction_prompt,
+                prompt = self.config.compaction_prompt.replace(
+                    "{agent_name}", self.config.agent_name,
                 )
+                await self.session_mgr.compact_session(
+                    session, compaction_provider, prompt,
+                )
+
+    async def _consolidate_on_close(self, session) -> None:
+        """Consolidation callback fired before session archival."""
+        try:
+            import consolidation
+            conn = self._get_memory_conn()
+            start_idx, end_idx = consolidation.get_unprocessed_range(
+                session.id, session.messages, session.compaction_count, conn,
+            )
+            if end_idx > start_idx:
+                await consolidation.consolidate_session(
+                    session_id=session.id,
+                    messages=session.messages,
+                    compaction_count=session.compaction_count,
+                    config=self.config,
+                    subagent_provider=self.providers.get("subagent"),
+                    primary_provider=self.providers.get("primary"),
+                    context_builder=self.context_builder,
+                    conn=conn,
+                )
+        except Exception:
+            log.exception("consolidation on close failed")
 
     async def _transcribe_audio(self, file_path: str, content_type: str) -> str:
         """Transcribe audio using OpenAI Whisper API."""
@@ -810,12 +908,12 @@ class LucydDaemon:
                         # Reset all sessions
                         contacts = list(self.session_mgr._index.keys())
                         for contact in contacts:
-                            self.session_mgr.close_session(contact)
+                            await self.session_mgr.close_session(contact)
                         log.info("All sessions reset (%d)", len(contacts))
                     elif item.get("session_id") and self.session_mgr:
                         # Reset by session UUID (from --reset <uuid>)
                         session_id = item["session_id"]
-                        if self.session_mgr.close_session_by_id(session_id):
+                        if await self.session_mgr.close_session_by_id(session_id):
                             log.info("Session reset by ID: %s", session_id)
                         else:
                             log.warning("No session found for ID: %s", session_id)
@@ -828,7 +926,7 @@ class LucydDaemon:
                                     target = contact
                                     break
                         if target and self.session_mgr:
-                            if self.session_mgr.close_session(target):
+                            if await self.session_mgr.close_session(target):
                                 log.info("Session reset for %s", target)
                             else:
                                 log.warning("No session found to reset for %s", target)
@@ -929,6 +1027,10 @@ class LucydDaemon:
             self._init_context()
             self._init_cost_db()
             self._init_tools()
+
+            # Register consolidation on session close
+            if self.config.consolidation_enabled:
+                self.session_mgr.on_close(self._consolidate_on_close)
 
             await self.channel.connect()
             log.info("Channel connected: %s", cfg.channel_type)

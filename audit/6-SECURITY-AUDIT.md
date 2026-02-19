@@ -92,6 +92,14 @@ grep -A5 'def tool_' tools/*.py | grep -E 'def tool_|path|file|write|output|dest
 ```
 Any parameter that could be a file path, URL, or external identifier must be traced to a validation boundary. Compare the re-derived table against the previous cycle's table — differences are findings.
 
+### P-012: Auto-populated pipeline misclassified as static
+If the security audit references any data source as "admin-managed," "static," or "manual," verify that claim against the Stage 5 dependency chain report AND against source code. Don't trust a previous stage's classification without tracing to source:
+```bash
+# For any table or file claimed to be "manual" or "static":
+grep -rn "INSERT.*INTO.*<table_name>\|\.write.*<filename>" --include='*.py' | grep -v test
+```
+If an automated producer exists, the security assessment of that data path may be wrong — auto-populated data from LLM extraction has different trust properties than admin-managed data.
+
 ---
 
 ## Phase 1: Map Input Sources
@@ -202,6 +210,9 @@ MEDIUM:
 LOW:
   - Schedule tool: future message delivery
   - React tool: emoji reactions
+  - memory_write: structured fact insertion (parameterized SQL, entity normalization, no filesystem)
+  - memory_forget: fact invalidation (parameterized SQL, no filesystem)
+  - commitment_update: commitment status change (parameterized SQL, enum-restricted values)
 ```
 
 Adjust based on actual tool implementations found.
@@ -453,6 +464,26 @@ Check:
 
 **Note on JSONL safety:** Session files use `json.dumps()` → `json.loads()` round-trip. No string concatenation in the write path. Control characters are escaped. Log injection / JSONL corruption is not a viable attack vector.
 
+**Structured memory poisoning (Memory v2):**
+```
+Attacker sends crafted text in conversation
+    ↓
+Consolidation extracts it as a "fact" via LLM
+    ↓
+Fact stored in memory/main.sqlite (facts table)
+    ↓
+Fact appears in [Known facts] context block on EVERY future session start
+    ↓
+LLM sees poisoned fact as established ground truth
+```
+
+This is a variant of the session poisoning vector but with PERSISTENCE — structured facts survive across sessions and appear in every future conversation. The accepted risk is that structured memory is read-only context injection: facts never reach tool arguments, file paths, shell commands, or network requests directly. Verify this holds:
+- Does any code path use `fact.value` as a tool input? (Should be NO)
+- Does any code path use `entity` names in file paths or SQL beyond parameterized lookups? (Should be NO)
+- Does `resolve_entity()` output ever reach a dispatch path? (Should be NO — used only for query normalization)
+
+If any of the above is YES, it's a vulnerability, not an accepted risk. See P-012 for verifying that the data provenance matches what the auditor assumes.
+
 ### Check for Resource Exhaustion
 
 Not a direct vulnerability but a denial-of-service vector:
@@ -493,7 +524,7 @@ For low-severity findings or findings that require architectural decisions, docu
 
 ## Phase 7: Report
 
-Write the report to `audit/reports/5-security-audit-report.md`:
+Write the report to `audit/reports/6-security-audit-report.md`:
 
 ```markdown
 # Security Audit Report
@@ -546,6 +577,7 @@ Mutation verified: [yes/no]
 | Command injection | | | |
 | Env var leakage | | | |
 | Memory poisoning | | | |
+| Structured memory poisoning | | | |
 | Resource exhaustion | | | |
 | Dynamic dispatch | | | |
 | Supply chain (dep CVEs) | | | |

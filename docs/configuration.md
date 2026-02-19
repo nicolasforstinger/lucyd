@@ -211,6 +211,7 @@ enabled = [
     "read", "write", "edit", "exec",
     "web_search", "web_fetch",
     "memory_search", "memory_get",
+    "memory_write", "memory_forget", "commitment_update",
     "message", "react", "schedule_message", "list_scheduled",
     "session_status", "sessions_spawn", "load_skill",
     "tts",
@@ -258,6 +259,60 @@ speed = 1.0                            # Speech speed
 stability = 0.5                        # Voice stability (0.0–1.0)
 similarity_boost = 0.75                # Voice similarity boost (0.0–1.0)
 ```
+
+### [memory.consolidation]
+
+Structured data extraction from session transcripts and workspace files.
+
+```toml
+[memory.consolidation]
+enabled = true                        # Enable structured memory extraction
+fact_model = "subagent"               # Model for fact extraction (cheaper, high volume)
+episode_model = "primary"             # Model for episode extraction (needs judgment)
+min_messages = 4                      # Minimum messages in session before extracting
+confidence_threshold = 0.6            # Minimum confidence for extracted facts
+```
+
+When enabled, `bin/lucyd-consolidate` (cron at `:15`) extracts facts, episodes, commitments, and entity aliases from session transcripts. Also triggers on session close and pre-compaction. See `memory_schema.py` for table definitions.
+
+### [memory.maintenance]
+
+Periodic cleanup of structured memory.
+
+```toml
+[memory.maintenance]
+enabled = true
+min_confidence = 0.3                  # Remove facts below this confidence
+stale_days = 90                       # Remove unaccessed facts older than this
+```
+
+Runs via `bin/lucyd-consolidate --maintain` (cron daily at `04:00`).
+
+### [memory.recall]
+
+Controls how structured memory is injected into session context at startup.
+
+```toml
+[memory.recall]
+structured_first = true              # Prioritize structured facts over vector search results
+decay_rate = 0.03                    # Time-decay factor for relevance scoring
+max_facts_in_context = 20            # Maximum facts injected into context
+max_dynamic_tokens = 1000            # Token budget for dynamic recall content
+```
+
+Recall runs at session start and enriches `memory_search` results with structured data. Budget-aware: prioritizes commitments > facts > episodes > vector results.
+
+### [memory.indexer]
+
+Controls which workspace files are indexed into the FTS5 + vector memory DB.
+
+```toml
+[memory.indexer]
+include_patterns = ["memory/*.md", "MEMORY.md"]   # Glob patterns relative to workspace
+exclude_dirs = []                                  # Directories to skip
+```
+
+The indexer (`bin/lucyd-index`) runs hourly at `:10` via cron. Incremental — skips files whose content hash hasn't changed.
 
 ## [behavior]
 

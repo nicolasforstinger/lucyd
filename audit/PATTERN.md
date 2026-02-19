@@ -110,7 +110,7 @@ done
 **Class:** A module reads from a persistent store, but the process that writes to that store has been removed, disabled, or broken. Test fixtures mask the gap by pre-populating the store.
 
 **Check (Stage 5 — Dependency Chain):**
-This pattern is now the entire purpose of Stage 5. For every consumer identified in the data flow matrix, verify the producer exists, is enabled, and has run recently. See `4.5-DEPENDENCY-CHAIN.md` Phase 1–3.
+This pattern is now the entire purpose of Stage 5. For every consumer identified in the data flow matrix, verify the producer exists, is enabled, and has run recently. See `5-DEPENDENCY-CHAIN.md` Phase 1–3.
 
 **Additional check (Stage 2):**
 For every test that creates pre-populated fixtures (test databases, pre-written files), ask: "In production, what process creates this data?" If the answer is not covered by another test, add a round-trip test.
@@ -205,16 +205,68 @@ For each model reference in documentation: trace to the actual model string in c
 
 ---
 
+## P-012: Auto-populated pipeline misclassified as static
+
+**Origin:** Cycle 3 Stage 5 — `entity_aliases` table classified as "Manual SQL (backfill) — not auto-populated" in the dependency chain report, and "admin-managed" in the security report. In reality, `consolidation.py:279-287` auto-populates aliases via `INSERT OR IGNORE` on every fact extraction call. All three producer paths (cron, pre-compaction, session close) converge on `extract_facts()` which stores aliases. The misclassification was carried forward to Stage 6 unchallenged.
+
+**Class:** A data pipeline classified as "manual" or "static" that is actually auto-populated by an automated process. The auditor sees the data, assumes a simpler provenance, and doesn't verify the write path against source code.
+
+**Check (Stage 5):**
+For every pipeline classified as "Manual" or "N/A (static)" in the data flow matrix, verify by grepping for INSERT/write operations on that table or file:
+
+```bash
+# For SQLite tables:
+grep -rn "INSERT.*INTO.*<table_name>" --include='*.py' | grep -v test | grep -v __pycache__
+# For files:
+grep -rn "\.write\|write_text\|open.*w" --include='*.py' | grep -v test | grep -v __pycache__
+```
+
+If any automated producer exists, the classification is wrong. Trace ALL write paths, not just the obvious ones.
+
+Also verify that auto-populated pipelines with ordering dependencies maintain correct ordering. For example, if table A must be populated before table B (because B's insert logic resolves through A), confirm that ordering is preserved in the code. A refactor that reverses INSERT order can silently break resolution without any test failing — the data just fragments.
+
+**Check (Stage 6):**
+If the security audit references a data source as "admin-managed" or "static," verify that claim against Stage 5's producer inventory. Don't trust a previous stage's classification without tracing to source.
+
+---
+
+## P-013: None-defaulted dependency hides untested code branch
+
+**Origin:** Cycle 3 Stage 3 — `recall()` in `memory.py` accepted `memory_interface` as a parameter. All test fixtures passed `None`, which caused the entire vector search code path (~50 mutants) to be skipped. The decay formula, sort order, and `top_k` reduction logic were completely unexercised. Discovered when mutation survivors clustered behind the `if memory_interface is not None` guard.
+
+**Class:** A function accepts an optional/defaulted dependency (database connection, API client, external service interface). Tests use the default (`None` or a no-op mock) which causes an entire code branch to be skipped silently. The function "works" in tests but a significant execution path is unverified.
+
+**Check (Stage 3):**
+When reviewing mutation survivors, check if surviving mutants cluster in a code path guarded by an `if`-not-`None` check on a function parameter:
+
+```bash
+# Look for patterns in source where None guards a branch:
+grep -n "if.*is not None\|if.*is None" <source_file>
+```
+
+Then check if any test fixtures pass `None` for that parameter:
+
+```bash
+grep -n "memory_interface=None\|conn=None\|provider=None" tests/test_*.py
+```
+
+If survivors cluster behind a dependency guard and tests pass `None` for that dependency, the test fixtures need a proper mock, not `None`.
+
+**Check (Stage 2):**
+For test fixtures that pass `None` for any dependency parameter, ask: "Does this `None` cause an entire code branch to be skipped?" If yes, flag for mock coverage in Stage 3.
+
+---
+
 ## Pattern Index by Stage
 
 | Stage | Applicable Patterns |
 |-------|-------------------|
 | 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010 |
-| 2. Test Suite | P-005 (verify count), P-006 (fixture check) |
-| 3. Mutation Testing | P-004 |
+| 2. Test Suite | P-005 (verify count), P-006 (fixture check), P-013 |
+| 3. Mutation Testing | P-004, P-013 |
 | 4. Orchestrator Testing | — |
-| 5. Dependency Chain | P-006 |
-| 6. Security Audit | P-003, P-009 |
+| 5. Dependency Chain | P-006, P-012 |
+| 6. Security Audit | P-003, P-009, P-012 |
 | 7. Documentation Audit | P-007, P-008, P-011 |
 
 ---
@@ -236,3 +288,6 @@ For each model reference in documentation: trace to the actual model string in c
 | 2026-02-18 | P-009 | Added from Cycle 2 Stage 6 (stale TTS capability assessment) |
 | 2026-02-18 | P-010 | Added from Cycle 1+2 Stage 1 (noqa accumulation) |
 | 2026-02-18 | P-011 | Added from Cycle 3 Stage 7 (operations.md "Opus" label was always wrong) |
+| 2026-02-19 | P-012 | Added from Cycle 3 Stage 5 (entity_aliases misclassified as manual/static) |
+| 2026-02-19 | P-012 | Updated: added ordering invariant check (aliases must store before facts) |
+| 2026-02-19 | P-013 | Added from Cycle 3 Stage 3 (recall() vector path untested via None default) |

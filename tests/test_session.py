@@ -495,31 +495,35 @@ class TestCompactionReplacesMessages:
 class TestSessionManagerLifecycle:
     """Session creation and persistence."""
 
-    def test_close_session_removes_from_index(self, tmp_sessions):
+    @pytest.mark.asyncio
+    async def test_close_session_removes_from_index(self, tmp_sessions):
         mgr = SessionManager(tmp_sessions)
         mgr.get_or_create("user1")
         assert "user1" in mgr._index
 
-        result = mgr.close_session("user1")
+        result = await mgr.close_session("user1")
         assert result is True
         assert "user1" not in mgr._index
 
-    def test_close_nonexistent_returns_false(self, tmp_sessions):
+    @pytest.mark.asyncio
+    async def test_close_nonexistent_returns_false(self, tmp_sessions):
         mgr = SessionManager(tmp_sessions)
-        result = mgr.close_session("nonexistent")
+        result = await mgr.close_session("nonexistent")
         assert result is False
 
-    def test_close_by_id(self, tmp_sessions):
+    @pytest.mark.asyncio
+    async def test_close_by_id(self, tmp_sessions):
         mgr = SessionManager(tmp_sessions)
         session = mgr.get_or_create("user1")
         sid = session.id
-        result = mgr.close_session_by_id(sid)
+        result = await mgr.close_session_by_id(sid)
         assert result is True
         assert "user1" not in mgr._index
 
-    def test_close_by_unknown_id_returns_false(self, tmp_sessions):
+    @pytest.mark.asyncio
+    async def test_close_by_unknown_id_returns_false(self, tmp_sessions):
         mgr = SessionManager(tmp_sessions)
-        result = mgr.close_session_by_id("nonexistent-uuid")
+        result = await mgr.close_session_by_id("nonexistent-uuid")
         assert result is False
 
     def test_create_subagent_session(self, tmp_sessions):

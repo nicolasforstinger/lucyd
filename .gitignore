@@ -30,6 +30,11 @@ htmlcov/
 .ruff_cache/
 ruff.toml
 
+# Scratch / local-only files
+build
+onboarding
+postfix
+
 # Claude Code
 .claude/
 

@@ -1,7 +1,10 @@
-"""Memory interface — SQLite FTS5 + vector similarity search.
+"""Memory interface — SQLite FTS5 + vector similarity search + structured recall.
 
 FTS-first, vector fallback. Keyword search handles ~80% of queries
 without an API call. Vector is the fallback for semantic gaps.
+
+Structured recall (v2): entity-attribute-value facts, episodes,
+commitments. Budget-aware context injection via RecallBlock.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import logging
 import math
 import sqlite3
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -54,7 +58,8 @@ class MemoryInterface:
 
     def _ensure_cache_table(self) -> None:
         """Create embedding_cache table if it doesn't exist."""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS embedding_cache (
@@ -117,7 +122,8 @@ class MemoryInterface:
             return []
 
         def _query():
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(
@@ -148,7 +154,8 @@ class MemoryInterface:
             return []
 
         def _search():
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(
@@ -215,7 +222,8 @@ class MemoryInterface:
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
         def _query():
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
             try:
                 row = conn.execute(
                     "SELECT embedding FROM embedding_cache WHERE hash = ? AND model = ?",
@@ -236,7 +244,8 @@ class MemoryInterface:
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
         def _store():
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
             try:
                 conn.execute(
                     """INSERT OR REPLACE INTO embedding_cache
@@ -257,7 +266,8 @@ class MemoryInterface:
                                start_line: int = 0, end_line: int = 50) -> str:
         """Retrieve file content from chunks by path and line range."""
         def _query():
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
             try:
                 # Overlap detection: find chunks that intersect the requested range
                 rows = conn.execute(
@@ -273,3 +283,303 @@ class MemoryInterface:
             return "\n".join(row[0] for row in rows)
 
         return await asyncio.to_thread(_query)
+
+
+# ─── Structured Recall (Memory v2) ──────────────────────────────
+
+# Priority assignments (higher = more important, dropped lowest-first)
+PRIORITY_VECTOR = 10
+PRIORITY_EPISODES = 20
+PRIORITY_FACTS = 30
+PRIORITY_COMMITMENTS = 40
+
+
+@dataclass
+class RecallBlock:
+    priority: int   # higher = keep longer
+    section: str    # e.g. "[Known facts]"
+    text: str       # formatted content
+    est_tokens: int # len(text) // 4
+
+
+def resolve_entity(name: str, conn: sqlite3.Connection) -> str:
+    """Resolve an entity name through the alias table."""
+    normalized = name.lower().strip().replace(" ", "_")
+    row = conn.execute(
+        "SELECT canonical FROM entity_aliases WHERE alias = ?",
+        (normalized,)
+    ).fetchone()
+    return row[0] if row else normalized
+
+
+def extract_query_entities(query: str, conn: sqlite3.Connection) -> set[str]:
+    """Extract known entity names from a natural language query.
+
+    Checks individual words, bigrams, and trigrams against both
+    the facts table and the alias table.
+    """
+    words = query.lower().replace("'s", "").split()
+    candidates = []
+
+    # Individual words
+    for w in words:
+        candidates.append(w.strip("?.,!\"'()"))
+
+    # Bigrams
+    for i in range(len(words) - 1):
+        w1 = words[i].strip("?.,!\"'()")
+        w2 = words[i + 1].strip("?.,!\"'()")
+        candidates.append(f"{w1}_{w2}")
+
+    # Trigrams
+    for i in range(len(words) - 2):
+        w1 = words[i].strip("?.,!\"'()")
+        w2 = words[i + 1].strip("?.,!\"'()")
+        w3 = words[i + 2].strip("?.,!\"'()")
+        candidates.append(f"{w1}_{w2}_{w3}")
+
+    entities = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        # Check direct entity match
+        exists = conn.execute(
+            "SELECT 1 FROM facts WHERE entity = ? "
+            "AND invalidated_at IS NULL LIMIT 1",
+            (candidate,)
+        ).fetchone()
+        if exists:
+            entities.add(candidate)
+
+        # Check alias table
+        canonical = resolve_entity(candidate, conn)
+        if canonical != candidate:
+            entities.add(canonical)
+
+    return entities
+
+
+def lookup_facts(
+    entities: set[str],
+    conn: sqlite3.Connection,
+    max_results: int = 20,
+) -> list[sqlite3.Row]:
+    """Direct fact lookup by entity names.
+
+    Returns current (non-invalidated) facts. Updates accessed_at.
+    Uses rowid as the implicit integer PK for facts table.
+    """
+    if not entities:
+        return []
+
+    placeholders = ",".join("?" * len(entities))
+    rows = conn.execute(f"""
+        SELECT id, entity, attribute, value, confidence
+        FROM facts
+        WHERE entity IN ({placeholders})
+          AND invalidated_at IS NULL
+        ORDER BY confidence DESC
+        LIMIT ?
+    """, (*entities, max_results)).fetchall()
+
+    if rows:
+        ids = [r[0] for r in rows]
+        id_placeholders = ",".join("?" * len(ids))
+        conn.execute(f"""
+            UPDATE facts SET accessed_at = datetime('now')
+            WHERE id IN ({id_placeholders})
+        """, ids)
+        conn.commit()
+
+    return rows
+
+
+def search_episodes(
+    keywords: list[str],
+    conn: sqlite3.Connection,
+    max_results: int = 3,
+    days_back: int | None = None,
+) -> list[sqlite3.Row]:
+    """Search episodes by topic keywords and optional date range."""
+    conditions: list[str] = []
+    params: list = []
+
+    if days_back:
+        conditions.append("date >= date('now', ?)")
+        params.append(f"-{days_back} days")
+
+    keyword_conditions = []
+    for kw in keywords:
+        keyword_conditions.append("(topics LIKE ? OR summary LIKE ?)")
+        params.extend([f"%{kw}%", f"%{kw}%"])
+    if keyword_conditions:
+        conditions.append(f"({' OR '.join(keyword_conditions)})")
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    query = f"""
+        SELECT id, session_id, date, topics, decisions, summary, emotional_tone
+        FROM episodes
+        {where}
+        ORDER BY date DESC LIMIT ?
+    """
+    params.append(max_results)
+    return conn.execute(query, params).fetchall()
+
+
+def get_open_commitments(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Get all open commitments, ordered by deadline."""
+    return conn.execute("""
+        SELECT id, who, what, deadline, created_at
+        FROM commitments
+        WHERE status = 'open'
+        ORDER BY deadline IS NULL, deadline ASC, created_at DESC
+    """).fetchall()
+
+
+async def recall(
+    query: str,
+    conn: sqlite3.Connection,
+    memory_interface: MemoryInterface,
+    config,
+    top_k: int = 5,
+) -> list[RecallBlock]:
+    """Three-stage recall: facts -> episodes -> vector fallback.
+
+    Returns list of RecallBlocks ordered by priority (highest first).
+    """
+    blocks: list[RecallBlock] = []
+    max_facts = getattr(config, "recall_max_facts", 20)
+    decay_rate = getattr(config, "recall_decay_rate", 0.03)
+
+    # Stage 1: Structured fact lookup
+    entities = extract_query_entities(query, conn)
+    if entities:
+        facts = lookup_facts(entities, conn, max_results=max_facts)
+        if facts:
+            lines = [f"  {f['entity']}.{f['attribute']}: {f['value']}"
+                     for f in facts]
+            text = "\n".join(lines)
+            blocks.append(RecallBlock(
+                priority=PRIORITY_FACTS,
+                section="[Known facts]",
+                text=text,
+                est_tokens=len(text) // 4,
+            ))
+
+    # Stage 2: Episode search
+    keywords = [w for w in query.lower().split() if len(w) > 3]
+    if keywords:
+        episodes = search_episodes(keywords, conn, max_results=3)
+        if episodes:
+            lines = [f"  [{e['date']}] {e['summary']}" for e in episodes]
+            text = "\n".join(lines)
+            blocks.append(RecallBlock(
+                priority=PRIORITY_EPISODES,
+                section="[Related episodes]",
+                text=text,
+                est_tokens=len(text) // 4,
+            ))
+
+    # Stage 3: Vector fallback with decay
+    vector_k = max(1, top_k - len(blocks)) if blocks else top_k
+    vector_results = await memory_interface.search(query, top_k=vector_k)
+    if vector_results:
+        for r in vector_results:
+            days_old = r.get("days_old", 0)
+            r["decayed_score"] = r["score"] * math.exp(
+                -decay_rate * days_old
+            )
+        vector_results.sort(key=lambda r: r["decayed_score"], reverse=True)
+        lines = [f"  {r['text'][:200]}" for r in vector_results[:vector_k]]
+        text = "\n".join(lines)
+        blocks.append(RecallBlock(
+            priority=PRIORITY_VECTOR,
+            section="[Memory search]",
+            text=text,
+            est_tokens=len(text) // 4,
+        ))
+
+    # Stage 4: Open commitments (always included)
+    commitments = get_open_commitments(conn)
+    if commitments:
+        lines = []
+        for c in commitments:
+            deadline = f" (by {c['deadline']})" if c["deadline"] else ""
+            lines.append(f"  #{c['id']} - {c['who']}: {c['what']}{deadline}")
+        text = "\n".join(lines)
+        blocks.append(RecallBlock(
+            priority=PRIORITY_COMMITMENTS,
+            section="[Open commitments]",
+            text=text,
+            est_tokens=len(text) // 4,
+        ))
+
+    blocks.sort(key=lambda b: b.priority, reverse=True)
+    return blocks
+
+
+def inject_recall(blocks: list[RecallBlock], max_tokens: int) -> str:
+    """Apply token budget to recall blocks.
+
+    Blocks arrive sorted by priority (highest first). Adds blocks
+    until budget exhausted, dropping lowest-priority blocks.
+    """
+    result = []
+    remaining = max_tokens
+    for block in blocks:
+        if block.est_tokens <= remaining:
+            result.append(f"{block.section}\n{block.text}")
+            remaining -= block.est_tokens
+    return "\n\n".join(result) if result else ""
+
+
+EMPTY_RECALL_FALLBACK = (
+    "No results found in structured memory or vector search. "
+    "Check the memory logs in memory/*.md for relevant information "
+    "using the memory_get tool. Also check memory/cache/NOTES.md "
+    "for tasks and reminders."
+)
+
+
+def get_session_start_context(
+    conn: sqlite3.Connection,
+    max_facts: int = 20,
+    max_tokens: int = 1000,
+) -> str:
+    """Build structured context for the first message of a session."""
+    blocks: list[RecallBlock] = []
+
+    facts = conn.execute("""
+        SELECT entity, attribute, value
+        FROM facts
+        WHERE invalidated_at IS NULL
+        ORDER BY accessed_at DESC
+        LIMIT ?
+    """, (max_facts,)).fetchall()
+
+    if facts:
+        lines = [f"  {f[0]}.{f[1]}: {f[2]}" for f in facts]
+        text = "\n".join(lines)
+        blocks.append(RecallBlock(
+            priority=PRIORITY_FACTS,
+            section="[Known facts]",
+            text=text,
+            est_tokens=len(text) // 4,
+        ))
+
+    commitments = get_open_commitments(conn)
+    if commitments:
+        lines = []
+        for c in commitments:
+            deadline = f" (by {c['deadline']})" if c["deadline"] else ""
+            lines.append(f"  #{c['id']} - {c['who']}: {c['what']}{deadline}")
+        text = "\n".join(lines)
+        blocks.append(RecallBlock(
+            priority=PRIORITY_COMMITMENTS,
+            section="[Open commitments]",
+            text=text,
+            est_tokens=len(text) // 4,
+        ))
+
+    return inject_recall(blocks, max_tokens)

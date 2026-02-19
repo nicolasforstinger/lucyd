@@ -230,6 +230,71 @@ class Config:
     def memory_top_k(self) -> int:
         return _deep_get(self._data, "memory", "search_top_k", default=10)
 
+    # --- Memory Consolidation ---
+
+    @property
+    def consolidation_enabled(self) -> bool:
+        return _deep_get(self._data, "memory", "consolidation", "enabled", default=False)
+
+    @property
+    def consolidation_fact_model(self) -> str:
+        return _deep_get(self._data, "memory", "consolidation", "fact_model", default="subagent")
+
+    @property
+    def consolidation_episode_model(self) -> str:
+        return _deep_get(self._data, "memory", "consolidation", "episode_model", default="primary")
+
+    @property
+    def consolidation_min_messages(self) -> int:
+        return _deep_get(self._data, "memory", "consolidation", "min_messages", default=4)
+
+    @property
+    def consolidation_confidence_threshold(self) -> float:
+        return _deep_get(self._data, "memory", "consolidation", "confidence_threshold", default=0.6)
+
+    @property
+    def consolidation_max_extraction_chars(self) -> int:
+        return _deep_get(self._data, "memory", "consolidation", "max_extraction_chars", default=50000)
+
+    # --- Memory Recall ---
+
+    @property
+    def recall_structured_first(self) -> bool:
+        return _deep_get(self._data, "memory", "recall", "structured_first", default=True)
+
+    @property
+    def recall_decay_rate(self) -> float:
+        return _deep_get(self._data, "memory", "recall", "decay_rate", default=0.03)
+
+    @property
+    def recall_max_facts(self) -> int:
+        return _deep_get(self._data, "memory", "recall", "max_facts_in_context", default=20)
+
+    @property
+    def recall_max_dynamic_tokens(self) -> int:
+        return _deep_get(self._data, "memory", "recall", "max_dynamic_tokens", default=1000)
+
+    # --- Memory Maintenance ---
+
+    @property
+    def maintenance_enabled(self) -> bool:
+        return _deep_get(self._data, "memory", "maintenance", "enabled", default=False)
+
+    @property
+    def maintenance_stale_threshold_days(self) -> int:
+        return _deep_get(self._data, "memory", "maintenance", "stale_threshold_days", default=90)
+
+    # --- Memory Indexer ---
+
+    @property
+    def indexer_include_patterns(self) -> list[str]:
+        return _deep_get(self._data, "memory", "indexer", "include_patterns",
+                         default=["memory/*.md", "MEMORY.md"])
+
+    @property
+    def indexer_exclude_dirs(self) -> list[str]:
+        return _deep_get(self._data, "memory", "indexer", "exclude_dirs", default=[])
+
     # --- Tools ---
 
     @property

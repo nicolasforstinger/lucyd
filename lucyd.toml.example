@@ -70,6 +70,28 @@ http = "primary"
 db = "~/.lucyd/memory/main.sqlite"
 search_top_k = 10
 
+[memory.consolidation]
+enabled = true
+fact_model = "subagent"
+episode_model = "primary"
+min_messages = 4
+confidence_threshold = 0.6
+
+# [memory.maintenance]
+# enabled = true
+# min_confidence = 0.3
+# stale_days = 90
+
+[memory.recall]
+structured_first = true
+decay_rate = 0.03
+max_facts_in_context = 20
+max_dynamic_tokens = 1000
+
+[memory.indexer]
+include_patterns = ["memory/*.md", "MEMORY.md"]
+exclude_dirs = []
+
 # ─── Tools ───────────────────────────────────────────────────────
 
 [tools]
@@ -77,6 +99,7 @@ enabled = [
     "read", "write", "edit", "exec",
     "web_search", "web_fetch",
     "memory_search", "memory_get",
+    "memory_write", "memory_forget", "commitment_update",
     "message", "react",
     "schedule_message", "list_scheduled",
     "session_status",

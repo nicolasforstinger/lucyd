@@ -18,6 +18,11 @@
 - **memory_search**: Search long-term memory by keyword or semantic similarity.
 - **memory_get**: Retrieve a specific file snippet from memory.
 
+## Memory Management
+- **memory_write**: Store a fact (entity-attribute-value) in structured memory.
+- **memory_forget**: Invalidate a stored fact.
+- **commitment_update**: Update the status of a commitment (open, done, expired, cancelled).
+
 ## System
 - **exec**: Run a shell command with timeout.
 - **session_status**: Check current session stats (cost, tokens, uptime).

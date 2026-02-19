@@ -1,15 +1,22 @@
 """Memory tools — memory_search and memory_get.
 
 Optional: only registered if memory DB is configured.
-Delegates to memory.py for actual search logic.
+memory_search uses structured recall (facts, episodes, commitments)
+with vector fallback. memory_get reads chunks by file path.
 """
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 # Set at daemon startup
 _memory: Any = None
+_conn: sqlite3.Connection | None = None
+_config: Any = None
 
 
 def set_memory(memory_interface: Any) -> None:
@@ -17,10 +24,30 @@ def set_memory(memory_interface: Any) -> None:
     _memory = memory_interface
 
 
+def set_structured_memory(conn: sqlite3.Connection, config: Any) -> None:
+    """Configure structured recall (memory v2)."""
+    global _conn, _config
+    _conn = conn
+    _config = config
+
+
 async def tool_memory_search(query: str, top_k: int = 10) -> str:
-    """Search long-term memory using keywords and/or semantic similarity."""
+    """Search long-term memory using structured facts, episodes, and vector similarity."""
     if _memory is None:
         return "Error: Memory not configured"
+
+    # Try structured recall if configured
+    if _conn is not None and _config is not None:
+        try:
+            from memory import EMPTY_RECALL_FALLBACK, inject_recall, recall
+            max_tokens = getattr(_config, "recall_max_dynamic_tokens", 1000)
+            blocks = await recall(query, _conn, _memory, _config, top_k)
+            result = inject_recall(blocks, max_tokens)
+            return result if result else EMPTY_RECALL_FALLBACK
+        except Exception:
+            log.warning("Structured recall failed, falling back to vector", exc_info=True)
+
+    # Fallback to direct vector search
     try:
         results = await _memory.search(query, top_k=top_k)
         if not results:
@@ -50,7 +77,7 @@ async def tool_memory_get(file_path: str, start_line: int = 0,
 TOOLS = [
     {
         "name": "memory_search",
-        "description": "Search long-term memory for relevant information. Uses keyword matching first, falls back to semantic similarity.",
+        "description": "Search long-term memory for relevant information. Uses structured facts and episodes first, falls back to semantic similarity.",
         "input_schema": {
             "type": "object",
             "properties": {

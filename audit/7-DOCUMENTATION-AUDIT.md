@@ -173,7 +173,7 @@ For each:
 Feature: ___  Source evidence: ___  User-facing: yes/no
 ```
 
-**Confidence check:** Is this inventory COMPLETE? Check for features in unexpected places. Are there any capabilities you found in Stages 3-5 (mutation testing, orchestrator testing, security audit) that should be documented?
+**Confidence check:** Is this inventory COMPLETE? Check for features in unexpected places. Are there any capabilities you found in Stages 3-6 (mutation testing, orchestrator testing, dependency chain, security audit) that should be documented?
 
 ---
 
@@ -332,7 +332,7 @@ echo "vars in source:" $(grep -rn "LUCYD_" lucyd.py channels/ tools/ | grep -v t
 
 ## Phase 6: Report
 
-Write the report to `audit/reports/6-documentation-audit-report.md`:
+Write the report to `audit/reports/7-documentation-audit-report.md`:
 
 ```markdown
 # Documentation Audit Report

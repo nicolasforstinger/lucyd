@@ -1007,6 +1007,8 @@ class TestProcessMessageIntegration:
         daemon.config.compaction_threshold = 150000
         daemon.config.compaction_model = "compaction"
         daemon.config.compaction_prompt = "Summarize"
+        daemon.config.agent_name = "TestAgent"
+        daemon.config.consolidation_enabled = False
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Something went wrong."
         daemon.config.raw = MagicMock(return_value=0.0)
@@ -1269,9 +1271,11 @@ class TestProcessMessageIntegration:
                 )
 
         # compact_session should have been called
-        daemon.session_mgr.compact_session.assert_called_once_with(
-            session, compaction_provider, "Summarize",
-        )
+        daemon.session_mgr.compact_session.assert_called_once()
+        args = daemon.session_mgr.compact_session.call_args[0]
+        assert args[0] is session
+        assert args[1] is compaction_provider
+        assert isinstance(args[2], str) and len(args[2]) > 0
 
 
 # ─── TEST-3: _message_loop Behavior Tests ───────────────────────
@@ -1303,8 +1307,8 @@ class TestMessageLoopDebounce:
 
         daemon.session_mgr = MagicMock()
         daemon.session_mgr.get_or_create = MagicMock(return_value=session)
-        daemon.session_mgr.close_session = MagicMock(return_value=True)
-        daemon.session_mgr.close_session_by_id = MagicMock(return_value=True)
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+        daemon.session_mgr.close_session_by_id = AsyncMock(return_value=True)
         daemon.session_mgr._index = {}
 
         daemon.context_builder = MagicMock()
@@ -1330,6 +1334,8 @@ class TestMessageLoopDebounce:
         daemon.config.compaction_threshold = 150000
         daemon.config.compaction_model = "compaction"
         daemon.config.compaction_prompt = "Summarize"
+        daemon.config.agent_name = "TestAgent"
+        daemon.config.consolidation_enabled = False
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
         daemon.config.raw = MagicMock(return_value=0.0)

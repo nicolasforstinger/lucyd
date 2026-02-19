@@ -100,20 +100,26 @@ def chunk_file(
     return chunks
 
 
-def scan_workspace(workspace: Path) -> list[tuple[str, Path]]:
+def scan_workspace(
+    workspace: Path,
+    include_patterns: list[str] | None = None,
+    exclude_dirs: set[str] | None = None,
+) -> list[tuple[str, Path]]:
     """Scan workspace for indexable memory files.
 
     Returns [(relative_path, absolute_path)] sorted by path.
     """
+    patterns = include_patterns or INCLUDE_PATTERNS
+    excludes = exclude_dirs if exclude_dirs is not None else EXCLUDE_DIRS
     results: dict[str, Path] = {}
-    for pattern in INCLUDE_PATTERNS:
+    for pattern in patterns:
         for p in workspace.glob(pattern):
             if not p.is_file():
                 continue
             rel = str(p.relative_to(workspace))
             # Normalize path separators
             rel = rel.replace("\\", "/")
-            if any(rel.startswith(d + "/") for d in EXCLUDE_DIRS):
+            if any(rel.startswith(d + "/") for d in excludes):
                 continue
             results[rel] = p
     return sorted(results.items())
@@ -288,6 +294,7 @@ def index_workspace(
 
     # 2. Connect to DB
     conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
 
     try:
         # 3. Get current index state
@@ -387,6 +394,7 @@ def get_index_status(db_path: Path, workspace: Path) -> dict:
         return status
 
     conn = sqlite3.connect(str(db_path), timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
     try:
         indexed = get_indexed_files(conn)
         status["indexed_files"] = len(indexed)

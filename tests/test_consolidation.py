@@ -3,13 +3,11 @@
 import json
 import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from consolidation import (
-    FACT_EXTRACTION_PROMPT,
     _normalize_entity,
     _resolve_entity,
     _strip_json_fences,
@@ -537,7 +535,7 @@ class TestExtractFromFile:
         })
         provider2 = _make_provider(response2)
 
-        count = await extract_from_file(str(f), provider2, mem_conn)
+        await extract_from_file(str(f), provider2, mem_conn)
         # Provider was called (file changed)
         provider2.complete.assert_called_once()
 

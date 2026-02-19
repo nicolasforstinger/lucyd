@@ -145,6 +145,11 @@ HOW: Identify equivalent mutants, document them with justification, move on.
 WHY: `lucyd.py` produced 1121 untestable mutants, 497 fork deadlocks, 76 ambiguous kills. The real bug (hardcoded `expanduser()` path) was found by manual testing, not mutmut. Orchestrators need extraction + contract testing.
 HOW: Use `4-ORCHESTRATOR-TESTING.md` for orchestrator files.
 
+**Rule 14: None-defaulted dependencies hide untested branches.**
+WHY: `recall()` accepted `memory_interface=None` in all test fixtures. The entire vector search branch (~50 mutants) was never exercised. Decay formula, sort order, and `top_k` reduction were all unverified — invisible because the `if memory_interface is not None` guard short-circuited the entire path.
+HOW: When a function parameter defaults to `None` and guards a code branch with `if param is not None`, passing `None` in tests skips that branch entirely. Provide a mock instead of `None`.
+WHAT: `memory_interface = MagicMock(); memory_interface.search = AsyncMock(return_value=[...])` — then verify the branch exercises the decay, sort, and truncation logic.
+
 ---
 
 ## Pattern Checks
@@ -160,6 +165,18 @@ When reviewing mutation survivors in filter/iteration functions, ask: "Would thi
 grep -rn 'monkeypatch.setenv\|os.environ' tests/ --include='*.py'
 ```
 For tests that add environment variables to test filter functions: verify that both matching and non-matching entries exist, and that non-matching entries appear AFTER matching ones in insertion order. If all test data is appended at the end, `continue→break` mutations are invisible.
+
+### P-013: None-defaulted dependency hides untested code branch
+When reviewing mutation survivors, check if surviving mutants cluster in a code path guarded by an `if`-not-`None` check on a function parameter:
+
+```bash
+# In the source file under test, find None guards:
+grep -n "if.*is not None\|if.*is None" <source_file>
+# In the test file, find None-defaulted fixtures:
+grep -n "=None\|= None" tests/test_<module>.py
+```
+
+If survivors cluster behind a dependency guard and tests pass `None` for that dependency, the test fixtures need a proper mock, not `None`. This caught ~50 hidden survivors in `recall()`'s vector search path.
 
 ---
 
@@ -616,3 +633,4 @@ Write per-module reports to `audit/reports/MUTATION-REPORT-<module>.md` AND the 
 12. **Unscoped `tests_dir` causes false kills.** Scope to relevant test file.
 13. **Don't run mutmut on orchestrators.** Use `4-ORCHESTRATOR-TESTING.md`.
 14. **Never write a test that asserts broken behavior is correct.** `assert _is_private_ip("0177.0.0.1") is False` doesn't test the function — it documents a vulnerability and calls it a feature. First audit declared it "by design." Human spot-check caught it. Fix the function, then assert correct behavior.
+15. **None-defaulted dependencies hide entire branches.** `recall(memory_interface=None)` skipped ~50 lines of vector search logic. If a parameter guards a code branch and tests pass `None`, those lines have zero coverage and mutants survive silently.

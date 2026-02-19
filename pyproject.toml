@@ -1,6 +1,8 @@
 [tool.mutmut]
 paths_to_mutate = ["tools/"]
 tests_dir = ["tests/"]
+pythonpath = ["."]
+debug = false
 
 [tool.mypy]
 python_version = "3.11"

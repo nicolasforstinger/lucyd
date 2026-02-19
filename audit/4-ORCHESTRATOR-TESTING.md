@@ -282,6 +282,14 @@ Write tests for each behavioral contract. Each test:
 - Tool results added to session
 - State saved after processing
 
+**Category 10: Memory v2 wiring (if consolidation_enabled)**
+- Structured recall injected at session start (`recall()` called, result added to context)
+- Structured memory tools (`memory_write`, `memory_forget`, `commitment_update`) registered when `consolidation_enabled=True`
+- Structured memory tools NOT registered when `consolidation_enabled=False`
+- Pre-compaction consolidation called before compaction truncates session (and failure doesn't block compaction)
+- Session close callback fires consolidation for the closing session
+- All Memory v2 paths are try/except isolated — failure in any structured memory operation does not crash `_process_message`
+
 ### Writing Contract Tests
 
 For each test:
@@ -378,6 +386,7 @@ Components mocked: [list]
 | Compaction | | PASS/FAIL |
 | HTTP future resolution | | PASS/FAIL |
 | Message persistence | | PASS/FAIL |
+| Memory v2 wiring | | PASS/FAIL/N/A |
 
 ## Test Counts
 | Type | Count |

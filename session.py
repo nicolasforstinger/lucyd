@@ -5,11 +5,13 @@ Dual storage: JSONL audit trail (append-only) + state file (atomic snapshots).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -234,12 +236,14 @@ class Session:
 class SessionManager:
     """Manages session routing and lifecycle."""
 
-    def __init__(self, sessions_dir: Path):
+    def __init__(self, sessions_dir: Path, agent_name: str = "Assistant"):
         self.dir = sessions_dir
         self.dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.dir / "sessions.json"
+        self.agent_name = agent_name
         self._index: dict[str, dict] = {}
         self._sessions: dict[str, Session] = {}
+        self._on_close_callbacks: list = []
         self._load_index()
 
     def _load_index(self) -> None:
@@ -285,8 +289,27 @@ class SessionManager:
         log.info("Created session %s for %s", session_id, contact)
         return session
 
-    def close_session(self, contact: str) -> bool:
+    def on_close(self, callback: Callable) -> None:
+        """Register a callback for session close.
+
+        Callback signature: async def cb(session) or def cb(session).
+        Callbacks fire before archiving — messages still accessible.
+        """
+        self._on_close_callbacks.append(callback)
+
+    async def close_session(self, contact: str) -> bool:
         """Close and archive the session for a contact. Next message starts fresh."""
+        # Fire callbacks before archiving (session still accessible)
+        session = self._sessions.get(contact)
+        if session:
+            for cb in self._on_close_callbacks:
+                try:
+                    result = cb(session)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    log.exception("on_close callback failed")
+
         # Clear memory cache
         if contact in self._sessions:
             del self._sessions[contact]
@@ -308,11 +331,11 @@ class SessionManager:
         self._save_index()
         return True
 
-    def close_session_by_id(self, session_id: str) -> bool:
+    async def close_session_by_id(self, session_id: str) -> bool:
         """Close a session by its UUID (linear scan over index)."""
         for contact, entry in self._index.items():
             if entry.get("session_id") == session_id:
-                return self.close_session(contact)
+                return await self.close_session(contact)
         return False
 
     def build_recall(self, contact: str, count: int = 20) -> str:
@@ -387,7 +410,7 @@ class SessionManager:
             elif role == "assistant":
                 text = msg.get("text", "")
                 if text:
-                    lines.append(f"**Lucy:** {text}")
+                    lines.append(f"**{self.agent_name}:** {text}")
 
         if not lines:
             return ""
@@ -429,12 +452,12 @@ class SessionManager:
             # Include tool calls in compaction context
             for tc in msg.get("tool_calls", []):
                 tc_name = tc.get("name", "unknown")
-                tc_args = str(tc.get("arguments", {}))[:200]
+                tc_args = str(tc.get("arguments", {}))[:2000]
                 conversation_text += f"assistant [tool_call]: {tc_name}({tc_args})\n\n"
             # Include tool results in compaction context
             if role == "tool_results":
                 for r in msg.get("results", []):
-                    content = r.get("content", "")[:300]
+                    content = r.get("content", "")[:2000]
                     conversation_text += f"tool_result: {content}\n\n"
 
         if not conversation_text.strip():

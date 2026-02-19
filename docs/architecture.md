@@ -12,7 +12,9 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `context.py` | Builds system prompt blocks from workspace files. Organizes into cache tiers (stable/semi_stable/dynamic). |
 | `session.py` | Session manager. Dual storage: JSONL audit trail (append-only) + state file (atomic snapshot). Handles compaction. |
 | `skills.py` | Scans workspace skills directory. Parses markdown with YAML frontmatter. Builds index for system prompt. |
-| `memory.py` | Long-term memory. SQLite FTS5 for keyword search, OpenAI embeddings for vector similarity. FTS-first strategy. |
+| `memory.py` | Long-term memory. SQLite FTS5 for keyword search, OpenAI embeddings for vector similarity. FTS-first strategy. Also handles structured recall (facts, episodes, commitments). |
+| `memory_schema.py` | Schema management for structured memory tables (6 tables). Safe to call on every startup — all `IF NOT EXISTS`. |
+| `consolidation.py` | Structured data extraction from sessions and workspace files via LLM. Extracts facts, episodes, commitments, and entity aliases. |
 | `channels/__init__.py` | Channel protocol definition (`connect`, `receive`, `send`, `send_typing`, `send_reaction`) and factory. |
 | `channels/telegram.py` | Telegram transport. Long polling via Bot API (httpx), sends via Bot API HTTP methods. |
 | `channels/cli.py` | stdin/stdout transport for testing. |
@@ -26,6 +28,7 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `tools/messaging.py` | `message` and `react` tools. Sends messages and emoji reactions via the active channel. |
 | `tools/web.py` | `web_search` (Brave), `web_fetch` tools. |
 | `tools/memory_tools.py` | `memory_search`, `memory_get` tools. Delegates to `memory.py`. |
+| `tools/structured_memory.py` | `memory_write`, `memory_forget`, `commitment_update` tools. Structured fact storage with parameterized SQL. |
 | `tools/agents.py` | `sessions_spawn` tool. Runs a sub-agent with scoped tools and a separate model. |
 | `tools/skills_tool.py` | `load_skill` tool. Returns a skill's full body on demand. |
 | `tools/status.py` | `session_status` tool. Returns uptime, today's cost, token counts. |
@@ -33,6 +36,8 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `tools/tts.py` | `tts` tool. Text-to-speech via ElevenLabs API. |
 | `tools/indexer.py` | Memory indexer. Scans workspace, chunks files, embeds via OpenAI, writes to SQLite FTS5 + vector DB. Used by `bin/lucyd-index`. |
 | `bin/lucyd-send` | CLI script. Writes JSON to the control FIFO. Queries cost DB and monitor state directly. |
+| `bin/lucyd-index` | Memory indexer CLI. Scans workspace, chunks, embeds, writes to SQLite FTS5 + vector DB. Cron at `:10`. |
+| `bin/lucyd-consolidate` | Memory consolidation CLI. Extracts structured facts/episodes/commitments from sessions. Cron at `:15`. |
 | `providers.d/*.toml` | Provider config files. Each defines connection type, API key env var, and `[models.*]` sections. Loaded via `[providers] load` in `lucyd.toml`. |
 
 ## Message Flow
@@ -193,9 +198,20 @@ Query embeddings are cached in an `embedding_cache` table (keyed by SHA-256 hash
 
 ### Tables
 
+**Unstructured memory (v1):**
 - `chunks` -- Text chunks with source path, line ranges, and optional embeddings
 - `chunks_fts` -- FTS5 virtual table for full-text search
 - `embedding_cache` -- Cached query embeddings
+
+**Structured memory (v2):**
+- `facts` -- Entity-attribute-value triples with confidence scoring and soft deletion
+- `episodes` -- Timestamped narrative session summaries with topics and emotional tone
+- `commitments` -- Promises and obligations with status tracking (open/done/expired/cancelled)
+- `entity_aliases` -- Canonical name resolution (nickname → primary entity name)
+- `consolidation_state` -- Tracks per-session processing progress (dedup)
+- `consolidation_file_hashes` -- Tracks file content hashes to skip unchanged files
+
+Schema management is in `memory_schema.py` — all tables use `IF NOT EXISTS`. Structured data is extracted by `consolidation.py` via LLM (cron at `:15`), and also written directly by the `memory_write` and `commitment_update` agent tools. All SQL is parameterized.
 
 ## Provider Abstraction
 

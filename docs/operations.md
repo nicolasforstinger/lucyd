@@ -303,7 +303,9 @@ Recommended cron jobs for long-running deployments:
 |---|---|---|
 | `0 * * * *` | Workspace git auto-commit | `git add -A && commit && push` in the workspace directory |
 | `10 * * * *` | Memory indexer | `lucyd-index` — scans workspace, chunks, embeds, writes to FTS5 + vector DB |
+| `15 * * * *` | Memory consolidation | `lucyd-consolidate` — extracts structured facts, episodes, commitments from sessions |
 | `0 3 * * *` | Trash cleanup | Delete files in `.trash/` older than 30 days |
+| `0 4 * * *` | Memory maintenance | `lucyd-consolidate --maintain` — clean up low-confidence facts and stale entries |
 | `0 4 * * 0` | DB integrity check | `PRAGMA integrity_check` on memory SQLite DB |
 | `0 8 * * *` | Heartbeat | `lucyd-send --system` to trigger `HEARTBEAT.md` tasks |
 

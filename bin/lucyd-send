@@ -231,18 +231,18 @@ def _session_cost(cost_db: Path, session_id: str) -> float:
         return 0.0
 
 
-def show_monitor(state_dir: Path) -> None:
+def show_monitor(state_dir: Path, agent_name: str = "Lucy") -> None:
     """Read and display monitor.json for live API call visibility."""
     monitor_path = state_dir / "monitor.json"
 
     if not monitor_path.exists():
-        print("Lucy \u2014 no monitor data")
+        print(f"{agent_name} \u2014 no monitor data")
         return
 
     try:
         data = json.loads(monitor_path.read_text())
     except (json.JSONDecodeError, OSError):
-        print("Lucy \u2014 no monitor data")
+        print(f"{agent_name} \u2014 no monitor data")
         return
 
     state = data.get("state", "unknown")
@@ -268,17 +268,17 @@ def show_monitor(state_dir: Path) -> None:
 
     # Header
     if state == "idle":
-        print(f"Lucy \u2014 idle")
+        print(f"{agent_name} \u2014 idle")
         print("\u2500" * 27)
     elif state == "thinking":
         elapsed = now - turn_started_at if turn_started_at else 0
-        print(f"Lucy \u2014 thinking (turn {turn}, {elapsed:.1f}s elapsed)")
+        print(f"{agent_name} \u2014 thinking (turn {turn}, {elapsed:.1f}s elapsed)")
         print("\u2500" * 40)
     elif state == "tools":
-        print(f"Lucy \u2014 tools (turn {turn})")
+        print(f"{agent_name} \u2014 tools (turn {turn})")
         print("\u2500" * 27)
     else:
-        print(f"Lucy \u2014 {state}")
+        print(f"{agent_name} \u2014 {state}")
         print("\u2500" * 27)
 
     if state != "idle" and (contact or model):
@@ -463,7 +463,9 @@ def main():
         return
 
     if args.monitor:
-        show_monitor(state_dir)
+        config = _load_config()
+        agent_name = config.get("agent", {}).get("name", "Lucy")
+        show_monitor(state_dir, agent_name=agent_name)
         return
 
     if not args.message and not args.system and not args.reset:

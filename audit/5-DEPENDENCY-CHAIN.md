@@ -43,6 +43,16 @@ This pattern is the entire reason this stage exists. During Phase 1, for every c
 
 If a test fixture simulates data that no production process creates, that's the exact gap this stage is designed to catch.
 
+### P-012: Auto-populated pipeline misclassified as static
+For every pipeline classified as "Manual," "N/A (static)," or "admin-managed" in the data flow matrix, verify the classification against source code. Grep for automated write operations on that table or file:
+```bash
+# For each "manual" pipeline, check if any automated process actually writes to it
+grep -rn "INSERT.*INTO.*<table_name>" --include='*.py' | grep -v test | grep -v __pycache__
+```
+If any automated producer exists, the classification is wrong. This pattern caught `entity_aliases` being misclassified as manual when `consolidation.py:extract_facts()` auto-populates it on every run.
+
+Additionally, verify that extraction prompts contain anti-fragmentation directives (e.g., "use the shortest common name" for entities). If a prompt edit drops this, entity fragmentation silently returns — new facts scatter across `nicolas_forstinger`, `lucy_belladonna`, etc. instead of resolving to canonical short names. The prompt is a pipeline input; treat prompt regressions as pipeline breaks.
+
 ---
 
 ## Phase 1: Data Flow Mapping
@@ -110,6 +120,12 @@ At minimum, trace these (expand as codebase grows):
 | `lucyd.py` FIFO reader | `~/.lucyd/control.pipe` | `bin/lucyd-send` and cron jobs |
 | Daily memory logs | `workspace/memory/YYYY-MM-DD.md` | Lucy via `write` tool (conversational, non-deterministic) |
 | `lucyd.py` monitor reader | `~/.lucyd/monitor.json` | `lucyd.py` `_process_message` (daemon) |
+| `memory.py` structured recall → `lookup_facts()` | `memory/main.sqlite` (`facts` table) | `consolidation.py` (cron :15, pre-compaction, session close) + `tools/structured_memory.py` (`memory_write` agent tool) |
+| `memory.py` structured recall → `search_episodes()` | `memory/main.sqlite` (`episodes` table) | `consolidation.py` (cron :15, session close) |
+| `memory.py` structured recall → `get_open_commitments()` | `memory/main.sqlite` (`commitments` table) | `consolidation.py` + `tools/structured_memory.py` (`commitment_update` agent tool) |
+| `memory.py` structured recall → `resolve_entity()` | `memory/main.sqlite` (`entity_aliases` table) | `consolidation.py` `extract_facts()` — auto-populated via LLM extraction on every consolidation run (see P-012). **Ordering invariant:** aliases are stored BEFORE facts in `extract_facts()`. If reversed, new entities in the same extraction batch won't resolve through aliases. Verify ordering on any refactor of the extraction pipeline. |
+| `consolidation.py` skip check | `memory/main.sqlite` (`consolidation_state` table) | `consolidation.py` `update_consolidation_state()` |
+| `consolidation.py` hash check | `memory/main.sqlite` (`consolidation_file_hashes` table) | `consolidation.py` `extract_from_file()` |
 
 **Note on non-deterministic producers:** Some data sources (daily memory logs, MEMORY.md) are written by Lucy as a conscious choice during conversations — there is no cron job or automatic process. Their freshness depends on conversation activity. Flag these separately from deterministic pipelines (cron, daemon auto-writes).
 
@@ -141,6 +157,8 @@ Build this table from documentation and config:
 |---------|------|----------|--------|--------|
 | `lucyd.service` | systemd | continuous | daemon | |
 | Memory indexer (`lucyd-index`) | cron | `10 * * * *` | `memory/main.sqlite` | |
+| Memory consolidation (`lucyd-consolidate`) | cron | `15 * * * *` | `memory/main.sqlite` (facts, episodes, commitments, aliases) | |
+| Memory maintenance (`lucyd-consolidate --maintain`) | cron | `0 4 * * *` | dedup, decay, cleanup in `memory/main.sqlite` | |
 | Workspace auto-commit | cron | `0 * * * *` | git commits | |
 | Code auto-commit | cron | `5 * * * *` | git commits | |
 | Heartbeat | cron | (check if enabled/disabled) | system message | |
@@ -178,6 +196,22 @@ SELECT path, updated_at FROM chunks ORDER BY updated_at DESC LIMIT 1;
 -- Cost DB: most recent cost entry
 SELECT timestamp FROM costs ORDER BY timestamp DESC LIMIT 1;
 -- Threshold: 24 hours (if daemon is running). Beyond = stale.
+
+-- Structured memory: most recent fact
+SELECT entity, attribute, updated_at FROM facts WHERE valid = 1 ORDER BY updated_at DESC LIMIT 1;
+-- Threshold: matches last consolidation run. If cron runs at :15, should be within 2 hours.
+
+-- Structured memory: consolidation state (has the pipeline run?)
+SELECT session_file, consolidated_at FROM consolidation_state ORDER BY consolidated_at DESC LIMIT 1;
+-- Threshold: should match last session activity. If sessions exist that aren't in consolidation_state, pipeline is behind.
+
+-- Structured memory: episodes
+SELECT title, created_at FROM episodes ORDER BY created_at DESC LIMIT 1;
+-- Threshold: 48 hours (depends on conversation activity).
+
+-- Structured memory: commitments
+SELECT description, updated_at FROM commitments WHERE status = 'open' ORDER BY updated_at DESC LIMIT 1;
+-- Threshold: informational only — stale open commitments may be legitimate.
 ```
 
 ```bash
@@ -208,6 +242,10 @@ ls -la ~/.lucyd/lucyd-index.lock 2>/dev/null
 | Daily memory logs | 72h | Written by Lucy during conversations (non-deterministic) |
 | PID file | Current process | Stale PID = unclean shutdown |
 | Monitor JSON | 5 min (if daemon running) | Written on every `_process_message` |
+| Structured memory (`facts`) | 2h | Consolidation cron runs at :15 every hour |
+| Structured memory (`episodes`) | 48h | Extracted from sessions during consolidation |
+| Structured memory (`consolidation_state`) | Matches session activity | One entry per processed session |
+| Structured memory (`consolidation_file_hashes`) | Matches workspace changes | Updated when markdown files change |
 
 Any data source beyond its freshness threshold is a FINDING. For non-deterministic sources (daily memory logs), check whether the daemon had conversations in the threshold period before flagging — no conversations = no logs is expected behavior, not a broken pipeline.
 
@@ -243,6 +281,11 @@ grep -l "memory_search\|_search_fts\|_search_vector" tests/test_*.py
 | Session: save -> load | `save()` -> `load()` preserves messages + metadata |
 | Context: write file -> build includes it | Write to workspace -> `context_builder.build()` includes content |
 | Cost: log cost -> status reads it | `_record_cost()` -> `tool_session_status()` shows cost |
+| Structured memory: consolidate -> recall | `extract_facts()` -> `lookup_facts()` returns extracted fact |
+| Structured memory: agent write -> recall | `memory_write()` tool -> `lookup_facts()` returns written fact |
+| Structured memory: episodes | `extract_episodes()` -> `search_episodes()` returns episode |
+| Structured memory: commitments | `extract_commitments()` -> `get_open_commitments()` returns commitment |
+| Structured memory: aliases | `extract_facts()` (with multi-name entity) -> `resolve_entity()` resolves alias |
 
 Missing round-trip test = FINDING (add to Stage 2 remediation).
 

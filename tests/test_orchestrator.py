@@ -132,6 +132,8 @@ def _make_daemon(tmp_path):
     daemon.config.raw = MagicMock(return_value=0.0)
     daemon.config.compaction_model = "compaction"
     daemon.config.compaction_prompt = "Compact this."
+    daemon.config.agent_name = "TestAgent"
+    daemon.config.consolidation_enabled = False
 
     return daemon, provider, session
 
@@ -771,9 +773,11 @@ class TestHardCompaction:
                     text="hello", sender="user", source="telegram",
                 )
 
-        daemon.session_mgr.compact_session.assert_called_once_with(
-            session, compaction_provider, "Compact this."
-        )
+        daemon.session_mgr.compact_session.assert_called_once()
+        args = daemon.session_mgr.compact_session.call_args[0]
+        assert args[0] is session
+        assert args[1] is compaction_provider
+        assert isinstance(args[2], str) and len(args[2]) > 0
 
     @pytest.mark.asyncio
     async def test_no_compaction_under_threshold(self, tmp_path):

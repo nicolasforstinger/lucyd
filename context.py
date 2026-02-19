@@ -133,6 +133,17 @@ class ContextBuilder:
             parts.append(extra)
         return "\n".join(parts)
 
+    def build_stable(self) -> list[dict]:
+        """Return only the stable context blocks (persona/identity).
+
+        Used by consolidation for persona-aware extraction.
+        Read-only — doesn't modify state, doesn't depend on session.
+        """
+        stable_text = self._read_files(self.stable_files)
+        if stable_text.strip():
+            return [{"text": stable_text, "tier": "stable"}]
+        return []
+
     def reload(self) -> None:
         """Reload workspace files on next build (called on SIGUSR1).
 
