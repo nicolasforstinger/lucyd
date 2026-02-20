@@ -103,7 +103,7 @@ Lucyd connects to the Telegram Bot API directly via httpx long polling. No exter
 
 ## Testing
 
-**1020 tests**, all passing in ~16 seconds. Four testing strategies:
+**1085 tests**, all passing in ~16 seconds. Four testing strategies:
 
 ```bash
 # Run the full suite
@@ -122,15 +122,15 @@ mutmut run
 
 | Layer | Tests | Strategy |
 |-------|-------|----------|
-| Component tests | ~770 | Direct function/class tests, mutation-verified where applicable |
-| Contract tests | ~50 | `_process_message` side effects verified through mocks |
+| Component tests | ~845 | Direct function/class tests, mutation-verified where applicable |
+| Contract tests | ~60 | `_process_message` side effects verified through mocks |
 | Dependency chain | ~54 | Indexer pipeline: chunk, embed, write, FTS rebuild, round-trip |
 | Extracted logic | ~48 | Pure functions pulled from orchestrator, tested directly |
-| Integration | ~98 | Full daemon wiring with mocked providers |
+| Integration | ~78 | Full daemon wiring with mocked providers |
 
 ### Coverage by Module
 
-Every source module except `channels/cli.py` (thin stdin/stdout wrapper, 46 lines, no branching logic) has a corresponding test file. Highest coverage: `channels/telegram.py` (177 tests, 79.5% mutation kill rate across 3 rounds), `channels/http_api.py` (75 tests), `lucyd.py` orchestrator (168 tests across `test_orchestrator.py`, `test_daemon_integration.py`, `test_daemon_helpers.py`, and `test_monitor.py`).
+Every source module except `channels/cli.py` (thin stdin/stdout wrapper, 46 lines, no branching logic) has a corresponding test file. Highest coverage: `channels/telegram.py` (177 tests, 79.5% mutation kill rate across 3 rounds), `channels/http_api.py` (75 tests), `lucyd.py` orchestrator (186 tests across `test_orchestrator.py`, `test_daemon_integration.py`, `test_daemon_helpers.py`, and `test_monitor.py`).
 
 ### Testing Manuals
 

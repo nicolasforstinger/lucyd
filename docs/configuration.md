@@ -185,9 +185,10 @@ telegram = "primary"   # Telegram messages use the primary model
 cli = "primary"        # CLI messages use the primary model
 system = "subagent"    # System events (lucyd-send --system) use the subagent model
 http = "primary"       # HTTP API messages use the primary model
+vision = "primary"     # Model for messages with image attachments (overrides source routing)
 ```
 
-Unmapped sources default to `"primary"`.
+Unmapped sources default to `"primary"`. When a message contains image attachments, `vision` routing overrides the source-based routing. If the `vision` route points to a model that isn't loaded, the source-based model is used instead.
 
 ## [memory]
 
@@ -237,16 +238,39 @@ allowed_paths = ["~/.lucyd/workspace", "/tmp/"]    # Path prefixes the agent can
 provider = "brave"    # Web search provider (currently only "brave")
 ```
 
-### [tools.whisper]
+### [stt]
+
+Speech-to-text configuration for voice message transcription. Supports pluggable backends.
 
 ```toml
-[tools.whisper]
+[stt]
+backend = "openai"                           # "openai" (cloud Whisper API) or "local" (whisper.cpp server)
+voice_label = "voice message"                # Label prefixed to transcriptions: "[voice message]: ..."
+voice_fail_msg = "voice message — transcription failed"  # Label on failure
+```
+
+**OpenAI backend** (default):
+
+```toml
+[stt.openai]
 api_url = "https://api.openai.com/v1/audio/transcriptions"    # Whisper API endpoint
 model = "whisper-1"                                            # Whisper model identifier
 timeout = 60                                                   # Request timeout (seconds)
 ```
 
-Requires `LUCYD_OPENAI_KEY`. Used to transcribe audio attachments received via Telegram or other channels.
+Requires `LUCYD_OPENAI_KEY`.
+
+**Local backend** (whisper.cpp server):
+
+```toml
+[stt.local]
+endpoint = "http://whisper-server:8082/inference"    # whisper.cpp HTTP inference endpoint
+language = "auto"                                     # Language hint (or "auto" for detection)
+ffmpeg_timeout = 30                                   # Timeout for ffmpeg audio conversion (seconds)
+request_timeout = 60                                  # Timeout for whisper.cpp HTTP request (seconds)
+```
+
+The local backend converts audio to WAV (16kHz mono) via ffmpeg before sending to the whisper.cpp server. Requires `ffmpeg` installed on the system.
 
 ### [tools.tts]
 
@@ -298,9 +322,27 @@ structured_first = true              # Prioritize structured facts over vector s
 decay_rate = 0.03                    # Time-decay factor for relevance scoring
 max_facts_in_context = 20            # Maximum facts injected into context
 max_dynamic_tokens = 1000            # Token budget for dynamic recall content
+max_episodes_at_start = 3            # Maximum episodes injected at session start
 ```
 
-Recall runs at session start and enriches `memory_search` results with structured data. Budget-aware: prioritizes commitments > facts > episodes > vector results.
+Recall runs at session start and enriches `memory_search` results with structured data. Budget-aware: prioritizes commitments > vector > episodes > facts (under budget pressure, clinical facts drop first).
+
+### [memory.recall.personality]
+
+Config-driven priority and formatting for recall injection. Higher priority = kept longer under budget pressure.
+
+```toml
+[memory.recall.personality]
+priority_vector = 35                 # Priority for vector search results (default: 35)
+priority_episodes = 25               # Priority for episode blocks (default: 25)
+priority_facts = 15                  # Priority for fact blocks (default: 15)
+priority_commitments = 40            # Priority for commitment blocks (default: 40)
+fact_format = "natural"              # "natural" (readable) or "compact"
+show_emotional_tone = true           # Include emotional tone in episode display
+episode_section_header = "Recent conversations"  # Header for episode section
+```
+
+Drop order under budget pressure: facts (15) → episodes (25) → vector (35) → commitments (40).
 
 ### [memory.indexer]
 

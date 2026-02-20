@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from session import AUDIT_TRUNCATION_LIMIT, Session, SessionManager
+from session import AUDIT_TRUNCATION_LIMIT, Session, SessionManager, _text_from_content
 
 
 class TestJSONLDatedFilename:
@@ -555,6 +555,125 @@ class TestSessionAddMessages:
         assert session.total_input_tokens == 500
         assert session.total_output_tokens == 100
         assert len(session.messages) == 1
+
+
+# ─── _text_from_content ───────────────────────────────────────────
+
+
+class TestTextFromContent:
+    """Tests for _text_from_content helper."""
+
+    def test_plain_string_passthrough(self):
+        assert _text_from_content("hello world") == "hello world"
+
+    def test_empty_string(self):
+        assert _text_from_content("") == ""
+
+    def test_none_returns_empty(self):
+        assert _text_from_content(None) == ""
+
+    def test_empty_list_returns_empty(self):
+        assert _text_from_content([]) == ""
+
+    def test_text_blocks_joined(self):
+        content = [
+            {"type": "text", "text": "describe this"},
+            {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
+        ]
+        assert _text_from_content(content) == "describe this"
+
+    def test_multiple_text_blocks(self):
+        content = [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]
+        assert _text_from_content(content) == "first second"
+
+    def test_image_only_returns_empty(self):
+        content = [
+            {"type": "image", "media_type": "image/png", "data": "abc"},
+        ]
+        assert _text_from_content(content) == ""
+
+    def test_non_dict_items_skipped(self):
+        content = [
+            {"type": "text", "text": "valid"},
+            "stray string",
+            42,
+        ]
+        assert _text_from_content(content) == "valid"
+
+    def test_dict_without_type_skipped(self):
+        content = [
+            {"text": "no type field"},
+            {"type": "text", "text": "has type"},
+        ]
+        assert _text_from_content(content) == "has type"
+
+    def test_integer_returns_empty(self):
+        assert _text_from_content(42) == ""
+
+
+class TestContentBlocksInAudit:
+    """Content blocks handled correctly in JSONL audit trail."""
+
+    def test_add_tool_results_with_content_blocks(self, tmp_sessions):
+        """Tool result with list content truncates text, not the list."""
+        session = Session("test-blocks-audit", tmp_sessions)
+        block_content = [
+            {"type": "text", "text": "x" * 1000},
+            {"type": "image", "media_type": "image/jpeg", "data": "abc"},
+        ]
+        session.add_tool_results([{"tool_call_id": "tc1", "content": block_content}])
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        event = json.loads(files[0].read_text().strip())
+        # Should be a truncated string, not a list
+        assert isinstance(event["content"], str)
+        assert len(event["content"]) == AUDIT_TRUNCATION_LIMIT
+
+    def test_persist_tool_results_with_content_blocks(self, tmp_sessions):
+        session = Session("test-blocks-persist", tmp_sessions)
+        block_content = [
+            {"type": "text", "text": "result text"},
+            {"type": "image", "media_type": "image/png", "data": "data"},
+        ]
+        session.persist_tool_results([{"tool_call_id": "tc1", "content": block_content}])
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        event = json.loads(files[0].read_text().strip())
+        assert isinstance(event["content"], str)
+        assert "result text" in event["content"]
+
+
+class TestCompactionWithContentBlocks:
+    """Compaction handles vision messages without crashing."""
+
+    @pytest.mark.asyncio
+    async def test_compaction_extracts_text_from_content_blocks(self, tmp_sessions):
+        """Session with vision content blocks compacts without error."""
+        session = Session("test-compact-blocks", tmp_sessions)
+        session.messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "what is in this photo"},
+                {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
+            ]},
+            {"role": "assistant", "text": "I see a cat.",
+             "usage": {"input_tokens": 500, "output_tokens": 50}},
+            {"role": "user", "content": "thanks"},
+            {"role": "assistant", "text": "you're welcome",
+             "usage": {"input_tokens": 600, "output_tokens": 30}},
+            {"role": "user", "content": "another question"},
+            {"role": "assistant", "text": "another answer",
+             "usage": {"input_tokens": 700, "output_tokens": 40}},
+        ]
+        mgr = SessionManager(tmp_sessions)
+        mock = MockCompactionProvider("Summary of vision conversation.")
+        await mgr.compact_session(session, mock, "Summarize.")
+
+        assert mock.call_count == 1
+        assert len(session.messages) == 3  # 1 summary + 2 recent
+        assert "Summary of vision conversation." in session.messages[0]["content"]
 
 
 class MockCompactionProvider:

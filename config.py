@@ -272,7 +272,41 @@ class Config:
 
     @property
     def recall_max_dynamic_tokens(self) -> int:
-        return _deep_get(self._data, "memory", "recall", "max_dynamic_tokens", default=1000)
+        return _deep_get(self._data, "memory", "recall", "max_dynamic_tokens", default=1500)
+
+    @property
+    def recall_max_episodes_at_start(self) -> int:
+        return _deep_get(self._data, "memory", "recall", "max_episodes_at_start", default=3)
+
+    # --- Memory Recall Personality ---
+
+    @property
+    def recall_priority_vector(self) -> int:
+        return _deep_get(self._data, "memory", "recall", "personality", "priority_vector", default=35)
+
+    @property
+    def recall_priority_episodes(self) -> int:
+        return _deep_get(self._data, "memory", "recall", "personality", "priority_episodes", default=25)
+
+    @property
+    def recall_priority_facts(self) -> int:
+        return _deep_get(self._data, "memory", "recall", "personality", "priority_facts", default=15)
+
+    @property
+    def recall_priority_commitments(self) -> int:
+        return _deep_get(self._data, "memory", "recall", "personality", "priority_commitments", default=40)
+
+    @property
+    def recall_fact_format(self) -> str:
+        return _deep_get(self._data, "memory", "recall", "personality", "fact_format", default="natural")
+
+    @property
+    def recall_show_emotional_tone(self) -> bool:
+        return _deep_get(self._data, "memory", "recall", "personality", "show_emotional_tone", default=True)
+
+    @property
+    def recall_episode_section_header(self) -> str:
+        return _deep_get(self._data, "memory", "recall", "personality", "episode_section_header", default="Recent conversations")
 
     # --- Memory Maintenance ---
 
@@ -331,6 +365,66 @@ class Config:
     @property
     def tts_provider(self) -> str:
         return _deep_get(self._data, "tools", "tts", "provider", default="elevenlabs")
+
+    # --- STT (Speech-to-Text) ---
+
+    @property
+    def stt_backend(self) -> str:
+        return _deep_get(self._data, "stt", "backend", default="openai")
+
+    @property
+    def stt_voice_label(self) -> str:
+        return _deep_get(self._data, "stt", "voice_label", default="voice message")
+
+    @property
+    def stt_voice_fail_msg(self) -> str:
+        return _deep_get(self._data, "stt", "voice_fail_msg",
+                         default="voice message — transcription failed")
+
+    @property
+    def stt_local_endpoint(self) -> str:
+        return _deep_get(self._data, "stt", "local", "endpoint",
+                         default="http://whisper-server:8082/inference")
+
+    @property
+    def stt_local_language(self) -> str:
+        return _deep_get(self._data, "stt", "local", "language", default="auto")
+
+    @property
+    def stt_local_ffmpeg_timeout(self) -> int:
+        return _deep_get(self._data, "stt", "local", "ffmpeg_timeout", default=30)
+
+    @property
+    def stt_local_request_timeout(self) -> int:
+        return _deep_get(self._data, "stt", "local", "request_timeout", default=60)
+
+    @property
+    def stt_openai_api_url(self) -> str:
+        return _deep_get(self._data, "stt", "openai", "api_url",
+                         default="https://api.openai.com/v1/audio/transcriptions")
+
+    @property
+    def stt_openai_model(self) -> str:
+        return _deep_get(self._data, "stt", "openai", "model", default="whisper-1")
+
+    @property
+    def stt_openai_timeout(self) -> int:
+        return _deep_get(self._data, "stt", "openai", "timeout", default=60)
+
+    # --- Vision ---
+
+    @property
+    def vision_max_image_bytes(self) -> int:
+        return _deep_get(self._data, "vision", "max_image_bytes", default=5 * 1024 * 1024)
+
+    @property
+    def vision_default_caption(self) -> str:
+        return _deep_get(self._data, "vision", "default_caption", default="image")
+
+    @property
+    def vision_too_large_msg(self) -> str:
+        return _deep_get(self._data, "vision", "too_large_msg",
+                         default="image too large to display")
 
     # --- Behavior ---
 

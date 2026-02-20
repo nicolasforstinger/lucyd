@@ -949,3 +949,234 @@ class TestMessagePersistence:
                 )
 
         session._save_state.assert_called()
+
+
+# ─── Memory v2 Wiring Contract Tests ─────────────────────────────
+
+
+class TestMemoryV2Wiring:
+    """Contract: Memory v2 structured recall and consolidation wiring."""
+
+    @pytest.mark.asyncio
+    async def test_structured_recall_injected_at_session_start(self, tmp_path):
+        """When consolidation_enabled and first message, structured recall is injected."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = True
+        # First message: session.messages is empty before add_user_message
+        session.messages = []
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        mock_context = "Facts:\n- nicolas — lives in: Austria"
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                with patch("memory.get_session_start_context", return_value=mock_context) as mock_gsc:
+                    with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
+                        await daemon._process_message(
+                            text="hello", sender="user", source="telegram",
+                        )
+
+        mock_gsc.assert_called_once()
+        # Verify context_builder.build received the recall text
+        build_kwargs = daemon.context_builder.build.call_args
+        extra = build_kwargs.kwargs.get("extra_dynamic", "") or (
+            build_kwargs[1].get("extra_dynamic", "") if len(build_kwargs) > 1 else ""
+        )
+        assert mock_context in extra
+
+    @pytest.mark.asyncio
+    async def test_no_structured_recall_when_disabled(self, tmp_path):
+        """When consolidation_enabled=False, no structured recall."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = False
+        session.messages = []
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                with patch("memory.get_session_start_context") as mock_gsc:
+                    await daemon._process_message(
+                        text="hello", sender="user", source="telegram",
+                    )
+
+        mock_gsc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_structured_recall_on_subsequent_messages(self, tmp_path):
+        """Structured recall only on first message (len(messages) <= 1)."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = True
+        # Simulate existing messages (not first message)
+        session.messages = [{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}]
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                with patch("memory.get_session_start_context") as mock_gsc:
+                    await daemon._process_message(
+                        text="hello", sender="user", source="telegram",
+                    )
+
+        mock_gsc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_structured_recall_failure_does_not_crash(self, tmp_path):
+        """Structured recall failure is caught — _process_message continues."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = True
+        session.messages = []
+        response = _make_response(text="reply despite recall failure")
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                with patch("memory.get_session_start_context", side_effect=Exception("DB corrupt")):
+                    with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
+                        await daemon._process_message(
+                            text="hello", sender="user", source="telegram",
+                        )
+
+        # Should complete without crashing and deliver reply
+        daemon.channel.send.assert_called_once()
+        assert daemon.channel.send.call_args[0][1] == "reply despite recall failure"
+
+    @pytest.mark.asyncio
+    async def test_pre_compaction_consolidation_called(self, tmp_path):
+        """When needs_compaction and consolidation_enabled, consolidation runs before compact."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = True
+        session.needs_compaction = MagicMock(return_value=True)
+        session.last_input_tokens = 160000
+        session.warned_about_compaction = True
+        session.compaction_count = 0
+        compaction_provider = MagicMock()
+        daemon.providers["compaction"] = compaction_provider
+        daemon.providers["subagent"] = MagicMock()
+        daemon.session_mgr.compact_session = AsyncMock()
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        mock_result = {"facts_added": 3, "episode_id": "ep-1"}
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                with patch("consolidation.consolidate_session", new_callable=AsyncMock, return_value=mock_result) as mock_consol:
+                    with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
+                        await daemon._process_message(
+                            text="hello", sender="user", source="telegram",
+                        )
+
+        mock_consol.assert_called_once()
+        # Compaction should also proceed
+        daemon.session_mgr.compact_session.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pre_compaction_consolidation_failure_does_not_block_compaction(self, tmp_path):
+        """If pre-compaction consolidation fails, compaction still proceeds."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = True
+        session.needs_compaction = MagicMock(return_value=True)
+        session.last_input_tokens = 160000
+        session.warned_about_compaction = True
+        session.compaction_count = 0
+        compaction_provider = MagicMock()
+        daemon.providers["compaction"] = compaction_provider
+        daemon.session_mgr.compact_session = AsyncMock()
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                with patch("consolidation.consolidate_session", new_callable=AsyncMock, side_effect=Exception("LLM timeout")):
+                    with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
+                        await daemon._process_message(
+                            text="hello", sender="user", source="telegram",
+                        )
+
+        # Compaction MUST still proceed despite consolidation failure
+        daemon.session_mgr.compact_session.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_pre_compaction_consolidation_when_disabled(self, tmp_path):
+        """When consolidation_enabled=False, no pre-compaction consolidation."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = False
+        session.needs_compaction = MagicMock(return_value=True)
+        session.last_input_tokens = 160000
+        session.warned_about_compaction = True
+        compaction_provider = MagicMock()
+        daemon.providers["compaction"] = compaction_provider
+        daemon.session_mgr.compact_session = AsyncMock()
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                with patch("consolidation.consolidate_session", new_callable=AsyncMock) as mock_consol:
+                    await daemon._process_message(
+                        text="hello", sender="user", source="telegram",
+                    )
+
+        mock_consol.assert_not_called()
+        # Compaction still proceeds
+        daemon.session_mgr.compact_session.assert_called_once()
+
+
+class TestConsolidateOnClose:
+    """Contract: session close callback fires consolidation."""
+
+    @pytest.mark.asyncio
+    async def test_consolidate_on_close_calls_consolidation(self, tmp_path):
+        """_consolidate_on_close calls consolidation.consolidate_session."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        session.compaction_count = 0
+
+        mock_result = {"facts_added": 1, "episode_id": "ep-close"}
+
+        with patch("consolidation.get_unprocessed_range", return_value=(0, 5)):
+            with patch("consolidation.consolidate_session", new_callable=AsyncMock, return_value=mock_result) as mock_consol:
+                with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
+                    await daemon._consolidate_on_close(session)
+
+        mock_consol.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_consolidate_on_close_skips_when_no_unprocessed(self, tmp_path):
+        """No unprocessed messages → consolidation not called."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        session.compaction_count = 0
+
+        with patch("consolidation.get_unprocessed_range", return_value=(5, 5)):
+            with patch("consolidation.consolidate_session", new_callable=AsyncMock) as mock_consol:
+                with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
+                    await daemon._consolidate_on_close(session)
+
+        mock_consol.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_consolidate_on_close_failure_does_not_crash(self, tmp_path):
+        """Consolidation failure on close is caught — no exception propagated."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        session.compaction_count = 0
+
+        with patch("consolidation.get_unprocessed_range", side_effect=Exception("DB locked")):
+            with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
+                # Should not raise
+                await daemon._consolidate_on_close(session)

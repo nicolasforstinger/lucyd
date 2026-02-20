@@ -63,6 +63,7 @@ telegram = "primary"
 cli = "primary"
 system = "subagent"
 http = "primary"
+vision = "primary"       # Model for messages with image attachments (overrides source routing)
 
 # ─── Memory ──────────────────────────────────────────────────────
 
@@ -87,6 +88,16 @@ structured_first = true
 decay_rate = 0.03
 max_facts_in_context = 20
 max_dynamic_tokens = 1000
+max_episodes_at_start = 3
+
+# [memory.recall.personality]
+# priority_vector = 35
+# priority_episodes = 25
+# priority_facts = 15
+# priority_commitments = 40
+# fact_format = "natural"           # "natural" or "compact"
+# show_emotional_tone = true
+# episode_section_header = "Recent conversations"
 
 [memory.indexer]
 include_patterns = ["memory/*.md", "MEMORY.md"]
@@ -124,10 +135,23 @@ speed = 1.0
 stability = 0.5
 similarity_boost = 0.75
 
-[tools.whisper]
+# ─── Speech-to-Text ──────────────────────────────────────────────
+
+[stt]
+backend = "openai"                    # "openai" (cloud) or "local" (whisper.cpp server)
+voice_label = "voice message"
+voice_fail_msg = "voice message — transcription failed"
+
+[stt.openai]
 api_url = "https://api.openai.com/v1/audio/transcriptions"
 model = "whisper-1"
 timeout = 60
+
+# [stt.local]
+# endpoint = "http://whisper-server:8082/inference"
+# language = "auto"
+# ffmpeg_timeout = 30
+# request_timeout = 60
 
 # ─── Behavior ────────────────────────────────────────────────────
 

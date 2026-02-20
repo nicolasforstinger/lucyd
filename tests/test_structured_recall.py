@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from memory import (
+    _DEFAULT_PRIORITIES,
     EMPTY_RECALL_FALLBACK,
-    PRIORITY_COMMITMENTS,
-    PRIORITY_EPISODES,
-    PRIORITY_FACTS,
-    PRIORITY_VECTOR,
     RecallBlock,
+    _format_episode,
+    _format_fact_row,
+    _format_fact_tuple,
     extract_query_entities,
     get_open_commitments,
     get_session_start_context,
@@ -103,6 +103,21 @@ def populated_conn(mem_conn):
     return mem_conn
 
 
+class FakeConfig:
+    """Config mock with all personality attributes at warm defaults."""
+    recall_max_facts = 20
+    recall_decay_rate = 0.03
+    recall_fact_format = "natural"
+    recall_show_emotional_tone = True
+    recall_priority_vector = 35
+    recall_priority_episodes = 25
+    recall_priority_facts = 15
+    recall_priority_commitments = 40
+    recall_episode_section_header = "Recent conversations"
+    recall_max_episodes_at_start = 3
+    recall_max_dynamic_tokens = 1500
+
+
 # ─── Entity Resolution ───────────────────────────────────────────
 
 
@@ -170,8 +185,9 @@ class TestLookupFacts:
             "SELECT accessed_at FROM facts WHERE entity = 'lucy' "
             "AND invalidated_at IS NULL"
         ).fetchone()[0]
-        # accessed_at should have been updated
+        # accessed_at should have been updated (at least as recent as before)
         assert after is not None
+        assert after >= before
 
     def test_respects_max_results(self, populated_conn):
         facts = lookup_facts({"nicolas"}, populated_conn, max_results=1)
@@ -233,6 +249,97 @@ class TestGetOpenCommitments:
         assert commits[1]["deadline"] is None
 
 
+# ─── Format Helpers ──────────────────────────────────────────────
+
+
+class TestFormatFactRow:
+    """Tests for _format_fact_row (sqlite3.Row access pattern)."""
+
+    def test_natural_format(self, populated_conn):
+        row = populated_conn.execute(
+            "SELECT id, entity, attribute, value, confidence "
+            "FROM facts WHERE entity = 'nicolas' AND attribute = 'lives_in' "
+            "AND invalidated_at IS NULL"
+        ).fetchone()
+        result = _format_fact_row(row, "natural")
+        assert result == "  nicolas — lives in: Austria"
+
+    def test_compact_format(self, populated_conn):
+        row = populated_conn.execute(
+            "SELECT id, entity, attribute, value, confidence "
+            "FROM facts WHERE entity = 'nicolas' AND attribute = 'lives_in' "
+            "AND invalidated_at IS NULL"
+        ).fetchone()
+        result = _format_fact_row(row, "compact")
+        assert result == "  nicolas.lives_in: Austria"
+
+    def test_underscores_replaced_in_natural(self, populated_conn):
+        row = populated_conn.execute(
+            "SELECT id, entity, attribute, value, confidence "
+            "FROM facts WHERE entity = 'nicolas' AND attribute = 'cat_name' "
+            "AND invalidated_at IS NULL"
+        ).fetchone()
+        result = _format_fact_row(row, "natural")
+        assert "cat name" in result
+        assert "_" not in result.split(":")[0]  # no underscores before the value
+
+
+class TestFormatFactTuple:
+    """Tests for _format_fact_tuple (raw tuple access pattern)."""
+
+    def test_natural_format(self):
+        result = _format_fact_tuple(("nicolas", "lives_in", "Austria"), "natural")
+        assert result == "  nicolas — lives in: Austria"
+
+    def test_compact_format(self):
+        result = _format_fact_tuple(("nicolas", "lives_in", "Austria"), "compact")
+        assert result == "  nicolas.lives_in: Austria"
+
+    def test_underscores_preserved_in_compact(self):
+        result = _format_fact_tuple(("uncle_charles", "phone_number", "555"), "compact")
+        assert "uncle_charles" in result
+        assert "phone_number" in result
+
+    def test_underscores_replaced_in_natural(self):
+        result = _format_fact_tuple(("uncle_charles", "phone_number", "555"), "natural")
+        assert "uncle charles" in result
+        assert "phone number" in result
+
+
+class TestFormatEpisode:
+    """Tests for _format_episode."""
+
+    def test_shows_non_neutral_tone(self):
+        e = ("2026-02-18", "Discussed architecture.", "productive")
+        result = _format_episode(e, show_tone=True)
+        assert "(tone: productive)" in result
+        assert "[2026-02-18]" in result
+
+    def test_omits_neutral_tone(self):
+        e = ("2026-02-18", "Routine check.", "neutral")
+        result = _format_episode(e, show_tone=True)
+        assert "tone:" not in result
+
+    def test_omits_tone_when_disabled(self):
+        e = ("2026-02-18", "Discussed architecture.", "productive")
+        result = _format_episode(e, show_tone=False)
+        assert "tone:" not in result
+        assert "Discussed architecture." in result
+
+    def test_omits_none_tone(self):
+        e = ("2026-02-18", "Something happened.", None)
+        result = _format_episode(e, show_tone=True)
+        assert "tone:" not in result
+
+    def test_with_sqlite_row(self, populated_conn):
+        row = populated_conn.execute(
+            "SELECT date, summary, emotional_tone FROM episodes LIMIT 1"
+        ).fetchone()
+        result = _format_episode(row, show_tone=True)
+        assert "[" in result
+        assert "]" in result
+
+
 # ─── recall() Integration ────────────────────────────────────────
 
 
@@ -244,16 +351,11 @@ class TestRecall:
             {"text": "some vector result", "score": 0.8, "days_old": 0},
         ]
 
-        class FakeConfig:
-            recall_max_facts = 20
-            recall_decay_rate = 0.03
-
         blocks = await recall(
             "what does nicolas like?", populated_conn,
             mock_memory, FakeConfig(),
         )
 
-        # Should have multiple block types
         sections = {b.section for b in blocks}
         assert "[Known facts]" in sections
         assert "[Open commitments]" in sections
@@ -266,10 +368,6 @@ class TestRecall:
             {"text": "vector", "score": 0.5, "days_old": 0},
         ]
 
-        class FakeConfig:
-            recall_max_facts = 20
-            recall_decay_rate = 0.03
-
         blocks = await recall(
             "nicolas", populated_conn,
             mock_memory, FakeConfig(),
@@ -280,43 +378,128 @@ class TestRecall:
             assert blocks[i].priority >= blocks[i + 1].priority
 
     @pytest.mark.asyncio
-    async def test_vector_k_reduced_when_structured_exists(self, populated_conn):
+    async def test_vector_gets_full_top_k(self, populated_conn):
+        """Vector search receives full top_k — no pre-throttle."""
         mock_memory = AsyncMock()
         mock_memory.search.return_value = []
-
-        class FakeConfig:
-            recall_max_facts = 20
-            recall_decay_rate = 0.03
 
         await recall(
             "nicolas", populated_conn,
             mock_memory, FakeConfig(), top_k=5,
         )
 
-        # If structured results existed, vector_k should have been reduced
         call_args = mock_memory.search.call_args
-        actual_k = call_args.kwargs.get("top_k", call_args.args[1] if len(call_args.args) > 1 else None)
-        # With structured results, vector_k = max(1, top_k - len(blocks))
-        # The exact value depends on how many structured blocks exist
-        assert actual_k is not None
+        actual_k = call_args.kwargs.get(
+            "top_k", call_args.args[1] if len(call_args.args) > 1 else None
+        )
+        assert actual_k == 5
 
     @pytest.mark.asyncio
     async def test_empty_query_returns_commitments_only(self, populated_conn):
         mock_memory = AsyncMock()
         mock_memory.search.return_value = []
 
-        class FakeConfig:
-            recall_max_facts = 20
-            recall_decay_rate = 0.03
-
         blocks = await recall(
             "xyznonexistent", populated_conn,
             mock_memory, FakeConfig(),
         )
 
-        # Should at least have commitments (always included)
         has_commitments = any(b.section == "[Open commitments]" for b in blocks)
         assert has_commitments
+
+    @pytest.mark.asyncio
+    async def test_uses_config_priorities(self, populated_conn):
+        """Verify recall uses config priority values, not defaults."""
+        mock_memory = AsyncMock()
+        mock_memory.search.return_value = [
+            {"text": "vector", "score": 0.5, "days_old": 0},
+        ]
+
+        class FactsHeavyConfig(FakeConfig):
+            recall_priority_facts = 50
+            recall_priority_vector = 5
+
+        blocks = await recall(
+            "nicolas", populated_conn,
+            mock_memory, FactsHeavyConfig(),
+        )
+
+        fact_block = next(b for b in blocks if b.section == "[Known facts]")
+        vector_block = next(b for b in blocks if b.section == "[Memory search]")
+        assert fact_block.priority == 50
+        assert vector_block.priority == 5
+        # Facts should sort before vector
+        fact_idx = blocks.index(fact_block)
+        vector_idx = blocks.index(vector_block)
+        assert fact_idx < vector_idx
+
+    @pytest.mark.asyncio
+    async def test_uses_natural_fact_format(self, populated_conn):
+        mock_memory = AsyncMock()
+        mock_memory.search.return_value = []
+
+        blocks = await recall(
+            "nicolas", populated_conn,
+            mock_memory, FakeConfig(),
+        )
+
+        fact_block = next(b for b in blocks if b.section == "[Known facts]")
+        # Natural format: spaces, em-dash
+        assert " — " in fact_block.text
+
+    @pytest.mark.asyncio
+    async def test_uses_compact_fact_format(self, populated_conn):
+        mock_memory = AsyncMock()
+        mock_memory.search.return_value = []
+
+        class CompactConfig(FakeConfig):
+            recall_fact_format = "compact"
+
+        blocks = await recall(
+            "nicolas", populated_conn,
+            mock_memory, CompactConfig(),
+        )
+
+        fact_block = next(b for b in blocks if b.section == "[Known facts]")
+        assert "." in fact_block.text
+        assert " — " not in fact_block.text
+
+    @pytest.mark.asyncio
+    async def test_episode_section_header_from_config(self, populated_conn):
+        mock_memory = AsyncMock()
+        mock_memory.search.return_value = []
+
+        class CustomHeaderConfig(FakeConfig):
+            recall_episode_section_header = "What happened lately"
+
+        # Query must match episode keywords — "memory" hits fixture episode topics
+        blocks = await recall(
+            "tell me about memory architecture", populated_conn,
+            mock_memory, CustomHeaderConfig(),
+        )
+
+        episode_block = next(
+            (b for b in blocks if "What happened lately" in b.section), None
+        )
+        assert episode_block is not None
+
+    @pytest.mark.asyncio
+    async def test_episode_tone_displayed(self, populated_conn):
+        mock_memory = AsyncMock()
+        mock_memory.search.return_value = []
+
+        # Query must match episode keywords — "deployment" hits fixture episode
+        blocks = await recall(
+            "deployment planning", populated_conn,
+            mock_memory, FakeConfig(),
+        )
+
+        episode_block = next(
+            (b for b in blocks if "Recent conversations" in b.section), None
+        )
+        assert episode_block is not None
+        # Fixture episodes have non-neutral tones
+        assert "tone:" in episode_block.text
 
 
 # ─── inject_recall ───────────────────────────────────────────────
@@ -356,7 +539,7 @@ class TestInjectRecall:
         assert "[C]" in result
 
     def test_drops_lowest_priority_first(self):
-        """With sorted blocks (high→low), budget drops from the end."""
+        """With sorted blocks (high->low), budget drops from the end."""
         blocks = [
             RecallBlock(priority=40, section="[High]", text="x", est_tokens=50),
             RecallBlock(priority=10, section="[Low]", text="x", est_tokens=50),
@@ -370,36 +553,85 @@ class TestInjectRecall:
 
 
 class TestGetSessionStartContext:
-    def test_returns_facts_and_commitments(self, populated_conn):
-        result = get_session_start_context(populated_conn)
+    def test_returns_facts_episodes_and_commitments(self, populated_conn):
+        result = get_session_start_context(populated_conn, config=FakeConfig())
         assert "[Known facts]" in result
+        assert "[Recent conversations]" in result
         assert "[Open commitments]" in result
 
     def test_respects_max_facts(self, populated_conn):
-        result = get_session_start_context(populated_conn, max_facts=1)
-        # Should only have 1 fact line
-        facts_section = result.split("[Open commitments]")[0]
-        fact_lines = [l for l in facts_section.split("\n") if l.strip().startswith("nicolas.") or l.strip().startswith("lucy.")]
+        result = get_session_start_context(
+            populated_conn, config=FakeConfig(), max_facts=1
+        )
+        # Natural format uses " — " not "."
+        facts_section = result.split("[Recent conversations]")[0]
+        fact_lines = [
+            line for line in facts_section.split("\n")
+            if line.strip() and " — " in line
+        ]
         assert len(fact_lines) <= 1
+
+    def test_respects_max_episodes(self, populated_conn):
+        result = get_session_start_context(
+            populated_conn, config=FakeConfig(), max_episodes=1
+        )
+        episode_section = result.split("[Recent conversations]")[1].split("[Open commitments]")[0]
+        episode_lines = [
+            line for line in episode_section.split("\n")
+            if line.strip() and line.strip().startswith("[")
+        ]
+        assert len(episode_lines) <= 1
 
     def test_empty_db_returns_empty(self, mem_conn):
         result = get_session_start_context(mem_conn)
         assert result == ""
 
     def test_budget_constraint(self, populated_conn):
-        result = get_session_start_context(populated_conn, max_tokens=10)
-        # With very small budget, might only fit one block or nothing
+        result = get_session_start_context(
+            populated_conn, config=FakeConfig(), max_tokens=10
+        )
         assert isinstance(result, str)
 
+    def test_works_without_config(self, populated_conn):
+        """Graceful fallback when config is None (backwards compat)."""
+        result = get_session_start_context(populated_conn)
+        assert "[Known facts]" in result
+        assert "[Open commitments]" in result
 
-# ─── Constants ───────────────────────────────────────────────────
+    def test_uses_config_fact_format(self, populated_conn):
+        class CompactConfig(FakeConfig):
+            recall_fact_format = "compact"
+
+        result = get_session_start_context(
+            populated_conn, config=CompactConfig()
+        )
+        # Compact format uses dots, not em-dashes
+        assert "." in result.split("[Recent conversations]")[0]
+
+    def test_episode_tone_in_output(self, populated_conn):
+        result = get_session_start_context(populated_conn, config=FakeConfig())
+        # Fixture episodes have non-neutral tones
+        assert "tone:" in result
 
 
-class TestConstants:
-    def test_priority_ordering(self):
-        assert PRIORITY_COMMITMENTS > PRIORITY_FACTS
-        assert PRIORITY_FACTS > PRIORITY_EPISODES
-        assert PRIORITY_EPISODES > PRIORITY_VECTOR
+# ─── Defaults ────────────────────────────────────────────────────
+
+
+class TestDefaults:
+    def test_default_priorities_exist(self):
+        assert "vector" in _DEFAULT_PRIORITIES
+        assert "episodes" in _DEFAULT_PRIORITIES
+        assert "facts" in _DEFAULT_PRIORITIES
+        assert "commitments" in _DEFAULT_PRIORITIES
+
+    def test_commitments_highest_default(self):
+        assert _DEFAULT_PRIORITIES["commitments"] > _DEFAULT_PRIORITIES["vector"]
+        assert _DEFAULT_PRIORITIES["commitments"] > _DEFAULT_PRIORITIES["episodes"]
+        assert _DEFAULT_PRIORITIES["commitments"] > _DEFAULT_PRIORITIES["facts"]
+
+    def test_vector_outranks_facts_in_warm_profile(self):
+        """Warm defaults: vector > facts (warmth over clinical precision)."""
+        assert _DEFAULT_PRIORITIES["vector"] > _DEFAULT_PRIORITIES["facts"]
 
     def test_empty_recall_fallback_not_empty(self):
         assert len(EMPTY_RECALL_FALLBACK) > 0

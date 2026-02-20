@@ -75,17 +75,44 @@ class AnthropicCompatProvider:
             result.append(entry)
         return result
 
+    @staticmethod
+    def _convert_content_blocks(content: Any) -> Any:
+        """Convert neutral image blocks to Anthropic API format.
+
+        Text blocks pass through unchanged. Neutral image blocks
+        {"type": "image", "media_type": ..., "data": ...} become
+        {"type": "image", "source": {"type": "base64", ...}}.
+        """
+        if not isinstance(content, list):
+            return content
+        result = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "image" and "media_type" in block:
+                result.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": block["media_type"],
+                        "data": block["data"],
+                    },
+                })
+            else:
+                result.append(block)
+        return result
+
     def format_messages(self, messages: list[dict]) -> list[dict]:
         """Convert internal format to Anthropic API format.
 
         Preserves thinking blocks with signatures for tool-use continuity.
+        Converts neutral image blocks to Anthropic's nested source format.
         """
         result = []
         for msg in messages:
             role = msg.get("role", "")
 
             if role == "user":
-                result.append({"role": "user", "content": msg.get("content", msg.get("text", ""))})
+                content = msg.get("content", msg.get("text", ""))
+                result.append({"role": "user", "content": self._convert_content_blocks(content)})
 
             elif role == "assistant":
                 content_blocks = []

@@ -200,3 +200,77 @@ class TestTodayStartTs:
         today = time.strftime("%Y-%m-%d")
         ts_day = time.strftime("%Y-%m-%d", time.localtime(ts))
         assert ts_day == today
+
+
+# ─── Vision Config ────────────────────────────────────────────────
+
+
+class TestSTTConfig:
+    """STT section defaults and overrides."""
+
+    def test_defaults_when_section_absent(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.stt_backend == "openai"
+        assert cfg.stt_voice_label == "voice message"
+        assert isinstance(cfg.stt_voice_fail_msg, str)
+        assert cfg.stt_local_endpoint == "http://whisper-server:8082/inference"
+        assert cfg.stt_local_language == "auto"
+        assert cfg.stt_local_ffmpeg_timeout == 30
+        assert cfg.stt_local_request_timeout == 60
+        assert "openai.com" in cfg.stt_openai_api_url
+        assert cfg.stt_openai_model == "whisper-1"
+        assert cfg.stt_openai_timeout == 60
+
+    def test_local_backend_overrides(self, minimal_toml_data):
+        minimal_toml_data["stt"] = {
+            "backend": "local",
+            "voice_label": "Sprachnachricht",
+            "local": {
+                "endpoint": "http://localhost:9090/inference",
+                "language": "de",
+                "ffmpeg_timeout": 15,
+                "request_timeout": 45,
+            },
+        }
+        cfg = Config(minimal_toml_data)
+        assert cfg.stt_backend == "local"
+        assert cfg.stt_voice_label == "Sprachnachricht"
+        assert cfg.stt_local_endpoint == "http://localhost:9090/inference"
+        assert cfg.stt_local_language == "de"
+        assert cfg.stt_local_ffmpeg_timeout == 15
+        assert cfg.stt_local_request_timeout == 45
+
+    def test_openai_backend_overrides(self, minimal_toml_data):
+        minimal_toml_data["stt"] = {
+            "backend": "openai",
+            "openai": {
+                "api_url": "https://custom.api/v1/transcriptions",
+                "model": "whisper-large-v3",
+                "timeout": 120,
+            },
+        }
+        cfg = Config(minimal_toml_data)
+        assert cfg.stt_openai_api_url == "https://custom.api/v1/transcriptions"
+        assert cfg.stt_openai_model == "whisper-large-v3"
+        assert cfg.stt_openai_timeout == 120
+
+
+class TestVisionConfig:
+    """Vision section defaults and overrides."""
+
+    def test_defaults_when_section_absent(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.vision_max_image_bytes == 5 * 1024 * 1024
+        assert cfg.vision_default_caption == "image"
+        assert cfg.vision_too_large_msg == "image too large to display"
+
+    def test_overrides(self, minimal_toml_data):
+        minimal_toml_data["vision"] = {
+            "max_image_bytes": 5242880,
+            "default_caption": "Foto vom Kunden",
+            "too_large_msg": "Zu groß.",
+        }
+        cfg = Config(minimal_toml_data)
+        assert cfg.vision_max_image_bytes == 5242880
+        assert cfg.vision_default_caption == "Foto vom Kunden"
+        assert cfg.vision_too_large_msg == "Zu groß."

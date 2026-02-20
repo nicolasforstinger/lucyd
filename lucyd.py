@@ -442,6 +442,16 @@ class LucydDaemon:
 
         # Route to model
         model_name = self.config.route_model(source)
+
+        # Route to vision model if message has image attachments
+        has_images = attachments and any(
+            a.content_type.startswith("image/") for a in attachments
+        )
+        if has_images:
+            vision_model = self.config.route_model("vision")
+            if vision_model in self.providers:
+                model_name = vision_model
+
         provider = self.providers.get(model_name)
         if provider is None:
             log.error("No provider for model '%s' (source: %s)", model_name, source)
@@ -451,10 +461,14 @@ class LucydDaemon:
         model_cfg = self.config.model_config(model_name)
 
         # Process attachments into text descriptions + image blocks
+        # Image blocks use neutral format: {"type": "image", "media_type": ..., "data": ...}
+        # Provider adapters convert to their native API format in format_messages().
         image_blocks = []
         supports_vision = model_cfg.get("supports_vision", True)
-        max_image_bytes = self.config.raw("behavior", "max_image_bytes", default=5 * 1024 * 1024)
+        max_image_bytes = self.config.vision_max_image_bytes
         if attachments:
+            caption = self.config.vision_default_caption
+            too_large_msg = self.config.vision_too_large_msg
             for att in attachments:
                 if att.content_type.startswith("image/"):
                     if not supports_vision:
@@ -465,28 +479,28 @@ class LucydDaemon:
                         img_size = img_path.stat().st_size
                         if img_size > max_image_bytes:
                             log.warning("Image too large (%d bytes), skipping vision: %s", img_size, att.local_path)
-                            text = (text + "\n" if text else "") + f"[image too large to display — {img_size / (1024*1024):.1f}MB]"
+                            text = (text + "\n" if text else "") + f"[{too_large_msg} — {img_size / (1024*1024):.1f}MB]"
                             continue
                         img_data = img_path.read_bytes()
                         image_blocks.append({
                             "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": att.content_type,
-                                "data": base64.b64encode(img_data).decode("ascii"),
-                            },
+                            "media_type": att.content_type,
+                            "data": base64.b64encode(img_data).decode("ascii"),
                         })
-                        text = ("[image] " + text) if text else "[image]"
+                        text = (f"[{caption}] " + text) if text else f"[{caption}]"
                     except Exception as e:
                         log.error("Failed to read image %s: %s", att.local_path, e)
 
                 elif att.content_type.startswith("audio/"):
+                    voice_label = self.config.stt_voice_label
                     try:
                         transcription = await self._transcribe_audio(att.local_path, att.content_type)
-                        text = (text + "\n" if text else "") + f"[voice message]: {transcription}"
+                        text = (text + "\n" if text else "") + f"[{voice_label}]: {transcription}"
                     except Exception as e:
-                        log.error("Whisper transcription failed: %s", e)
-                        text = (text + "\n" if text else "") + "[voice message — transcription failed]"
+                        log.error("STT transcription failed (%s): %s",
+                                  self.config.stt_backend, e)
+                        voice_fail = self.config.stt_voice_fail_msg
+                        text = (text + "\n" if text else "") + f"[{voice_fail}]"
 
                 else:
                     text = (text + "\n" if text else "") + f"[attachment: {att.filename or 'file'}, {att.content_type}]"
@@ -532,7 +546,9 @@ class LucydDaemon:
                     conn = self._get_memory_conn()
                     memory_context = get_session_start_context(
                         conn=conn,
+                        config=self.config,
                         max_facts=self.config.recall_max_facts,
+                        max_episodes=self.config.recall_max_episodes_at_start,
                         max_tokens=self.config.recall_max_dynamic_tokens,
                     )
                     if memory_context:
@@ -783,29 +799,89 @@ class LucydDaemon:
             log.exception("consolidation on close failed")
 
     async def _transcribe_audio(self, file_path: str, content_type: str) -> str:
-        """Transcribe audio using OpenAI Whisper API."""
+        """Transcribe audio via configured STT backend.
+
+        Dispatches to local (whisper.cpp) or cloud (OpenAI) based on
+        [stt] backend config. Returns transcribed text or raises on failure.
+        """
+        backend = self.config.stt_backend
+        if backend == "local":
+            return await self._transcribe_local(file_path)
+        if backend == "openai":
+            return await self._transcribe_openai(file_path, content_type)
+        raise RuntimeError(f"Unknown STT backend: {backend}")
+
+    async def _transcribe_openai(self, file_path: str, content_type: str) -> str:
+        """Transcribe audio via OpenAI Whisper cloud API."""
         import httpx
+
         api_key = self.config.api_key("openai")
         if not api_key:
             raise RuntimeError("No OpenAI API key for Whisper")
 
-        whisper_cfg = self.config.raw("tools", "whisper", default={})
-        api_url = whisper_cfg.get("api_url", "https://api.openai.com/v1/audio/transcriptions")
-        whisper_model = whisper_cfg.get("model", "whisper-1")
-        whisper_timeout = whisper_cfg.get("timeout", 60)
+        api_url = self.config.stt_openai_api_url
+        model = self.config.stt_openai_model
+        timeout = self.config.stt_openai_timeout
 
         audio_data = Path(file_path).read_bytes()
         filename = Path(file_path).name
 
-        async with httpx.AsyncClient(timeout=whisper_timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 api_url,
                 headers={"Authorization": f"Bearer {api_key}"},
                 files={"file": (filename, audio_data, content_type)},
-                data={"model": whisper_model},
+                data={"model": model},
             )
             resp.raise_for_status()
-            return resp.json().get("text", "")
+            text = resp.json().get("text", "").strip()
+            if not text:
+                raise RuntimeError("Whisper returned empty transcription")
+            return text
+
+    async def _transcribe_local(self, file_path: str) -> str:
+        """Transcribe audio via local whisper.cpp server.
+
+        Converts OGG/audio to WAV (16kHz mono) via ffmpeg, then POSTs
+        to the whisper.cpp HTTP inference endpoint.
+        """
+        import subprocess
+        import tempfile
+
+        import httpx
+
+        endpoint = self.config.stt_local_endpoint
+        language = self.config.stt_local_language
+        ffmpeg_timeout = self.config.stt_local_ffmpeg_timeout
+        request_timeout = self.config.stt_local_request_timeout
+
+        # Convert to WAV (16kHz mono) for whisper.cpp
+        wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(wav_fd)
+        try:
+            subprocess.run(
+                ["ffmpeg", "-i", file_path, "-ar", "16000", "-ac", "1",
+                 "-f", "wav", "-y", wav_path],
+                capture_output=True, timeout=ffmpeg_timeout, check=True,
+            )
+
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
+                with open(wav_path, "rb") as f:
+                    resp = await client.post(
+                        endpoint,
+                        files={"file": ("audio.wav", f, "audio/wav")},
+                        data={"response_format": "json", "language": language},
+                    )
+                resp.raise_for_status()
+                text = resp.json().get("text", "").strip()
+                if not text:
+                    raise RuntimeError("Whisper returned empty transcription")
+                return text
+        finally:
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
 
     def _build_status(self) -> dict:
         """Build status dict for HTTP /status and SIGUSR2."""

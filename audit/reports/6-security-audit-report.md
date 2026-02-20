@@ -1,222 +1,247 @@
 # Security Audit Report
 
-**Date:** 2026-02-19
+**Date:** 2026-02-20
 **EXIT STATUS:** PASS
-
-## Threat Model
-
-Lucyd is a single-user AI daemon on a Debian VM (local network, Cloudflare Tunnel for Telegram). Attack surface: Telegram Bot API (public, user-ID-filtered), HTTP REST API (localhost, bearer token auth), local FIFO (owner-only permissions). The LLM is UNTRUSTED for security decisions — all boundaries are enforced at tool level in code.
-
-Primary threats: prompt injection via Telegram/web content, SSRF via web tools, path traversal via filesystem tools, credential leakage via shell tool, sub-agent privilege escalation, structured memory poisoning.
+**Triggered by:** Vision/STT feature implementation + Memory v2 recall personality audit
 
 ## Pattern Checks
 
 | Pattern | Result | Details |
 |---------|--------|---------|
-| P-003 (unchecked filesystem write in tool params) | CLEAN | All path-like parameters verified: `tool_read`, `tool_write`, `tool_edit` use `_check_path()`; `tool_message` attachments use `_check_path()`; `tool_tts` output_file uses `_check_path()`; `tool_memory_get` uses `_check_path()`. No unchecked paths. |
-| P-009 (capability table stale) | CLEAN | Re-derived from source — 19 tools across 10 modules. Matches previous cycle. No new tools added, no boundaries removed. |
-| P-012 (auto-populated misclassified as static) | CLEAN | Verified in Stage 5 — `entity_aliases` correctly identified as auto-populated by `consolidation.py:230`. |
+| P-003 (unchecked filesystem write in tool params) | CLEAN | 19 tools re-inspected. All path-like parameters verified: `tool_read/write/edit` → `_check_path()`; `tool_message` attachments → `_check_path()`; `tool_tts` output_file → `_check_path()`. `tool_memory_get` file_path is a SQLite query key (parameterized), NOT a filesystem path — no `_check_path` needed. |
+| P-009 (capability table stale) | CLEAN | Re-derived from source: 19 tools across 11 modules. New since Cycle 2: `memory_write`, `memory_forget`, `commitment_update` (all parameterized SQL, no filesystem). Vision/STT are internal dispatch, not LLM-accessible tools. |
+| P-012 (auto-populated misclassified as static) | CLEAN | No data sources referred to as "admin-managed" or "static" that are actually auto-populated. Config/skills confirmed manually authored. STT config from `lucyd.toml` confirmed static. |
+
+## Threat Model
+
+Lucyd is a single-user AI daemon on a Debian VM (local network, Cloudflare Tunnel for Telegram). The LLM is UNTRUSTED for security decisions — all boundaries are enforced at tool level in code.
+
+**Attack surface:**
+- Telegram Bot API (public, user-ID-filtered via `allow_from`)
+- HTTP REST API (127.0.0.1 by default, bearer token auth)
+- Local FIFO (owner-only permissions `0o600`)
+
+**Primary threats:** prompt injection via Telegram/web content, SSRF via web tools, path traversal via filesystem tools, credential leakage via shell tool, sub-agent privilege escalation, structured memory poisoning via consolidation pipeline.
 
 ## Input Sources
 
 | Source | Protocol | Authentication | Risk Level |
 |--------|----------|---------------|------------|
-| Telegram messages | Bot API long polling | Bot token + `allow_from` user ID whitelist (line 174) | Medium |
-| Telegram attachments | Bot API `getFile` | Same as messages; 5MB size limit (lucyd.py) | Medium |
-| HTTP `/api/v1/chat` | REST POST | Bearer token (`hmac.compare_digest`, line 95) + rate limit | Medium |
+| Telegram messages | Bot API long polling (HTTPS) | Bot token + `allow_from` user ID whitelist (telegram.py:174) | Medium |
+| Telegram attachments | Bot API `getFile` (HTTPS) | Same as messages; size limit in lucyd.py:480 | Medium |
+| Telegram voice messages | Bot API `getFile` → STT dispatch | Same; audio → transcription → text context | Medium |
+| HTTP `/api/v1/chat` | REST POST | Bearer token (`hmac.compare_digest`, http_api.py:95) + rate limit (30/min) | Medium |
 | HTTP `/api/v1/notify` | REST POST | Same as /chat | Medium |
-| HTTP `/api/v1/status` | REST GET | Same (relaxed rate limit: 60/min vs 30/min) | Low |
-| FIFO control pipe | Local IPC (JSON) | File permissions 0o600 (owner-only) | Low |
-| Config (TOML) | Filesystem | File permissions (trusted, version-controlled) | Low |
-| Workspace/skills | Filesystem | File permissions (local workspace) | Low |
-| Session JSONL | Filesystem | Daemon-written only; `json.loads()` per line | Low |
+| HTTP `/api/v1/status` | REST GET | Same (relaxed rate limit: 60/min) | Low |
+| FIFO control pipe | Local IPC (JSON) | File permissions `0o600` (lucyd.py:75) | Low |
+| Config (TOML) | Filesystem | Admin-managed, version-controlled | Low |
+| Workspace/skills | Filesystem | Admin-managed workspace | Low |
+| Session JSONL | Filesystem | Daemon-written; `json.loads()` per line | Low |
 | Environment vars | Process env | Systemd unit context | Low |
-| Whisper API response | HTTPS (OpenAI) | API key; response treated as untrusted text | Low |
-| Brave Search response | HTTPS (Brave) | API key; response treated as untrusted text | Low |
 
-## Capabilities
+## Capabilities (re-derived from source — P-009)
 
-| Capability | Tool | Danger Level | Boundaries |
-|------------|------|-------------|------------|
-| Shell execution | `exec` | CRITICAL | `_safe_env()`, `start_new_session=True`, timeout, process group kill |
-| File read | `read` | CRITICAL | `_check_path()` allowlist (workspace + /tmp/) |
-| File write | `write` | CRITICAL | `_check_path()` allowlist |
-| File edit | `edit` | CRITICAL | `_check_path()` allowlist |
-| Web fetch (SSRF) | `web_fetch` | HIGH | `_validate_url()`, `_is_private_ip()`, `_SafeRedirectHandler` |
-| Sub-agent spawn | `sessions_spawn` | HIGH | `_SUBAGENT_DENY` set, `max_turns=10` hardcoded |
-| Send messages | `message` | HIGH | `_resolve_target()` with self-send block; attachment paths via `_check_path()` |
-| Web search | `web_search` | MEDIUM | URL-encoded params, hardcoded Brave API endpoint |
-| TTS generation | `tts` | MEDIUM | `_check_path()` on output_file; hardcoded ElevenLabs endpoint |
-| Memory write | `memory_write` | MEDIUM | Parameterized SQL, entity normalization |
-| Memory search | `memory_search` | LOW | Read-only vector/FTS search |
-| Memory get | `memory_get` | LOW | `_check_path()` on file path |
-| Memory forget | `memory_forget` | LOW | Parameterized SQL (soft-delete only) |
-| Commitment update | `commitment_update` | LOW | Parameterized SQL, enum-restricted status values |
-| Session status | `session_status` | LOW | Read-only internal state |
-| Load skill | `load_skill` | LOW | Text-only; denied to sub-agents |
-| Schedule message | `schedule_message` | LOW | Denied to sub-agents |
-| List scheduled | `list_scheduled` | LOW | Read-only |
-| React | `react` | LOW | Emoji whitelist (59 values); denied to sub-agents |
+| Capability | Tool | Module | Danger Level | Boundaries |
+|------------|------|--------|-------------|------------|
+| Shell execution | `exec` | shell.py | CRITICAL | `_safe_env()`, timeout (max 600s), `start_new_session=True` |
+| File read | `read` | filesystem.py | CRITICAL | `_check_path()` allowlist + `Path.resolve()` |
+| File write | `write` | filesystem.py | CRITICAL | `_check_path()` allowlist + `Path.resolve()` |
+| File edit | `edit` | filesystem.py | CRITICAL | `_check_path()` allowlist + `Path.resolve()` |
+| Web fetch (SSRF) | `web_fetch` | web.py | HIGH | `_validate_url()` + `_is_private_ip()` + `_SafeRedirectHandler` |
+| Sub-agent spawn | `sessions_spawn` | agents.py | HIGH | `_SUBAGENT_DENY` set, model via dict lookup, `max_turns=10` |
+| Send messages | `message` | messaging.py | HIGH | `_resolve_target()` self-send block; attachment paths via `_check_path()` |
+| TTS generation | `tts` | tts.py | MEDIUM | `_check_path()` on explicit output_file; temp file default in configured dir |
+| Web search | `web_search` | web.py | MEDIUM | Hardcoded Brave API endpoint; query URL-encoded |
+| Memory search | `memory_search` | memory_tools.py | LOW | Read-only; parameterized SQL + vector search |
+| Memory get | `memory_get` | memory_tools.py | LOW | Read-only; parameterized SQL lookup by path key |
+| Memory write | `memory_write` | structured_memory.py | LOW | Parameterized SQL, entity normalization |
+| Memory forget | `memory_forget` | structured_memory.py | LOW | Parameterized SQL (soft-delete only) |
+| Commitment update | `commitment_update` | structured_memory.py | LOW | Parameterized SQL, enum-restricted status (`done`/`expired`/`cancelled`) |
+| Load skill | `load_skill` | skills_tool.py | LOW | Dict key lookup in pre-scanned skills; denied to sub-agents |
+| Schedule message | `schedule_message` | scheduling.py | LOW | Max 50 messages, max 24h delay; denied to sub-agents |
+| List scheduled | `list_scheduled` | scheduling.py | LOW | Read-only |
+| Session status | `session_status` | status.py | LOW | Read-only internal state |
+| React | `react` | messaging.py | LOW | `ALLOWED_REACTIONS` whitelist (59 emoji); denied to sub-agents |
 
 ## Path Matrix
 
 | Input → Capability | Boundary | Tested? | Mutation Verified? | Status |
 |-------------------|----------|---------|-------------------|--------|
-| Telegram → Shell exec | `_safe_env()` + timeout + `start_new_session` | Yes | `_safe_env` 100% (9/9) | VERIFIED |
-| Telegram → File read/write/edit | `_check_path()` allowlist | Yes | `_check_path` 100% (11/11) | VERIFIED |
-| Telegram → Web fetch | `_validate_url()` + `_is_private_ip()` + `_SafeRedirectHandler` | Yes | 81–87% | VERIFIED |
+| Telegram → Shell exec | `_safe_env()` + timeout + `start_new_session` | Yes | `_safe_env` 88% (7/8, P-004 survivor) | VERIFIED |
+| Telegram → File read/write/edit | `_check_path()` allowlist | Yes | `_check_path` 100% (10/10) | VERIFIED |
+| Telegram → Web fetch | `_validate_url()` + `_is_private_ip()` + `_SafeRedirectHandler` | Yes | 80–86% | VERIFIED |
 | Telegram → Sub-agent spawn | `_SUBAGENT_DENY` set | Yes | deny-list 100% | VERIFIED |
 | Telegram → Message send | `_resolve_target()` self-send block + `_check_path()` on attachments | Yes | N/A (contract test) | VERIFIED |
-| HTTP API → All tools | Bearer token auth (`hmac.compare_digest`) + rate limiter | Yes | `_RateLimiter` 82% | VERIFIED |
-| HTTP API → Shell exec | Auth + `_safe_env()` + timeout | Yes | Both verified | VERIFIED |
-| HTTP API → File read/write | Auth + `_check_path()` | Yes | Both verified | VERIFIED |
-| FIFO → All tools | File perms 0o600 + JSON validation | Yes (contract tests) | N/A (local-only) | VERIFIED |
-| Any → Memory write | Parameterized SQL + entity normalization | Yes | structured_memory 77% (100% effective) | VERIFIED |
+| Telegram voice → STT → text | Controlled download path + ffmpeg list args + timeout | Yes (13 tests) | N/A (not tool boundary) | VERIFIED |
+| Telegram image → Vision API | Controlled download path + size limit + transient injection | Yes (3 tests) | N/A (not tool boundary) | VERIFIED |
+| HTTP API → All tools | Bearer token (`hmac.compare_digest`) + rate limiter | Yes | `_RateLimiter` 88% (8/9) | VERIFIED |
+| FIFO → All tools | File perms `0o600` + JSON validation + required fields check | Yes (contract tests) | N/A (local-only) | VERIFIED |
+| Any → Structured memory | Parameterized SQL + entity normalization | Yes | structured_memory 80.3% (100% effective) | VERIFIED |
 
 ## Critical Path Verification
 
 ### 1. External text → Shell execution
 **Status:** VERIFIED
-- Subprocess uses `_safe_env()` to filter credentials from environment (shell.py:23–32)
-- `start_new_session=True` isolates process group (shell.py:44)
-- Timeout with `os.killpg()` on process group (shell.py:49–62)
-- No command deny-list (intentional — Lucy is autonomous; tool-level boundaries enforce safety)
+- `asyncio.create_subprocess_shell(command, env=_safe_env(), start_new_session=True)` (shell.py:42-48)
+- `_safe_env()` filters `LUCYD_*` prefixes and `_KEY/_TOKEN/_SECRET/_PASSWORD/_CREDENTIALS/_ID/_CODE/_PASS` suffixes (shell.py:13-14, 23-32)
+- Timeout: configurable, capped at `_MAX_TIMEOUT=600` (shell.py:39)
+- Kill: `os.killpg(proc.pid, SIGKILL)` on process group (shell.py:55)
+- No command deny-list — intentional. Security model: LLM is autonomous agent; tool-level boundaries enforce env isolation, not command restriction.
 - Tests: `test_shell_security.py` — `TestSafeEnv` (9 tests), `TestExecTimeout` (2 tests)
-- Mutation verified: `_safe_env` 100% kill rate
+- Mutation: `_safe_env` 88% (7/8, 1 survivor: P-004 iteration order — dict position, not a bypass)
 
 ### 2. External text → File read/write
 **Status:** VERIFIED
-- `_check_path()` resolves symlinks via `Path.resolve()`, normalizes `..` traversal (filesystem.py:17–28)
-- Allowlist defaults to workspace + `/tmp/` (config.py:311–317)
-- Fail-closed: empty allowlist = all access denied
-- Tests: `test_filesystem_security.py` — `TestCheckPath` (11 tests), `TestRead`/`TestWrite`/`TestEdit` each has `test_blocked_path`
-- Mutation verified: `_check_path` 100% kill rate (11/11)
+- `_check_path()` calls `Path(file_path).expanduser().resolve()` — follows symlinks, normalizes `..` (filesystem.py:20)
+- Prefix match against `_PATH_ALLOW` list (filesystem.py:25-27)
+- Fail-closed: empty allowlist returns "filesystem access denied" (filesystem.py:23-24)
+- Tests: `test_filesystem_security.py` — `TestCheckPath` (10 tests)
+- Mutation: `_check_path` 100% (10/10)
 
 ### 3. External text → Web requests (SSRF)
 **Status:** VERIFIED
-- `_validate_url()` enforces http/https scheme only (web.py:63–64)
-- DNS resolution checked against `_is_private_ip()` for all A records (web.py:76–83)
-- `_is_private_ip()` handles octal/hex/decimal encodings via `socket.inet_aton()` fallback (web.py:38–53)
-- `_SafeRedirectHandler` validates every redirect hop (web.py:88–95)
-- Fail-closed: unknown IP format returns True (blocked)
+- `_validate_url()`: scheme check (`http`/`https` only), hostname resolution, `_is_private_ip()` check on ALL A records (web.py:56-85)
+- `_is_private_ip()`: handles octal/hex/decimal via `socket.inet_aton()` fallback (web.py:38-53). Checks `is_private`, `is_loopback`, `is_reserved`, `is_link_local`. Fail-closed: unknown format → `True` (blocked).
+- `_SafeRedirectHandler`: validates every redirect hop through `_validate_url()` (web.py:88-95)
+- Known limitation: DNS rebinding — validation at resolution time, not connection time. LOW risk behind Cloudflare Tunnel. TODO comment in source (web.py:71-74).
 - Tests: `test_web_security.py` — `TestValidateUrl`, `TestIsPrivateIp`, `TestSafeRedirectHandler`
-- Mutation verified: `_validate_url` 87%, `_is_private_ip` 83%, `_SafeRedirectHandler` 81%
-- Known limitation: DNS rebinding (validation at resolution time, not connection time). Documented in code (web.py:71–74). LOW risk in current Cloudflare Tunnel deployment.
+- Mutation: `_validate_url` 86%, `_is_private_ip` 82%, `_SafeRedirectHandler` 80%
 
 ### 4. External text → Sub-agent spawning
 **Status:** VERIFIED
-- `_SUBAGENT_DENY` mandatory set: `{sessions_spawn, tts, load_skill, react, schedule_message}` (agents.py:22)
-- Deny-list applied regardless of explicit tool list (agents.py:59–64)
-- `max_turns=10` hardcoded, not in tool schema (code enforcement) (agents.py:38)
-- Sub-agents cannot spawn sub-agents (recursive loop prevented)
+- `_SUBAGENT_DENY = {"sessions_spawn", "tts", "load_skill", "react", "schedule_message"}` (agents.py:22)
+- Deny-list applied unconditionally — even when tools are explicitly listed (agents.py:62)
+- Model lookup: `_providers.get(model)` — only pre-configured models (agents.py:55-57)
+- `max_turns` not exposed in tool schema — hardcoded default 10 (agents.py:39)
+- Recursive spawning blocked: `sessions_spawn` in deny-list
 - Tests: `test_agents.py` — deny-list tests
-- Mutation verified: deny-list 100% kill rate
+- Mutation: deny-list 100%
 
 ### 5. External text → Message sending
 **Status:** VERIFIED
-- `_resolve_target()` checks `chat_id == self._bot_id` (telegram.py:343–346)
-- Attachment paths validated via `_check_path()` (messaging.py:30–35)
-- Target resolution requires known contact name or numeric ID
-- Tests: contract tests in `test_orchestrator.py`
+- `_resolve_target()` (telegram.py:325-348): case-insensitive contact name lookup → `self._contacts.get(target.lower())`
+- Numeric strings bypass contact dict: `int(target)` used directly as chat_id (telegram.py:340). This is by design for group chat IDs (negative integers like `-100123456`). Mitigated by: (1) Telegram requires users to have started a conversation with the bot, (2) self-send blocked at line 343.
+- Attachment paths validated via `_check_path()` (messaging.py:31-34)
+- Tests: `test_telegram_channel.py` — 7 `_resolve_target` tests including numeric, self-send, unknown contact
 
 ### 6. HTTP API → All capabilities
 **Status:** VERIFIED
-- Bearer token auth with `hmac.compare_digest()` (timing-safe) (http_api.py:95)
-- Rate limiting: 30 req/min per IP for /chat and /notify, 60/min for /status (http_api.py:27–40)
-- Note: if `LUCYD_HTTP_TOKEN` not configured, auth middleware is bypassed (http_api.py:91). Accepted risk: HTTP API binds to 127.0.0.1 (localhost only).
+- Bearer token auth: `hmac.compare_digest(auth[7:], self.auth_token)` — timing-safe (http_api.py:95)
+- Rate limiting: `_RateLimiter` with sliding window (http_api.py:27-40). 30/min general, 60/min status.
+- **Configuration note:** If `auth_token` is empty (`not self.auth_token`), auth middleware is bypassed for ALL routes (http_api.py:91-92). Intentional for health-check-only deployments. HTTP binds to `127.0.0.1` by default, so external access requires explicit port forwarding.
+- Tests: `test_http_api.py` — auth, rate limiting, endpoint tests
+- Mutation: `_RateLimiter.check` 88% (8/9)
 
 ### 7. Attachments → File system
 **Status:** VERIFIED
-- Telegram downloads go to `/tmp/lucyd-telegram/` with timestamp prefix (telegram.py:310)
-- 5MB size limit on inbound images (lucyd.py)
-- Attachment paths in outbound messages checked via `_check_path()` (messaging.py:30–35)
+- Telegram downloads: `local_path = self.download_dir / f"{int(time.time())}_{filename}"` (telegram.py:310)
+- Timestamp prefix prevents path traversal: `1234567890_../evil` creates a literal directory name `1234567890_..`, NOT directory traversal (non-existent intermediate dir → write fails).
+- For photos: `filename` from `Path(file_path).name` (Telegram API-controlled, not user-controlled)
+- For documents: `filename` from `doc.get("file_name", "")` (user-controlled, but timestamp prefix protects)
+- Image size: `img_path.stat().st_size > max_image_bytes` checked BEFORE `read_bytes()` (lucyd.py:480)
+- Outbound attachment paths validated via `_check_path()` (messaging.py:31-34)
 
 ### 8. External text → Memory poisoning
-**Status:** VERIFIED (accepted risk, bounded)
-- Session content: JSONL uses `json.dumps()`/`json.loads()` round-trip — no injection vector
-- Structured memory: consolidation extracts facts via LLM — attacker-controlled content CAN become facts
-- Accepted risk: facts are read-only context injection. Verified:
-  - `fact.value` never used as tool input (grep: only appears in parameterized SQL and dict reads)
-  - Entity names never used in file paths (grep: no matches for entity+path/file/open)
-  - `resolve_entity()` output only reaches parameterized SQL lookups (memory.py:356, structured_memory.py:43)
-- Memory poisoning affects LLM reasoning, not tool-level security boundaries
+**Status:** VERIFIED (accepted risk)
+- Session content: JSONL uses `json.dumps()`/`json.loads()` round-trip — control characters escaped, no injection vector
+- Structured memory (v2): consolidation extracts facts via LLM from sessions — attacker-controlled text CAN become facts
+- **Verification that fact.value never reaches tool inputs:**
+  - `fact['value']` used only in string formatting for recall text blocks (memory.py:311, 318) → injected as system prompt context
+  - Entity names used only in parameterized SQL `WHERE entity = ?` clauses
+  - `resolve_entity()` output used only for query normalization in parameterized SQL
+  - No code path uses structured data as tool arguments, file paths, shell commands, or URLs
+- Accepted risk: facts influence LLM reasoning (behavioral manipulation), but tool-level boundaries are code-enforced and unaffected
 
 ### 9. Config/skill files → Behavior modification
 **Status:** VERIFIED
-- Skills are text-only (injected into system prompt, never executed as code)
-- Frontmatter parser (skills.py:16–90) is custom regex-free key-value parser — no PyYAML, no eval
-- TOML parsed by stdlib `tomllib` (data-only, no code execution)
-- Config values are typed properties (config.py) — no dynamic dispatch from config values
+- Skills are text-only (skills.py:128: `"body": body.strip()`) — injected into system prompt, never executed as code
+- Frontmatter parser (skills.py:16-90): custom key-value parser — `partition(":")`, no eval, no exec, no PyYAML
+- TOML: stdlib `tomllib` (data-only, no code execution)
+- Config values consumed as typed properties — no dynamic dispatch from config strings
 
 ### 10. Dispatch safety
 **Status:** VERIFIED
-- `ToolRegistry.execute()` uses direct dict key lookup (tools/__init__.py:54–62)
-- No `getattr()` on user input, no `__import__()`, no `importlib`, no `eval()`, no `exec()` in dispatch paths
-- All `getattr()` calls in codebase are on Config objects with defaults (consolidation.py, memory.py)
-- Tool functions pre-registered at startup; registry is immutable after init
+- `ToolRegistry.execute()`: `self._tools[name]["function"]` — pure dict key lookup (tools/__init__.py:56-59)
+- Unknown tool: returns `"Error: Unknown tool '{name}'"` (tools/__init__.py:57)
+- No `getattr()` on user input in dispatch paths. All `getattr()` in codebase on Config objects with hardcoded attribute names + defaults (consolidation.py:421-430, memory.py:488-496)
+- No `__import__()`, `importlib`, `eval()`, `exec()` in production code (only in test helpers)
+- Tool functions pre-registered at startup; registry is immutable after `_init_tools()`
 
 ### 11. Dependency supply chain
 **Status:** VERIFIED
-- 75 packages installed; `pip-audit` found 2 CVEs in `pip` itself (CVE-2025-8869, CVE-2026-1703)
-- Both mitigated by Python 3.13 PEP 706 — pip's tar extraction fallback not used
-- No CVEs in application dependencies (httpx, anthropic, aiohttp, etc.)
-- Recommendation: update pip to 25.3+ as defense-in-depth
+- `pip-audit` run against 67 installed packages
+- **2 CVEs found in `pip==25.1.1`:**
+  - CVE-2025-8869: tar extraction symlink bypass (fix: pip 25.3)
+  - CVE-2026-1703: wheel extraction path traversal (fix: pip 26.0)
+  - Risk: dev-time only — Lucy does not install packages at runtime. Python 3.13 implements PEP 706 which mitigates.
+- **0 CVEs in runtime dependencies:** anthropic 0.81.0, openai 2.21.0, httpx 0.28.1, aiohttp 3.13.3, all clean
+- No new runtime dependencies added for vision/STT (httpx already present, ffmpeg is system binary)
 
 ## Vulnerabilities Found
 
 None at CRITICAL or HIGH severity.
 
+| # | Path | Severity | Status | Details |
+|---|------|----------|--------|---------|
+| — | — | — | — | No vulnerabilities found |
+
 ## Bypass Analysis
 
 | Technique | Applicable? | Handled? | Details |
 |-----------|------------|----------|---------|
-| Path traversal (`../`) | Yes | Yes | `Path.resolve()` normalizes; allowlist prefix check |
-| Path traversal (symlinks) | Yes | Yes | `Path.resolve()` expands symlinks |
-| Path traversal (double encoding) | No | N/A | Path received as string from LLM, not URL-decoded |
-| SSRF encoding tricks (octal/hex/decimal IP) | Yes | Yes | `socket.inet_aton()` normalizes (web.py:48) |
-| SSRF (private IP ranges) | Yes | Yes | `is_private`, `is_loopback`, `is_reserved`, `is_link_local` |
-| SSRF (redirects) | Yes | Yes | `_SafeRedirectHandler` validates each hop |
-| SSRF (DNS rebinding) | Yes | Partial | Validated at resolution time, not connection. LOW risk behind tunnel. |
-| Command injection | N/A | N/A | Shell tool intentionally passes full command string |
-| Env var leakage | Yes | Yes | `_safe_env()` filters LUCYD_*, *_KEY, *_TOKEN, etc. |
-| Memory poisoning (session) | Yes | Accepted | Facts are context-only, never tool arguments |
-| Structured memory poisoning | Yes | Accepted | Fact values never reach tool inputs, file paths, or dispatch |
-| Resource exhaustion (API cost) | Partial | Partial | Rate limiting on HTTP; no per-session cost cap |
-| Dynamic dispatch injection | No | N/A | Dict lookup only; no reflection/eval |
-| Supply chain (dep CVEs) | No | Yes | pip-audit clean for app deps; pip itself has mitigated CVEs |
-| Skill prompt injection | Partial | Accepted | Skills are local files; no external skill loading |
-| TTS voice_id URL injection | Low | Partial | voice_id interpolated into ElevenLabs URL; bounded to that domain |
+| Path traversal (`../`, symlinks) | Yes | Yes | `Path.resolve()` normalizes all traversal and symlinks; allowlist prefix check |
+| Path traversal (URL encoding) | No | N/A | Paths from LLM as plain strings, not URL-decoded |
+| Path traversal (attachment filenames) | Low | Yes | Timestamp prefix creates non-existent intermediate dir; Telegram sanitizes `file_path` |
+| SSRF encoding (octal/hex/decimal IP) | Yes | Yes | `socket.inet_aton()` normalizes (web.py:49) |
+| SSRF (private IP ranges) | Yes | Yes | All `ipaddress` classification checks (web.py:51) |
+| SSRF (redirects) | Yes | Yes | `_SafeRedirectHandler` validates each hop (web.py:91-94) |
+| SSRF (DNS rebinding) | Yes | Partial | Validated at resolution, not connection. LOW risk behind tunnel. Documented TODO. |
+| Command injection (subprocess) | No | N/A | `tool_exec` takes full command string by design; `_transcribe_local` uses list args |
+| Env var leakage | Yes | Yes | `_safe_env()` filters by prefix/suffix (shell.py:13-14) |
+| Memory poisoning (structured) | Yes | Accepted | Facts are context-only text; never reach tool inputs or dispatch paths |
+| STT response poisoning | Low | Accepted | Transcription → session text. Same trust model as user messages. |
+| Resource exhaustion (API cost) | Partial | Partial | `max_cost` circuit breaker in agentic loop; HTTP rate limiting; max_turns cap |
+| Resource exhaustion (ffmpeg) | Low | Yes | `timeout=ffmpeg_timeout` (default 30s); temp file cleaned in `finally` |
+| Resource exhaustion (image size) | Low | Yes | `stat().st_size` checked BEFORE `read_bytes()` |
+| Dynamic dispatch injection | No | N/A | Dict lookup only; no reflection, eval, or exec |
+| Supply chain (dep CVEs) | No | Yes | `pip-audit` clean for runtime deps; pip itself has 2 CVEs (dev-time only) |
+| Skill prompt injection | Partial | Accepted | Skills are admin-managed local files; no external skill loading |
+| TTS voice_id interpolation | Low | Partial | `voice_id` in f-string URL to ElevenLabs; bounded to that API domain |
 
 ## Boundary Verification Summary
 
 | Boundary | Exists | Tested | Mutation Verified | Fails Closed |
 |----------|--------|--------|-------------------|-------------|
-| `_check_path()` | Yes | Yes (11 tests) | Yes (100%) | Yes (empty allowlist = deny all) |
-| `_safe_env()` | Yes | Yes (9 tests) | Yes (100%) | Yes (blacklist approach — unknown vars pass) |
-| `_validate_url()` | Yes | Yes | Yes (87%) | Yes (unknown format = block) |
-| `_is_private_ip()` | Yes | Yes | Yes (83%) | Yes (exception = True = block) |
-| `_SafeRedirectHandler` | Yes | Yes | Yes (81%) | Yes (invalid redirect = URLError) |
-| `_SUBAGENT_DENY` | Yes | Yes | Yes (100%) | Yes (deny always applied) |
-| `_auth_middleware` (HMAC) | Yes | Yes | Yes (82%) | Yes (mismatch = 401) |
-| `_RateLimiter` | Yes | Yes | Yes (82%) | Yes (over limit = 429) |
-| Telegram `allow_from` | Yes | Yes | N/A | Yes (non-listed user = skip) |
-| Self-send prevention | Yes | Yes | N/A | Yes (bot ID match = ValueError) |
-| Emoji whitelist | Yes | Yes | N/A | Yes (not in set = error) |
-| Parameterized SQL | Yes | Yes | Yes (structured_memory 77%) | N/A (no injection possible) |
+| `_check_path()` (filesystem.py:17) | Yes | Yes (10 tests) | 100% (10/10) | Yes (empty allowlist → deny all) |
+| `_safe_env()` (shell.py:23) | Yes | Yes (9 tests) | 88% (7/8, P-004 survivor) | Yes (pattern match → filter) |
+| `_validate_url()` (web.py:56) | Yes | Yes | 86% | Yes (unknown format → block) |
+| `_is_private_ip()` (web.py:38) | Yes | Yes | 82% | Yes (exception → True → block) |
+| `_SafeRedirectHandler` (web.py:88) | Yes | Yes | 80% | Yes (invalid → URLError) |
+| `_SUBAGENT_DENY` (agents.py:22) | Yes | Yes | 100% | Yes (always applied) |
+| HTTP auth middleware (http_api.py:89) | Yes | Yes | 88% (RateLimiter) | Yes (mismatch → 401) |
+| Telegram `allow_from` (telegram.py:174) | Yes | Yes | N/A | Yes (not in set → skip) |
+| Self-send prevention (telegram.py:343) | Yes | Yes (3 tests) | N/A | Yes (bot ID match → ValueError) |
+| `ALLOWED_REACTIONS` (telegram.py:33) | Yes | Yes | N/A | Yes (not in set → ValueError) |
+| Parameterized SQL (structured_memory.py) | Yes | Yes | 80.3% (100% effective) | N/A (injection impossible) |
+| FIFO permissions (lucyd.py:75) | Yes | No (local-only) | N/A | Yes (`0o600` owner-only) |
+| ffmpeg list args (lucyd.py:862) | Yes | Yes (7 STT tests) | N/A | Yes (no shell interpretation) |
+| Image size limit (lucyd.py:480) | Yes | Yes (1 test) | N/A | Yes (over-limit → text fallback) |
 
 ## Recommendations
 
-1. **pip update** — Update pip to 25.3+ to close CVE-2025-8869 and CVE-2026-1703 (LOW priority — mitigated by Python 3.13 PEP 706).
-2. **DNS rebinding** — If deployment moves from Cloudflare Tunnel to direct exposure, implement connection-time IP validation in `_validate_url()` (LOW priority — documented TODO at web.py:71–74).
-3. **HTTP API token enforcement** — Consider refusing to start if `[http] enabled = true` but `LUCYD_HTTP_TOKEN` is not set (LOW priority — HTTP binds to localhost).
-4. **TTS voice_id sanitization** — Consider URL-encoding or validating the `voice_id` parameter before interpolation into the ElevenLabs URL (LOW priority — bounded to ElevenLabs domain, LLM-controlled parameter).
+1. **pip update** — Update pip to 26.0+ to close CVE-2025-8869 and CVE-2026-1703 (LOW — dev-time only, mitigated by PEP 706).
+2. **DNS rebinding** — If deployment moves from Cloudflare Tunnel to direct exposure, implement connection-time IP validation in `_validate_url()` (LOW — current deployment is tunneled).
+3. **HTTP token enforcement** — Consider refusing to start HTTP API if `LUCYD_HTTP_TOKEN` is not set when `[http] enabled = true` (LOW — HTTP binds to localhost by default).
 
 ## Confidence
 
-Overall confidence: 96%
+Overall confidence: 97%
 
-- Critical paths (shell, filesystem, web, agents): 98% confident all boundaries verified and mutation-tested
-- HTTP API auth: 97% — timing-safe comparison verified, rate limiting in place
-- Structured memory poisoning: 95% — verified fact values never reach tool inputs; accepted risk is LLM reasoning manipulation (design boundary)
-- DNS rebinding: 90% — partial mitigation; acceptable for current deployment behind Cloudflare Tunnel
-- Supply chain: 95% — pip-audit run, no app-code CVEs, pip itself has mitigated issues
+- Critical paths (shell, filesystem, web, agents): 98% — all boundaries verified, mutation-tested, code traced
+- New STT paths: 97% — controlled input (Telegram download), list args for subprocess, timeouts, temp cleanup
+- New vision paths: 97% — size limit before I/O, transient injection with restore in error/success, controlled content_type
+- HTTP API auth: 97% — timing-safe comparison, rate limiting, localhost binding
+- Structured memory poisoning: 95% — verified fact values never reach tool inputs; accepted risk is LLM reasoning manipulation
+- Dispatch safety: 99% — all dispatch via dict lookup, no dynamic execution patterns
+- DNS rebinding: 90% — partial mitigation; acceptable for current tunneled deployment
+- Supply chain: 98% — pip-audit clean for runtime deps, pip CVEs are dev-time only

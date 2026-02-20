@@ -261,6 +261,44 @@ class TestOpenAIFormatMessages:
         assert result[0]["role"] == "tool"
         assert result[1]["role"] == "tool"
 
+    def test_user_message_with_neutral_image_blocks(self):
+        """Neutral image blocks are converted to OpenAI image_url format."""
+        p = self._make_provider()
+        msgs = [{"role": "user", "content": [
+            {"type": "text", "text": "describe this"},
+            {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
+        ]}]
+        result = p.format_messages(msgs)
+        content = result[0]["content"]
+        assert len(content) == 2
+        # Text block passes through
+        assert content[0] == {"type": "text", "text": "describe this"}
+        # Image block converted to OpenAI data URI format
+        assert content[1]["type"] == "image_url"
+        assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,base64data"
+
+    def test_user_message_string_unchanged(self):
+        """Plain string content is not affected by image conversion."""
+        p = self._make_provider()
+        msgs = [{"role": "user", "content": "just text"}]
+        result = p.format_messages(msgs)
+        assert result[0]["content"] == "just text"
+
+    def test_multiple_images_converted(self):
+        """Multiple image blocks all converted to data URIs."""
+        p = self._make_provider()
+        msgs = [{"role": "user", "content": [
+            {"type": "image", "media_type": "image/png", "data": "img1"},
+            {"type": "text", "text": "compare"},
+            {"type": "image", "media_type": "image/jpeg", "data": "img2"},
+        ]}]
+        result = p.format_messages(msgs)
+        content = result[0]["content"]
+        images = [b for b in content if b.get("type") == "image_url"]
+        assert len(images) == 2
+        assert "image/png" in images[0]["image_url"]["url"]
+        assert "image/jpeg" in images[1]["image_url"]["url"]
+
 
 # ─── TEST-10: Additional provider dataclass and factory tests ────
 
@@ -515,3 +553,43 @@ class TestAnthropicFormatMessagesExtended:
         assert result[1]["role"] == "assistant"
         assert result[2]["role"] == "user"  # tool_results -> user role
         assert result[3]["role"] == "assistant"
+
+    def test_user_message_with_neutral_image_blocks(self):
+        """Neutral image blocks are converted to Anthropic source format."""
+        p = self._make_provider()
+        msgs = [{"role": "user", "content": [
+            {"type": "text", "text": "what is this"},
+            {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
+        ]}]
+        result = p.format_messages(msgs)
+        content = result[0]["content"]
+        assert len(content) == 2
+        # Text block passes through
+        assert content[0] == {"type": "text", "text": "what is this"}
+        # Image block converted to Anthropic format
+        assert content[1]["type"] == "image"
+        assert content[1]["source"]["type"] == "base64"
+        assert content[1]["source"]["media_type"] == "image/jpeg"
+        assert content[1]["source"]["data"] == "base64data"
+
+    def test_user_message_string_unchanged(self):
+        """Plain string content is not affected by image conversion."""
+        p = self._make_provider()
+        msgs = [{"role": "user", "content": "just text"}]
+        result = p.format_messages(msgs)
+        assert result[0]["content"] == "just text"
+
+    def test_multiple_images_converted(self):
+        """Multiple image blocks all converted."""
+        p = self._make_provider()
+        msgs = [{"role": "user", "content": [
+            {"type": "image", "media_type": "image/png", "data": "img1"},
+            {"type": "text", "text": "compare these"},
+            {"type": "image", "media_type": "image/jpeg", "data": "img2"},
+        ]}]
+        result = p.format_messages(msgs)
+        content = result[0]["content"]
+        images = [b for b in content if b.get("type") == "image"]
+        assert len(images) == 2
+        assert images[0]["source"]["media_type"] == "image/png"
+        assert images[1]["source"]["media_type"] == "image/jpeg"

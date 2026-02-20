@@ -21,6 +21,23 @@ log = logging.getLogger(__name__)
 AUDIT_TRUNCATION_LIMIT = 500
 
 
+def _text_from_content(content: Any) -> str:
+    """Extract text from string or content block list.
+
+    Handles plain strings, the neutral content block format
+    [{"type": "text", "text": "..."}, {"type": "image", ...}],
+    and edge cases (None, empty list).
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            b.get("text", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
 def _atomic_write(path: Path, data: str) -> None:
     """Write to temp file then rename — atomic on POSIX."""
     tmp = path.with_suffix(".tmp")
@@ -194,7 +211,7 @@ class Session:
             self.append_event({
                 "type": "tool_result",
                 "tool_use_id": r.get("tool_call_id", ""),
-                "content": r.get("content", "")[:AUDIT_TRUNCATION_LIMIT],
+                "content": _text_from_content(r.get("content", ""))[:AUDIT_TRUNCATION_LIMIT],
             })
         self._save_state()
 
@@ -217,7 +234,7 @@ class Session:
             self.append_event({
                 "type": "tool_result",
                 "tool_use_id": r.get("tool_call_id", ""),
-                "content": r.get("content", "")[:AUDIT_TRUNCATION_LIMIT],
+                "content": _text_from_content(r.get("content", ""))[:AUDIT_TRUNCATION_LIMIT],
             })
 
     @property
@@ -398,11 +415,7 @@ class SessionManager:
         for msg in tail:
             role = msg["role"]
             if role == "user":
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    parts = [b["text"] for b in content
-                             if isinstance(b, dict) and b.get("type") == "text"]
-                    content = " ".join(parts)
+                content = _text_from_content(msg.get("content", ""))
                 # Strip timestamp prefix
                 if content.startswith("[") and "]\n" in content[:60]:
                     content = content[content.index("]\n") + 2:]
@@ -446,7 +459,7 @@ class SessionManager:
         conversation_text = ""
         for msg in old_messages:
             role = msg.get("role", "")
-            text = msg.get("content", msg.get("text", ""))
+            text = _text_from_content(msg.get("content", msg.get("text", "")))
             if role and text:
                 conversation_text += f"{role}: {text}\n\n"
             # Include tool calls in compaction context
@@ -457,7 +470,7 @@ class SessionManager:
             # Include tool results in compaction context
             if role == "tool_results":
                 for r in msg.get("results", []):
-                    content = r.get("content", "")[:2000]
+                    content = _text_from_content(r.get("content", ""))[:2000]
                     conversation_text += f"tool_result: {content}\n\n"
 
         if not conversation_text.strip():

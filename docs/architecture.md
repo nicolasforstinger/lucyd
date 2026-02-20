@@ -229,11 +229,26 @@ Internal message format uses a neutral schema. Each provider translates to/from 
 
 ### Internal Message Format
 
-- User messages use `"content"` for the message body
+- User messages use `"content"` for the message body (string or list of content blocks)
 - Assistant messages use `"text"` for the response body
 - Providers must handle both: `msg.get("content", msg.get("text", ""))`
 
 This convention exists because user messages mirror the API format while assistant messages are stored in a simplified internal format.
+
+### Neutral Image Blocks
+
+Image attachments use a provider-agnostic format in the internal message schema:
+
+```python
+{"type": "image", "media_type": "image/jpeg", "data": "<base64>"}
+```
+
+Each provider's `_convert_content_blocks()` static method converts to the native API format:
+
+- **Anthropic**: `{"type": "image", "source": {"type": "base64", "media_type": ..., "data": ...}}`
+- **OpenAI**: `{"type": "image_url", "image_url": {"url": "data:{mime};base64,{data}"}}`
+
+Image blocks are injected transiently into `session.messages` for the API call duration only, then restored to text-only before persistence. This prevents base64 data from bloating JSONL files and breaking compaction.
 
 ### Provider Configuration
 

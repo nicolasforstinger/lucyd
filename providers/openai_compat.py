@@ -58,16 +58,43 @@ class OpenAICompatProvider:
         """
         return "\n\n".join(b["text"] for b in blocks)
 
+    @staticmethod
+    def _convert_content_blocks(content: Any) -> Any:
+        """Convert neutral image blocks to OpenAI API format.
+
+        Text blocks pass through unchanged. Neutral image blocks
+        {"type": "image", "media_type": ..., "data": ...} become
+        {"type": "image_url", "image_url": {"url": "data:mime;base64,..."}}.
+        """
+        if not isinstance(content, list):
+            return content
+        result = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "image" and "media_type" in block:
+                result.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{block['media_type']};base64,{block['data']}",
+                    },
+                })
+            else:
+                result.append(block)
+        return result
+
     def format_messages(self, messages: list[dict]) -> list[dict]:
-        """Convert internal format to OpenAI API format."""
+        """Convert internal format to OpenAI API format.
+
+        Converts neutral image blocks to OpenAI's data URI format.
+        """
         result = []
         for msg in messages:
             role = msg.get("role", "")
 
             if role == "user":
+                content = msg.get("content", msg.get("text", ""))
                 result.append({
                     "role": "user",
-                    "content": msg.get("content", msg.get("text", "")),
+                    "content": self._convert_content_blocks(content),
                 })
 
             elif role == "assistant":

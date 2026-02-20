@@ -1012,6 +1012,9 @@ class TestProcessMessageIntegration:
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Something went wrong."
         daemon.config.raw = MagicMock(return_value=0.0)
+        daemon.config.vision_max_image_bytes = 5 * 1024 * 1024
+        daemon.config.vision_default_caption = "image"
+        daemon.config.vision_too_large_msg = "image too large to display"
 
         return daemon, provider, session
 
@@ -1131,7 +1134,6 @@ class TestProcessMessageIntegration:
     async def test_image_attachment_adds_prefix_to_text(self, full_daemon, tmp_path):
         """Image attachment adds [image] prefix and creates image blocks."""
         daemon, provider, session = full_daemon
-        daemon.config.raw = MagicMock(return_value=5 * 1024 * 1024)  # 5 MB limit
 
         # Create a small test image file
         img_path = tmp_path / "test.jpg"
@@ -1176,7 +1178,7 @@ class TestProcessMessageIntegration:
     async def test_oversized_image_shows_correct_mb(self, full_daemon, tmp_path):
         """BUG-4: Oversized image shows float MB, not truncated integer."""
         daemon, provider, session = full_daemon
-        daemon.config.raw = MagicMock(return_value=5_000_000)  # 5 MB limit (below 5,200,000)
+        daemon.config.vision_max_image_bytes = 5_000_000
 
         usage = MagicMock()
         usage.input_tokens = 2000
@@ -1212,7 +1214,7 @@ class TestProcessMessageIntegration:
         """BUG-4: Sub-1MB oversized image shows '0.5MB' not '0MB'."""
         daemon, provider, session = full_daemon
         # Set limit very low so 500KB exceeds it
-        daemon.config.raw = MagicMock(return_value=100_000)
+        daemon.config.vision_max_image_bytes = 100_000
 
         usage = MagicMock()
         usage.input_tokens = 2000
@@ -1498,7 +1500,7 @@ class TestMessageLoopDebounce:
 
 
 class TestTranscribeAudio:
-    """Tests for _transcribe_audio — Whisper API integration."""
+    """Tests for _transcribe_audio — pluggable STT backend."""
 
     @pytest.fixture
     def audio_daemon(self, tmp_path):
@@ -1510,24 +1512,44 @@ class TestTranscribeAudio:
         audio_file.write_bytes(b"OggS" + b"\x00" * 100)  # minimal OGG header
         return daemon, str(audio_file)
 
+    def _mock_openai_config(self, daemon, api_key="sk-test-key", **overrides):
+        """Configure daemon.config for OpenAI STT backend."""
+        daemon.config = MagicMock()
+        daemon.config.stt_backend = "openai"
+        daemon.config.api_key = MagicMock(return_value=api_key)
+        daemon.config.stt_openai_api_url = overrides.get(
+            "api_url", "https://api.openai.com/v1/audio/transcriptions")
+        daemon.config.stt_openai_model = overrides.get("model", "whisper-1")
+        daemon.config.stt_openai_timeout = overrides.get("timeout", 60)
+
+    # --- Backend dispatch ---
+
     @pytest.mark.asyncio
-    async def test_missing_api_key_raises(self, audio_daemon):
-        """Missing OpenAI API key raises RuntimeError."""
+    async def test_unknown_backend_raises(self, audio_daemon):
+        """Unknown STT backend raises RuntimeError."""
         daemon, audio_path = audio_daemon
         daemon.config = MagicMock()
-        daemon.config.api_key = MagicMock(return_value="")
-        daemon.config.raw = MagicMock(return_value={})
+        daemon.config.stt_backend = "nonexistent"
+
+        with pytest.raises(RuntimeError, match="Unknown STT backend"):
+            await daemon._transcribe_audio(audio_path, "audio/ogg")
+
+    # --- OpenAI backend ---
+
+    @pytest.mark.asyncio
+    async def test_openai_missing_api_key_raises(self, audio_daemon):
+        """Missing OpenAI API key raises RuntimeError."""
+        daemon, audio_path = audio_daemon
+        self._mock_openai_config(daemon, api_key="")
 
         with pytest.raises(RuntimeError, match="No OpenAI API key for Whisper"):
             await daemon._transcribe_audio(audio_path, "audio/ogg")
 
     @pytest.mark.asyncio
-    async def test_successful_transcription(self, audio_daemon):
-        """Successful Whisper API call returns transcribed text."""
+    async def test_openai_successful_transcription(self, audio_daemon):
+        """Successful OpenAI Whisper API call returns transcribed text."""
         daemon, audio_path = audio_daemon
-        daemon.config = MagicMock()
-        daemon.config.api_key = MagicMock(return_value="sk-test-key-12345")
-        daemon.config.raw = MagicMock(return_value={})
+        self._mock_openai_config(daemon, api_key="sk-test-key-12345")
 
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
@@ -1542,24 +1564,21 @@ class TestTranscribeAudio:
             result = await daemon._transcribe_audio(audio_path, "audio/ogg")
 
         assert result == "Hello, how are you?"
-        # Verify the correct URL was called
         mock_client.post.assert_called_once()
         call_args = mock_client.post.call_args
         assert call_args[0][0] == "https://api.openai.com/v1/audio/transcriptions"
-        # Verify Authorization header
         assert call_args[1]["headers"]["Authorization"] == "Bearer sk-test-key-12345"
 
     @pytest.mark.asyncio
-    async def test_custom_whisper_config(self, audio_daemon):
-        """Custom Whisper configuration (api_url, model, timeout) is used."""
+    async def test_openai_custom_config(self, audio_daemon):
+        """Custom OpenAI STT configuration is used."""
         daemon, audio_path = audio_daemon
-        daemon.config = MagicMock()
-        daemon.config.api_key = MagicMock(return_value="sk-custom-key")
-        daemon.config.raw = MagicMock(return_value={
-            "api_url": "https://custom.api/v1/transcribe",
-            "model": "whisper-large-v3",
-            "timeout": 120,
-        })
+        self._mock_openai_config(
+            daemon, api_key="sk-custom-key",
+            api_url="https://custom.api/v1/transcribe",
+            model="whisper-large-v3",
+            timeout=120,
+        )
 
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
@@ -1574,21 +1593,16 @@ class TestTranscribeAudio:
             result = await daemon._transcribe_audio(audio_path, "audio/ogg")
 
         assert result == "Custom transcription"
-        # Verify custom URL was used
         call_args = mock_client.post.call_args
         assert call_args[0][0] == "https://custom.api/v1/transcribe"
-        # Verify custom model was sent in form data
         assert call_args[1]["data"]["model"] == "whisper-large-v3"
-        # Verify custom timeout was passed to AsyncClient
         mock_cls.assert_called_once_with(timeout=120)
 
     @pytest.mark.asyncio
-    async def test_api_error_raises(self, audio_daemon):
+    async def test_openai_api_error_raises(self, audio_daemon):
         """Non-200 API response raises via raise_for_status."""
         daemon, audio_path = audio_daemon
-        daemon.config = MagicMock()
-        daemon.config.api_key = MagicMock(return_value="sk-test-key")
-        daemon.config.raw = MagicMock(return_value={})
+        self._mock_openai_config(daemon)
 
         import httpx
         mock_response = MagicMock()
@@ -1610,12 +1624,10 @@ class TestTranscribeAudio:
                 await daemon._transcribe_audio(audio_path, "audio/ogg")
 
     @pytest.mark.asyncio
-    async def test_empty_text_in_response(self, audio_daemon):
-        """API response without 'text' key returns empty string."""
+    async def test_openai_empty_text_raises(self, audio_daemon):
+        """API response with empty text raises RuntimeError."""
         daemon, audio_path = audio_daemon
-        daemon.config = MagicMock()
-        daemon.config.api_key = MagicMock(return_value="sk-test-key")
-        daemon.config.raw = MagicMock(return_value={})
+        self._mock_openai_config(daemon)
 
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
@@ -1627,6 +1639,215 @@ class TestTranscribeAudio:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(RuntimeError, match="empty transcription"):
+                await daemon._transcribe_audio(audio_path, "audio/ogg")
+
+    # --- Local backend ---
+
+    @pytest.mark.asyncio
+    async def test_local_successful_transcription(self, audio_daemon):
+        """Local whisper.cpp backend: ffmpeg + POST returns text."""
+        daemon, audio_path = audio_daemon
+        daemon.config = MagicMock()
+        daemon.config.stt_backend = "local"
+        daemon.config.stt_local_endpoint = "http://whisper:8082/inference"
+        daemon.config.stt_local_language = "de"
+        daemon.config.stt_local_ffmpeg_timeout = 30
+        daemon.config.stt_local_request_timeout = 60
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = MagicMock(return_value={"text": "Guten Morgen"})
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("subprocess.run") as mock_ffmpeg, \
+             patch("httpx.AsyncClient", return_value=mock_client):
             result = await daemon._transcribe_audio(audio_path, "audio/ogg")
 
-        assert result == ""
+        assert result == "Guten Morgen"
+        # Verify ffmpeg was called with correct args
+        mock_ffmpeg.assert_called_once()
+        ffmpeg_args = mock_ffmpeg.call_args[0][0]
+        assert ffmpeg_args[0] == "ffmpeg"
+        assert "-ar" in ffmpeg_args
+        assert "16000" in ffmpeg_args
+        # Verify whisper endpoint was called
+        mock_client.post.assert_called_once()
+        call_args = mock_client.post.call_args
+        assert call_args[0][0] == "http://whisper:8082/inference"
+        assert call_args[1]["data"]["language"] == "de"
+
+    @pytest.mark.asyncio
+    async def test_local_ffmpeg_failure_raises(self, audio_daemon):
+        """ffmpeg failure raises CalledProcessError."""
+        import subprocess
+
+        daemon, audio_path = audio_daemon
+        daemon.config = MagicMock()
+        daemon.config.stt_backend = "local"
+        daemon.config.stt_local_endpoint = "http://whisper:8082/inference"
+        daemon.config.stt_local_language = "auto"
+        daemon.config.stt_local_ffmpeg_timeout = 30
+        daemon.config.stt_local_request_timeout = 60
+
+        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "ffmpeg")):
+            with pytest.raises(subprocess.CalledProcessError):
+                await daemon._transcribe_audio(audio_path, "audio/ogg")
+
+    @pytest.mark.asyncio
+    async def test_local_ffmpeg_timeout_raises(self, audio_daemon):
+        """ffmpeg timeout raises TimeoutExpired."""
+        import subprocess
+
+        daemon, audio_path = audio_daemon
+        daemon.config = MagicMock()
+        daemon.config.stt_backend = "local"
+        daemon.config.stt_local_endpoint = "http://whisper:8082/inference"
+        daemon.config.stt_local_language = "auto"
+        daemon.config.stt_local_ffmpeg_timeout = 30
+        daemon.config.stt_local_request_timeout = 60
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("ffmpeg", 30)):
+            with pytest.raises(subprocess.TimeoutExpired):
+                await daemon._transcribe_audio(audio_path, "audio/ogg")
+
+    @pytest.mark.asyncio
+    async def test_local_whisper_error_raises(self, audio_daemon):
+        """Whisper server error raises."""
+        import httpx
+
+        daemon, audio_path = audio_daemon
+        daemon.config = MagicMock()
+        daemon.config.stt_backend = "local"
+        daemon.config.stt_local_endpoint = "http://whisper:8082/inference"
+        daemon.config.stt_local_language = "auto"
+        daemon.config.stt_local_ffmpeg_timeout = 30
+        daemon.config.stt_local_request_timeout = 60
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError(
+                "Server Error", request=MagicMock(),
+                response=MagicMock(status_code=500),
+            ),
+        )
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("subprocess.run"), \
+             patch("httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(httpx.HTTPStatusError):
+                await daemon._transcribe_audio(audio_path, "audio/ogg")
+
+    @pytest.mark.asyncio
+    async def test_local_empty_text_raises(self, audio_daemon):
+        """Whisper server returning empty text raises RuntimeError."""
+        daemon, audio_path = audio_daemon
+        daemon.config = MagicMock()
+        daemon.config.stt_backend = "local"
+        daemon.config.stt_local_endpoint = "http://whisper:8082/inference"
+        daemon.config.stt_local_language = "auto"
+        daemon.config.stt_local_ffmpeg_timeout = 30
+        daemon.config.stt_local_request_timeout = 60
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = MagicMock(return_value={"text": ""})
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("subprocess.run"), \
+             patch("httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(RuntimeError, match="empty transcription"):
+                await daemon._transcribe_audio(audio_path, "audio/ogg")
+
+    @pytest.mark.asyncio
+    async def test_local_wav_cleanup_on_success(self, audio_daemon):
+        """WAV temp file is cleaned up after successful transcription."""
+        daemon, audio_path = audio_daemon
+        daemon.config = MagicMock()
+        daemon.config.stt_backend = "local"
+        daemon.config.stt_local_endpoint = "http://whisper:8082/inference"
+        daemon.config.stt_local_language = "auto"
+        daemon.config.stt_local_ffmpeg_timeout = 30
+        daemon.config.stt_local_request_timeout = 60
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = MagicMock(return_value={"text": "test"})
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        wav_paths = []
+        original_mkstemp = __import__("tempfile").mkstemp
+
+        def track_mkstemp(**kwargs):
+            fd, path = original_mkstemp(**kwargs)
+            wav_paths.append(path)
+            return fd, path
+
+        with patch("subprocess.run"), \
+             patch("httpx.AsyncClient", return_value=mock_client), \
+             patch("tempfile.mkstemp", side_effect=track_mkstemp):
+            await daemon._transcribe_audio(audio_path, "audio/ogg")
+
+        # WAV file should have been cleaned up
+        assert len(wav_paths) == 1
+        assert not Path(wav_paths[0]).exists()
+
+    @pytest.mark.asyncio
+    async def test_local_wav_cleanup_on_error(self, audio_daemon):
+        """WAV temp file is cleaned up even when whisper fails."""
+        import httpx
+
+        daemon, audio_path = audio_daemon
+        daemon.config = MagicMock()
+        daemon.config.stt_backend = "local"
+        daemon.config.stt_local_endpoint = "http://whisper:8082/inference"
+        daemon.config.stt_local_language = "auto"
+        daemon.config.stt_local_ffmpeg_timeout = 30
+        daemon.config.stt_local_request_timeout = 60
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError(
+                "Error", request=MagicMock(),
+                response=MagicMock(status_code=500),
+            ),
+        )
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        wav_paths = []
+        original_mkstemp = __import__("tempfile").mkstemp
+
+        def track_mkstemp(**kwargs):
+            fd, path = original_mkstemp(**kwargs)
+            wav_paths.append(path)
+            return fd, path
+
+        with patch("subprocess.run"), \
+             patch("httpx.AsyncClient", return_value=mock_client), \
+             patch("tempfile.mkstemp", side_effect=track_mkstemp):
+            with pytest.raises(httpx.HTTPStatusError):
+                await daemon._transcribe_audio(audio_path, "audio/ogg")
+
+        # WAV file should still be cleaned up
+        assert len(wav_paths) == 1
+        assert not Path(wav_paths[0]).exists()

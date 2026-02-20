@@ -1,12 +1,10 @@
 """Tests for session lifecycle callbacks (on_close, async/sync, ordering)."""
 
-import asyncio
-import json
 import logging
 
 import pytest
 
-from session import Session, SessionManager
+from session import SessionManager
 
 
 @pytest.fixture
