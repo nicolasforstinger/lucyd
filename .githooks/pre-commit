@@ -1,0 +1,40 @@
+#!/bin/sh
+# Verify test counts in docs match actual test count.
+# Prevents P-007 (test count drift) from recurring.
+
+ACTUAL=$(.venv/bin/python -m pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -oP '^\d+')
+
+if [ -z "$ACTUAL" ]; then
+    echo "pre-commit: could not collect test count, skipping check"
+    exit 0
+fi
+
+STALE=0
+
+# Check README.md
+if grep -qP '\*\*\d+ tests\*\*' README.md; then
+    README_COUNT=$(grep -oP '\*\*\K\d+(?= tests\*\*)' README.md)
+    if [ "$README_COUNT" != "$ACTUAL" ]; then
+        echo "pre-commit: README.md says $README_COUNT tests, actual is $ACTUAL"
+        STALE=1
+    fi
+fi
+
+# Check CLAUDE.md (may be in parent directory or repo root)
+CLAUDE_MD=""
+[ -f CLAUDE.md ] && CLAUDE_MD="CLAUDE.md"
+[ -f ../CLAUDE.md ] && CLAUDE_MD="../CLAUDE.md"
+if [ -n "$CLAUDE_MD" ]; then
+    for COUNT in $(grep -oP '\b\d+(?= tests)' "$CLAUDE_MD" | sort -u); do
+        if [ "$COUNT" != "$ACTUAL" ]; then
+            echo "pre-commit: $CLAUDE_MD says $COUNT tests, actual is $ACTUAL"
+            STALE=1
+            break
+        fi
+    done
+fi
+
+if [ "$STALE" = "1" ]; then
+    echo "pre-commit: update test counts to $ACTUAL before committing"
+    exit 1
+fi

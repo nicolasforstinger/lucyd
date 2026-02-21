@@ -1,0 +1,182 @@
+# lucyd.toml.example — Template configuration for Lucyd daemon
+# Copy to lucyd.toml and customize for your setup.
+# API keys are loaded from .env via environment variables.
+
+# ─── Agent Identity ───────────────────────────────────────────────
+
+[agent]
+name = "YourAgent"
+workspace = "~/.lucyd/workspace"
+
+[agent.context]
+stable = ["SOUL.md", "AGENTS.md", "USER.md", "IDENTITY.md", "TOOLS.md"]
+semi_stable = ["MEMORY.md"]
+
+[agent.context.tiers]
+operational.stable = ["SOUL.md", "AGENTS.md", "IDENTITY.md"]
+operational.semi_stable = ["HEARTBEAT.md"]
+
+[agent.skills]
+dir = "skills"
+always_on = []
+
+# ─── Channel ─────────────────────────────────────────────────────
+
+[channel]
+type = "telegram"        # "telegram" or "cli"
+debounce_ms = 500
+
+# Create a bot via @BotFather, get the token, set it in .env as LUCYD_TELEGRAM_TOKEN.
+# Get your numeric user ID via @userinfobot. Message the bot first (required by Telegram).
+
+[channel.telegram]
+token_env = "LUCYD_TELEGRAM_TOKEN"         # Env var containing the bot token
+allow_from = [123456789]                   # Your Telegram user ID (numeric)
+text_chunk_limit = 4000
+download_dir = "/tmp/lucyd-telegram"
+
+[channel.telegram.contacts]
+YourContact = 123456789                    # Your Telegram user ID
+
+# ─── Providers ───────────────────────────────────────────────────
+# Models loaded from providers.d/{name}.toml files.
+# Each file defines type, api_key_env, base_url, and [models.*] sections.
+# Switch providers by changing the load list — one line, no model editing.
+
+[providers]
+load = ["anthropic", "openai"]
+# dir = "providers.d"  # default: providers.d/ relative to this file
+
+# ─── HTTP API ───────────────────────────────────────────────────
+# Optional REST API for external integrations (n8n, scripts, webhooks).
+# Auth token is loaded from LUCYD_HTTP_TOKEN env var (or .env file).
+
+[http]
+enabled = false
+host = "127.0.0.1"
+port = 8100
+# callback_url = "https://n8n.local/webhook/abc"  # POST after every message (default: "" = disabled)
+# callback_token_env = "MY_CALLBACK_TOKEN"         # Env var for webhook bearer token
+
+# ─── Routing ─────────────────────────────────────────────────────
+
+[routing]
+telegram = "primary"
+cli = "primary"
+system = "subagent"
+http = "primary"
+vision = "primary"       # Model for messages with image attachments (overrides source routing)
+
+# ─── Memory ──────────────────────────────────────────────────────
+
+[memory]
+db = "~/.lucyd/memory/main.sqlite"
+search_top_k = 10
+
+[memory.consolidation]
+enabled = true
+fact_model = "subagent"
+episode_model = "primary"
+min_messages = 4
+confidence_threshold = 0.6
+
+# [memory.maintenance]
+# enabled = true
+# min_confidence = 0.3
+# stale_days = 90
+
+[memory.recall]
+structured_first = true
+decay_rate = 0.03
+max_facts_in_context = 20
+max_dynamic_tokens = 1000
+max_episodes_at_start = 3
+
+# [memory.recall.personality]
+# priority_vector = 35
+# priority_episodes = 25
+# priority_facts = 15
+# priority_commitments = 40
+# fact_format = "natural"           # "natural" or "compact"
+# show_emotional_tone = true
+# episode_section_header = "Recent conversations"
+
+[memory.indexer]
+include_patterns = ["memory/*.md", "MEMORY.md"]
+exclude_dirs = []
+
+# ─── Tools ───────────────────────────────────────────────────────
+
+[tools]
+enabled = [
+    "read", "write", "edit", "exec",
+    "web_search", "web_fetch",
+    "memory_search", "memory_get",
+    "memory_write", "memory_forget", "commitment_update",
+    "message", "react",
+    "schedule_message", "list_scheduled",
+    "session_status",
+    "sessions_spawn", "load_skill",
+    "tts",
+]
+output_truncation = 30000
+exec_timeout = 120
+exec_max_timeout = 600
+# subagent_deny = ["sessions_spawn", "tts", "load_skill", "react", "schedule_message"]  # Default deny-list if omitted
+
+[tools.filesystem]
+# allowed_paths = ["~/.lucyd/workspace", "/tmp/"]   # Defaults to workspace + /tmp/ if omitted
+
+[tools.web_search]
+provider = "brave"
+
+[tools.tts]
+provider = "elevenlabs"
+default_voice_id = "your-elevenlabs-voice-id"
+default_model_id = "eleven_v3"
+speed = 1.0
+stability = 0.5
+similarity_boost = 0.75
+
+# ─── Speech-to-Text ──────────────────────────────────────────────
+
+[stt]
+backend = "openai"                    # "openai" (cloud) or "local" (whisper.cpp server)
+voice_label = "voice message"
+voice_fail_msg = "voice message — transcription failed"
+
+[stt.openai]
+api_url = "https://api.openai.com/v1/audio/transcriptions"
+model = "whisper-1"
+timeout = 60
+
+# [stt.local]
+# endpoint = "http://whisper-server:8082/inference"
+# language = "auto"
+# ffmpeg_timeout = 30
+# request_timeout = 60
+
+# ─── Behavior ────────────────────────────────────────────────────
+
+[behavior]
+silent_tokens = ["HEARTBEAT_OK", "NO_REPLY"]
+typing_indicators = true
+error_message = "I'm having trouble connecting right now. Try again in a moment."
+agent_timeout_seconds = 600
+max_turns_per_message = 50
+max_cost_per_message = 5.0             # USD limit per message (0.0 = disabled)
+max_image_bytes = 5242880              # 5 MB
+
+[behavior.compaction]
+threshold_tokens = 150000
+model = "compaction"
+prompt = """Summarize this conversation preserving all factual details, decisions,
+action items, and emotional context. Write as a dense narrative, not bullet points."""
+
+# ─── Paths ───────────────────────────────────────────────────────
+
+[paths]
+state_dir = "~/.lucyd"
+sessions_dir = "~/.lucyd/sessions"
+cost_db = "~/.lucyd/cost.db"
+log_file = "~/.lucyd/lucyd.log"

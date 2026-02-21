@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""lucyd-index — index workspace memory files into SQLite FTS5 + vector DB.
+
+Usage:
+    lucyd-index                    # Incremental index
+    lucyd-index --full             # Force full re-index
+    lucyd-index --status           # Show index status
+    lucyd-index --db PATH          # Override DB path
+    lucyd-index --workspace PATH   # Override workspace path
+"""
+
+import argparse
+import fcntl
+import os
+import sys
+import time
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+def _load_dotenv(env_path: Path) -> None:
+    """Load .env file into os.environ (existing vars take precedence)."""
+    if not env_path.exists():
+        return
+    with open(env_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key not in os.environ:
+                os.environ[key] = val
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Index workspace memory files")
+    parser.add_argument("--full", action="store_true", help="Force full re-index")
+    parser.add_argument("--status", action="store_true", help="Show index status")
+    parser.add_argument("--db", help="Override DB path")
+    parser.add_argument("--workspace", help="Override workspace path")
+    args = parser.parse_args()
+
+    # Resolve paths
+    project_root = Path(__file__).resolve().parent.parent
+    state_dir = Path(os.environ.get("LUCYD_STATE_DIR", "~/.lucyd")).expanduser()
+    db_path = Path(args.db) if args.db else state_dir / "memory" / "main.sqlite"
+    workspace = Path(args.workspace) if args.workspace else state_dir / "workspace"
+
+    # Load .env
+    _load_dotenv(project_root / ".env")
+
+    # Status mode — no lock needed
+    if args.status:
+        from tools.indexer import get_index_status
+        status = get_index_status(db_path, workspace)
+        print(f"\n[lucyd-index] Status")
+        print(f"  DB: {db_path}")
+        print(f"  Workspace: {workspace}")
+        print(f"  Indexed files: {status['indexed_files']}")
+        print(f"  Total chunks: {status['total_chunks']}")
+        if status["pending_files"]:
+            print(f"  Pending: {', '.join(status['pending_files'])}")
+        else:
+            print("  Pending: (none)")
+        if status["stale_files"]:
+            print(f"  Stale: {', '.join(status['stale_files'])}")
+        print()
+        return
+
+    # Lock file — prevent concurrent runs (cron-safe)
+    lock_path = state_dir / "lucyd-index.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # Another instance running — exit silently (cron-friendly)
+        lock_fd.close()
+        sys.exit(0)
+
+    try:
+        api_key = os.environ.get("LUCYD_OPENAI_KEY", "")
+        if not api_key:
+            print("Error: LUCYD_OPENAI_KEY not set", file=sys.stderr)
+            sys.exit(1)
+
+        if not db_path.exists():
+            print(f"Error: DB not found at {db_path}", file=sys.stderr)
+            sys.exit(1)
+
+        if not workspace.is_dir():
+            print(f"Error: Workspace not found at {workspace}", file=sys.stderr)
+            sys.exit(1)
+
+        from tools.indexer import index_workspace
+
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        summary = index_workspace(
+            workspace=workspace,
+            db_path=db_path,
+            api_key=api_key,
+            force=args.full,
+        )
+
+        # Output (cron-friendly)
+        print(f"[lucyd-index] {timestamp}")
+        if summary["indexed"]:
+            for path, count in summary["indexed"]:
+                print(f"  indexed: {path} ({count} chunks)")
+        if summary["skipped"]:
+            print(f"  skipped: {summary['skipped']} unchanged files")
+        if summary["removed"]:
+            print(f"  removed: {', '.join(summary['removed'])}")
+        if summary["errors"]:
+            for err in summary["errors"]:
+                print(f"  error: {err}")
+        print(f"  total: {summary['total_files']} files, {summary['total_chunks']} chunks")
+
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    main()

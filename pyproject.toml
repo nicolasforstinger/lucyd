@@ -1,0 +1,56 @@
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "S",      # flake8-bandit: security anti-patterns
+    "E",      # pycodestyle errors
+    "F",      # pyflakes: unused imports, undefined names, dead code
+    "W",      # pycodestyle warnings
+    "B",      # flake8-bugbear: common bug patterns
+    "UP",     # pyupgrade: outdated Python syntax
+    "SIM",    # flake8-simplify: unnecessary complexity
+    "RET",    # flake8-return: return statement issues
+    "PTH",    # flake8-use-pathlib: os.path → pathlib
+    "I",      # isort: import ordering
+    "TID",    # flake8-tidy-imports: import restrictions
+]
+
+ignore = [
+    "S603",   # subprocess call - check manually, don't auto-flag
+    "S607",   # partial executable path - check manually
+    "E501",   # line too long
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S104", "S105", "S106", "S108"]
+
+[tool.mutmut]
+paths_to_mutate = ["tools/"]
+tests_dir = [
+    "tests/test_agents.py",
+    "tests/test_filesystem.py",
+    "tests/test_indexer.py",
+    "tests/test_memory_tools_structured.py",
+    "tests/test_messaging.py",
+    "tests/test_scheduling.py",
+    "tests/test_shell_security.py",
+    "tests/test_skills.py",
+    "tests/test_tool_registry.py",
+    "tests/test_tools.py",
+    "tests/test_tts.py",
+    "tests/test_web_security.py",
+    "tests/test_zero_kill_modules.py",
+]
+pythonpath = ["."]
+debug = false
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"

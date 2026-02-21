@@ -1,0 +1,8 @@
+# OpenAI — embeddings
+# Copy to openai.toml (or edit in place — this file is committed).
+type = "openai-compat"
+api_key_env = "LUCYD_OPENAI_KEY"
+base_url = "https://api.openai.com/v1"
+
+[models.embeddings]
+model = "text-embedding-3-small"

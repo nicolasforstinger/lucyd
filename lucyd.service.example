@@ -1,0 +1,37 @@
+# Lucyd systemd service template
+# Copy to /etc/systemd/system/lucyd.service and adjust paths.
+#
+# Install:
+#   sudo cp lucyd.service.example /etc/systemd/system/lucyd.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lucyd
+
+[Unit]
+Description=Lucyd AI Agent Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User and paths to your username
+# NOTE: %h resolves to root's home for system services — use absolute paths.
+User=your-username
+WorkingDirectory=/home/your-username/lucyd
+ExecStart=/home/your-username/lucyd/.venv/bin/python3 /home/your-username/lucyd/lucyd.py -c /home/your-username/lucyd/lucyd.toml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Resource limits
+MemoryMax=1G
+MemoryHigh=768M
+TasksMax=64
+
+# Environment (secrets via env file)
+EnvironmentFile=-/home/your-username/lucyd/.env
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""lucyd-send — inject messages into the running Lucyd daemon via FIFO.
+
+Usage:
+    lucyd-send --message "Hello"                    # User message
+    lucyd-send --message "Question" --from Claudio  # Message from named sender
+    lucyd-send --system "Execute HEARTBEAT.md."     # System event
+    lucyd-send --system "Health check" --tier operational
+    lucyd-send --cost today                         # Query today's cost
+    lucyd-send --sessions                           # List active sessions
+    lucyd-send --reset                              # Reset ALL sessions
+    lucyd-send --reset system                       # Reset system session
+    lucyd-send --reset user                         # Reset user session
+    lucyd-send --reset <session-uuid>               # Reset session by ID
+"""
+
+import argparse
+import errno
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+import tomllib
+from pathlib import Path
+
+# Add project root to path so we can import from the package (config, etc.)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _is_uuid(s: str) -> bool:
+    return bool(_UUID_RE.match(s))
+
+
+def send_to_fifo(fifo_path: Path, message: dict) -> None:
+    """Write JSON message to FIFO (non-blocking)."""
+    try:
+        fd = os.open(str(fifo_path), os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as e:
+        if e.errno == errno.ENXIO:
+            print("Error: Lucyd daemon is not running (no reader on FIFO)", file=sys.stderr)
+            sys.exit(1)
+        raise
+
+    try:
+        data = json.dumps(message) + "\n"
+    except Exception:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "w") as f:
+        f.write(data)
+
+
+def query_cost(cost_db: Path, period: str) -> None:
+    """Query cost from SQLite DB."""
+    if not cost_db.exists():
+        print("No cost data found.", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(str(cost_db))
+
+    if period == "today":
+        from config import today_start_ts
+        today_start = today_start_ts()
+        rows = conn.execute(
+            "SELECT model, SUM(input_tokens), SUM(output_tokens), "
+            "SUM(cache_read_tokens), SUM(cost_usd) "
+            "FROM costs WHERE timestamp >= ? GROUP BY model",
+            (today_start,)
+        ).fetchall()
+    elif period == "week":
+        week_start = int(time.time()) - 7 * 86400
+        rows = conn.execute(
+            "SELECT model, SUM(input_tokens), SUM(output_tokens), "
+            "SUM(cache_read_tokens), SUM(cost_usd) "
+            "FROM costs WHERE timestamp >= ? GROUP BY model",
+            (week_start,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT model, SUM(input_tokens), SUM(output_tokens), "
+            "SUM(cache_read_tokens), SUM(cost_usd) "
+            "FROM costs GROUP BY model"
+        ).fetchall()
+
+    conn.close()
+
+    if not rows:
+        print("No cost data for this period.")
+        return
+
+    total_cost = 0.0
+    print(f"\n{'Model':<35} {'Input':>12} {'Output':>12} {'Cache':>12} {'Cost':>10}")
+    print("\u2500" * 85)
+    for model, inp, out, cache, cost in rows:
+        total_cost += cost or 0
+        print(f"{model:<35} {inp or 0:>12,} {out or 0:>12,} {cache or 0:>12,} ${cost or 0:>9.4f}")
+    print("\u2500" * 85)
+    print(f"{'Total':<35} {'':>12} {'':>12} {'':>12} ${total_cost:>9.4f}")
+    print()
+
+
+# ─── Session Listing ──────────────────────────────────────────────
+
+def _load_config() -> dict:
+    """Load lucyd.toml relative to this script's location.
+
+    Uses the Config class to ensure provider files are loaded,
+    so model settings (max_context_tokens, etc.) are available.
+    Falls back to raw TOML if Config import fails.
+    """
+    config_path = Path(__file__).resolve().parent.parent / "lucyd.toml"
+    if not config_path.exists():
+        return {}
+    try:
+        from config import Config
+        with open(config_path, "rb") as f:
+            data = tomllib.load(f)
+        cfg = Config(data, config_dir=config_path.parent)
+        return cfg._data
+    except Exception:
+        # Fallback to raw TOML (provider models won't be visible)
+        with open(config_path, "rb") as f:
+            return tomllib.load(f)
+
+
+def _resolve_contact_name(
+    contact_key: str,
+    contacts: dict[str, str],
+    allow_from: list[str],
+) -> str:
+    """Resolve a session contact key to a human-readable name.
+
+    Keys can be names ("Claudio"), phone numbers ("+43..."), or UUIDs.
+    """
+    # Already a readable name
+    if not contact_key.startswith("+") and not _is_uuid(contact_key):
+        return contact_key
+
+    # Phone → name (reverse lookup)
+    phone_to_name = {v: k for k, v in contacts.items()}
+    if contact_key in phone_to_name:
+        return phone_to_name[contact_key]
+
+    # NOTE: UUID-to-name resolution is best-effort. With multiple contacts
+    # sharing allow_from, the first match is returned. This is acceptable
+    # for display purposes in lucyd-send output.
+    if _is_uuid(contact_key):
+        allow_set = set(allow_from)
+        if contact_key in allow_set:
+            for name, phone in contacts.items():
+                if phone in allow_set:
+                    return name
+
+    return contact_key
+
+
+def _session_log_info(sessions_dir: Path, session_id: str) -> tuple[int, int, str]:
+    """Get JSONL log info for a session.
+
+    Returns (file_count, total_bytes, date_range_str).
+    """
+    files = sorted(sessions_dir.glob(f"{session_id}.????-??-??.jsonl"))
+    if not files:
+        return 0, 0, "(no logs)"
+
+    total_bytes = sum(f.stat().st_size for f in files)
+
+    # Extract dates from filenames: {session_id}.YYYY-MM-DD.jsonl
+    dates = []
+    for f in files:
+        parts = f.stem.split(".")
+        if len(parts) >= 2:
+            dates.append(parts[-1])
+
+    if not dates:
+        return len(files), total_bytes, "(no logs)"
+
+    first = dates[0]
+    last = dates[-1]
+
+    # Format dates nicely (strip year if current year)
+    current_year = time.strftime("%Y")
+
+    def _fmt_date(d: str) -> str:
+        try:
+            t = time.strptime(d, "%Y-%m-%d")
+            if d.startswith(current_year):
+                return time.strftime("%b %d", t)
+            return time.strftime("%b %d %Y", t)
+        except ValueError:
+            return d
+
+    if first == last:
+        range_str = f"{_fmt_date(first)} ({len(files)} log file{'s' if len(files) != 1 else ''})"
+    else:
+        range_str = f"{_fmt_date(first)} – {_fmt_date(last)} ({len(files)} log files)"
+
+    return len(files), total_bytes, range_str
+
+
+def _format_size(nbytes: int) -> str:
+    """Format bytes as human-readable (e.g., '143K', '2.1M')."""
+    if nbytes < 1024:
+        return f"{nbytes}B"
+    elif nbytes < 1024 * 1024:
+        return f"{nbytes // 1024}K"
+    else:
+        return f"{nbytes / (1024 * 1024):.1f}M"
+
+
+def _session_cost(cost_db: Path, session_id: str) -> float:
+    """Query total cost for a session from cost.db."""
+    if not cost_db.exists():
+        return 0.0
+    try:
+        conn = sqlite3.connect(str(cost_db))
+        row = conn.execute(
+            "SELECT SUM(cost_usd) FROM costs WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        conn.close()
+        return row[0] or 0.0 if row else 0.0
+    except Exception:
+        return 0.0
+
+
+def show_monitor(state_dir: Path, agent_name: str = "Lucy") -> None:
+    """Read and display monitor.json for live API call visibility."""
+    monitor_path = state_dir / "monitor.json"
+
+    if not monitor_path.exists():
+        print(f"{agent_name} \u2014 no monitor data")
+        return
+
+    try:
+        data = json.loads(monitor_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        print(f"{agent_name} \u2014 no monitor data")
+        return
+
+    state = data.get("state", "unknown")
+    contact = data.get("contact", "")
+    model = data.get("model", "")
+    turn = data.get("turn", 0)
+    turn_started_at = data.get("turn_started_at", 0)
+    updated_at = data.get("updated_at", 0)
+    tools_in_flight = data.get("tools_in_flight", [])
+    turns = data.get("turns", [])
+
+    now = time.time()
+
+    # Stale detection
+    stale_warning = ""
+    age = now - updated_at if updated_at else 0
+    if state != "idle" and age > 60:
+        if age < 120:
+            stale_warning = f"\u26a0 last update {int(age)}s ago \u2014 daemon may be stuck or dead"
+        else:
+            minutes = int(age // 60)
+            stale_warning = f"\u26a0 last update {minutes}m ago \u2014 daemon may be stuck or dead"
+
+    # Header
+    if state == "idle":
+        print(f"{agent_name} \u2014 idle")
+        print("\u2500" * 27)
+    elif state == "thinking":
+        elapsed = now - turn_started_at if turn_started_at else 0
+        print(f"{agent_name} \u2014 thinking (turn {turn}, {elapsed:.1f}s elapsed)")
+        print("\u2500" * 40)
+    elif state == "tools":
+        print(f"{agent_name} \u2014 tools (turn {turn})")
+        print("\u2500" * 27)
+    else:
+        print(f"{agent_name} \u2014 {state}")
+        print("\u2500" * 27)
+
+    if state != "idle" and (contact or model):
+        if contact:
+            print(f"Contact:  {contact}")
+        if model:
+            print(f"Model:    {model}")
+        print()
+
+    # Turn history
+    if turns:
+        for i, t in enumerate(turns, 1):
+            dur = t.get("duration_ms", 0)
+            dur_s = dur / 1000
+            out_tok = t.get("output_tokens", 0)
+            stop = t.get("stop_reason", "")
+            tool_names = t.get("tools", [])
+
+            suffix = ""
+            if stop == "tool_use" and tool_names:
+                suffix = f"tool_use \u2192 {', '.join(tool_names)}"
+            elif stop:
+                suffix = stop
+
+            # Mark last turn as running if tools are in flight
+            if i == len(turns) and state == "tools" and tools_in_flight:
+                suffix += " (running)"
+
+            print(f"  T{i:<3} {dur_s:>5.1f}s {out_tok:>5} tok  {suffix}")
+
+        # Show current thinking turn if waiting for API response
+        if state == "thinking" and turn > len(turns):
+            elapsed = now - turn_started_at if turn_started_at else 0
+            print(f"  T{turn:<3} ...thinking ({elapsed:.1f}s)")
+
+    if stale_warning:
+        print()
+        print(stale_warning)
+
+
+def list_sessions(state_dir: Path) -> None:
+    """List all active sessions with context, cost, and log info."""
+    sessions_dir = state_dir / "sessions"
+    index_path = sessions_dir / "sessions.json"
+
+    if not index_path.exists():
+        print("No active sessions.")
+        return
+
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            index = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        print("No active sessions.")
+        return
+
+    if not index:
+        print("No active sessions.")
+        return
+
+    # Load config for name resolution and max context tokens
+    config = _load_config()
+    contacts = config.get("channel", {}).get("telegram", {}).get("contacts", {})
+    allow_from = config.get("channel", {}).get("telegram", {}).get("allow_from", [])
+    max_context = config.get("models", {}).get("primary", {}).get("max_context_tokens", 200_000)
+
+    cost_db = state_dir / "cost.db"
+
+    # Build session data
+    entries = []
+    for contact_key, entry in index.items():
+        session_id = entry.get("session_id", "")
+        if not session_id:
+            continue
+
+        name = _resolve_contact_name(contact_key, contacts, allow_from)
+
+        # Load state
+        state_path = sessions_dir / f"{session_id}.state.json"
+        context_tokens = 0
+        msg_count = "?"
+        compactions = 0
+        if state_path.exists():
+            try:
+                with open(state_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                messages = state.get("messages", [])
+                msg_count = str(len(messages))
+                compactions = state.get("compaction_count", 0)
+                # Walk messages in reverse for last assistant usage
+                # With cache_control, actual context = input + cache_read + cache_write
+                for msg in reversed(messages):
+                    if msg.get("role") == "assistant":
+                        usage = msg.get("usage", {})
+                        context_tokens = (
+                            usage.get("input_tokens", 0)
+                            + usage.get("cache_read_tokens", 0)
+                            + usage.get("cache_write_tokens", 0)
+                        )
+                        break
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Context percentage
+        if context_tokens > 0:
+            pct = context_tokens * 100 // max_context
+            context_str = f"{context_tokens:>7,} ({pct:>2}%)"
+        else:
+            context_str = "      — (—%)" if msg_count == "?" else "      0 (0%)"
+
+        # Log info
+        file_count, total_bytes, date_range = _session_log_info(sessions_dir, session_id)
+        log_size = _format_size(total_bytes) if total_bytes > 0 else "0K"
+
+        # Per-session cost
+        cost = _session_cost(cost_db, session_id)
+
+        entries.append({
+            "name": name,
+            "session_id": session_id,
+            "context_str": context_str,
+            "msg_count": msg_count,
+            "compactions": compactions,
+            "cost": cost,
+            "log_size": log_size,
+            "date_range": date_range,
+        })
+
+    # Sort by cost descending
+    entries.sort(key=lambda e: e["cost"], reverse=True)
+
+    # Dynamic column width for contact name (min 11 to fit header)
+    name_w = max(11, max((len(e["name"]) for e in entries), default=11)) + 2
+
+    # Print
+    n = len(entries)
+    print(f"\nActive Sessions ({n})\n")
+    print(f"{'Contact':<{name_w}}{'Session ID':<39}{'Context':>15}  {'Msgs':>5} {'Cmp':>4}  {'Cost':>8}  {'Logs':>5}")
+    print("\u2500" * (name_w + 84))
+
+    for e in entries:
+        print(
+            f"{e['name']:<{name_w}}"
+            f"{e['session_id']:<39}"
+            f"{e['context_str']:>15}  "
+            f"{e['msg_count']:>5} "
+            f"{e['compactions']:>4}  "
+            f"${e['cost']:>7.3f}  "
+            f"{e['log_size']:>5}"
+        )
+        # Second line: date range
+        print(f"{'':>{name_w}}{e['date_range']}")
+
+    print()
+
+
+# ─── Main ─────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Send messages to Lucyd daemon")
+    parser.add_argument("-m", "--message", help="User message to inject")
+    parser.add_argument("-s", "--system", help="System event to inject")
+    parser.add_argument("--tier", default="", help="Context tier (full/operational/minimal)")
+    parser.add_argument("--cost", nargs="?", const="today", help="Query cost (today/week/all)")
+    parser.add_argument("--sessions", action="store_true", help="List active sessions")
+    parser.add_argument("--monitor", action="store_true", help="Show live API call monitor state")
+    parser.add_argument("--from", dest="sender", metavar="NAME", help="Sender name for --message (default: 'cli')")
+    parser.add_argument("--reset", nargs="?", const="__all__", metavar="TARGET",
+                        help="Reset session by sender name or UUID; no argument resets all")
+    parser.add_argument("--state-dir", default="~/.lucyd", help="Lucyd state directory")
+    args = parser.parse_args()
+
+    state_dir = Path(args.state_dir).expanduser()
+
+    # Filesystem-only commands (no daemon needed)
+    if args.cost is not None:
+        query_cost(state_dir / "cost.db", args.cost)
+        return
+
+    if args.sessions:
+        list_sessions(state_dir)
+        return
+
+    if args.monitor:
+        config = _load_config()
+        agent_name = config.get("agent", {}).get("name", "Lucy")
+        show_monitor(state_dir, agent_name=agent_name)
+        return
+
+    if not args.message and not args.system and not args.reset:
+        parser.print_help()
+        sys.exit(1)
+
+    fifo_path = state_dir / "control.pipe"
+    if not fifo_path.exists():
+        print(f"Error: FIFO not found at {fifo_path}. Is Lucyd running?", file=sys.stderr)
+        sys.exit(1)
+
+    if args.reset is not None:
+        target = args.reset
+        if target == "__all__":
+            # Reset all sessions
+            msg = {"type": "reset", "all": True}
+            send_to_fifo(fifo_path, msg)
+            print("Reset sent for all sessions.")
+        elif _is_uuid(target):
+            # Reset by session ID
+            sessions_dir = state_dir / "sessions"
+            file_count, total_bytes, _ = _session_log_info(sessions_dir, target)
+            msg = {"type": "reset", "session_id": target}
+            send_to_fifo(fifo_path, msg)
+            size_str = _format_size(total_bytes) if total_bytes > 0 else "0K"
+            print(f"Reset sent for session: {target} ({file_count} log file{'s' if file_count != 1 else ''}, {size_str} archived)")
+        else:
+            # Reset by sender name (existing behavior)
+            msg = {"type": "reset", "sender": target}
+            send_to_fifo(fifo_path, msg)
+            print(f"Reset sent for sender: {target}")
+        return
+
+    if args.message:
+        msg = {"type": "user", "text": args.message, "sender": args.sender or "cli"}
+        if args.tier:
+            msg["tier"] = args.tier
+        send_to_fifo(fifo_path, msg)
+        print("Message sent.")
+    elif args.system:
+        msg = {"type": "system", "text": f"[AUTOMATED SYSTEM MESSAGE] {args.system}", "sender": "system"}
+        msg["tier"] = args.tier or "operational"
+        send_to_fifo(fifo_path, msg)
+        print("System event sent.")
+
+
+if __name__ == "__main__":
+    main()
