@@ -156,6 +156,13 @@ timeout = 60
 # ffmpeg_timeout = 30
 # request_timeout = 60
 
+# ─── Vision ─────────────────────────────────────────────────────
+
+[vision]
+max_image_bytes = 5242880              # 5 MB — Anthropic API limit
+# default_caption = "image"
+# too_large_msg = "image too large to display"
+
 # ─── Behavior ────────────────────────────────────────────────────
 
 [behavior]
@@ -165,8 +172,6 @@ error_message = "I'm having trouble connecting right now. Try again in a moment.
 agent_timeout_seconds = 600
 max_turns_per_message = 50
 max_cost_per_message = 5.0             # USD limit per message (0.0 = disabled)
-max_image_bytes = 5242880              # 5 MB
-
 [behavior.compaction]
 threshold_tokens = 150000
 model = "compaction"

@@ -1180,3 +1180,301 @@ class TestConsolidateOnClose:
             with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
                 # Should not raise
                 await daemon._consolidate_on_close(session)
+
+
+# ─── Error Recovery: Orphaned User Messages ──────────────────────
+
+
+class TestErrorRecoveryOrphanedMessages:
+    """Contract: agentic loop failure removes orphaned user message."""
+
+    @pytest.mark.asyncio
+    async def test_error_removes_orphaned_user_message(self, tmp_path):
+        """Agentic loop error → orphaned user message popped from session."""
+        daemon, provider, session = _make_daemon(tmp_path)
+
+        # Make add_user_message actually append (real behavior)
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        async def fake_loop(**kwargs):
+            raise RuntimeError("API returned 400")
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                )
+
+        # Session must NOT end with an orphaned user message
+        assert not session.messages or session.messages[-1].get("role") != "user"
+        # State must be saved after cleanup
+        session._save_state.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_error_preserves_prior_assistant_message(self, tmp_path):
+        """Error cleanup only removes the trailing user message, not earlier ones."""
+        daemon, provider, session = _make_daemon(tmp_path)
+
+        # Pre-populate with a valid exchange
+        session.messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+        ]
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        async def fake_loop(**kwargs):
+            raise RuntimeError("API error")
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="second", sender="user", source="telegram",
+                )
+
+        # Prior exchange intact, orphaned user message removed
+        assert len(session.messages) == 2
+        assert session.messages[-1]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_error_with_image_blocks_cleans_up(self, tmp_path):
+        """Error with image attachments → image blocks restored AND user message popped."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.vision_max_image_bytes = 10 * 1024 * 1024
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        async def fake_loop(**kwargs):
+            raise RuntimeError("API rejected image")
+
+        # Create a tiny fake image
+        img_path = tmp_path / "test.jpg"
+        img_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+
+        from channels import Attachment
+        att = Attachment(
+            content_type="image/jpeg",
+            filename="test.jpg",
+            local_path=str(img_path),
+            size=104,
+        )
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="look at this", sender="user", source="telegram",
+                    attachments=[att],
+                )
+
+        # Orphaned user message removed despite image blocks
+        assert not session.messages or session.messages[-1].get("role") != "user"
+
+    @pytest.mark.asyncio
+    async def test_second_message_after_error_succeeds(self, tmp_path):
+        """After error recovery, next message processes normally (no consecutive-user crash)."""
+        daemon, provider, session = _make_daemon(tmp_path)
+
+        call_count = [0]
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="recovered!")
+
+        async def fake_loop(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("First call fails")
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                # First message — error
+                await daemon._process_message(
+                    text="msg1", sender="user", source="telegram",
+                )
+                # Second message — should succeed
+                await daemon._process_message(
+                    text="msg2", sender="user", source="telegram",
+                )
+
+        # Second call completed (loop was called twice)
+        assert call_count[0] == 2
+        # channel.send called twice: error message for msg1, reply for msg2
+        assert daemon.channel.send.call_count == 2
+        assert daemon.channel.send.call_args_list[1][0][1] == "recovered!"
+
+
+# ─── Defense: Consecutive User Message Merge ─────────────────────
+
+
+class TestConsecutiveUserMessageMerge:
+    """Contract: consecutive user messages are merged before agentic loop."""
+
+    @pytest.mark.asyncio
+    async def test_consecutive_user_messages_merged(self, tmp_path):
+        """Two consecutive user messages → merged into one before API call."""
+        daemon, provider, session = _make_daemon(tmp_path)
+
+        # Pre-populate with orphaned user message from prior error
+        session.messages = [{"role": "user", "content": "orphaned message"}]
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+        captured_messages = []
+
+        async def fake_loop(**kwargs):
+            # Snapshot messages at time of API call
+            captured_messages.extend([m.copy() for m in kwargs["messages"]])
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="new message", sender="user", source="telegram",
+                )
+
+        # Only one user message should reach the agentic loop
+        user_msgs = [m for m in captured_messages if m.get("role") == "user"]
+        assert len(user_msgs) == 1
+        # Both texts present in merged content
+        assert "orphaned message" in user_msgs[0]["content"]
+        assert "new message" in user_msgs[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_no_merge_when_alternating_roles(self, tmp_path):
+        """Normal alternating user/assistant → no merge."""
+        daemon, provider, session = _make_daemon(tmp_path)
+
+        session.messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+        ]
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+        captured_messages = []
+
+        async def fake_loop(**kwargs):
+            captured_messages.extend([m.copy() for m in kwargs["messages"]])
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="second", sender="user", source="telegram",
+                )
+
+        # Three messages: user, assistant, user — no merge
+        user_msgs = [m for m in captured_messages if m.get("role") == "user"]
+        assert len(user_msgs) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_merge_on_first_message(self, tmp_path):
+        """First message in empty session → no merge attempt."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        session.messages = []
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                # Should not crash on empty session
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                )
+
+    @pytest.mark.asyncio
+    async def test_merge_handles_content_block_format(self, tmp_path):
+        """Merge extracts text from content block format (list of dicts)."""
+        daemon, provider, session = _make_daemon(tmp_path)
+
+        # Orphaned message with content block format (from prior image processing)
+        session.messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "image caption"},
+                {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
+            ],
+        }]
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+        captured_messages = []
+
+        async def fake_loop(**kwargs):
+            captured_messages.extend([m.copy() for m in kwargs["messages"]])
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="follow up", sender="user", source="telegram",
+                )
+
+        # Should merge — one user message with text from both
+        user_msgs = [m for m in captured_messages if m.get("role") == "user"]
+        assert len(user_msgs) == 1
+        merged = user_msgs[0]["content"]
+        assert "image caption" in merged
+        assert "follow up" in merged
+
+    @pytest.mark.asyncio
+    async def test_merge_clears_deep_corruption(self, tmp_path):
+        """Multiple stacked orphaned user messages all merged in one pass."""
+        daemon, provider, session = _make_daemon(tmp_path)
+
+        # Simulate deep corruption: 4 orphaned user messages from repeated errors
+        session.messages = [
+            {"role": "user", "content": "msg1"},
+            {"role": "user", "content": "msg2"},
+            {"role": "user", "content": "msg3"},
+            {"role": "user", "content": "msg4"},
+        ]
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+        captured_messages = []
+
+        async def fake_loop(**kwargs):
+            captured_messages.extend([m.copy() for m in kwargs["messages"]])
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="recovery msg", sender="user", source="telegram",
+                )
+
+        # All 5 user messages merged into one in a single pass
+        user_msgs = [m for m in captured_messages if m.get("role") == "user"]
+        assert len(user_msgs) == 1
+        merged = user_msgs[0]["content"]
+        for fragment in ("msg1", "msg2", "msg3", "msg4", "recovery msg"):
+            assert fragment in merged

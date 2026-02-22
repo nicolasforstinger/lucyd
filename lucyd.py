@@ -29,7 +29,7 @@ from channels import InboundMessage, create_channel
 from config import Config, ConfigError, load_config
 from context import ContextBuilder
 from providers import create_provider
-from session import SessionManager
+from session import SessionManager, _text_from_content
 from skills import SkillLoader
 from tools import ToolRegistry
 
@@ -589,6 +589,16 @@ class LucydDaemon:
 
         # Transiently inject image content blocks for the API call
         user_msg_idx = len(session.messages) - 1
+
+        # Merge consecutive user messages (recovery from prior errors, JSONL rebuild)
+        while len(session.messages) >= 2 and session.messages[-2].get("role") == "user":
+            prev_text = _text_from_content(session.messages[-2].get("content", ""))
+            last_text = _text_from_content(session.messages[-1].get("content", ""))
+            session.messages[-2]["content"] = prev_text + "\n" + last_text
+            session.messages.pop()
+            user_msg_idx = len(session.messages) - 1
+            log.warning("Merged consecutive user messages in session %s", session.id)
+
         if image_blocks:
             api_content = image_blocks + [{"type": "text", "text": text}]
             session.messages[user_msg_idx]["content"] = api_content
@@ -724,6 +734,10 @@ class LucydDaemon:
             # Restore text-only content before returning
             if image_blocks:
                 session.messages[user_msg_idx]["content"] = text
+            # Remove orphaned user message to prevent consecutive-user corruption
+            if session.messages and session.messages[-1].get("role") == "user":
+                session.messages.pop()
+                session._save_state()
             _resolve({"error": str(e), "session_id": session.id})
             if source not in self._NO_CHANNEL_DELIVERY:
                 try:
