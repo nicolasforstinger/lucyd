@@ -208,3 +208,41 @@ class TestExecTimeout:
         monkeypatch.setattr(shell_mod, "_MAX_TIMEOUT", 2)
         result = await tool_exec("sleep 30", timeout=3600)
         assert "timed out" in result.lower()
+
+
+class TestExecOutputFormatting:
+    """Output assembly: stdout, stderr, exit code, empty output."""
+
+    @pytest.mark.asyncio
+    async def test_stdout_only(self):
+        result = await tool_exec("echo hello")
+        assert "hello" in result
+        assert "STDERR" not in result
+
+    @pytest.mark.asyncio
+    async def test_stderr_only(self):
+        result = await tool_exec("echo error >&2")
+        assert "STDERR:" in result
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_combined_stdout_stderr(self):
+        result = await tool_exec("echo out && echo err >&2")
+        assert "out" in result
+        assert "STDERR:" in result
+        assert "err" in result
+
+    @pytest.mark.asyncio
+    async def test_non_zero_exit_code_shown(self):
+        result = await tool_exec("exit 42")
+        assert "[exit code: 42]" in result
+
+    @pytest.mark.asyncio
+    async def test_zero_exit_code_not_shown(self):
+        result = await tool_exec("echo ok")
+        assert "exit code" not in result
+
+    @pytest.mark.asyncio
+    async def test_empty_output_returns_no_output(self):
+        result = await tool_exec("true")
+        assert result == "(no output)"

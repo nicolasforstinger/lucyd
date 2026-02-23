@@ -722,6 +722,45 @@ class TestIsTransientError:
             status_code = 400
         assert _is_transient_error(APIStatusError("bad request")) is False
 
+    def test_not_found_error_not_transient(self):
+        class NotFoundError(Exception): pass
+        assert _is_transient_error(NotFoundError("404")) is False
+
+    def test_unprocessable_entity_not_transient(self):
+        class UnprocessableEntityError(Exception): pass
+        assert _is_transient_error(UnprocessableEntityError("422")) is False
+
+    def test_api_connection_error_is_transient(self):
+        class APIConnectionError(Exception): pass
+        assert _is_transient_error(APIConnectionError("reset")) is True
+
+    def test_api_timeout_error_is_transient(self):
+        class APITimeoutError(Exception): pass
+        assert _is_transient_error(APITimeoutError("timeout")) is True
+
+    def test_internal_server_error_is_transient(self):
+        class InternalServerError(Exception): pass
+        assert _is_transient_error(InternalServerError("500")) is True
+
+    def test_overloaded_error_is_transient(self):
+        class OverloadedError(Exception): pass
+        assert _is_transient_error(OverloadedError("overloaded")) is True
+
+    def test_api_status_error_with_429_is_transient(self):
+        class APIStatusError(Exception):
+            status_code = 429
+        assert _is_transient_error(APIStatusError("rate limited")) is True
+
+    def test_api_status_error_with_503_is_transient(self):
+        class APIStatusError(Exception):
+            status_code = 503
+        assert _is_transient_error(APIStatusError("service unavailable")) is True
+
+    def test_api_status_error_with_401_not_transient(self):
+        class APIStatusError(Exception):
+            status_code = 401
+        assert _is_transient_error(APIStatusError("unauthorized")) is False
+
 
 class TestRetryLogic:
     """Provider retry in agentic loop."""

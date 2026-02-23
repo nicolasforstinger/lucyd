@@ -625,3 +625,81 @@ class TestConsolidateSession:
 
         assert result["facts_added"] == 0
         assert result["episode_id"] is None
+
+
+class TestExtractThenLookupRoundTrip:
+    """End-to-end: extract writes to real SQLite, recall reads them back."""
+
+    @pytest.mark.asyncio
+    async def test_facts_round_trip(self, mem_conn):
+        """extract_facts → lookup_facts returns matching facts."""
+        from memory import lookup_facts
+
+        response = json.dumps({
+            "facts": [
+                {"entity": "nicolas", "attribute": "lives_in", "value": "Austria", "confidence": 0.9},
+                {"entity": "nicolas", "attribute": "cat_name", "value": "Miso", "confidence": 0.85},
+            ],
+            "aliases": [],
+        })
+        provider = _make_provider(response)
+        count = await extract_facts("test conversation", "sess-rt", provider, mem_conn)
+        assert count == 2
+
+        facts = lookup_facts({"nicolas"}, mem_conn)
+        assert len(facts) == 2
+        attrs = {f["attribute"] for f in facts}
+        assert attrs == {"lives_in", "cat_name"}
+
+    @pytest.mark.asyncio
+    async def test_episodes_round_trip(self, mem_conn):
+        """extract_episode → search_episodes returns the episode."""
+        from memory import search_episodes
+
+        response = json.dumps({
+            "episode": {
+                "topics": ["memory architecture", "sqlite"],
+                "decisions": ["use WAL mode"],
+                "commitments": [],
+                "summary": "Discussed memory system architecture.",
+                "emotional_tone": "productive",
+            }
+        })
+        provider = _make_provider(response)
+        episode_id = await extract_episode(
+            "test text", "sess-rt", provider,
+            [{"text": "I am an agent."}], mem_conn,
+        )
+        assert episode_id is not None
+
+        episodes = search_episodes(["memory"], mem_conn)
+        assert len(episodes) >= 1
+        summaries = [e["summary"] for e in episodes]
+        assert any("memory" in s.lower() for s in summaries)
+
+    @pytest.mark.asyncio
+    async def test_commitments_round_trip(self, mem_conn):
+        """extract_episode with commitments → get_open_commitments returns them."""
+        from memory import get_open_commitments
+
+        response = json.dumps({
+            "episode": {
+                "topics": ["planning"],
+                "decisions": [],
+                "commitments": [
+                    {"who": "nicolas", "what": "review the PR", "deadline": "2026-03-01"},
+                ],
+                "summary": "Planning session.",
+                "emotional_tone": "focused",
+            }
+        })
+        provider = _make_provider(response)
+        episode_id = await extract_episode(
+            "text", "sess-rt", provider,
+            [{"text": "persona"}], mem_conn,
+        )
+        assert episode_id is not None
+
+        commits = get_open_commitments(mem_conn)
+        assert len(commits) >= 1
+        assert any(c["what"] == "review the PR" for c in commits)
