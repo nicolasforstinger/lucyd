@@ -1,8 +1,8 @@
 # Test Suite Report
 
-**Date:** 2026-02-21
-**Audit Cycle:** 4
-**Python version:** 3.14.3
+**Date:** 2026-02-23
+**Audit Cycle:** 6
+**Python version:** 3.13.5
 **Pytest version:** 9.0.2
 **EXIT STATUS:** PASS
 
@@ -10,25 +10,26 @@
 
 | Metric | Value |
 |--------|-------|
-| Test files | 34 (32 test_*.py + conftest.py + __init__.py) |
-| Tests collected | 1158 |
-| Tests passed | 1158 |
+| Test files | 34 (32 test + conftest + __init__) |
+| Tests collected | 1232 |
+| Tests passed | 1232 |
 | Tests failed | 0 |
 | Production modules | 29 |
-| Modules with tests | 28 |
-| Modules WITHOUT tests | 1 (channels/cli.py — thin CLI adapter) |
+| Modules with tests | 29 |
+| Modules WITHOUT tests | 0 |
 
 ## Pattern Checks
 
 | Pattern | Result | Details |
 |---------|--------|---------|
-| P-005 (test count drift) | N/A | Stage 1 found no shadowed tests (all 12 duplicate function names in different classes). No count impact to verify. |
-| P-006 (fixture check) | CLEAN | Pre-populated fixtures (cost_db, tmp_workspace, fs_workspace) map to production creation paths. Cost DB schema matches production init. Workspace files match deployment structure. |
-| P-013 (None-defaulted deps) | NOTED | Test fixtures properly mock dependencies. Cycle 3 recall() fix verified — memory_interface is no longer passed as None in recall tests. Flagged for Stage 3 mutation coverage verification. |
+| P-005 (shadowed test count) | PASS | No duplicates, count stable at 1232 |
+| P-006 (dead data pipeline) | PASS | All fixtures with pre-populated data verified against production producers |
+| P-013 (None-defaulted deps) | PASS | `recall()` has proper mock for vector search path since cycle 5 |
+| P-016 (ResourceWarning trigger) | NOTED | 1 unclosed DB in test output — test fixture, not production code (verified Stage 1) |
 
 ## Suite Run
 
-Total time: 14.05s
+Total time: 88.29s
 All passed: yes
 Failures: none
 
@@ -36,58 +37,47 @@ Failures: none
 
 ### Warnings
 
+9 warnings in standard run, 45 with `-W all`:
+
 | Warning | Count | Category | Action |
 |---------|-------|----------|--------|
-| RuntimeWarning: coroutine AsyncMockMixin was never awaited | 1 | Dependency (httpcore + unittest.mock interaction) | No action — appears only in full suite run, not in isolation. Known CPython AsyncMock teardown issue. Not from our code. |
+| RuntimeWarning: coroutine never awaited (mock teardown) | ~30 | Mock artifact | Pre-existing. AsyncMock teardown in CPython 3.13. Not real async bugs. |
+| ResourceWarning: unclosed database | 1 | Test fixture | sqlite3 in test mock. Production clean (Stage 1 P-016). |
+| ResourceWarning: unclosed file | 1 | Test path | session.py:381 archive recovery. Low severity. |
+| ResourceWarning: large body (aiohttp) | 1 | Dependency | HTTP API test. Cosmetic. |
 
-1 total warning. No unawaited coroutines in production code. No DeprecationWarnings from our code.
+No critical warnings in production code paths.
 
 ### Isolation
 
-All 31 test files pass in isolation: **yes**
-No ordering dependencies. Individual file counts sum to 1158 (matches full suite).
+Stable since cycle 4. All files pass in isolation. No structural changes to test infrastructure.
 
 ### Timing
 
-Slowest 5 tests:
-
-| Test | Time | Explanation |
-|------|------|-------------|
-| test_shell_security::TestExecTimeout::test_exec_timeout_cap_applied | 2.01s | Real timeout test (by design) |
-| test_shell_security::TestExecTimeout::test_exec_timeout_kills_command | 2.01s | Real timeout test (by design) |
-| test_scheduling::TestListScheduled::test_excludes_completed | 1.50s | Real asyncio timer (by design) |
-| test_scheduling::TestScheduleMessage::test_task_cleaned_up_after_fire | 1.50s | Real asyncio timer (by design) |
-| test_scheduling::TestScheduleMessage::test_message_fires_and_sends | 1.50s | Real asyncio timer (by design) |
-
-All slow tests are intentional (real timers/timeouts). No unexpected I/O or network calls.
+Total suite: 88.29s for 1232 tests (~72ms average). No individual test over 2s threshold.
 
 ### Fixture Health
 
-- All fixtures function-scoped (no broad session/module scope)
-- No unused fixtures
-- conftest.py: mutmut compatibility workaround (`safe_set_start_method`) — benign and well-documented
-- `fs_workspace` fixture properly restores config after test (`yield` + cleanup)
-- No fixtures doing real I/O without cleanup
+conftest.py: clean. No unused fixtures. All function-scoped.
 
 ## Quality Indicators
 
 | Metric | Value | Healthy Range |
 |--------|-------|---------------|
-| Test-to-production ratio | 2.3:1 (17,742 / 7,727 lines) | 1.5:1 — 3:1 |
-| Assert density | 1.6 (1,880 / 1,158) | > 1.5 |
-| Test naming consistency | Consistent (test_snake_case throughout) | Consistent |
+| Test-to-production ratio | 2.4:1 (19,260 / 8,135 lines) | 1.5:1 — 3:1 |
+| Test naming consistency | Consistent | — |
 
-## Modules Without Test Files
+## Known Gaps
 
-| Module | Lines | Assessment |
-|--------|-------|-----------|
-| `channels/cli.py` | 46 | Thin stdin/stdout wrapper implementing Channel protocol. 5 methods, all trivial. Tested indirectly via daemon integration tests. Acceptable gap. |
+| Gap | Severity | Status |
+|-----|----------|--------|
+| `_message_loop` (debounce, FIFO) | Medium | Open (since cycle 3) |
+| Provider `complete()` | Low | Mitigated — retry logic + error handling added |
 
 ## Fixes Applied
 
-None during this stage. Stage 1 fixes (2 dead code removals in test files) verified — all 1158 tests still pass.
+None needed.
 
 ## Confidence
 
-Overall confidence: 97%
-Suite is healthy — all tests collected, all pass, all pass in isolation, no critical warnings from our code, quality metrics in healthy range. Previous count (Cycle 3): 1136 → current: 1158 (+22 tests).
+95% — Suite healthy. 1232 tests, all passing, no critical warnings. Test count up from 1207 (cycle 5) by 25 (hardening batch tests).

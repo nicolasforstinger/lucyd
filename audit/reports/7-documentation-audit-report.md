@@ -1,20 +1,18 @@
 # Documentation Audit Report
 
-**Date:** 2026-02-21
-**Audit Cycle:** 4
+**Date:** 2026-02-23
+**Audit Cycle:** 6
 **EXIT STATUS:** PASS
 
 ## Pattern Checks
 
 | Pattern | Result | Details |
 |---------|--------|---------|
-| P-007 (test count drift) | PASS | README says 1158, actual `pytest --collect-only` reports 1158. No drift from Cycle 3 update. |
-| P-008 (new module without docs) | PASS | All 29 source modules documented in architecture.md module map. Tool count 19 in source matches README, TOOLS.md, configuration.md, lucyd.toml.example. |
-| P-011 (config-to-doc label consistency) | PASS | Model IDs consistent across providers.d/ and all docs: `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `text-embedding-3-small`. |
+| P-007 (test count drift) | FIXED | CLAUDE.md said ~1187, README said 1207, actual is 1232. Fixed both. |
+| P-008 (new module without docs) | CLEAN | All source modules documented. Tool count 19 matches across all docs. No new modules since Cycle 5. |
+| P-011 (config-to-doc label consistency) | CLEAN | Model IDs consistent across providers.d/ and all docs: `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `text-embedding-3-small`. |
 
 ## Source Inventory
-
-Built from source code, not from existing docs.
 
 | Category | Count | Verified Against |
 |----------|-------|------------------|
@@ -23,106 +21,63 @@ Built from source code, not from existing docs.
 | Providers | 2 (anthropic-compat, openai-compat) | `providers/*.py` |
 | Provider configs | 3 examples | `providers.d/*.toml.example` |
 | CLI utilities | 3 (lucyd-send, lucyd-index, lucyd-consolidate) | `bin/` |
-| Config sections | 14 top-level + sub-sections | `config.py` property definitions |
+| Config sections | 14 top-level + sub-sections | `config.py` |
 | Environment variables | 6 | `.env.example` + `config.py` |
-| HTTP endpoints | 5 | `channels/http_api.py` route registrations |
-| Test functions | 1158 | `python -m pytest tests/ --collect-only -q` |
+| HTTP endpoints | 5 | `channels/http_api.py` |
+| Source modules | 29 (8,135 lines) | All .py files excl tests/venv/mutants |
+| Test functions | 1232 | `pytest --collect-only -q` |
 
 ## Files Audited
 
-| File | Lines | Issues Found |
-|------|-------|--------------|
-| README.md | 149 | 0 |
-| docs/architecture.md | 342 | 2 (HTTP endpoint table missing 2 endpoints, http_api.py description incomplete) |
-| docs/configuration.md | 420 | 3 (missing `callback_url`/`callback_token_env`, missing `subagent_deny`, `[stt]` and `[memory.*]` misplaced under `## [tools]`) |
-| docs/operations.md | 385 | 3 (/notify curl example wrong fields, /notify field table wrong, systemd copy command wrong filename) |
-| .env.example | 10 | 0 |
-| lucyd.toml.example | 180 | 2 (missing callback options, missing subagent_deny) |
-| workspace.example/TOOLS.md | 31 | 0 |
-| lucyd.service.example | — | 0 |
-| providers.d/*.toml.example | — | 0 |
-| LICENSE | — | 0 |
+| File | Issues Found |
+|------|--------------|
+| CLAUDE.md | 5 (test count ×2, module count, line count, body size, ratio) |
+| README.md | 1 (test count) |
+| docs/architecture.md | 0 |
+| docs/configuration.md | 0 |
+| docs/operations.md | 0 |
+| .env.example | 0 |
+| lucyd.toml.example | 0 |
+| workspace.example/TOOLS.md | 0 |
+| providers.d/*.toml.example | 0 |
 
 ## Discrepancies Found & Fixed
 
-| # | File | Line(s) | Issue | Fix Applied |
-|---|------|---------|-------|-------------|
-| 1 | operations.md | 167 | `/notify` curl example used `{"event": ..., "data": ...}` — source requires `{"message": ..., "source": ..., "ref": ...}` | Replaced curl example with correct fields |
-| 2 | operations.md | 179-185 | `/notify` field table listed nonexistent `event` (required) and `priority` fields | Replaced with actual fields: `message`, `source`, `ref`, `data`, `sender` |
-| 3 | operations.md | 153-168 | Missing `/sessions` and `/cost` endpoint examples | Added curl examples for both endpoints |
-| 4 | operations.md | — | Webhook callback feature entirely undocumented | Added "Webhook Callback" section with payload format, config, and behavior |
-| 5 | operations.md | 29 | `sudo cp ~/lucyd/lucyd.service` — file doesn't exist (should be `lucyd.service.example`) | Fixed to `sudo cp ~/lucyd/lucyd.service.example /etc/systemd/system/lucyd.service` |
-| 6 | architecture.md | 147-151 | HTTP API table listed 3 endpoints — source has 5 (missing `/sessions`, `/cost`) | Added 2 rows: `/api/v1/sessions` (GET), `/api/v1/cost` (GET) |
-| 7 | architecture.md | 21 | `channels/http_api.py` description: "chat, notify, status" | Updated to "chat, notify, status, sessions, cost" |
-| 8 | configuration.md | 87-98 | Missing `[http] callback_url` and `callback_token_env` options | Added both with defaults and description |
-| 9 | configuration.md | 207-230 | Missing `[tools] subagent_deny` config option | Added commented example + description of default deny-list |
-| 10 | configuration.md | 246-362 | `### [stt]` nested under `## [tools]`; `### [memory.*]` subsections also misplaced under `## [tools]` | Restructured: moved `[memory.*]` under `## [memory]`, made `[stt]` a top-level `##` section |
-| 11 | lucyd.toml.example | 54-57 | Missing `callback_url` and `callback_token_env` examples | Added commented-out callback options |
-| 12 | lucyd.toml.example | 108-121 | Missing `subagent_deny` example | Added commented-out option with default list |
-
-**Root cause analysis:**
-- Findings 1-4: The `/notify` endpoint was redesigned at some point (from `event`/`priority` to `message`/`source`/`ref`/`data`) and the docs were never updated. The webhook callback was added without updating public docs (only CLAUDE.md had it).
-- Finding 5: Template filename omitted in copy command.
-- Findings 6-7: `/sessions` and `/cost` endpoints were added after the original HTTP docs were written.
-- Findings 8-9: Config options `callback_url`, `callback_token_env`, and `subagent_deny` were added to `config.py` without corresponding documentation.
-- Finding 10: Original configuration.md was written with flat subsection ordering; as sections grew, `[stt]` and `[memory.*]` ended up visually nested under the wrong parent.
+| # | File | Issue | Fix Applied |
+|---|------|-------|-------------|
+| 1 | CLAUDE.md line 239 | `~1187 tests` | Updated to `~1232 tests` |
+| 2 | CLAUDE.md line 295 | `~1187, all passing` | Updated to `~1232, all passing` |
+| 3 | CLAUDE.md line 293 | `30 (~7,500 lines)` source modules | Updated to `29 (~8,100 lines)` |
+| 4 | CLAUDE.md line 168 | `Body size capped at 1 MiB` | Updated to `10 MiB` (matches code default) |
+| 5 | CLAUDE.md line 296 | `~2.2:1` test-to-source ratio | Updated to `~2.4:1` |
+| 6 | README.md line 110 | `1207 tests` | Updated to `1232 tests` |
 
 ## Cross-Reference Check
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tool counts consistent | PASS | 19 in README, TOOLS.md, configuration.md, lucyd.toml.example |
-| Tool names consistent | PASS | All 19 names match across TOOLS.md, configuration.md, lucyd.toml.example |
-| Env vars consistent | PASS | 6 vars in .env.example = 6 in configuration.md |
-| Config sections consistent | PASS | lucyd.toml.example sections match configuration.md (after restructuring) |
-| HTTP endpoints consistent | PASS | 5 endpoints in architecture.md = 5 in operations.md = 5 in source |
-| Feature list consistent | PASS | All README features exist in source |
-| File references valid | PASS | All file/directory references in docs exist in repo |
-| Model names consistent | PASS | All model IDs match across providers.d/ and docs |
-| /notify field tables | PASS | operations.md matches source (http_api.py:200-209) after fix |
-| Webhook callback documented | PASS | operations.md + configuration.md + lucyd.toml.example all consistent |
+| Tool counts consistent | PASS | 19 in CLAUDE.md, README, TOOLS.md, configuration.md |
+| Tool names consistent | PASS | All 19 names match across docs |
+| Env vars consistent | PASS | .env.example = configuration.md |
+| Config sections consistent | PASS | lucyd.toml.example = configuration.md |
+| HTTP endpoints consistent | PASS | 5 endpoints across all docs |
+| Model names consistent | PASS | P-011 clean |
+| File references valid | PASS | All paths in docs exist |
+| Test counts consistent | PASS (after fix) | 1232 in CLAUDE.md, README, audit reports |
 
-## Fixes Applied
+## Non-Doc Finding from Cycle 5
 
-**operations.md** (5 edits):
-- /notify curl example: replaced `event`/`data` with `message`/`source`/`ref`
-- /notify field table: replaced wrong fields with actual schema
-- Added /sessions and /cost endpoint descriptions
-- Added "Webhook Callback" section
-- Fixed systemd copy command filename
-
-**architecture.md** (2 edits):
-- HTTP API table: added /sessions and /cost rows
-- http_api.py description: added "sessions, cost"
-
-**configuration.md** (3 edits):
-- Added `callback_url` and `callback_token_env` to `[http]` section
-- Added `subagent_deny` to `[tools]` section
-- Restructured: moved `[memory.*]` under `## [memory]`, elevated `[stt]` to `##` level
-
-**lucyd.toml.example** (2 edits):
-- Added commented callback options to `[http]`
-- Added commented `subagent_deny` to `[tools]`
+Finding #1 (missing table creation) from Cycle 5's Stage 7 was **resolved by the hardening batch** — `ensure_schema()` in `memory_schema.py` now creates all 10 tables including unstructured ones. Confirmed in Stage 5 dependency chain audit.
 
 ## Missing Documentation
 
-| Feature | Documented? | Notes |
-|---------|-------------|-------|
-| Plugin system (`plugins.d/`) | CLAUDE.md only | Code exists (`lucyd.py:_init_plugins`), documented in CLAUDE.md. Not in public docs (architecture.md, configuration.md, operations.md). The `plugins.d/` directory does not exist in the repo. Low priority — feature is functional but opt-in for deployers. |
-
-## Verification
-
-All 1158 tests pass after documentation changes (14.01s). No source code was modified in this stage — only `.md` and `.toml.example` files.
+| Feature | Documented? | Status |
+|---------|-------------|--------|
+| Plugin system (`plugins.d/`) | CLAUDE.md only | Carried from Cycle 4. Not in public docs. Low priority (empty directory). |
+| `api_retries` / `api_retry_base_delay` config | Not in configuration.md | New from hardening batch. Low priority. |
 
 ## Confidence
 
 Overall confidence: 96%
 
-- Tool counts: each tool traced to `TOOLS` list in source (19/19)
-- Config keys: verified against `config.py` property definitions
-- HTTP endpoints: verified against `http_api.py` route registrations (5/5)
-- /notify schema: verified line-by-line against `_handle_notify()` (http_api.py:185-243)
-- Webhook callback: verified against `_fire_webhook()` (lucyd.py:963-1000) and config.py:207-215
-- Cross-reference: all 10 consistency checks pass after fixes
-- Structure reorganization: verified section headings via grep
-- Minor uncertainty: plugin system docs gap noted but not fixed (Low severity, CLAUDE.md covers it)
+All factual errors fixed. Cross-references consistent. Test counts verified via pytest. Module counts verified via source enumeration. HTTP body size confirmed against code default.

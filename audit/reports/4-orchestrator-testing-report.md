@@ -1,134 +1,101 @@
 # Orchestrator Testing Report
 
-**Date:** 2026-02-21
-**Audit Cycle:** 4
-**Target:** lucyd.py (1408 lines)
+**Date:** 2026-02-23
+**Audit Cycle:** 6
+**Target:** lucyd.py (1,571 lines)
 **EXIT STATUS:** PASS
 
 ## Pattern Checks
 
-No patterns indexed to Stage 4 in `audit/PATTERN.md`.
+| Pattern | Result | Details |
+|---------|--------|---------|
+| P-017 (crash-unsafe state) | 1 LOW | `pending_system_warning = ""` at line 711 not persisted until `_save_state()` at line 899. Full agentic loop runs between. Crash would re-inject warning on restart. Benign — worst case is a duplicated context warning, not data loss. |
+
+### P-017 Detail
+
+| Site | Lines | Mutation | Operations Before Persist | Risk |
+|------|-------|----------|---------------------------|------|
+| Warning consumption | 711 → 899 | `pending_system_warning = ""` | Full agentic loop (async, minutes) | LOW — duplicated warning on crash, no data loss |
+| Error path cleanup | 869–871 | `messages.pop()` | None | Safe |
+| Success path save | 896–899 | image content restore | None | Safe |
+| Warning set | 954–961 | `pending_system_warning`, `warned_about_compaction` | None | Safe |
+
+The compaction state persistence (original P-017 finding from session.py) was fixed in the hardening batch — `_save_state()` now called immediately after state mutation. The lucyd.py warning consumption gap is new and lower severity.
 
 ## Phase 1: Architecture Map
 
-Decision points found: 11
-Already extracted: 4 (`_should_warn_context`, `_should_deliver`, `_inject_warning`, `_is_silent`)
-Still inline: 7 (all wiring — vision routing, attachment processing, recall injection, typing, consolidation, compaction)
-Components mocked: provider, channel, session_mgr, context_builder, skill_loader, tool_registry, config, agentic loop, tools.status
+Extracted decision functions: 6 (unchanged from Cycle 5)
+- `_should_warn_context` (line 126) — context length warning
+- `_should_deliver` (line 146) — delivery routing
+- `_inject_warning` (line 151) — system warning prepend
+- `_is_silent` (line 161) — silent token matching
+- `_fit_image` (line 189) — image size/quality reduction
+- `_extract_document_text` (line 237) — document text extraction
 
-### `_process_message` Flow (lines 490-855, 365 lines)
+Inline decisions in `_process_message` (lines 603–1000): 32
+Components mocked: provider, channel, session_mgr, tool_registry, config, cost_db, _get_memory_conn
 
-1. [502] Define `_resolve` inner function for HTTP future
-2. [508] Route to model via `config.route_model(source)`
-3. [511-517] Vision model routing — `has_images` → vision_model override
-4. [520-523] No provider → early return with error + resolve future
-5. [527-570] Attachment processing — image blocks, STT transcription, generic attachments
-6. [573] Get or create session
-7. [580-582] Inject pending warning → `_inject_warning()` (extracted)
-8. [585-586] Inject timestamp
-9. [588] Add user message to session
-10. [592-594] Transiently inject image blocks for API call
-11. [596-634] Build system prompt with recall, skills, tool descriptions
-12. [638-642] Typing indicator (conditional on source + config)
-13. [644-741] Run agentic loop with monitor callbacks
-14. [722-738] Error handling — restore images, resolve future, send error
-15. [742-754] Persist new messages + restore text-only content + save state
-16. [759-776] Silent token check → `_is_silent()` (extracted) → early return
-17. [779-783] Resolve HTTP future with response
-18. [786-790] Delivery decision → `_should_deliver()` (extracted)
-19. [798-818] Warning threshold → `_should_warn_context()` (extracted)
-20. [821-842] Pre-compaction consolidation (config-gated)
-21. [845-854] Hard compaction
+### Changes Since Cycle 5 (Hardening Batch)
 
-### Components Mocked
-
-| Component | Access Pattern | Mock Type |
-|-----------|---------------|-----------|
-| `self.config` | Attribute access (route_model, model_config, typing_indicators, ...) | MagicMock |
-| `self.providers` | Dict lookup | dict with MagicMock values |
-| `self.session_mgr` | get_or_create, build_recall, compact_session | MagicMock |
-| `self.context_builder` | build() | MagicMock |
-| `self.skill_loader` | build_index(), get_bodies() | MagicMock |
-| `self.tool_registry` | get_brief_descriptions(), get_schemas() | MagicMock |
-| `self.channel` | send(), send_typing() | AsyncMock |
-| `lucyd.run_agentic_loop` | async coroutine | patch |
-| `tools.status.set_current_session` | module-level function | patch |
+| Change | Location | Test Coverage |
+|--------|----------|---------------|
+| `_memory_conn` close in `finally` block | `run()` | `_get_memory_conn` mocked in 7 orchestrator tests |
+| `channel.disconnect()` call in `finally` block | `run()` | 4 tests in test_telegram_channel.py (close, idempotent, clean dir, closed client) |
+| `_last_inbound_ts` → `OrderedDict` with eviction | Lines 295, 1322-1325 | 3 basic tests in test_daemon_integration.py. **Gap: no eviction test** |
+| Config params `api_retries`, `api_retry_base_delay` | Passed to agentic loop | Tested in test_agentic.py (retry logic) |
 
 ## Phase 2: Extractions
 
-No new extractions needed. All remaining inline code is:
-- **Pure wiring** (call structured recall, call consolidation) — no branching logic worth extracting
-- **Already tested** through existing contract tests (attachment processing, STT dispatch)
-- **Too coupled to async/IO** to be pure functions
+| Function | Purpose | Tests | Status |
+|----------|---------|-------|--------|
+| `_should_warn_context` | Context length warning threshold | TestShouldWarnContext | PASS |
+| `_should_deliver` | Delivery routing by source | TestShouldDeliver | PASS |
+| `_inject_warning` | System warning injection | TestInjectWarning | PASS |
+| `_is_silent` | Silent token suppression | TestIsSilentExtended | PASS |
+| `_fit_image` | Image resizing for API limits | TestImageFitting | PASS |
+| `_extract_document_text` | PDF/text extraction | TestExtractDocumentText | PASS |
 
-### Extracted Function Mutation Kill Rates (Fresh Run)
-
-| Function | Purpose | Total Mutants | Killed | Survived | Kill Rate |
-|----------|---------|---------------|--------|----------|-----------|
-| `_should_warn_context` | Context length warning | 9 | 9 | 0 | **100%** |
-| `_should_deliver` | Delivery suppression | 3 | 3 | 0 | **100%** |
-| `_inject_warning` | Warning text prepend | 2 | 2 | 0 | **100%** |
-| `_is_silent` | Silent token detection | 18 | 17 | 1 (equivalent) | **94.4%** |
-| **Total** | | **32** | **31** | **1** | **96.9%** |
-
-**`_is_silent` survivor (equivalent):** mutmut_1 changes `if not text or not tokens:` → `if not text and not tokens:`. When `text` is empty, no regex match succeeds (returns False via loop). When `tokens` is empty, loop has nothing to iterate (returns False). Behavior identical in all cases. Same result as Cycle 3.
+No new extractions needed. No new decision points added.
 
 ## Phase 3: Contract Tests
 
-| Category | Tests | Status | Notes |
-|----------|-------|--------|-------|
-| Basic message flow | 3 | PASS | Reply delivery, session creation, user message |
-| Error handling | 4 | PASS | Graceful error, no crash, system suppression, unknown model |
-| Typing indicators | 4 | PASS | Telegram, system suppressed, HTTP suppressed, disabled |
-| Silent token suppression | 2 | PASS | Silent → no delivery, non-silent → delivery |
-| Delivery suppression | 4 | PASS | System, HTTP, empty reply, CLI allowed |
-| Warning injection | 2 | PASS | Warning prepended + consumed, no warning unchanged |
-| Compaction (warning + hard) | 6 | PASS | Above 80%, below, no double-warn, zero MAX_CONTEXT, hard trigger |
-| HTTP future resolution | 4 | PASS | Success, error, silent, no-future |
-| Message persistence | 3 | PASS | Assistant msgs, tool results, state saved |
-| Memory v2 wiring | 10 | PASS | Recall injection, consolidation, close callback, failure isolation |
+| Category | Tests | Class(es) | Status |
+|----------|-------|-----------|--------|
+| Basic message flow | 10+ | TestBasicMessageFlow | PASS |
+| Error handling | 10+ | TestProviderErrorHandling | PASS |
+| Typing indicators | 10+ | TestTypingIndicators | PASS |
+| Silent token suppression | 8+ | TestSilentTokenSuppression | PASS |
+| Delivery suppression | 15+ | TestDeliverySuppression, TestChannelDeliverySuppression | PASS |
+| Warning injection | 8+ | TestWarningInjection | PASS |
+| Compaction | 12+ | TestCompactionWarning, TestHardCompaction | PASS |
+| HTTP future resolution | 10+ | TestHTTPFutureResolution | PASS |
+| Message persistence | 10+ | TestMessagePersistence | PASS |
+| Memory v2 wiring | 15+ | TestMemoryV2Wiring, TestConsolidateOnClose | PASS |
 
-All 10 methodology categories covered.
-
-### Additional Integration Coverage
-
-| Category | Tests | File | Status |
-|----------|-------|------|--------|
-| Channel delivery suppression | 8 | test_daemon_integration.py | PASS |
-| Audio transcription (local + cloud) | 17 | test_daemon_integration.py | PASS |
-| Message loop debouncing | 5 | test_daemon_integration.py | PASS |
-| Status/cost building | 13 | test_daemon_integration.py | PASS |
-| Webhook callbacks | 6 | test_daemon_integration.py | PASS |
-| FIFO validation | 3 | test_daemon_integration.py | PASS |
-| Monitor callbacks | 15 | test_monitor.py | PASS |
-| Monitor CLI display | 18 | test_monitor.py | PASS |
-| PID file lifecycle | 6 | test_daemon_helpers.py | PASS |
+Additional coverage: TestResolvePattern, TestResolveIntegration, TestMessageLoopDebounce, TestTranscribeAudio, TestBuildSessions, TestBuildCost, TestFireWebhook, TestFifoAttachmentReconstruction, TestConsecutiveUserMessageMerge, TestErrorRecoveryOrphanedMessages, TestDocumentExtractionIntegration, TestImageFitting, TestInboundTimestampCapture.
 
 ## Test Counts
 
 | Type | Count |
 |------|-------|
-| Contract + extracted function tests (test_orchestrator.py) | 60 |
-| Daemon integration (test_daemon_integration.py) | 92 |
-| Monitor (test_monitor.py) | 33 |
-| Daemon helpers (test_daemon_helpers.py) | 15 |
-| **Total orchestrator tests** | **200** |
+| test_daemon_helpers.py | 15 |
+| test_daemon_integration.py | 94 (+1 from Cycle 5) |
+| test_orchestrator.py | 90 |
+| test_monitor.py | 33 |
+| **Total** | **232** |
 
-All 200 pass (1.00s). Full suite: 1158 pass (14.16s).
+All 232 pass.
 
-## `_process_message` Metrics
+## Known Gaps
 
-Lines: 365 (lines 490-855)
-Inline decisions remaining: 7 (all wiring, not extractable as pure functions)
-Extracted functions: 4 (verified at 96.9% mutation kill rate)
+| Gap | Severity | Status |
+|-----|----------|--------|
+| `_last_inbound_ts` eviction at 1000 entries | Low | No dedicated test. Implementation verified in source (lines 1322-1325). |
+| `pending_system_warning` consumption persist delay | Low | P-017 finding. Duplicated warning on crash, not data loss. |
+| `_message_loop` (debounce, FIFO) | Medium | Open since Cycle 3. |
 
 ## Confidence
 
-Overall confidence: 97%
+Overall confidence: 95%
 
-- All 10 contract test categories covered
-- Extracted functions mutation-verified at 96.9% (1 equivalent survivor documented)
-- All try/except isolation paths verified (structured recall, consolidation, close callback)
-- 200 tests total, all passing
-- Same results as Cycle 3 — no regression
-- Known gap: `_message_loop` debounce/FIFO has integration tests but isn't mutation-testable (async timing)
+All 10 contract categories covered. All 6 extracted functions tested. Hardening batch changes tested through component tests (disconnect, retry, memory_conn). One new P-017 finding (warning persist delay) is low severity. No new extractions needed.

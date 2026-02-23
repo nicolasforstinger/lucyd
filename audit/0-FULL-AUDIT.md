@@ -51,6 +51,29 @@ ls audit/PATTERN.md
 
 If `PATTERN.md` doesn't exist, this is the first audit cycle. Proceed without it. It will be created during the bug fix workflow (Step 6 of `8-BUG-FIX-WORKFLOW.md`).
 
+### Pre-Audit Retrospective
+
+Before starting Stage 1, check for unprocessed production fixes:
+
+```
+1. Have any production fixes, hardening batches, or incident responses
+   occurred since the last audit cycle?
+2. If YES: Run the Retrospective Protocol from PATTERN.md.
+   - For each fix: trace which stage should have caught it, create patterns.
+   - New patterns will then be checked during this audit cycle.
+3. If NO: Proceed directly to Stage 1.
+```
+
+This ensures that lessons from production don't wait until the *next* audit cycle to take effect. The retrospective runs once at the start, generates patterns, and those patterns are immediately active for the stages that follow.
+
+```bash
+# Quick check: commits since last audit report date
+last_audit=$(grep -m1 'Date:' audit/reports/0-full-audit-report.md 2>/dev/null | grep -oP '\d{4}-\d{2}-\d{2}')
+[ -n "$last_audit" ] && git log --oneline --since="$last_audit" -- '*.py' | grep -i 'fix\|harden\|patch\|hotfix'
+```
+
+If any commits look like production fixes that weren't triggered by the audit pipeline, they need retrospective analysis before proceeding.
+
 ---
 
 ## Execution Order
@@ -232,7 +255,35 @@ Re-running from the beginning is non-negotiable. The bug fix may have changed be
 
 ## Aggregate Report
 
-After all stages complete, write the aggregate report to `audit/reports/0-full-audit-report.md`:
+After all stages complete, run the post-audit steps, then write the aggregate report.
+
+### Post-Audit: Pattern Sweep
+
+Review all bugs found and fixed during this audit cycle. The bug fix workflow (Step 6) creates patterns per-bug, but an aggregate sweep catches patterns that only emerge when looking at multiple findings together:
+
+```
+1. List all bugs fixed during this cycle (from stage reports).
+2. Group by root cause class. Do any share a common class not yet in PATTERN.md?
+3. For each new class: create a pattern entry using the Retrospective Protocol.
+4. Review the Pattern Index — are new patterns indexed to the right stages?
+```
+
+### Post-Audit: Known Gaps Review
+
+```
+1. Collect all "Known Gaps" from all 7 stage reports.
+2. Compare against the Known Gaps from the previous cycle's aggregate report.
+3. For each gap:
+   - New this cycle → status: Open
+   - Carried from previous cycle, now fixed → status: Resolved (remove from gaps)
+   - Carried from previous cycle, mitigated by pattern/test → status: Mitigated
+   - Carried 2+ cycles without action → ESCALATE (flag in report)
+4. Record the final gaps table in the aggregate report.
+```
+
+### Aggregate Report
+
+Write the aggregate report to `audit/reports/0-full-audit-report.md`:
 
 ```markdown
 # Full Audit Report
@@ -278,6 +329,23 @@ EXIT STATUS: PASS / PARTIAL / FAIL
 - Tests failing
 - Critical data pipeline has no producer
 - Critical doc mismatch that could mislead users
+
+## Patterns
+### Pre-audit retrospective
+[Production fixes analyzed, patterns created: list]
+
+### Patterns created during this cycle
+[From bug fixes and aggregate sweep: list]
+
+### Pattern index changes
+[New stage assignments, retired patterns]
+
+## Known Gaps
+| Gap | Source | Status | Cycles Open | Action |
+|-----|--------|--------|-------------|--------|
+
+Status: Open / Mitigated / Resolved / Accepted
+Gaps open 2+ cycles without action are escalated.
 
 ## Deferred Items
 [Anything marked PARTIAL with justification for deferral]

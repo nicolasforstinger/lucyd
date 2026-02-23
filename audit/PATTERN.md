@@ -10,6 +10,68 @@ Before each stage, scan this file for patterns tagged with that stage. Run the c
 
 ---
 
+## Retrospective Protocol — How Patterns Get Created
+
+Patterns accumulate from two sources: findings during audit stages (handled by `8-BUG-FIX-WORKFLOW.md` Step 6), and **retrospective analysis after production fixes**. The second source is what makes the audit self-evolving — it closes gaps that all seven stages missed.
+
+### When to Run
+
+After any batch of production fixes, hardening changes, or incident responses that weren't caught by the audit pipeline. The trigger is: "We fixed something that the audit should have caught but didn't."
+
+### Protocol
+
+For each fix in the batch:
+
+```
+1. WHAT was fixed? (one sentence)
+2. WHICH stage should have caught it? Trace through all 7:
+   - Stage 1: Would a grep or ruff rule have flagged this?
+   - Stage 2: Would a test health check (warnings, isolation) have surfaced it?
+   - Stage 3: Would mutation testing have revealed it?
+   - Stage 4: Would orchestrator contract tests have caught it?
+   - Stage 5: Would dependency chain analysis have found it?
+   - Stage 6: Would security boundary analysis have caught it?
+   - Stage 7: Would documentation cross-referencing have caught it?
+3. WHY did that stage miss it? What check is absent?
+4. WHAT class of bug does this represent? (generalize beyond this instance)
+5. WHAT grep/check would catch future instances of this class?
+6. CREATE pattern entry (P-NNN) with origin, class, check, stage index.
+```
+
+### Self-Evolution Mechanics
+
+The audit improves through three feedback loops:
+
+**Loop 1 — Stage-internal (already exists):** Each stage runs its pattern checks before starting. New patterns from previous cycles feed into the next cycle automatically.
+
+**Loop 2 — Post-fix retrospective (this protocol):** Fixes that bypassed all stages generate new patterns. The retrospective traces the gap, generalizes it, and adds the check. This is the primary mechanism for catching blind spots.
+
+**Loop 3 — Cross-stage propagation:** When Stage N finds something, ask: "Why didn't Stages 1 through N-1 catch this?" If the answer is "no check exists," create a pattern indexed to the earlier stage. This prevents findings from clustering at late stages when they could be caught cheaply at early ones.
+
+### Pattern Retirement
+
+A pattern becomes a candidate for retirement when:
+- The code it checks has been removed or architecturally replaced
+- Three consecutive audit cycles find zero instances
+- A structural change makes the class of bug impossible (e.g., type system enforcement)
+
+Retired patterns stay in this file marked `**RETIRED [date]:**` with the reason. They serve as historical record of what the audit has learned.
+
+### Known Gaps Lifecycle
+
+Audit reports contain "Known Gaps" sections. These must be tracked, not just noted:
+
+| Status | Meaning |
+|--------|---------|
+| **Open** | Gap exists, no mitigation. Must be re-evaluated each cycle. |
+| **Mitigated** | Gap exists but compensating control added (pattern check, test, etc.). |
+| **Resolved** | Gap closed by code change. Remove from Known Gaps, note in changelog. |
+| **Accepted** | Gap acknowledged as acceptable risk with justification. Re-evaluate annually. |
+
+Each full audit cycle must review all Open and Accepted gaps. If a gap has been Open for 2+ cycles without action, escalate.
+
+---
+
 ## P-001: Silent data truncation in zip()
 
 **Origin:** Cycle 1 Stage 1 — `cosine_sim()` in memory.py used `zip(a, b)` without `strict=True`. Dimension mismatch silently truncated to shorter list, producing wrong similarity scores. Cycle 2 Stage 1 found the same bug in `tools/indexer.py` and `tests/test_context.py`.
@@ -257,16 +319,132 @@ For test fixtures that pass `None` for any dependency parameter, ask: "Does this
 
 ---
 
+## P-014: Unhandled errors at system boundaries
+
+**Origin:** Production hardening 2026-02-22 — `provider.complete()` in `agentic.py` had zero error handling. Rate limits (429), network errors, and server 5xx errors propagated as unhandled exceptions. Both providers (Anthropic, OpenAI) affected. No retry, no backoff. No audit stage checked for error handling at API call sites.
+
+**Class:** Any call to an external system (API, database, network) that lacks try/except for transient failures. The call may work 99% of the time, so tests pass and code reviews don't flag it. But rate limits, network blips, and server errors are inevitable in production.
+
+**Check (Stage 1):**
+```bash
+# Find external API call sites (provider, httpx, requests, urllib)
+grep -rn "\.complete(\|\.post(\|\.get(\|\.put(\|\.delete(\|\.request(" --include='*.py' | grep -v test | grep -v __pycache__
+# Find database execute calls
+grep -rn "\.execute(\|\.executemany(\|\.executescript(" --include='*.py' | grep -v test | grep -v __pycache__
+```
+For each call site: is it wrapped in try/except for transient errors? If it's a critical path (message processing, session persistence), the absence of error handling is a finding. Internal helper calls within already-handled blocks are exempt.
+
+**Check (Stage 5):**
+For each edge in the dependency chain data flow matrix, ask: "What happens when this edge fails?" If the answer is "unhandled exception propagates to the event loop," that's a finding. Every external edge should have defined failure behavior (retry, fallback, graceful error message, or documented intentional crash).
+
+---
+
+## P-015: Implementation parity across parallel modules
+
+**Origin:** Production hardening 2026-02-22 — `anthropic_compat.py:222` used bare `json.loads(block.input)` without try/except. `openai_compat.py:164-168` had the correct pattern with `_safe_parse_args()` fallback. Same interface, inconsistent error handling. No audit stage compared the two providers' implementations.
+
+**Class:** Modules that implement the same protocol or interface (providers, channels) but handle edge cases, errors, or malformed data differently. The inconsistency is invisible when testing each module in isolation — both "work" — but one is fragile where the other is robust.
+
+**Check (Stage 1):**
+```bash
+# List all implementations of the same interface
+# Providers:
+ls providers/*.py | grep -v __init__
+# Channels:
+ls channels/*.py | grep -v __init__
+```
+For each group of parallel implementations: compare error handling patterns. Specifically:
+- Do all providers handle malformed tool input the same way?
+- Do all channels handle send failures the same way?
+- Do all channels implement the full protocol (including lifecycle methods)?
+
+**Check (Stage 3):**
+When mutation-testing one implementation (e.g., `anthropic_compat.py`), check if the same edge-case tests exist for the parallel implementation (`openai_compat.py`). If provider A has a test for malformed JSON input and provider B doesn't, that's a finding.
+
+---
+
+## P-016: Resource lifecycle completeness (open without close)
+
+**Origin:** Production hardening 2026-02-22 — two independent instances:
+1. `memory.py` created `self._memory_conn` (sqlite3 connection) in `lucyd.py:562-578`, never closed. WAL files accumulated.
+2. `TelegramChannel` created `self._client` (httpx.AsyncClient) in `connect()`, never closed. The `Channel` protocol had no `disconnect()` method at all.
+
+Stage 2 had caught a `ResourceWarning` for the indexer's connection in cycle 5 but didn't generalize the finding.
+
+**Class:** Any resource (database connection, HTTP client, file handle, temp directory) that is created/opened but never closed/cleaned up. The lifecycle is incomplete: init without teardown, connect without disconnect, open without close.
+
+**Check (Stage 1):**
+```bash
+# Database connections
+grep -rn "sqlite3\.connect\|\.connect(" --include='*.py' | grep -v test | grep -v __pycache__
+# HTTP clients
+grep -rn "httpx\.\|requests\.Session\|aiohttp\.ClientSession" --include='*.py' | grep -v test | grep -v __pycache__
+# File opens without context manager
+grep -rn "open(" --include='*.py' | grep -v "with " | grep -v test | grep -v __pycache__
+```
+For each resource creation: trace to its cleanup. If the resource is assigned to `self.*`, the class must have a close/cleanup method that's called during shutdown. If no cleanup exists, that's a finding.
+
+**Check (Stage 2):**
+`ResourceWarning` in test output is a **pattern trigger**, not just a one-off finding. When any ResourceWarning appears:
+```bash
+# Find ALL similar resource creations, not just the one that warned
+grep -rn "<resource_type>" --include='*.py' | grep -v test | grep -v __pycache__
+```
+
+**Check (Stage 5):**
+For each resource in the dependency chain that has a creation step, verify: does the shutdown/cleanup path close it? Trace both normal exit and error paths.
+
+---
+
+## P-017: Crash-unsafe state mutation sequences
+
+**Origin:** Production hardening 2026-02-22 — `session.py:497-508` modified in-memory compaction state (`compaction_count`, `warned_about_compaction`) at lines 497-500, but called `_save_state()` only at line 508 after `append_event()`. A crash between lines 500 and 508 would lose the compaction — the agent would re-compact the same session on restart.
+
+**Class:** Code that modifies in-memory state AND persists it to disk/database, where the persist operation doesn't happen immediately after the critical state change. If the process crashes between the mutation and the persist, the state is lost or inconsistent.
+
+**Check (Stage 4):**
+For each state-mutating operation in the orchestrator (compaction, session creation, cost tracking):
+```
+1. WHERE is in-memory state modified?
+2. WHERE is it persisted (_save_state, db write, file write)?
+3. WHAT happens between those two points?
+4. If the process crashes between 1 and 2, is the state recoverable?
+```
+If non-trivial work (network calls, other I/O, event logging) happens between the state mutation and the persist, the persist should be moved earlier. The supplementary work (audit logs, events) can happen after the critical persist.
+
+**Check (Stage 5):**
+For each state persistence flow in the dependency chain, verify the order: critical state change → persist → supplementary operations. Not: critical state change → supplementary operations → persist.
+
+---
+
+## P-018: Unbounded runtime data structures
+
+**Origin:** Production hardening 2026-02-22 — `self._last_inbound_ts` in `lucyd.py:294` was a plain `dict[str, int]` with one entry per unique sender, never pruned. In a Telegram group scenario with thousands of unique senders, this grows without bound for the daemon's entire lifetime.
+
+**Class:** Any `dict`, `list`, or `set` assigned to `self.*` (instance state) that grows proportional to input volume without eviction or pruning. These are memory leaks that only manifest under sustained production load — tests with 3-5 senders never trigger them.
+
+**Check (Stage 1):**
+```bash
+# Find dict/set/list assignments on self in production code
+grep -rn "self\._.*= {}\|self\._.*= \[\]\|self\._.*= set()\|self\._.*= dict()\|self\._.*= OrderedDict(" --include='*.py' | grep -v test | grep -v __pycache__
+```
+For each: does the collection grow with input? Is there a cap, eviction, or periodic cleanup? Fixed-size collections (config-derived, known-bounded keys) are exempt. Collections that grow with unique senders, sessions, messages, or external IDs need bounds.
+
+**Check (Stage 6):**
+As a resource exhaustion vector: could an attacker (or organic growth) cause unbounded memory consumption by sending messages from many unique senders/sources? Any unbounded collection proportional to attacker-controlled input is a DoS vector.
+
+---
+
 ## Pattern Index by Stage
 
 | Stage | Applicable Patterns |
 |-------|-------------------|
-| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010 |
-| 2. Test Suite | P-005 (verify count), P-006 (fixture check), P-013 |
-| 3. Mutation Testing | P-004, P-013 |
-| 4. Orchestrator Testing | — |
-| 5. Dependency Chain | P-006, P-012 |
-| 6. Security Audit | P-003, P-009, P-012 |
+| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018 |
+| 2. Test Suite | P-005 (verify count), P-006 (fixture check), P-013, P-016 (ResourceWarning trigger) |
+| 3. Mutation Testing | P-004, P-013, P-015 (parity check) |
+| 4. Orchestrator Testing | P-017 |
+| 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order) |
+| 6. Security Audit | P-003, P-009, P-012, P-018 (resource exhaustion) |
 | 7. Documentation Audit | P-007, P-008, P-011 |
 
 ---
@@ -291,3 +469,9 @@ For test fixtures that pass `None` for any dependency parameter, ask: "Does this
 | 2026-02-19 | P-012 | Added from Cycle 3 Stage 5 (entity_aliases misclassified as manual/static) |
 | 2026-02-19 | P-012 | Updated: added ordering invariant check (aliases must store before facts) |
 | 2026-02-19 | P-013 | Added from Cycle 3 Stage 3 (recall() vector path untested via None default) |
+| 2026-02-22 | P-014 | Added from production hardening retrospective (provider.complete() no error handling) |
+| 2026-02-22 | P-015 | Added from production hardening retrospective (Anthropic vs OpenAI json.loads parity) |
+| 2026-02-22 | P-016 | Added from production hardening retrospective (memory_conn + httpx client never closed) |
+| 2026-02-22 | P-017 | Added from production hardening retrospective (compaction state persisted after event log) |
+| 2026-02-22 | P-018 | Added from production hardening retrospective (_last_inbound_ts unbounded dict) |
+| 2026-02-22 | — | Added Retrospective Protocol, Known Gaps Lifecycle, Pattern Retirement rules |
