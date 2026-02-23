@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import random
 import sqlite3
 import time
 from pathlib import Path
@@ -110,6 +111,8 @@ async def run_agentic_loop(
     max_cost: float = 0.0,
     on_response: Any = None,
     on_tool_results: Any = None,
+    api_retries: int = 2,
+    api_retry_base_delay: float = 2.0,
 ) -> LLMResponse:
     """Run the provider-agnostic agentic loop.
 
@@ -144,14 +147,27 @@ async def run_agentic_loop(
     for turn in range(max_turns):
         fmt_messages = provider.format_messages(messages)
 
-        try:
-            response = await asyncio.wait_for(
-                provider.complete(system, fmt_messages, fmt_tools),
-                timeout=timeout,
-            )
-        except TimeoutError:
-            log.error("API call timed out after %.0fs (turn %d)", timeout, turn)
-            raise
+        last_exc: BaseException | None = None
+        for attempt in range(1 + api_retries):
+            try:
+                response = await asyncio.wait_for(
+                    provider.complete(system, fmt_messages, fmt_tools),
+                    timeout=timeout,
+                )
+                break
+            except TimeoutError:
+                log.error("API call timed out after %.0fs (turn %d)", timeout, turn)
+                raise
+            except Exception as exc:
+                if not _is_transient_error(exc) or attempt >= api_retries:
+                    raise
+                delay = api_retry_base_delay * (2 ** attempt) * (0.5 + random.random())  # noqa: S311 — jitter for backoff timing
+                log.warning("Transient API error (attempt %d/%d): %s — retrying in %.1fs",
+                            attempt + 1, api_retries + 1, exc, delay)
+                last_exc = exc
+                await asyncio.sleep(delay)
+        else:
+            raise last_exc  # type: ignore[misc]
 
         # Track cost
         if cost_db and cost_rates:
@@ -225,6 +241,44 @@ async def run_agentic_loop(
     if response is not None and not response.text and fallback_text:
         response.text = "\n\n".join(fallback_text)
     return response  # type: ignore[return-value]
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """Check if an exception is transient and worth retrying.
+
+    Uses class name matching to work with both Anthropic and OpenAI SDKs
+    without importing them. Never retries auth (401), bad request (400),
+    or permission (403) errors.
+    """
+    cls_name = type(exc).__name__
+
+    # Non-retryable: auth, permission, bad request
+    non_retryable = {
+        "AuthenticationError", "PermissionDeniedError",
+        "BadRequestError", "NotFoundError",
+        "UnprocessableEntityError",
+    }
+    if cls_name in non_retryable:
+        return False
+
+    # Retryable: rate limits, server errors, connection problems
+    retryable = {
+        "RateLimitError", "APIStatusError",
+        "InternalServerError", "APIConnectionError",
+        "APITimeoutError", "OverloadedError",
+    }
+    if cls_name in retryable:
+        # APIStatusError: only retry 429 and 5xx
+        status = getattr(exc, "status_code", None)
+        if status is not None and status < 429:
+            return False
+        return True
+
+    # Connection-level errors
+    if isinstance(exc, (ConnectionError, OSError)):
+        return True
+
+    return False
 
 
 def _truncate_args(args: dict, max_len: int = 200) -> str:

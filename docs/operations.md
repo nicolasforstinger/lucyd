@@ -75,6 +75,7 @@ CLI tool for injecting messages into the running daemon via its control FIFO (`~
 | `--sessions` | List active sessions with context %, cost, log size, date range. Filesystem-only — no daemon needed. |
 | `--monitor` | Show live API call monitor state. Filesystem-only — reads `~/.lucyd/monitor.json`. Use with `watch -n 1` for live updates. |
 | `--reset [target]` | Reset sessions. No argument resets all. Target: sender name (`system` / `user`) or session UUID. Archives to `.archive/`, next message starts fresh. |
+| `-a`, `--attach <file>` | Attach file(s) to the message. Can be repeated for multiple files. |
 | `--state-dir <path>` | Override state directory (default: `~/.lucyd`) |
 
 If the daemon is not running, `lucyd-send` exits with an error ("no reader on FIFO").

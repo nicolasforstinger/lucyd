@@ -22,6 +22,20 @@ except ImportError:
     anthropic = None  # type: ignore[assignment]
 
 
+def _safe_parse_args(raw: Any) -> dict:
+    """Parse tool input, handling both dict and string forms.
+
+    Anthropic usually returns a dict, but may return a string in edge cases.
+    Matches the OpenAI provider's fallback pattern ({"raw": ...}).
+    """
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {"raw": raw}
+
+
 class AnthropicCompatProvider:
     def __init__(
         self,
@@ -219,7 +233,7 @@ class AnthropicCompatProvider:
                 tool_calls.append(ToolCall(
                     id=block.id,
                     name=block.name,
-                    arguments=block.input if isinstance(block.input, dict) else json.loads(block.input),
+                    arguments=_safe_parse_args(block.input),
                 ))
             elif block.type == "thinking":
                 thinking_text = block.thinking

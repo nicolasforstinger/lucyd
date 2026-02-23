@@ -17,6 +17,7 @@ Usage:
 import argparse
 import errno
 import json
+import mimetypes
 import os
 import re
 import sqlite3
@@ -448,6 +449,8 @@ def main():
     parser.add_argument("--from", dest="sender", metavar="NAME", help="Sender name for --message (default: 'cli')")
     parser.add_argument("--reset", nargs="?", const="__all__", metavar="TARGET",
                         help="Reset session by sender name or UUID; no argument resets all")
+    parser.add_argument("-a", "--attach", action="append", metavar="FILE",
+                        help="Attach a file (repeatable); requires --message or --system")
     parser.add_argument("--state-dir", default="~/.lucyd", help="Lucyd state directory")
     args = parser.parse_args()
 
@@ -499,15 +502,39 @@ def main():
             print(f"Reset sent for sender: {target}")
         return
 
+    # Build attachment list if --attach used
+    attach_list = None
+    if args.attach:
+        attach_list = []
+        for filepath in args.attach:
+            p = Path(filepath).resolve()
+            if not p.exists():
+                print(f"Error: file not found: {p}", file=sys.stderr)
+                sys.exit(1)
+            if not p.is_file():
+                print(f"Error: not a file: {p}", file=sys.stderr)
+                sys.exit(1)
+            ct, _ = mimetypes.guess_type(str(p))
+            attach_list.append({
+                "content_type": ct or "application/octet-stream",
+                "local_path": str(p),
+                "filename": p.name,
+                "size": p.stat().st_size,
+            })
+
     if args.message:
         msg = {"type": "user", "text": args.message, "sender": args.sender or "cli"}
         if args.tier:
             msg["tier"] = args.tier
+        if attach_list:
+            msg["attachments"] = attach_list
         send_to_fifo(fifo_path, msg)
         print("Message sent.")
     elif args.system:
         msg = {"type": "system", "text": f"[AUTOMATED SYSTEM MESSAGE] {args.system}", "sender": "system"}
         msg["tier"] = args.tier or "operational"
+        if attach_list:
+            msg["attachments"] = attach_list
         send_to_fifo(fifo_path, msg)
         print("System event sent.")
 

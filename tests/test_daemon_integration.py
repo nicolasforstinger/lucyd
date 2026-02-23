@@ -1135,16 +1135,18 @@ class TestProcessMessageIntegration:
         """Image attachment adds [image] prefix and creates image blocks."""
         daemon, provider, session = full_daemon
 
-        # Create a small test image file
+        # Create a real small test image via Pillow
+        from PIL import Image as PILImage
+        pil_img = PILImage.new("RGB", (100, 100), color="red")
         img_path = tmp_path / "test.jpg"
-        img_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)  # minimal JPEG header
+        pil_img.save(str(img_path), format="JPEG")
 
         from channels import Attachment
         att = Attachment(
             content_type="image/jpeg",
             local_path=str(img_path),
             filename="test.jpg",
-            size=104,
+            size=img_path.stat().st_size,
         )
 
         usage = MagicMock()
@@ -1175,10 +1177,11 @@ class TestProcessMessageIntegration:
         assert "What is in this picture?" in call_text
 
     @pytest.mark.asyncio
-    async def test_oversized_image_shows_correct_mb(self, full_daemon, tmp_path):
-        """BUG-4: Oversized image shows float MB, not truncated integer."""
+    async def test_unfittable_image_shows_fallback(self, full_daemon, tmp_path):
+        """PNG that can't be compressed below limit shows fallback message."""
         daemon, provider, session = full_daemon
-        daemon.config.vision_max_image_bytes = 5_000_000
+        # Set very low limit — PNG can't quality-reduce
+        daemon.config.vision_max_image_bytes = 100
 
         usage = MagicMock()
         usage.input_tokens = 2000
@@ -1192,12 +1195,13 @@ class TestProcessMessageIntegration:
         session.add_user_message = MagicMock(side_effect=fake_add_user)
 
         from channels import Attachment
+        from PIL import Image as PILImage
 
-        # 5,200,000 bytes → should display "5.0MB" not "4MB"
-        img_path = tmp_path / "big.jpg"
-        img_path.write_bytes(b"\xff\xd8" + b"\x00" * (5_200_000 - 2))
-        att = Attachment(content_type="image/jpeg", local_path=str(img_path),
-                         filename="big.jpg", size=5_200_000)
+        img = PILImage.new("RGB", (200, 200), color="red")
+        img_path = tmp_path / "big.png"
+        img.save(str(img_path), format="PNG")
+        att = Attachment(content_type="image/png", local_path=str(img_path),
+                         filename="big.png", size=img_path.stat().st_size)
 
         with patch("lucyd.run_agentic_loop", return_value=response):
             with patch("tools.status.set_current_session"):
@@ -1207,14 +1211,12 @@ class TestProcessMessageIntegration:
                 )
 
         call_text = session.add_user_message.call_args[0][0]
-        assert "5.0MB" in call_text
+        assert "too large" in call_text.lower() or "after compression" in call_text.lower()
 
     @pytest.mark.asyncio
-    async def test_sub_mb_oversized_image_shows_decimal(self, full_daemon, tmp_path):
-        """BUG-4: Sub-1MB oversized image shows '0.5MB' not '0MB'."""
+    async def test_unreadable_image_shows_fallback(self, full_daemon, tmp_path):
+        """Image file that can't be read injects fallback instead of silent drop."""
         daemon, provider, session = full_daemon
-        # Set limit very low so 500KB exceeds it
-        daemon.config.vision_max_image_bytes = 100_000
 
         usage = MagicMock()
         usage.input_tokens = 2000
@@ -1229,20 +1231,19 @@ class TestProcessMessageIntegration:
 
         from channels import Attachment
 
-        img_path = tmp_path / "medium.jpg"
-        img_path.write_bytes(b"\xff\xd8" + b"\x00" * (500_000 - 2))
-        att = Attachment(content_type="image/jpeg", local_path=str(img_path),
-                         filename="medium.jpg", size=500_000)
+        # Point to a file that doesn't exist
+        att = Attachment(content_type="image/jpeg", local_path=str(tmp_path / "gone.jpg"),
+                         filename="gone.jpg", size=1000)
 
         with patch("lucyd.run_agentic_loop", return_value=response):
             with patch("tools.status.set_current_session"):
                 await daemon._process_message(
-                    text="look", sender="+431234567890", source="telegram",
+                    text="check this", sender="+431234567890", source="telegram",
                     attachments=[att],
                 )
 
         call_text = session.add_user_message.call_args[0][0]
-        assert "0.5MB" in call_text
+        assert "could not read file" in call_text.lower()
 
     @pytest.mark.asyncio
     async def test_compaction_triggered_when_threshold_exceeded(self, full_daemon):
@@ -2155,3 +2156,91 @@ class TestFireWebhook:
         assert payload["notify_meta"]["source"] == "n8n-email"
         assert payload["notify_meta"]["ref"] == "Q-47"
         assert payload["notify_meta"]["data"]["amount"] == 1500
+
+
+# ─── FIFO Attachment Reconstruction ──────────────────────────────
+
+
+class TestFifoAttachmentReconstruction:
+    """Test that _fifo_reader reconstructs Attachment objects from JSON dicts."""
+
+    @pytest.mark.asyncio
+    async def test_fifo_reconstructs_attachments(self, tmp_path):
+        """Attachment dicts in FIFO JSON become Attachment objects on the queue."""
+        from lucyd import _fifo_reader
+        from channels import Attachment
+
+        fifo_path = tmp_path / "test.pipe"
+        queue = asyncio.Queue()
+
+        # Create a test file the attachment references
+        test_file = tmp_path / "photo.jpg"
+        test_file.write_bytes(b"\xff\xd8\xff fake jpeg")
+
+        msg = {
+            "type": "user",
+            "text": "look at this",
+            "sender": "cli",
+            "attachments": [{
+                "content_type": "image/jpeg",
+                "local_path": str(test_file),
+                "filename": "photo.jpg",
+                "size": test_file.stat().st_size,
+            }],
+        }
+
+        # Start FIFO reader
+        task = asyncio.create_task(_fifo_reader(fifo_path, queue))
+        await asyncio.sleep(0.1)  # Let it create the FIFO
+
+        # Write the message to the FIFO
+        def write_fifo():
+            with open(str(fifo_path), "w") as f:
+                f.write(json.dumps(msg) + "\n")
+
+        await asyncio.to_thread(write_fifo)
+        # Wait for message to arrive on queue
+        item = await asyncio.wait_for(queue.get(), timeout=2.0)
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert "attachments" in item
+        atts = item["attachments"]
+        assert len(atts) == 1
+        assert isinstance(atts[0], Attachment)
+        assert atts[0].content_type == "image/jpeg"
+        assert atts[0].local_path == str(test_file)
+        assert atts[0].filename == "photo.jpg"
+
+    @pytest.mark.asyncio
+    async def test_fifo_no_attachments_passthrough(self, tmp_path):
+        """Messages without attachments pass through unchanged."""
+        from lucyd import _fifo_reader
+
+        fifo_path = tmp_path / "test.pipe"
+        queue = asyncio.Queue()
+
+        msg = {"type": "user", "text": "hello", "sender": "cli"}
+
+        task = asyncio.create_task(_fifo_reader(fifo_path, queue))
+        await asyncio.sleep(0.1)
+
+        def write_fifo():
+            with open(str(fifo_path), "w") as f:
+                f.write(json.dumps(msg) + "\n")
+
+        await asyncio.to_thread(write_fifo)
+        item = await asyncio.wait_for(queue.get(), timeout=2.0)
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert item["text"] == "hello"
+        assert "attachments" not in item or item.get("attachments") is None

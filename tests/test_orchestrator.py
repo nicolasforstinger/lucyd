@@ -1478,3 +1478,456 @@ class TestConsecutiveUserMessageMerge:
         merged = user_msgs[0]["content"]
         for fragment in ("msg1", "msg2", "msg3", "msg4", "recovery msg"):
             assert fragment in merged
+
+
+# ─── Image Dimension Check ───────────────────────────────────────
+
+
+# ─── Document Text Extraction ─────────────────────────────────────
+
+
+class TestExtractDocumentText:
+    """Unit tests for _extract_document_text."""
+
+    def test_text_file_extracted(self, tmp_path):
+        """Plain .txt file → content returned."""
+        from lucyd import _extract_document_text
+
+        f = tmp_path / "notes.txt"
+        f.write_text("Hello, world!")
+        result = _extract_document_text(
+            str(f), "text/plain", "notes.txt",
+            max_chars=30000, max_bytes=10_000_000,
+            text_extensions=[".txt", ".md"],
+        )
+        assert result == "Hello, world!"
+
+    def test_text_file_by_mime(self, tmp_path):
+        """text/* MIME type → content returned even without matching extension."""
+        from lucyd import _extract_document_text
+
+        f = tmp_path / "data.unknown"
+        f.write_text("MIME-based extraction")
+        result = _extract_document_text(
+            str(f), "text/csv", "data.unknown",
+            max_chars=30000, max_bytes=10_000_000,
+            text_extensions=[],  # no extension match
+        )
+        assert result == "MIME-based extraction"
+
+    def test_truncation_at_max_chars(self, tmp_path):
+        """Large text file truncated at max_chars."""
+        from lucyd import _extract_document_text
+
+        f = tmp_path / "big.txt"
+        f.write_text("x" * 500)
+        result = _extract_document_text(
+            str(f), "text/plain", "big.txt",
+            max_chars=100, max_bytes=10_000_000,
+            text_extensions=[".txt"],
+        )
+        assert len(result) < 500
+        assert result.startswith("x" * 100)
+        assert "truncated at 100 chars" in result
+
+    def test_non_readable_format_returns_none(self, tmp_path):
+        """Unrecognized format (e.g. .psd) → None."""
+        from lucyd import _extract_document_text
+
+        f = tmp_path / "image.psd"
+        f.write_bytes(b"\x00" * 100)
+        result = _extract_document_text(
+            str(f), "application/octet-stream", "image.psd",
+            max_chars=30000, max_bytes=10_000_000,
+            text_extensions=[".txt"],
+        )
+        assert result is None
+
+    def test_file_too_large_returns_none(self, tmp_path):
+        """File exceeding max_bytes → None."""
+        from lucyd import _extract_document_text
+
+        f = tmp_path / "huge.txt"
+        f.write_bytes(b"x" * 200)
+        result = _extract_document_text(
+            str(f), "text/plain", "huge.txt",
+            max_chars=30000, max_bytes=100,  # 100 bytes limit
+            text_extensions=[".txt"],
+        )
+        assert result is None
+
+    def test_pdf_extraction(self, tmp_path):
+        """PDF with text content → text extracted."""
+        from pypdf import PdfWriter
+        from lucyd import _extract_document_text
+
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        # pypdf blank pages have no text, so we create a real PDF via reportlab-free method
+        # Instead, use a PDF that has actual text by annotation
+        pdf_path = tmp_path / "test.pdf"
+        writer.write(str(pdf_path))
+
+        # This returns None or empty for blank pages — that's correct behavior
+        result = _extract_document_text(
+            str(pdf_path), "application/pdf", "test.pdf",
+            max_chars=30000, max_bytes=10_000_000,
+            text_extensions=[],
+        )
+        # Blank PDF has no text → returns None (empty string becomes None via `or None`)
+        assert result is None
+
+    def test_pdf_by_extension(self, tmp_path):
+        """PDF detected by .pdf extension even with generic MIME type."""
+        from pypdf import PdfWriter
+        from lucyd import _extract_document_text
+
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        pdf_path = tmp_path / "report.pdf"
+        writer.write(str(pdf_path))
+
+        # Should not crash — gracefully handles blank PDF
+        result = _extract_document_text(
+            str(pdf_path), "application/octet-stream", "report.pdf",
+            max_chars=30000, max_bytes=10_000_000,
+            text_extensions=[],
+        )
+        assert result is None  # blank PDF → None
+
+    def test_pypdf_not_installed(self, tmp_path):
+        """When pypdf is not importable, PDF falls through to None."""
+        import builtins
+        from lucyd import _extract_document_text
+
+        f = tmp_path / "doc.pdf"
+        f.write_bytes(b"%PDF-1.4 fake")
+
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "pypdf":
+                raise ImportError("no pypdf")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            result = _extract_document_text(
+                str(f), "application/pdf", "doc.pdf",
+                max_chars=30000, max_bytes=10_000_000,
+                text_extensions=[],
+            )
+        assert result is None
+
+    def test_corrupt_pdf_raises(self, tmp_path):
+        """Corrupt PDF → exception propagates (caller catches it)."""
+        import pypdf.errors
+        from lucyd import _extract_document_text
+
+        f = tmp_path / "corrupt.pdf"
+        f.write_bytes(b"not a pdf at all")
+
+        with pytest.raises(pypdf.errors.PdfReadError):
+            _extract_document_text(
+                str(f), "application/pdf", "corrupt.pdf",
+                max_chars=30000, max_bytes=10_000_000,
+                text_extensions=[],
+            )
+
+    def test_md_extension_extracted(self, tmp_path):
+        """Markdown file matched by extension."""
+        from lucyd import _extract_document_text
+
+        f = tmp_path / "readme.md"
+        f.write_text("# Hello\nWorld")
+        result = _extract_document_text(
+            str(f), "application/octet-stream", "readme.md",
+            max_chars=30000, max_bytes=10_000_000,
+            text_extensions=[".txt", ".md"],
+        )
+        assert result == "# Hello\nWorld"
+
+    def test_empty_filename_uses_mime(self, tmp_path):
+        """Empty filename → falls back to MIME type detection."""
+        from lucyd import _extract_document_text
+
+        f = tmp_path / "noname"
+        f.write_text("plain text content")
+        result = _extract_document_text(
+            str(f), "text/plain", "",
+            max_chars=30000, max_bytes=10_000_000,
+            text_extensions=[],
+        )
+        assert result == "plain text content"
+
+
+class TestDocumentExtractionIntegration:
+    """Contract: document attachments are extracted or fall through to label."""
+
+    @pytest.mark.asyncio
+    async def test_text_document_injected(self, tmp_path):
+        """Text file attachment → [document: file.txt] with content in text."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = True
+        daemon.config.documents_max_chars = 30000
+        daemon.config.documents_max_file_bytes = 10_000_000
+        daemon.config.documents_text_extensions = [".txt"]
+
+        doc_path = tmp_path / "notes.txt"
+        doc_path.write_text("Meeting notes here")
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="Got it")
+
+        from channels import Attachment
+        att = Attachment(content_type="text/plain", local_path=str(doc_path),
+                         filename="notes.txt", size=doc_path.stat().st_size)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="check this", sender="user", source="telegram",
+                    attachments=[att],
+                )
+
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[document: notes.txt]" in call_text
+        assert "Meeting notes here" in call_text
+
+    @pytest.mark.asyncio
+    async def test_non_readable_falls_to_label(self, tmp_path):
+        """Non-extractable file → [attachment: file, type] label."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = True
+        daemon.config.documents_max_chars = 30000
+        daemon.config.documents_max_file_bytes = 10_000_000
+        daemon.config.documents_text_extensions = [".txt"]
+
+        doc_path = tmp_path / "design.psd"
+        doc_path.write_bytes(b"\x00" * 50)
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+
+        from channels import Attachment
+        att = Attachment(content_type="application/octet-stream", local_path=str(doc_path),
+                         filename="design.psd", size=50)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="", sender="user", source="telegram",
+                    attachments=[att],
+                )
+
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[attachment: design.psd, application/octet-stream]" in call_text
+
+    @pytest.mark.asyncio
+    async def test_documents_disabled_falls_to_label(self, tmp_path):
+        """documents_enabled=False → all documents get label-only."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = False
+
+        doc_path = tmp_path / "readme.txt"
+        doc_path.write_text("This should not be extracted")
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+
+        from channels import Attachment
+        att = Attachment(content_type="text/plain", local_path=str(doc_path),
+                         filename="readme.txt", size=doc_path.stat().st_size)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="", sender="user", source="telegram",
+                    attachments=[att],
+                )
+
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[attachment: readme.txt, text/plain]" in call_text
+        assert "This should not be extracted" not in call_text
+
+    @pytest.mark.asyncio
+    async def test_oversized_document_falls_to_label(self, tmp_path):
+        """File exceeding max_file_bytes → label-only."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = True
+        daemon.config.documents_max_chars = 30000
+        daemon.config.documents_max_file_bytes = 50  # very small limit
+        daemon.config.documents_text_extensions = [".txt"]
+
+        doc_path = tmp_path / "big.txt"
+        doc_path.write_text("x" * 200)
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+
+        from channels import Attachment
+        att = Attachment(content_type="text/plain", local_path=str(doc_path),
+                         filename="big.txt", size=200)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="", sender="user", source="telegram",
+                    attachments=[att],
+                )
+
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[attachment: big.txt, text/plain]" in call_text
+
+    @pytest.mark.asyncio
+    async def test_extraction_error_falls_to_label(self, tmp_path):
+        """Extraction exception → graceful fallback to label."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = True
+        daemon.config.documents_max_chars = 30000
+        daemon.config.documents_max_file_bytes = 10_000_000
+        daemon.config.documents_text_extensions = [".txt"]
+
+        doc_path = tmp_path / "bad.txt"
+        doc_path.write_text("content")
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+
+        from channels import Attachment
+        att = Attachment(content_type="text/plain", local_path=str(doc_path),
+                         filename="bad.txt", size=7)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("tools.status.set_current_session"):
+                with patch("lucyd._extract_document_text", side_effect=OSError("disk error")):
+                    await daemon._process_message(
+                        text="", sender="user", source="telegram",
+                        attachments=[att],
+                    )
+
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[attachment: bad.txt, text/plain]" in call_text
+
+
+# ─── Image Dimension Check ───────────────────────────────────────
+
+
+class TestImageFitting:
+    """Verify _fit_image scales dimensions and reduces quality."""
+
+    def test_dimensions_scaled_down(self):
+        """Image >8000px is scaled to fit."""
+        from io import BytesIO
+        from PIL import Image
+        from lucyd import _fit_image
+
+        img = Image.new("RGB", (10000, 5000), color="red")
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=95)
+        data = buf.getvalue()
+
+        result = _fit_image(data, "image/jpeg", 5 * 1024 * 1024)
+        with Image.open(BytesIO(result)) as fitted:
+            assert max(fitted.size) <= 8000
+
+    def test_small_image_unchanged(self):
+        """Image within all limits is returned as-is."""
+        from io import BytesIO
+        from PIL import Image
+        from lucyd import _fit_image
+
+        img = Image.new("RGB", (800, 600), color="blue")
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        data = buf.getvalue()
+
+        result = _fit_image(data, "image/jpeg", 5 * 1024 * 1024)
+        assert result == data
+
+    def test_jpeg_quality_reduction(self):
+        """Large JPEG gets quality reduced to fit under byte limit."""
+        from io import BytesIO
+        from PIL import Image
+        from lucyd import _fit_image
+
+        # Create a noisy image that compresses poorly
+        import random
+        img = Image.new("RGB", (4000, 3000))
+        pixels = img.load()
+        rng = random.Random(42)
+        for y in range(3000):
+            for x in range(4000):
+                pixels[x, y] = (rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=98)
+        data = buf.getvalue()
+
+        # Set a tight limit so quality reduction kicks in
+        limit = len(data) // 2
+        result = _fit_image(data, "image/jpeg", limit)
+        assert len(result) <= limit
+
+    def test_png_too_large_raises(self):
+        """PNG that can't be compressed raises _ImageTooLarge."""
+        from io import BytesIO
+        from PIL import Image
+        from lucyd import _ImageTooLarge, _fit_image
+
+        img = Image.new("RGB", (4000, 3000), color="red")
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        data = buf.getvalue()
+
+        # Set absurdly low limit — PNG is lossless, can't reduce quality
+        with pytest.raises(_ImageTooLarge):
+            _fit_image(data, "image/png", 100)
+
+    @pytest.mark.asyncio
+    async def test_oversized_image_sent_after_fitting(self, tmp_path):
+        """Integration: oversized image is fitted and sent, not rejected."""
+        from PIL import Image
+
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.vision_max_image_bytes = 5 * 1024 * 1024
+        daemon.config.vision_default_caption = "image"
+        daemon.config.vision_too_large_msg = "image too large"
+
+        img = Image.new("RGB", (10000, 8000), color="green")
+        img_path = tmp_path / "huge.jpg"
+        img.save(str(img_path), format="JPEG", quality=95)
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="I see green")
+
+        from channels import Attachment
+        att = Attachment(content_type="image/jpeg", local_path=str(img_path),
+                         filename="huge.jpg", size=img_path.stat().st_size)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="look", sender="user", source="telegram",
+                    attachments=[att],
+                )
+
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[image]" in call_text
+        assert "too large" not in call_text

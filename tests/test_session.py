@@ -811,3 +811,48 @@ class MockCompactionProvider:
             stop_reason="end_turn",
             usage=Usage(input_tokens=50, output_tokens=30),
         )
+
+
+class TestCompactionStatePersistenceOrder:
+    """_save_state() must be called before append_event() in compaction."""
+
+    @pytest.mark.asyncio
+    async def test_save_state_before_append_event(self, tmp_sessions):
+        """State is persisted before the audit event, so a crash between
+        the two doesn't lose the compaction."""
+        from unittest.mock import patch
+
+        session = Session("test-order", tmp_sessions)
+        for i in range(15):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "content": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+        session._save_state()
+
+        call_order = []
+        orig_save = session._save_state
+        orig_append = session.append_event
+
+        def tracking_save():
+            call_order.append("save_state")
+            return orig_save()
+
+        def tracking_append(event):
+            call_order.append("append_event")
+            return orig_append(event)
+
+        mgr = SessionManager(tmp_sessions)
+        provider = MockCompactionProvider(summary_text="Summary.")
+
+        with patch.object(session, "_save_state", tracking_save), \
+             patch.object(session, "append_event", tracking_append):
+            await mgr.compact_session(session, provider, "Summarize.")
+
+        assert "save_state" in call_order
+        assert "append_event" in call_order
+        save_idx = call_order.index("save_state")
+        append_idx = call_order.index("append_event")
+        assert save_idx < append_idx, "_save_state must be called before append_event"

@@ -292,9 +292,12 @@ def index_workspace(
     file_list = scan_workspace(workspace)
     scanned_paths = {rel for rel, _ in file_list}
 
-    # 2. Connect to DB
+    # 2. Connect to DB and ensure schema exists
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
+
+    from memory_schema import ensure_schema
+    ensure_schema(conn)
 
     try:
         # 3. Get current index state

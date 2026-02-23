@@ -28,54 +28,11 @@ from tools.indexer import (
 @pytest.fixture
 def index_db(tmp_path):
     """Fresh SQLite DB with production schema."""
+    from memory_schema import ensure_schema
+
     db_path = tmp_path / "memory.sqlite"
     conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        CREATE TABLE files (
-            path TEXT PRIMARY KEY,
-            source TEXT NOT NULL DEFAULT 'memory',
-            hash TEXT NOT NULL,
-            mtime INTEGER NOT NULL,
-            size INTEGER NOT NULL
-        );
-        CREATE TABLE chunks (
-            id TEXT PRIMARY KEY,
-            path TEXT NOT NULL,
-            source TEXT NOT NULL DEFAULT 'memory',
-            start_line INTEGER NOT NULL,
-            end_line INTEGER NOT NULL,
-            hash TEXT NOT NULL,
-            model TEXT NOT NULL,
-            text TEXT NOT NULL,
-            embedding TEXT NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        CREATE INDEX idx_chunks_path ON chunks(path);
-        CREATE INDEX idx_chunks_source ON chunks(source);
-        CREATE TABLE embedding_cache (
-            provider TEXT NOT NULL,
-            model TEXT NOT NULL,
-            provider_key TEXT NOT NULL,
-            hash TEXT NOT NULL,
-            embedding TEXT NOT NULL,
-            dims INTEGER,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY (provider, model, provider_key, hash)
-        );
-        CREATE VIRTUAL TABLE chunks_fts USING fts5(
-            text,
-            id UNINDEXED,
-            path UNINDEXED,
-            source UNINDEXED,
-            model UNINDEXED,
-            start_line UNINDEXED,
-            end_line UNINDEXED
-        );
-    """)
+    ensure_schema(conn)
     conn.close()
     return db_path
 

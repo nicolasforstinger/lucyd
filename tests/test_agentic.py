@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from agentic import _init_cost_db, _record_cost, _truncate_args, run_agentic_loop
+from agentic import _init_cost_db, _is_transient_error, _record_cost, _truncate_args, run_agentic_loop
 from providers import LLMResponse, ToolCall, Usage
 from tools import ToolRegistry
 
@@ -679,3 +679,118 @@ class TestCostInit:
             max_cost=0.5,  # Would trigger if starting at $1
         )
         assert "Cost limit" not in (resp.text or "")
+
+
+# ─── Provider Retry with Backoff ────────────────────────────────
+
+
+class TestIsTransientError:
+    """_is_transient_error classification."""
+
+    def test_rate_limit_is_transient(self):
+        class RateLimitError(Exception): pass
+        assert _is_transient_error(RateLimitError("429")) is True
+
+    def test_connection_error_is_transient(self):
+        assert _is_transient_error(ConnectionError("reset")) is True
+
+    def test_os_error_is_transient(self):
+        assert _is_transient_error(OSError("network down")) is True
+
+    def test_auth_error_not_transient(self):
+        class AuthenticationError(Exception): pass
+        assert _is_transient_error(AuthenticationError("bad key")) is False
+
+    def test_bad_request_not_transient(self):
+        class BadRequestError(Exception): pass
+        assert _is_transient_error(BadRequestError("invalid")) is False
+
+    def test_permission_denied_not_transient(self):
+        class PermissionDeniedError(Exception): pass
+        assert _is_transient_error(PermissionDeniedError("denied")) is False
+
+    def test_unknown_error_not_transient(self):
+        assert _is_transient_error(ValueError("nope")) is False
+
+    def test_api_status_error_with_500(self):
+        class APIStatusError(Exception):
+            status_code = 500
+        assert _is_transient_error(APIStatusError("server error")) is True
+
+    def test_api_status_error_with_400(self):
+        class APIStatusError(Exception):
+            status_code = 400
+        assert _is_transient_error(APIStatusError("bad request")) is False
+
+
+class TestRetryLogic:
+    """Provider retry in agentic loop."""
+
+    @pytest.mark.asyncio
+    async def test_retry_succeeds_on_second_attempt(self):
+        """Transient error on first call, success on second."""
+        call_count = [0]
+        ok_response = _end_turn_response("Recovered")
+
+        class RetryProvider(MockProvider):
+            async def complete(self, system, messages, tools, **kwargs):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    exc = type("RateLimitError", (Exception,), {})("429")
+                    raise exc
+                return ok_response
+
+        provider = RetryProvider([ok_response])
+        reg = _make_registry()
+        messages = [{"role": "user", "content": "test"}]
+
+        resp = await run_agentic_loop(
+            provider=provider, system=[], messages=messages,
+            tools=[], tool_executor=reg, max_turns=1,
+            api_retries=2, api_retry_base_delay=0.01,
+        )
+        assert resp.text == "Recovered"
+        assert call_count[0] == 2
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_auth_error(self):
+        """Auth errors propagate immediately without retry."""
+        call_count = [0]
+        AuthError = type("AuthenticationError", (Exception,), {})
+
+        class AuthFailProvider(MockProvider):
+            async def complete(self, system, messages, tools, **kwargs):
+                call_count[0] += 1
+                raise AuthError("bad key")
+
+        provider = AuthFailProvider([_end_turn_response()])
+        reg = _make_registry()
+        messages = [{"role": "user", "content": "test"}]
+
+        with pytest.raises(Exception, match="bad key"):
+            await run_agentic_loop(
+                provider=provider, system=[], messages=messages,
+                tools=[], tool_executor=reg, max_turns=1,
+                api_retries=3, api_retry_base_delay=0.01,
+            )
+        assert call_count[0] == 1  # No retry
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_propagates(self):
+        """After all retries exhausted, the error propagates."""
+        RateLimit = type("RateLimitError", (Exception,), {})
+
+        class AlwaysFailProvider(MockProvider):
+            async def complete(self, system, messages, tools, **kwargs):
+                raise RateLimit("429 always")
+
+        provider = AlwaysFailProvider([_end_turn_response()])
+        reg = _make_registry()
+        messages = [{"role": "user", "content": "test"}]
+
+        with pytest.raises(Exception, match="429 always"):
+            await run_agentic_loop(
+                provider=provider, system=[], messages=messages,
+                tools=[], tool_executor=reg, max_turns=1,
+                api_retries=2, api_retry_base_delay=0.01,
+            )

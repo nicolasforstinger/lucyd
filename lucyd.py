@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import collections
 import json
 import logging
 import logging.handlers
@@ -25,7 +26,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agentic import _init_cost_db, run_agentic_loop
-from channels import InboundMessage, create_channel
+from channels import Attachment, InboundMessage, create_channel
 from config import Config, ConfigError, load_config
 from context import ContextBuilder
 from providers import create_provider
@@ -97,6 +98,19 @@ async def _fifo_reader(fifo_path: Path, queue: asyncio.Queue) -> None:
                             log.warning("FIFO message missing required fields, ignoring: %s",
                                         list({"text", "sender"} - msg.keys()))
                             continue
+                        # Reconstruct Attachment objects from serialized dicts
+                        raw_atts = msg.get("attachments")
+                        if raw_atts and isinstance(raw_atts, list):
+                            msg["attachments"] = [
+                                Attachment(
+                                    content_type=a.get("content_type", ""),
+                                    local_path=a.get("local_path", ""),
+                                    filename=a.get("filename", ""),
+                                    size=a.get("size", 0),
+                                )
+                                for a in raw_atts
+                                if isinstance(a, dict) and a.get("local_path")
+                            ] or None
                         await queue.put(msg)
                     except json.JSONDecodeError:
                         log.warning("Invalid JSON from FIFO: %s", line[:200])
@@ -162,6 +176,105 @@ def _is_silent(text: str, tokens: list[str]) -> bool:
     return False
 
 
+# ─── Image Fitting ───────────────────────────────────────────────
+
+_MAX_IMAGE_DIMENSION = 8000
+_QUALITY_STEPS = [85, 60, 40]
+
+
+class _ImageTooLarge(Exception):
+    """Raised when an image can't be fit within API limits."""
+
+
+def _fit_image(data: bytes, content_type: str, max_bytes: int, path: str = "") -> bytes:
+    """Scale dimensions and reduce quality to fit within API limits.
+
+    Strategy: (1) shrink to 8000px per side, (2) step down JPEG quality.
+    Raises _ImageTooLarge if nothing works.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    is_jpeg = content_type == "image/jpeg"
+    img = Image.open(BytesIO(data))
+
+    # Step 1: scale dimensions if any side > 8000px
+    if max(img.size) > _MAX_IMAGE_DIMENSION:
+        log.info("Scaling %dx%d to fit %dpx: %s", img.size[0], img.size[1],
+                 _MAX_IMAGE_DIMENSION, path)
+        img.thumbnail((_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION))
+        buf = BytesIO()
+        if is_jpeg:
+            img.save(buf, format="JPEG", quality=90)
+        else:
+            img.save(buf, format="PNG")
+        data = buf.getvalue()
+
+    # Already fits?
+    if len(data) <= max_bytes:
+        img.close()
+        return data
+
+    # Step 2: reduce JPEG quality (only works for JPEG — PNG is lossless)
+    if is_jpeg:
+        for q in _QUALITY_STEPS:
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=q)
+            data = buf.getvalue()
+            if len(data) <= max_bytes:
+                log.info("JPEG quality %d brought size to %d bytes: %s", q, len(data), path)
+                img.close()
+                return data
+
+    img.close()
+    raise _ImageTooLarge(f"{len(data) / (1024*1024):.1f}MB after compression")
+
+
+# ─── Document Text Extraction ────────────────────────────────────
+
+
+def _extract_document_text(path: str, content_type: str, filename: str,
+                           max_chars: int, max_bytes: int,
+                           text_extensions: list[str]) -> str | None:
+    """Extract text from a document. Returns None if not a readable format."""
+    file_path = Path(path)
+
+    # Skip files too large to bother reading
+    if file_path.stat().st_size > max_bytes:
+        return None
+
+    ext = Path(filename).suffix.lower() if filename else ""
+
+    # Plain text — by extension or text/* MIME
+    if ext in text_extensions or content_type.startswith("text/"):
+        text = file_path.read_bytes().decode("utf-8", errors="replace")
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\n[… truncated at {max_chars:,} chars]"
+        return text
+
+    # PDF
+    if content_type == "application/pdf" or ext == ".pdf":
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            return None  # pypdf not installed — fall through to label
+        reader = PdfReader(path)
+        parts = []
+        total = 0
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if total + len(page_text) > max_chars:
+                parts.append(page_text[:max_chars - total])
+                parts.append(f"\n[… truncated at {max_chars:,} chars]")
+                break
+            parts.append(page_text)
+            total += len(page_text)
+        return "\n".join(parts) or None
+
+    return None
+
+
 # ─── Daemon ──────────────────────────────────────────────────────
 
 class LucydDaemon:
@@ -179,7 +292,7 @@ class LucydDaemon:
         self._fifo_task: asyncio.Task | None = None
         self._http_api: Any = None
         self._memory_conn: Any = None
-        self._last_inbound_ts: dict[str, int] = {}  # sender → ms timestamp
+        self._last_inbound_ts: collections.OrderedDict[str, int] = collections.OrderedDict()  # sender → ms timestamp
 
     def _setup_logging(self) -> None:
         """Configure logging to file + stderr."""
@@ -540,12 +653,12 @@ class LucydDaemon:
                         continue
                     try:
                         img_path = Path(att.local_path)
-                        img_size = img_path.stat().st_size
-                        if img_size > max_image_bytes:
-                            log.warning("Image too large (%d bytes), skipping vision: %s", img_size, att.local_path)
-                            text = (text + "\n" if text else "") + f"[{too_large_msg} — {img_size / (1024*1024):.1f}MB]"
-                            continue
                         img_data = img_path.read_bytes()
+                        try:
+                            img_data = _fit_image(img_data, att.content_type, max_image_bytes, att.local_path)
+                        except _ImageTooLarge as exc:
+                            text = (text + "\n" if text else "") + f"[{too_large_msg} — {exc}]"
+                            continue
                         image_blocks.append({
                             "type": "image",
                             "media_type": att.content_type,
@@ -554,6 +667,7 @@ class LucydDaemon:
                         text = (f"[{caption}] " + text) if text else f"[{caption}]"
                     except Exception as e:
                         log.error("Failed to read image %s: %s", att.local_path, e)
+                        text = (text + "\n" if text else "") + f"[{too_large_msg} — could not read file]"
 
                 elif att.content_type.startswith("audio/"):
                     voice_label = self.config.stt_voice_label
@@ -567,7 +681,22 @@ class LucydDaemon:
                         text = (text + "\n" if text else "") + f"[{voice_fail}]"
 
                 else:
-                    text = (text + "\n" if text else "") + f"[attachment: {att.filename or 'file'}, {att.content_type}]"
+                    doc_text = None
+                    if self.config.documents_enabled:
+                        try:
+                            doc_text = _extract_document_text(
+                                att.local_path, att.content_type, att.filename or "",
+                                max_chars=self.config.documents_max_chars,
+                                max_bytes=self.config.documents_max_file_bytes,
+                                text_extensions=self.config.documents_text_extensions,
+                            )
+                        except Exception as e:
+                            log.error("Document extraction failed for %s: %s", att.filename, e)
+                    if doc_text:
+                        label = att.filename or "document"
+                        text = (text + "\n" if text else "") + f"[document: {label}]\n{doc_text}"
+                    else:
+                        text = (text + "\n" if text else "") + f"[attachment: {att.filename or 'file'}, {att.content_type}]"
 
         # Get or create session
         session = self.session_mgr.get_or_create(sender, model=model_name)
@@ -728,6 +857,8 @@ class LucydDaemon:
                 max_cost=float(max_cost),
                 on_response=_on_response,
                 on_tool_results=_on_tool_results,
+                api_retries=self.config.api_retries,
+                api_retry_base_delay=self.config.api_retry_base_delay,
             )
         except Exception as e:
             log.error("Agentic loop failed: %s", e)
@@ -1160,6 +1291,7 @@ class LucydDaemon:
                 sender=item.get("sender", "http"),
                 source=item.get("type", "http"),
                 tier=item.get("tier", "full"),
+                attachments=item.get("attachments"),
                 response_future=item.get("response_future"),
                 notify_meta=item.get("notify_meta"),
             )
@@ -1188,6 +1320,9 @@ class LucydDaemon:
                 notify_meta = None
                 # Store last inbound timestamp for reaction tool (ms int)
                 self._last_inbound_ts[sender] = int(item.timestamp * 1000)
+                self._last_inbound_ts.move_to_end(sender)
+                while len(self._last_inbound_ts) > 1000:
+                    self._last_inbound_ts.popitem(last=False)
             elif isinstance(item, dict):
                 # Handle session reset before normal message processing
                 if item.get("type") == "reset":
@@ -1229,7 +1364,7 @@ class LucydDaemon:
                 source = item.get("type", "system")
                 text = item.get("text", "")
                 tier = item.get("tier", "full" if source == "user" else "operational")
-                attachments = None
+                attachments = item.get("attachments")
                 notify_meta = item.get("notify_meta")
             else:
                 continue
@@ -1350,6 +1485,8 @@ class LucydDaemon:
                     get_status=self._build_status,
                     get_sessions=self._build_sessions,
                     get_cost=self._build_cost,
+                    download_dir=cfg.http_download_dir,
+                    max_body_bytes=cfg.http_max_body_bytes,
                 )
                 await self._http_api.start()
 
@@ -1373,6 +1510,18 @@ class LucydDaemon:
             log.error("Fatal error: %s", e, exc_info=True)
             raise
         finally:
+            # Disconnect channel (close httpx client, clean downloads)
+            if self.channel is not None:
+                try:
+                    await self.channel.disconnect()
+                except Exception:  # noqa: S110 — channel cleanup on shutdown; failure is benign
+                    pass
+            # Close memory DB connection
+            if self._memory_conn is not None:
+                try:
+                    self._memory_conn.close()
+                except Exception:  # noqa: S110 — DB close on shutdown; failure is benign
+                    pass
             _remove_pid_file(pid_path)
             # Clean up FIFO
             fifo_path = cfg.state_dir / "control.pipe"

@@ -53,30 +53,6 @@ class MemoryInterface:
 
         if not Path(db_path).exists():
             log.warning("Memory DB not found: %s", db_path)
-        else:
-            self._ensure_cache_table()
-
-    def _ensure_cache_table(self) -> None:
-        """Create embedding_cache table if it doesn't exist."""
-        conn = sqlite3.connect(self.db_path, timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS embedding_cache (
-                    provider TEXT,
-                    model TEXT,
-                    provider_key TEXT,
-                    hash TEXT PRIMARY KEY,
-                    embedding TEXT,
-                    dims INTEGER,
-                    updated_at TEXT
-                )
-            """)
-            conn.commit()
-        except Exception as e:
-            log.warning("Failed to ensure cache table: %s", e)
-        finally:
-            conn.close()
 
     async def search(self, query: str, top_k: int | None = None) -> list[dict]:
         """Search memory: FTS first, vector fallback."""

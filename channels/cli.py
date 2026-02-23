@@ -16,6 +16,9 @@ class CLIChannel:
     async def connect(self) -> None:
         pass
 
+    async def disconnect(self) -> None:
+        pass
+
     async def receive(self) -> AsyncIterator[InboundMessage]:
         while True:
             try:

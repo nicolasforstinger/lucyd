@@ -498,6 +498,7 @@ class SessionManager:
 
         session.compaction_count += 1
         session.warned_about_compaction = False
+        session._save_state()
         session.append_event({
             "type": "compaction",
             "summary_tokens": response.usage.output_tokens,
@@ -505,6 +506,5 @@ class SessionManager:
             "compaction_number": session.compaction_count,
             "summary": summary[:2000],
         })
-        session._save_state()
         log.info("Compacted session %s: %d messages → summary + %d recent",
                  session.id, len(old_messages), len(recent_messages))

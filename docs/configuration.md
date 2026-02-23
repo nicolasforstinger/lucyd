@@ -361,6 +361,15 @@ request_timeout = 60                                  # Timeout for whisper.cpp 
 
 The local backend converts audio to WAV (16kHz mono) via ffmpeg before sending to the whisper.cpp server. Requires `ffmpeg` installed on the system.
 
+## [vision]
+
+Image processing settings for inbound images.
+
+```toml
+[vision]
+max_image_bytes = 5242880              # Skip inbound images larger than this (bytes, default 5 MB)
+```
+
 ## [behavior]
 
 Runtime behavior tuning.
@@ -373,7 +382,6 @@ error_message = "I'm having trouble connecting right now. Try again in a moment.
 agent_timeout_seconds = 600                                            # Timeout per API call in the agentic loop
 max_turns_per_message = 50                                             # Max tool-use iterations per inbound message
 max_cost_per_message = 5.0                                             # USD circuit breaker per message (0.0 = disabled)
-max_image_bytes = 5242880                                              # Skip inbound images larger than this (bytes, default 5 MB)
 ```
 
 ### [behavior.compaction]

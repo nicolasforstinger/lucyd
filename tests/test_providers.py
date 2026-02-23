@@ -593,3 +593,29 @@ class TestAnthropicFormatMessagesExtended:
         assert len(images) == 2
         assert images[0]["source"]["media_type"] == "image/png"
         assert images[1]["source"]["media_type"] == "image/jpeg"
+
+
+class TestAnthropicSafeParseArgs:
+    """_safe_parse_args — handles malformed tool input without crashing."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self):
+        pytest.importorskip("anthropic")
+
+    def test_dict_passthrough(self):
+        from providers.anthropic_compat import _safe_parse_args
+        assert _safe_parse_args({"key": "val"}) == {"key": "val"}
+
+    def test_valid_json_string(self):
+        from providers.anthropic_compat import _safe_parse_args
+        assert _safe_parse_args('{"a": 1}') == {"a": 1}
+
+    def test_malformed_string_returns_raw_fallback(self):
+        from providers.anthropic_compat import _safe_parse_args
+        result = _safe_parse_args("not json {{{")
+        assert result == {"raw": "not json {{{"}
+
+    def test_none_returns_raw_fallback(self):
+        from providers.anthropic_compat import _safe_parse_args
+        result = _safe_parse_args(None)
+        assert result == {"raw": None}

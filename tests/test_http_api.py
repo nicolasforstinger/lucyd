@@ -4,6 +4,7 @@ Covers: auth security, endpoint correctness, resilience, edge cases.
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -53,7 +54,7 @@ def _make_app(api_instance: HTTPApi) -> web.Application:
     """Build aiohttp app from HTTPApi for testing."""
     app = web.Application(
         middlewares=[api_instance._auth_middleware, api_instance._rate_middleware],
-        client_max_size=1_048_576,
+        client_max_size=api_instance._max_body_bytes,
     )
     app.router.add_post("/api/v1/chat", api_instance._handle_chat)
     app.router.add_post("/api/v1/notify", api_instance._handle_notify)
@@ -995,8 +996,13 @@ class TestContentType:
             assert resp.status in (400, 500)
 
     @pytest.mark.asyncio
-    async def test_oversized_body_rejected(self, api, auth_headers):
-        """POST with body > 1 MiB gets 413 Request Entity Too Large."""
+    async def test_oversized_body_rejected(self, queue, auth_headers):
+        """POST with body > max_body_bytes gets 413 Request Entity Too Large."""
+        api = HTTPApi(
+            queue=queue, host="127.0.0.1", port=0,
+            auth_token="test-token-123", agent_timeout=5.0,
+            max_body_bytes=1_048_576,  # 1 MiB
+        )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             # Build valid JSON that exceeds 1 MiB
@@ -1622,3 +1628,293 @@ class TestHTTPCallbackConfig:
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
         })
         assert cfg.http_callback_token == ""
+
+
+# ─── HTTP Attachment Support ─────────────────────────────────────
+
+
+class TestHTTPAttachments:
+    """Attachment decoding and queue wiring for /chat and /notify."""
+
+    @pytest.fixture
+    def api_with_dl(self, queue, tmp_path):
+        """HTTPApi with a temp download directory."""
+        return HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="test-token-123",
+            agent_timeout=5.0,
+            download_dir=str(tmp_path / "downloads"),
+        )
+
+    @pytest.fixture
+    def auth_headers(self):
+        return {"Authorization": "Bearer test-token-123"}
+
+    @pytest.mark.asyncio
+    async def test_chat_with_attachment(self, api_with_dl, queue, auth_headers):
+        """POST /chat with attachments decodes and queues Attachment objects."""
+        import base64
+        from channels import Attachment
+
+        data_b64 = base64.b64encode(b"fake pdf content").decode()
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            async def resolve():
+                await asyncio.sleep(0.1)
+                item = await queue.get()
+                assert "attachments" in item
+                atts = item["attachments"]
+                assert len(atts) == 1
+                assert isinstance(atts[0], Attachment)
+                assert atts[0].content_type == "application/pdf"
+                assert atts[0].filename == "invoice.pdf"
+                assert atts[0].size == len(b"fake pdf content")
+                assert Path(atts[0].local_path).exists()
+                item["response_future"].set_result({"reply": "got it"})
+
+            task = asyncio.create_task(resolve())
+            resp = await client.post(
+                "/api/v1/chat",
+                headers=auth_headers,
+                json={
+                    "message": "process this",
+                    "attachments": [{
+                        "content_type": "application/pdf",
+                        "filename": "invoice.pdf",
+                        "data": data_b64,
+                    }],
+                },
+            )
+            await task
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_notify_with_attachment(self, api_with_dl, queue, auth_headers):
+        """POST /notify with attachments decodes and queues them."""
+        import base64
+        from channels import Attachment
+
+        data_b64 = base64.b64encode(b"\x89PNG fake image").decode()
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={
+                    "message": "new photo",
+                    "attachments": [{
+                        "content_type": "image/png",
+                        "filename": "photo.png",
+                        "data": data_b64,
+                    }],
+                },
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        assert "attachments" in item
+        atts = item["attachments"]
+        assert len(atts) == 1
+        assert isinstance(atts[0], Attachment)
+        assert atts[0].content_type == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_multiple_attachments(self, api_with_dl, queue, auth_headers):
+        """Multiple attachments in one request are all decoded."""
+        import base64
+
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={
+                    "message": "two files",
+                    "attachments": [
+                        {"content_type": "text/plain", "filename": "a.txt", "data": base64.b64encode(b"aaa").decode()},
+                        {"content_type": "image/jpeg", "filename": "b.jpg", "data": base64.b64encode(b"bbb").decode()},
+                    ],
+                },
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        assert len(item["attachments"]) == 2
+        assert {a.filename for a in item["attachments"]} == {"a.txt", "b.jpg"}
+
+    @pytest.mark.asyncio
+    async def test_no_attachments_key_absent(self, api_with_dl, queue, auth_headers):
+        """When no attachments provided, key is absent from queue item."""
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={"message": "plain text"},
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        assert "attachments" not in item
+
+    @pytest.mark.asyncio
+    async def test_empty_attachments_list(self, api_with_dl, queue, auth_headers):
+        """Empty attachments list treated same as absent."""
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={"message": "no files", "attachments": []},
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        assert "attachments" not in item
+
+    @pytest.mark.asyncio
+    async def test_attachment_missing_data_skipped(self, api_with_dl, queue, auth_headers):
+        """Attachment with missing data field is silently skipped."""
+        import base64
+
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={
+                    "message": "partial",
+                    "attachments": [
+                        {"content_type": "text/plain", "filename": "no-data.txt"},
+                        {"content_type": "text/plain", "filename": "good.txt", "data": base64.b64encode(b"ok").decode()},
+                    ],
+                },
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        assert len(item["attachments"]) == 1
+        assert item["attachments"][0].filename == "good.txt"
+
+    @pytest.mark.asyncio
+    async def test_attachment_missing_content_type_skipped(self, api_with_dl, queue, auth_headers):
+        """Attachment with missing content_type is silently skipped."""
+        import base64
+
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={
+                    "message": "partial",
+                    "attachments": [
+                        {"filename": "no-ct.txt", "data": base64.b64encode(b"x").decode()},
+                    ],
+                },
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        assert "attachments" not in item
+
+    @pytest.mark.asyncio
+    async def test_download_dir_created(self, queue, tmp_path, auth_headers):
+        """Download directory is created if it doesn't exist."""
+        import base64
+
+        dl_dir = tmp_path / "new" / "subdir"
+        api = HTTPApi(
+            queue=queue, host="127.0.0.1", port=0,
+            auth_token="test-token-123", agent_timeout=5.0,
+            download_dir=str(dl_dir),
+        )
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={
+                    "message": "file",
+                    "attachments": [{"content_type": "text/plain", "filename": "test.txt",
+                                     "data": base64.b64encode(b"hello").decode()}],
+                },
+            )
+            assert resp.status == 202
+
+        assert dl_dir.exists()
+        item = queue.get_nowait()
+        assert Path(item["attachments"][0].local_path).parent == dl_dir
+
+    @pytest.mark.asyncio
+    async def test_file_content_preserved(self, api_with_dl, queue, auth_headers):
+        """File content round-trips through base64 decode to disk."""
+        import base64
+
+        original = b"\x00\x01\x02binary\xfe\xff"
+        data_b64 = base64.b64encode(original).decode()
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={
+                    "message": "binary file",
+                    "attachments": [{"content_type": "application/octet-stream",
+                                     "filename": "data.bin", "data": data_b64}],
+                },
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        saved = Path(item["attachments"][0].local_path).read_bytes()
+        assert saved == original
+
+
+# ─── Config: HTTP Attachment Properties ──────────────────────────
+
+
+class TestHTTPAttachmentConfig:
+    def test_download_dir_default(self):
+        """Download dir defaults to /tmp/lucyd-http."""
+        from config import Config
+        cfg = Config({
+            "agent": {"name": "Test", "workspace": "/tmp/test"},
+            "channel": {"type": "cli"},
+            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+        })
+        assert cfg.http_download_dir == "/tmp/lucyd-http"
+
+    def test_download_dir_configured(self):
+        """Download dir reads from [http] section."""
+        from config import Config
+        cfg = Config({
+            "agent": {"name": "Test", "workspace": "/tmp/test"},
+            "channel": {"type": "cli"},
+            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "http": {"download_dir": "/var/lucyd/uploads"},
+        })
+        assert cfg.http_download_dir == "/var/lucyd/uploads"
+
+    def test_max_body_bytes_default(self):
+        """Max body bytes defaults to 10 MiB."""
+        from config import Config
+        cfg = Config({
+            "agent": {"name": "Test", "workspace": "/tmp/test"},
+            "channel": {"type": "cli"},
+            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+        })
+        assert cfg.http_max_body_bytes == 10 * 1024 * 1024
+
+    def test_max_body_bytes_configured(self):
+        """Max body bytes reads from [http] section."""
+        from config import Config
+        cfg = Config({
+            "agent": {"name": "Test", "workspace": "/tmp/test"},
+            "channel": {"type": "cli"},
+            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "http": {"max_body_bytes": 5_000_000},
+        })
+        assert cfg.http_max_body_bytes == 5_000_000

@@ -11,57 +11,46 @@ from memory import MemoryInterface, cosine_sim
 @pytest.fixture
 def memory_db(tmp_path):
     """Create a temporary memory DB with test data."""
+    from memory_schema import ensure_schema
+
     db_path = str(tmp_path / "test_memory.sqlite")
     conn = sqlite3.connect(db_path)
-    conn.execute("""
-        CREATE TABLE chunks (
-            id TEXT PRIMARY KEY,
-            path TEXT,
-            source TEXT,
-            text TEXT,
-            start_line INTEGER,
-            end_line INTEGER,
-            embedding TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-            text, content=chunks, content_rowid=rowid
-        )
-    """)
-    # Insert test chunks
+    ensure_schema(conn)
+    # Insert test chunks (ensure_schema creates the production schema with all columns)
     conn.execute(
-        "INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("chunk1", "test.py", "file", "def hello():\n    print('hello')", 1, 10, None),
+        "INSERT INTO chunks (id, path, source, text, start_line, end_line, hash, model, embedding, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("chunk1", "test.py", "file", "def hello():\n    print('hello')", 1, 10, "h1", "model", "[]", 0),
     )
     conn.execute(
-        "INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("chunk2", "test.py", "file", "def world():\n    print('world')", 11, 20, None),
+        "INSERT INTO chunks (id, path, source, text, start_line, end_line, hash, model, embedding, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("chunk2", "test.py", "file", "def world():\n    print('world')", 11, 20, "h2", "model", "[]", 0),
     )
     conn.execute(
-        "INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("chunk3", "test.py", "file", "class Foo:\n    pass", 45, 60, None),
+        "INSERT INTO chunks (id, path, source, text, start_line, end_line, hash, model, embedding, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("chunk3", "test.py", "file", "class Foo:\n    pass", 45, 60, "h3", "model", "[]", 0),
     )
     # Populate FTS
-    conn.execute("INSERT INTO chunks_fts(rowid, text) SELECT rowid, text FROM chunks")
+    conn.execute(
+        "INSERT INTO chunks_fts(text, id, path, source, model, start_line, end_line) "
+        "SELECT text, id, path, source, model, start_line, end_line FROM chunks"
+    )
     conn.commit()
     conn.close()
     return db_path
 
 
 class TestCachTableInit:
-    """Cache table auto-creation on init."""
+    """Cache table is created by ensure_schema, not by MemoryInterface."""
 
-    def test_creates_cache_table(self, tmp_path):
+    def test_ensure_schema_creates_cache_table(self, tmp_path):
+        from memory_schema import ensure_schema
+
         db_path = str(tmp_path / "test.sqlite")
         conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE chunks (id TEXT)")
-        conn.commit()
-        conn.close()
-
-        MemoryInterface(db_path=db_path)
-        # Verify cache table exists
-        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)
         tables = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='embedding_cache'"
         ).fetchone()
@@ -178,8 +167,9 @@ class TestVectorSearchLimitWarning:
         for i in range(3):
             emb = json.dumps([float(i)] * 3)
             conn.execute(
-                "INSERT INTO chunks (id, path, source, text, embedding) VALUES (?, ?, ?, ?, ?)",
-                (f"limit-test-{i}", "test.md", "test", f"text {i}", emb),
+                "INSERT INTO chunks (id, path, source, text, start_line, end_line, hash, model, embedding, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (f"limit-test-{i}", "test.md", "test", f"text {i}", 1, 1, f"h{i}", "model", emb, 0),
             )
         conn.commit()
         conn.close()

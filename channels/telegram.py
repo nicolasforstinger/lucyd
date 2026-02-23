@@ -108,6 +108,20 @@ class TelegramChannel:
 
         return data.get("result", {})
 
+    async def disconnect(self) -> None:
+        """Close httpx client and clean up downloaded files."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+        # Clean transient download files
+        if self.download_dir.exists():
+            for f in self.download_dir.iterdir():
+                try:
+                    if f.is_file():
+                        f.unlink()
+                except OSError:
+                    pass
+
     async def connect(self) -> None:
         """Verify bot token and log identity."""
         try:
@@ -209,15 +223,18 @@ class TelegramChannel:
         """Download and return attachments from a Telegram message."""
         attachments = []
 
-        # Photos — take largest resolution
+        # Photos — try largest resolution first, fall back to smaller variants
         photos = message.get("photo")
         if photos:
-            best = photos[-1]  # Largest size
-            att = await self._download_file(
-                best.get("file_id", ""),
-                content_type="image/jpeg",
-                size=best.get("file_size", 0),
-            )
+            att = None
+            for variant in reversed(photos):
+                att = await self._download_file(
+                    variant.get("file_id", ""),
+                    content_type="image/jpeg",
+                    size=variant.get("file_size", 0),
+                )
+                if att:
+                    break
             if att:
                 attachments.append(att)
 
@@ -232,7 +249,7 @@ class TelegramChannel:
             if att:
                 attachments.append(att)
 
-        # Documents
+        # Documents — fall back to thumbnail for image documents
         doc = message.get("document")
         if doc:
             att = await self._download_file(
@@ -241,6 +258,18 @@ class TelegramChannel:
                 filename=doc.get("file_name", ""),
                 size=doc.get("file_size", 0),
             )
+            if not att and doc.get("thumbnail"):
+                mime = doc.get("mime_type", "")
+                if mime.startswith("image/"):
+                    thumb = doc["thumbnail"]
+                    log.info("Full document too large, downloading thumbnail: %s",
+                             doc.get("file_name", ""))
+                    att = await self._download_file(
+                        thumb.get("file_id", ""),
+                        content_type="image/jpeg",
+                        filename=doc.get("file_name", ""),
+                        size=thumb.get("file_size", 0),
+                    )
             if att:
                 attachments.append(att)
 

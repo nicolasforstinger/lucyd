@@ -394,3 +394,129 @@ class TestSessionLogInfo:
         f.write_text('{"msg":"old"}\n')
         _, _, desc = _session_log_info(d, self.SID)
         assert "2023" in desc
+
+
+# ─── CLI --attach flag ───────────────────────────────────────────
+
+main = lucyd_send.main
+
+
+class TestAttachFlag:
+    """Tests for the --attach CLI flag and FIFO serialization."""
+
+    def test_attach_serialises_metadata(self, tmp_path):
+        """--attach serialises file metadata into the FIFO JSON message."""
+        fifo_path = tmp_path / "test.pipe"
+        os.mkfifo(str(fifo_path))
+
+        # Create a test file
+        test_file = tmp_path / "doc.pdf"
+        test_file.write_bytes(b"%PDF-fake-content")
+
+        import threading
+
+        captured = []
+
+        def reader():
+            with open(str(fifo_path)) as f:
+                captured.append(f.read())
+
+        t = threading.Thread(target=reader)
+        t.start()
+        time.sleep(0.05)
+
+        msg = {"type": "user", "text": "check this", "sender": "cli",
+               "attachments": [{
+                   "content_type": "application/pdf",
+                   "local_path": str(test_file),
+                   "filename": "doc.pdf",
+                   "size": test_file.stat().st_size,
+               }]}
+        send_to_fifo(fifo_path, msg)
+        t.join(timeout=2)
+
+        assert len(captured) == 1
+        parsed = json.loads(captured[0])
+        assert "attachments" in parsed
+        att = parsed["attachments"][0]
+        assert att["content_type"] == "application/pdf"
+        assert att["local_path"] == str(test_file)
+        assert att["filename"] == "doc.pdf"
+        assert att["size"] == len(b"%PDF-fake-content")
+
+    def test_attach_nonexistent_file_exits(self, tmp_path, monkeypatch):
+        """--attach with a nonexistent file prints error and exits."""
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--message", "test",
+            "--attach", str(tmp_path / "missing.pdf"),
+            "--state-dir", str(tmp_path),
+        ])
+        # Create a fake FIFO so we get past the FIFO check
+        fifo = tmp_path / "control.pipe"
+        os.mkfifo(str(fifo))
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_attach_directory_exits(self, tmp_path, monkeypatch):
+        """--attach with a directory (not a file) prints error and exits."""
+        a_dir = tmp_path / "subdir"
+        a_dir.mkdir()
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--message", "test",
+            "--attach", str(a_dir),
+            "--state-dir", str(tmp_path),
+        ])
+        fifo = tmp_path / "control.pipe"
+        os.mkfifo(str(fifo))
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_attach_guesses_content_type(self, tmp_path):
+        """mimetypes guesses correct content_type for known extensions."""
+        import mimetypes
+
+        for ext, expected_prefix in [(".jpg", "image/"), (".png", "image/"), (".txt", "text/")]:
+            f = tmp_path / f"test{ext}"
+            f.write_bytes(b"x")
+            ct, _ = mimetypes.guess_type(str(f))
+            assert ct is not None
+            assert ct.startswith(expected_prefix)
+
+    def test_attach_multiple_files(self, tmp_path):
+        """Multiple --attach flags produce multiple attachment entries."""
+        fifo_path = tmp_path / "test.pipe"
+        os.mkfifo(str(fifo_path))
+
+        f1 = tmp_path / "a.txt"
+        f1.write_text("aaa")
+        f2 = tmp_path / "b.jpg"
+        f2.write_bytes(b"\xff\xd8\xff")
+
+        import threading
+
+        captured = []
+
+        def reader():
+            with open(str(fifo_path)) as f:
+                captured.append(f.read())
+
+        t = threading.Thread(target=reader)
+        t.start()
+        time.sleep(0.05)
+
+        msg = {"type": "user", "text": "two files", "sender": "cli",
+               "attachments": [
+                   {"content_type": "text/plain", "local_path": str(f1), "filename": "a.txt", "size": f1.stat().st_size},
+                   {"content_type": "image/jpeg", "local_path": str(f2), "filename": "b.jpg", "size": f2.stat().st_size},
+               ]}
+        send_to_fifo(fifo_path, msg)
+        t.join(timeout=2)
+
+        parsed = json.loads(captured[0])
+        assert len(parsed["attachments"]) == 2
+        filenames = {a["filename"] for a in parsed["attachments"]}
+        assert filenames == {"a.txt", "b.jpg"}

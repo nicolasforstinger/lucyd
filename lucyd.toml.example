@@ -156,6 +156,20 @@ timeout = 60
 # ffmpeg_timeout = 30
 # request_timeout = 60
 
+# ─── Documents ───────────────────────────────────────────────────
+# Extract text from document attachments (PDF, text files, etc.)
+# so the agent sees content, not just "[attachment: file.pdf, application/pdf]".
+# PDF support requires pypdf (pip install pypdf). If not installed, PDFs
+# fall through to label-only.
+
+[documents]
+enabled = true
+max_chars = 30000                  # Truncation limit (matches output_truncation)
+max_file_bytes = 10485760          # 10 MB — skip huge files
+# text_extensions = [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
+#     ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
+#     ".ini", ".cfg", ".log", ".sql", ".css"]
+
 # ─── Vision ─────────────────────────────────────────────────────
 
 [vision]

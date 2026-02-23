@@ -204,6 +204,14 @@ class Config:
         return self.api_key("http_token")
 
     @property
+    def http_download_dir(self) -> str:
+        return _deep_get(self._data, "http", "download_dir", default="/tmp/lucyd-http")  # noqa: S108 — config default; overridden by lucyd.toml
+
+    @property
+    def http_max_body_bytes(self) -> int:
+        return _deep_get(self._data, "http", "max_body_bytes", default=10 * 1024 * 1024)
+
+    @property
     def http_callback_url(self) -> str:
         return _deep_get(self._data, "http", "callback_url", default="")
 
@@ -434,6 +442,27 @@ class Config:
     def stt_openai_timeout(self) -> int:
         return _deep_get(self._data, "stt", "openai", "timeout", default=60)
 
+    # --- Documents ---
+
+    @property
+    def documents_enabled(self) -> bool:
+        return _deep_get(self._data, "documents", "enabled", default=True)
+
+    @property
+    def documents_max_chars(self) -> int:
+        return _deep_get(self._data, "documents", "max_chars", default=30000)
+
+    @property
+    def documents_max_file_bytes(self) -> int:
+        return _deep_get(self._data, "documents", "max_file_bytes", default=10 * 1024 * 1024)
+
+    @property
+    def documents_text_extensions(self) -> list[str]:
+        return _deep_get(self._data, "documents", "text_extensions",
+                         default=[".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
+                                  ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
+                                  ".ini", ".cfg", ".log", ".sql", ".css"])
+
     # --- Vision ---
 
     @property
@@ -464,6 +493,14 @@ class Config:
     def error_message(self) -> str:
         return _deep_get(self._data, "behavior", "error_message",
                          default="I'm having trouble connecting right now. Try again in a moment.")
+
+    @property
+    def api_retries(self) -> int:
+        return _deep_get(self._data, "behavior", "api_retries", default=2)
+
+    @property
+    def api_retry_base_delay(self) -> float:
+        return float(_deep_get(self._data, "behavior", "api_retry_base_delay", default=2.0))
 
     @property
     def agent_timeout(self) -> float:

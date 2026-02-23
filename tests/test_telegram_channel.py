@@ -1616,6 +1616,81 @@ class TestParseMessageStrong:
         })
         assert isinstance(msg, InboundMessage)
 
+    @pytest.mark.asyncio
+    async def test_photo_falls_back_to_smaller_variant(self, tmp_path):
+        """If largest photo variant fails, smaller variants are tried."""
+        ch = _make_channel(download_dir=str(tmp_path))
+        mock_client = AsyncMock()
+        mock_client.is_closed = False
+
+        # getFile calls: first fails (large), second succeeds (small)
+        mock_client.post.side_effect = [
+            # Large variant: getFile fails
+            _mock_response({"ok": False, "description": "Bad Request: file is too big"}),
+            # Small variant: getFile succeeds
+            _mock_response({"ok": True, "result": {"file_path": "photos/small.jpg"}}),
+        ]
+        download_resp = MagicMock(spec=httpx.Response)
+        download_resp.raise_for_status = MagicMock()
+        download_resp.content = b"smalljpeg"
+        mock_client.get.return_value = download_resp
+        ch._client = mock_client
+
+        atts = await ch._extract_attachments({
+            "photo": [
+                {"file_id": "small", "file_size": 100},
+                {"file_id": "large", "file_size": 50000},
+            ],
+        })
+        assert len(atts) == 1
+        assert atts[0].content_type == "image/jpeg"
+
+    @pytest.mark.asyncio
+    async def test_document_falls_back_to_thumbnail(self, tmp_path):
+        """Image document too large falls back to thumbnail download."""
+        ch = _make_channel(download_dir=str(tmp_path))
+        mock_client = AsyncMock()
+        mock_client.is_closed = False
+
+        # First getFile (full doc) fails, second getFile (thumbnail) succeeds
+        mock_client.post.side_effect = [
+            _mock_response({"ok": False, "description": "Bad Request: file is too big"}),
+            _mock_response({"ok": True, "result": {"file_path": "thumbs/t.jpg"}}),
+        ]
+        download_resp = MagicMock(spec=httpx.Response)
+        download_resp.raise_for_status = MagicMock()
+        download_resp.content = b"thumbdata"
+        mock_client.get.return_value = download_resp
+        ch._client = mock_client
+
+        atts = await ch._extract_attachments({
+            "document": {
+                "file_id": "d1", "file_size": 30_000_000,
+                "mime_type": "image/png", "file_name": "huge.png",
+                "thumbnail": {"file_id": "t1", "file_size": 5000},
+            },
+        })
+        assert len(atts) == 1
+        assert atts[0].content_type == "image/jpeg"
+
+    @pytest.mark.asyncio
+    async def test_document_thumbnail_not_tried_for_non_images(self, tmp_path):
+        """Non-image documents don't attempt thumbnail fallback."""
+        ch = _make_channel(download_dir=str(tmp_path))
+        mock_client = AsyncMock()
+        mock_client.is_closed = False
+        mock_client.post.side_effect = httpx.ConnectError("fail")
+        ch._client = mock_client
+
+        atts = await ch._extract_attachments({
+            "document": {
+                "file_id": "d1", "file_size": 30_000_000,
+                "mime_type": "application/pdf", "file_name": "big.pdf",
+                "thumbnail": {"file_id": "t1", "file_size": 5000},
+            },
+        })
+        assert atts == []
+
 
 # ─── Send Typing (Stronger) ─────────────────────────────────────
 
@@ -2706,3 +2781,51 @@ class TestReceive:
         for s in sleep_args:
             # Max = 10.0, jitter = 20%, so max with jitter ≈ 12.0
             assert s <= _RECONNECT_MAX * (1 + _RECONNECT_JITTER)
+
+
+# ─── Disconnect Lifecycle ────────────────────────────────────────
+
+
+class TestDisconnect:
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_client(self):
+        ch = _make_channel()
+        mock_client = AsyncMock()
+        mock_client.is_closed = False
+        ch._client = mock_client
+
+        await ch.disconnect()
+
+        mock_client.aclose.assert_awaited_once()
+        assert ch._client is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_idempotent(self):
+        ch = _make_channel()
+        # No client set
+        await ch.disconnect()  # Should not raise
+        await ch.disconnect()  # Still should not raise
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cleans_download_dir(self, tmp_path):
+        dl_dir = tmp_path / "downloads"
+        dl_dir.mkdir()
+        (dl_dir / "file1.jpg").write_bytes(b"fake")
+        (dl_dir / "file2.ogg").write_bytes(b"audio")
+
+        ch = _make_channel(download_dir=str(dl_dir))
+        await ch.disconnect()
+
+        remaining = list(dl_dir.iterdir())
+        assert remaining == []
+
+    @pytest.mark.asyncio
+    async def test_disconnect_skips_closed_client(self):
+        ch = _make_channel()
+        mock_client = AsyncMock()
+        mock_client.is_closed = True
+        ch._client = mock_client
+
+        await ch.disconnect()
+
+        mock_client.aclose.assert_not_awaited()
