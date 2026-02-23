@@ -185,6 +185,14 @@ class Config:
     def telegram_config(self) -> dict:
         return _deep_get(self._data, "channel", "telegram", default={})
 
+    @property
+    def contact_names(self) -> list[str]:
+        """Contact names from channel config (for tool descriptions)."""
+        contacts = _deep_get(
+            self._data, "channel", self.channel_type, "contacts", default={},
+        )
+        return list(contacts.keys())
+
     # --- HTTP API ---
 
     @property

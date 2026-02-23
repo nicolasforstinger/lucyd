@@ -544,21 +544,38 @@ def inject_recall(blocks: list[RecallBlock], max_tokens: int) -> str:
 
     Blocks arrive sorted by priority (highest first). Adds blocks
     until budget exhausted, dropping lowest-priority blocks.
+    Appends a footer showing what was loaded vs. budget, plus
+    any dropped sections so the agent knows what it's missing.
     """
     result = []
+    included_sections = []
+    dropped_sections = []
     remaining = max_tokens
     for block in blocks:
         if block.est_tokens <= remaining:
             result.append(f"{block.section}\n{block.text}")
+            included_sections.append(block.section.strip("[]"))
             remaining -= block.est_tokens
-    return "\n\n".join(result) if result else ""
+        else:
+            dropped_sections.append(block.section.strip("[]"))
+
+    if not result:
+        return ""
+
+    used = max_tokens - remaining
+    sections_str = ", ".join(included_sections)
+    footer = f"[Memory loaded: {sections_str} | {used}/{max_tokens} tokens used]"
+    if dropped_sections:
+        dropped_str = ", ".join(dropped_sections)
+        footer += f"\n[Dropped (over budget): {dropped_str} — use memory_search to access]"
+    result.append(footer)
+    return "\n\n".join(result)
 
 
 EMPTY_RECALL_FALLBACK = (
     "No results found in structured memory or vector search. "
-    "Check the memory logs in memory/*.md for relevant information "
-    "using the memory_get tool. Also check memory/cache/NOTES.md "
-    "for tasks and reminders."
+    "Try memory_get with workspace-relative paths (e.g., 'memory/YYYY-MM-DD.md', 'MEMORY.md') "
+    "to check memory files directly."
 )
 
 

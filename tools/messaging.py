@@ -21,6 +21,24 @@ def set_timestamp_getter(fn: Callable) -> None:
     _get_timestamp = fn
 
 
+def configure(contact_names: list[str] | None = None) -> None:
+    """Patch tool descriptions with deployment-specific values."""
+    if contact_names:
+        names = ", ".join(contact_names)
+        target_desc = (
+            f"Recipient contact name (case-insensitive). "
+            f"Available contacts: {names}. Self-sends are blocked."
+        )
+    else:
+        target_desc = (
+            "Recipient contact name. No contacts configured — check deployment config."
+        )
+    # Patch target description on both message and react tools
+    for tool in TOOLS:
+        if "target" in tool["input_schema"]["properties"]:
+            tool["input_schema"]["properties"]["target"]["description"] = target_desc
+
+
 async def tool_message(target: str, text: str = "", attachments: list[str] | None = None) -> str:
     """Send a message via the configured channel."""
     if _channel is None:
@@ -41,8 +59,8 @@ async def tool_message(target: str, text: str = "", attachments: list[str] | Non
         if attachments:
             parts.append(f"{len(attachments)} attachment(s)")
         return f"Sent {' + '.join(parts)} to {target}"
-    except Exception:
-        return "Error: Message delivery failed"
+    except Exception as e:
+        return f"Error: Message delivery failed: {type(e).__name__}"
 
 
 async def tool_react(target: str, emoji: str, sender: str = "") -> str:
@@ -64,7 +82,11 @@ async def tool_react(target: str, emoji: str, sender: str = "") -> str:
 TOOLS = [
     {
         "name": "message",
-        "description": "Send a message (text and/or file attachments) to a contact via the configured channel.",
+        "description": (
+            "Send a message (text and/or file attachments) to a contact. "
+            "In system/HTTP sessions, your text replies are NOT delivered — "
+            "this tool is the only way to notify the operator."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -87,8 +109,21 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "target": {"type": "string", "description": "Contact to send the reaction to"},
-                "emoji": {"type": "string", "description": "Emoji to react with. Must be a Telegram-allowed reaction: ❤ 👍 👎 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳 ❤‍🔥 🌚 🌭 💯 🤣 ⚡ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👨‍💻 👀 🎃 🙈 😇 😨 🤝 ✍ 🤗 🫡 🎅 🎄 ☃ 💅 🤪 🗿 🆒 💘 🙉 🦄 😘 💊 🙊 😎 👾 🤷‍♂ 🤷 🤷‍♀ 😡"},
-                "sender": {"type": "string", "description": "Sender of the message to react to (defaults to target)"},
+                "emoji": {
+                    "type": "string",
+                    "description": "Telegram-allowed reaction emoji.",
+                    "enum": [
+                        "❤", "👍", "👎", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱",
+                        "🤬", "😢", "🎉", "🤩", "🤮", "💩", "🙏", "👌", "🕊", "🤡",
+                        "🥱", "🥴", "😍", "🐳", "❤\u200d🔥", "🌚", "🌭", "💯", "🤣", "⚡",
+                        "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈",
+                        "😴", "😭", "🤓", "👻", "👨\u200d💻", "👀", "🎃", "🙈", "😇", "😨",
+                        "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿",
+                        "🆒", "💘", "🙉", "🦄", "😘", "💊", "🙊", "😎", "👾",
+                        "🤷\u200d♂", "🤷", "🤷\u200d♀", "😡"
+                    ],
+                },
+                "sender": {"type": "string", "description": "Contact who sent the message to react to. Leave empty to react to target's last message (most common)."},
             },
             "required": ["target", "emoji"],
         },

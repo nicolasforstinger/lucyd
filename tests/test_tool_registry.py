@@ -68,7 +68,8 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_unknown_tool_error(self, tool_registry):
         result = await tool_registry.execute("nonexistent", {})
-        assert "Unknown tool" in result
+        assert "not available" in result
+        assert "Available tools:" in result
 
     @pytest.mark.asyncio
     async def test_wrong_args_type_error(self, tool_registry):
@@ -83,7 +84,7 @@ class TestExecute:
         reg.register("bomb", "explodes", {"type": "object"}, explode)
         result = await reg.execute("bomb", {})
         assert "Error:" in result
-        assert "Tool 'bomb' execution failed" in result
+        assert "Tool 'bomb' failed (RuntimeError)" in result
 
     @pytest.mark.asyncio
     async def test_truncation_at_limit(self):

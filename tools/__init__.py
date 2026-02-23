@@ -54,7 +54,12 @@ class ToolRegistry:
     async def execute(self, name: str, arguments: dict) -> str:
         """Execute a tool call with error isolation and truncation."""
         if name not in self._tools:
-            return f"Error: Unknown tool '{name}'"
+            available = ", ".join(sorted(self._tools.keys()))
+            return (
+                f"Error: Tool '{name}' is not available. "
+                f"Available tools: {available}. "
+                f"Check your available tools and try a different approach."
+            )
 
         func = self._tools[name]["function"]
         try:
@@ -69,7 +74,10 @@ class ToolRegistry:
             return f"Error: Invalid arguments for '{name}': {e}"
         except Exception as e:
             log.error("Tool %s failed: %s", name, e, exc_info=True)
-            return f"Error: Tool '{name}' execution failed"
+            return (
+                f"Error: Tool '{name}' failed ({type(e).__name__}). "
+                f"Try a different approach or check your arguments."
+            )
 
         result_str = str(result) if not isinstance(result, str) else result
         if len(result_str) > self.truncation_limit:

@@ -40,6 +40,76 @@ def configure(config: Any, providers: dict, tool_registry: Any,
         _subagent_deny = set(_DEFAULT_SUBAGENT_DENY)
 
 
+def _build_subagent_preamble(
+    scoped_tools: list[dict],
+    denied_names: list[str],
+    max_turns: int,
+) -> str:
+    """Build explicit preamble so sub-agents know their environment."""
+    import time as _time
+    now = _time.strftime("%a, %d. %b %Y - %H:%M %Z")
+    parts = [
+        "You are a sub-agent spawned to complete a specific task. "
+        "Complete the task below and return a clear text result.",
+        "",
+        f"Current date/time: {now}",
+        "",
+        "## Your Available Tools",
+        "",
+    ]
+    for t in scoped_tools:
+        parts.append(f"- **{t['name']}**: {t['description']}")
+
+    if denied_names:
+        parts.append("")
+        parts.append("## Denied Tools (do NOT call these)")
+        parts.append("")
+        for name in sorted(denied_names):
+            parts.append(f"- {name}")
+
+    parts.append("")
+    parts.append("## Limits")
+    parts.append("")
+    parts.append(f"- You have **{max_turns} tool-use turns**. Work efficiently.")
+    parts.append("- When done, respond with a clear text answer summarizing what you did and the result.")
+
+    # Contextual hints based on available tools
+    tool_names = {t["name"] for t in scoped_tools}
+
+    if tool_names & {"memory_search", "memory_get", "memory_write", "memory_forget"}:
+        parts.append("")
+        parts.append("## Memory Conventions")
+        parts.append("")
+        parts.append("- Entity names: lowercase with underscores (e.g., 'nicolas', 'lucy')")
+        parts.append("- memory_get paths are workspace-relative (e.g., 'memory/2026-02-23.md')")
+        parts.append("- Indexed files: memory/*.md, MEMORY.md")
+
+    if "message" in tool_names and _config:
+        contact_names = getattr(_config, "contact_names", [])
+        if contact_names:
+            parts.append("")
+            parts.append(f"## Contacts: {', '.join(contact_names)}")
+
+    if tool_names & {"read", "write", "edit"} and _config:
+        paths = getattr(_config, "filesystem_allowed_paths", [])
+        if paths:
+            parts.append("")
+            parts.append(f"## Allowed file paths: {', '.join(paths)}")
+
+    parts.append("")
+    parts.append("## Session")
+    parts.append("")
+    parts.append("Your session is ephemeral — context is discarded after this task.")
+
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+    parts.append("## Task")
+    parts.append("")
+
+    return "\n".join(parts)
+
+
 async def tool_sessions_spawn(
     prompt: str,
     model: str = "subagent",
@@ -72,8 +142,15 @@ async def tool_sessions_spawn(
     else:
         scoped_tools = [t for t in available if t["name"] not in _subagent_deny]
 
-    # Build minimal system prompt
-    system_blocks = [{"text": prompt, "tier": "stable"}]
+    # Build denied tool names list for the preamble
+    all_names = {t["name"] for t in available}
+    scoped_names = {t["name"] for t in scoped_tools}
+    denied_names = sorted(all_names - scoped_names)
+
+    # Build system prompt with explicit preamble
+    preamble = _build_subagent_preamble(scoped_tools, denied_names, max_turns)
+    system_text = preamble + prompt
+    system_blocks = [{"text": system_text, "tier": "stable"}]
     fmt_system = provider.format_system(system_blocks)
 
     messages = [{"role": "user", "content": prompt}]
@@ -119,7 +196,10 @@ async def tool_sessions_spawn(
 TOOLS = [
     {
         "name": "sessions_spawn",
-        "description": "Spawn a sub-agent for delegated or parallel work. Uses a cheaper/specialized model for the task.",
+        "description": (
+            "Spawn a sub-agent for delegated or parallel work. Uses a cheaper/specialized model. "
+            "Sub-agents are limited to 10 tool-use turns and have no conversation history."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {

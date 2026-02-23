@@ -198,6 +198,15 @@ async def run_agentic_loop(
 
         if response.stop_reason == "max_tokens":
             log.warning("Response truncated (max_tokens) on turn %d", turn)
+            # Warn agent so it can wrap up
+            if response.tool_calls:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[system: Your response was truncated (max output tokens). "
+                        "Some tool calls may be missing. Wrap up quickly.]"
+                    ),
+                })
 
         # If there are complete tool calls, execute them — even on max_tokens.
         # A truncated response may contain valid tool_use blocks generated
@@ -237,9 +246,24 @@ async def run_agentic_loop(
             await on_tool_results(results_msg) if inspect.iscoroutinefunction(on_tool_results) \
                 else on_tool_results(results_msg)
 
+        # Warn agent when approaching turn limit (2 turns remaining)
+        remaining = max_turns - (turn + 1)
+        if remaining == 2:
+            warning_text = (
+                f"[system: You have 2 tool-use turns remaining out of {max_turns}. "
+                f"Wrap up your work and provide a final answer.]"
+            )
+            messages.append({"role": "user", "content": warning_text})
+
     log.warning("Max turns (%d) reached", max_turns)
-    if response is not None and not response.text and fallback_text:
-        response.text = "\n\n".join(fallback_text)
+    if response is not None:
+        stop_msg = f"\n[Stopped: maximum tool-use turns ({max_turns}) reached]"
+        if response.text:
+            response.text += stop_msg
+        elif fallback_text:
+            response.text = "\n\n".join(fallback_text) + stop_msg
+        else:
+            response.text = stop_msg
     return response  # type: ignore[return-value]
 
 

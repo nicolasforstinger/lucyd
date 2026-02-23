@@ -389,9 +389,11 @@ class LucydDaemon:
         # Messaging
         if enabled & {"message", "react"}:
             from tools.messaging import TOOLS as msg_tools
+            from tools.messaging import configure as msg_configure
             from tools.messaging import set_channel, set_timestamp_getter
             set_channel(self.channel)
             set_timestamp_getter(lambda sender: self._last_inbound_ts.get(sender))
+            msg_configure(contact_names=self.config.contact_names)
             for t in msg_tools:
                 if t["name"] in enabled:
                     self.tool_registry.register_many([t])
@@ -457,6 +459,7 @@ class LucydDaemon:
                 speed=tts_cfg.get("speed", 1.0),
                 stability=tts_cfg.get("stability", 0.5),
                 similarity_boost=tts_cfg.get("similarity_boost", 0.75),
+                contact_names=self.config.contact_names,
             )
             self.tool_registry.register_many(tts_tools)
 
@@ -464,7 +467,7 @@ class LucydDaemon:
         if enabled & {"schedule_message", "list_scheduled"}:
             from tools.scheduling import TOOLS as sched_tools
             from tools.scheduling import configure as sched_configure
-            sched_configure(channel=self.channel)
+            sched_configure(channel=self.channel, contact_names=self.config.contact_names)
             for t in sched_tools:
                 if t["name"] in enabled:
                     self.tool_registry.register_many([t])
@@ -490,10 +493,12 @@ class LucydDaemon:
             self.tool_registry.register_many(status_tools)
 
         # Structured memory tools
-        if enabled & {"memory_write"} and self.config.memory_db:
+        if enabled & {"memory_write", "memory_forget", "commitment_update"} and self.config.memory_db:
             from tools import structured_memory
             structured_memory.configure(conn=self._get_memory_conn())
-            self.tool_registry.register_many(structured_memory.TOOLS)
+            for t in structured_memory.TOOLS:
+                if t["name"] in enabled:
+                    self.tool_registry.register_many([t])
 
         log.info("Registered tools: %s", ", ".join(self.tool_registry.tool_names))
 
@@ -762,6 +767,11 @@ class LucydDaemon:
                             recall_text = memory_context
                 except Exception:
                     log.exception("structured recall at session start failed")
+                    if not recall_text:
+                        recall_text = (
+                            "[Memory recall unavailable — background error. "
+                            "Use memory_search or memory_get to access memory manually.]"
+                        )
 
         system_blocks = self.context_builder.build(
             tier=tier,
@@ -771,6 +781,12 @@ class LucydDaemon:
             always_on_skills=always_on,
             skill_bodies=skill_bodies,
             extra_dynamic=recall_text,
+            silent_tokens=self.config.silent_tokens,
+            max_turns=self.config.max_turns,
+            max_cost=float(self.config.raw("behavior", "max_cost_per_message", default=0.0)),
+            compaction_threshold=self.config.compaction_threshold,
+            has_images=bool(image_blocks),
+            sender=sender,
         )
         fmt_system = provider.format_system(system_blocks)
 

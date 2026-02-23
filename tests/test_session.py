@@ -337,15 +337,17 @@ class TestCompactionEndToEnd:
         await mgr.compact_session(session, mock_provider, "Summarize this conversation.")
 
         # split_point = 6 * 2 // 3 = 4, so 4 old, 2 recent
-        # Result: 1 summary + 2 recent = 3
-        assert len(session.messages) == 3
+        # Result: 1 summary + 1 compaction marker + 2 recent = 4
+        assert len(session.messages) == 4
         assert "[Previous conversation summary]" in session.messages[0]["content"]
         assert "Summary of old conversation." in session.messages[0]["content"]
+        # Compaction marker
+        assert "[system: This conversation was compacted" in session.messages[1]["content"]
         # Recent messages preserved
-        assert session.messages[1]["role"] == "user"
-        assert session.messages[1]["content"] == "user message 2"
-        assert session.messages[2]["role"] == "assistant"
-        assert session.messages[2]["text"] == "assistant reply 2"
+        assert session.messages[2]["role"] == "user"
+        assert session.messages[2]["content"] == "user message 2"
+        assert session.messages[3]["role"] == "assistant"
+        assert session.messages[3]["text"] == "assistant reply 2"
 
     @pytest.mark.asyncio
     async def test_compact_increments_compaction_count(
@@ -404,7 +406,7 @@ class TestCompactionEndToEnd:
         assert session.state_path.exists()
         state = json.loads(session.state_path.read_text())
         assert state["compaction_count"] == 1
-        assert len(state["messages"]) == 3  # 1 summary + 2 recent
+        assert len(state["messages"]) == 4  # 1 summary + 1 compaction marker + 2 recent
 
     @pytest.mark.asyncio
     async def test_compact_skips_when_fewer_than_4_messages(self, tmp_sessions):
@@ -470,13 +472,15 @@ class TestCompactionRoundTrip:
         await mgr.compact_session(session, provider, "Summarize this conversation.")
 
         # split_point = 30 * 2 // 3 = 20 old, 10 recent
-        # Result: 1 summary + 10 recent = 11
-        assert len(session.messages) == 11
+        # Result: 1 summary + 1 compaction marker + 10 recent = 12
+        assert len(session.messages) == 12
         assert "[Previous conversation summary]" in session.messages[0]["content"]
         assert "Round-trip summary." in session.messages[0]["content"]
+        # Compaction marker
+        assert "[system: This conversation was compacted" in session.messages[1]["content"]
 
         # Recent 10 messages preserved unchanged
-        assert session.messages[1]["content"] == "user msg 10"
+        assert session.messages[2]["content"] == "user msg 10"
         assert session.messages[-1]["text"] == "reply 14"
 
         assert session.compaction_count == 1
@@ -485,7 +489,7 @@ class TestCompactionRoundTrip:
         # State file on disk reflects compacted state
         loaded_state = json.loads(session.state_path.read_text())
         assert loaded_state["compaction_count"] == 1
-        assert len(loaded_state["messages"]) == 11
+        assert len(loaded_state["messages"]) == 12
 
         # Provider received the oldest 2/3 as formatted text
         # 30 msgs, split_point=20: old = indices 0-19 (user 0..9, reply 0..9)
@@ -785,7 +789,7 @@ class TestCompactionWithContentBlocks:
         await mgr.compact_session(session, mock, "Summarize.")
 
         assert mock.call_count == 1
-        assert len(session.messages) == 3  # 1 summary + 2 recent
+        assert len(session.messages) == 4  # 1 summary + 1 compaction marker + 2 recent
         assert "Summary of vision conversation." in session.messages[0]["content"]
 
 

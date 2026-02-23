@@ -61,8 +61,8 @@ async def tool_exec(command: str, timeout: int | None = None) -> str:
             except Exception:  # noqa: S110 — last-resort kill after timeout; nothing more to do
                 pass
         return f"Error: Command timed out after {timeout}s"
-    except Exception:
-        return "Error: Command execution failed"
+    except Exception as e:
+        return f"Error: Command execution failed: {type(e).__name__}"
 
     result = ""
     out = stdout.decode("utf-8", errors="replace") if stdout else ""
@@ -85,7 +85,13 @@ async def tool_exec(command: str, timeout: int | None = None) -> str:
 TOOLS = [
     {
         "name": "exec",
-        "description": "Execute a shell command. Returns stdout, stderr, and exit code.",
+        "description": (
+            "Execute a shell command. Returns stdout, stderr, and exit code. "
+            "Working directory is the daemon's startup directory — use absolute paths. "
+            "Secret environment variables are filtered (LUCYD_* and any ending in "
+            "_KEY, _TOKEN, _SECRET, _PASSWORD are removed). "
+            "Output is truncated at 30000 characters."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {

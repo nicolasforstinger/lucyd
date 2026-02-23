@@ -489,12 +489,20 @@ class SessionManager:
             log.error("Compaction failed: %s", e)
             return
 
-        # Replace old messages with summary
+        # Replace old messages with summary + compaction marker
         summary_msg = {
             "role": "user",
             "content": f"[Previous conversation summary]\n{summary}",
         }
-        session.messages = [summary_msg] + recent_messages
+        compaction_marker = {
+            "role": "user",
+            "content": (
+                "[system: This conversation was compacted. The summary above covers "
+                "earlier messages. Some details may be lost. Use memory_search or "
+                "memory_get to find specific information from before compaction.]"
+            ),
+        }
+        session.messages = [summary_msg, compaction_marker] + recent_messages
 
         session.compaction_count += 1
         session.warned_about_compaction = False

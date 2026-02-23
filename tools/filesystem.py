@@ -13,6 +13,14 @@ def configure(allowed_paths: list[str] | None = None) -> None:
     global _PATH_ALLOW
     if allowed_paths is not None:
         _PATH_ALLOW = allowed_paths
+        # Patch file_path descriptions with allowed paths
+        paths_str = ", ".join(allowed_paths)
+        for tool in TOOLS:
+            schema = tool["input_schema"]["properties"].get("file_path", {})
+            if schema:
+                schema["description"] = (
+                    f"Absolute path to the file. Allowed paths: {paths_str}"
+                )
 
 
 def _check_path(file_path: str) -> str | None:
@@ -93,7 +101,11 @@ def tool_edit(file_path: str, old_string: str, new_string: str,
         return f"Error: Cannot read binary file: {file_path}"
 
     if old_string not in content:
-        return f"Error: old_string not found in {file_path}"
+        return (
+            f"Error: old_string not found in {file_path}. "
+            f"Ensure exact match including whitespace and newlines. "
+            f"Use read to verify current content."
+        )
 
     if not replace_all:
         count = content.count(old_string)
@@ -118,7 +130,10 @@ def tool_edit(file_path: str, old_string: str, new_string: str,
 TOOLS = [
     {
         "name": "read",
-        "description": "Read a file. Returns numbered lines. Use offset/limit for large files.",
+        "description": (
+            "Read a file. Returns numbered lines. Use offset/limit for large files. "
+            "For indexed memory files, use memory_get with workspace-relative paths instead."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {

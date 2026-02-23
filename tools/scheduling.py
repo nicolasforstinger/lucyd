@@ -15,9 +15,14 @@ _counter = 0
 _MAX_SCHEDULED = 50
 
 
-def configure(channel: Any) -> None:
+def configure(channel: Any, contact_names: list[str] | None = None) -> None:
     global _channel
     _channel = channel
+    if contact_names:
+        names = ", ".join(contact_names)
+        TOOLS[0]["input_schema"]["properties"]["target"]["description"] = (
+            f"Recipient contact name. Available contacts: {names}."
+        )
 
 
 async def tool_schedule_message(target: str, text: str, delay_seconds: int) -> str:
@@ -77,7 +82,10 @@ async def tool_list_scheduled() -> str:
 TOOLS = [
     {
         "name": "schedule_message",
-        "description": "Schedule a message to be sent after a delay. Non-persistent — lost on daemon restart. Maximum delay: 24 hours.",
+        "description": (
+            "Schedule a message to be sent after a delay. Non-persistent — lost on daemon restart. "
+            "Maximum delay: 24 hours. Maximum 50 pending scheduled messages."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {

@@ -12,7 +12,7 @@ class TestToolErrorHandling:
 
     @pytest.mark.asyncio
     async def test_tool_error_does_not_leak_details(self):
-        """Tool error response should not contain exception type or path."""
+        """Tool error response includes exception type but not message content (paths, secrets)."""
         reg = ToolRegistry()
 
         def bad_tool():
@@ -21,8 +21,8 @@ class TestToolErrorHandling:
         reg.register("bad", "A bad tool", {"type": "object", "properties": {}}, bad_tool)
         result = await reg.execute("bad", {})
         assert "Error:" in result
-        assert "Tool 'bad' execution failed" in result
-        assert "FileNotFoundError" not in result
+        assert "Tool 'bad' failed (FileNotFoundError)" in result
+        # Exception message must NOT leak — could contain paths, credentials
         assert "/secret/path" not in result
 
     @pytest.mark.asyncio

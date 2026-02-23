@@ -34,7 +34,7 @@ def set_structured_memory(conn: sqlite3.Connection, config: Any) -> None:
 async def tool_memory_search(query: str, top_k: int = 10) -> str:
     """Search long-term memory using structured facts, episodes, and vector similarity."""
     if _memory is None:
-        return "Error: Memory not configured"
+        return "Error: Memory not configured in this deployment. This tool is unavailable."
 
     # Try structured recall if configured
     if _conn is not None and _config is not None:
@@ -67,7 +67,7 @@ async def tool_memory_get(file_path: str, start_line: int = 0,
                           end_line: int = 50) -> str:
     """Retrieve a specific file snippet from memory by path and line range."""
     if _memory is None:
-        return "Error: Memory not configured"
+        return "Error: Memory not configured in this deployment. This tool is unavailable."
     try:
         return await _memory.get_file_snippet(file_path, start_line, end_line)
     except Exception as e:
@@ -77,7 +77,11 @@ async def tool_memory_get(file_path: str, start_line: int = 0,
 TOOLS = [
     {
         "name": "memory_search",
-        "description": "Search long-term memory for relevant information. Uses structured facts and episodes first, falls back to semantic similarity.",
+        "description": (
+            "Search long-term memory. Searches indexed workspace files "
+            "(memory/*.md, MEMORY.md) plus structured facts, episodes, "
+            "and open commitments extracted from past sessions."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -90,11 +94,15 @@ TOOLS = [
     },
     {
         "name": "memory_get",
-        "description": "Retrieve a specific file snippet from memory by path and line range.",
+        "description": (
+            "Retrieve a file snippet from indexed memory by workspace-relative path. "
+            "Paths are relative to the workspace root (e.g., 'memory/2026-02-23.md', 'MEMORY.md'). "
+            "Use memory_search to find available file paths first."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "Path of the file in memory"},
+                "file_path": {"type": "string", "description": "Workspace-relative path (e.g., 'memory/2026-02-23.md', 'MEMORY.md'). NOT an absolute path."},
                 "start_line": {"type": "integer", "description": "Start line (0-based)", "default": 0},
                 "end_line": {"type": "integer", "description": "End line", "default": 50},
             },

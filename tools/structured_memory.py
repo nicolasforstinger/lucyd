@@ -38,7 +38,7 @@ def _resolve_entity(entity: str) -> str:
 async def handle_memory_write(entity: str, attribute: str, value: str) -> str:
     """Store a fact in structured memory."""
     if _conn is None:
-        return "Error: structured memory not configured"
+        return "Error: Structured memory not configured in this deployment. Use memory_search for vector lookup instead."
 
     entity = _resolve_entity(entity)
     attribute = _normalize(attribute)
@@ -84,7 +84,7 @@ async def handle_memory_write(entity: str, attribute: str, value: str) -> str:
 async def handle_memory_forget(entity: str, attribute: str) -> str:
     """Mark a fact as no longer current."""
     if _conn is None:
-        return "Error: structured memory not configured"
+        return "Error: Structured memory not configured in this deployment. Use memory_search for vector lookup instead."
 
     entity = _resolve_entity(entity)
     attribute = _normalize(attribute)
@@ -104,7 +104,7 @@ async def handle_memory_forget(entity: str, attribute: str) -> str:
 async def handle_commitment_update(commitment_id: int, status: str) -> str:
     """Update a commitment's status."""
     if _conn is None:
-        return "Error: structured memory not configured"
+        return "Error: Structured memory not configured in this deployment. Use memory_search for vector lookup instead."
 
     cursor = _conn.execute(
         "UPDATE commitments SET status = ? "
@@ -131,7 +131,7 @@ TOOLS = [
             "properties": {
                 "entity": {
                     "type": "string",
-                    "description": "Who or what (lowercase, underscores for spaces)",
+                    "description": "Who or what (lowercase, underscores for spaces). Normalized and alias-resolved automatically.",
                 },
                 "attribute": {
                     "type": "string",
@@ -155,8 +155,8 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "entity": {"type": "string"},
-                "attribute": {"type": "string"},
+                "entity": {"type": "string", "description": "Who or what (lowercase, underscores for spaces). Alias-resolved automatically."},
+                "attribute": {"type": "string", "description": "What about them (lowercase, descriptive)"},
             },
             "required": ["entity", "attribute"],
         },

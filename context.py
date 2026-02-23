@@ -37,6 +37,12 @@ class ContextBuilder:
         always_on_skills: list[str] | None = None,
         skill_bodies: dict[str, str] | None = None,
         extra_dynamic: str = "",
+        silent_tokens: list[str] | None = None,
+        max_turns: int = 0,
+        max_cost: float = 0.0,
+        compaction_threshold: int = 0,
+        has_images: bool = False,
+        sender: str = "",
     ) -> list[dict]:
         """Build system prompt blocks for the given tier.
 
@@ -65,17 +71,27 @@ class ContextBuilder:
             for skill_name in always_on_skills:
                 body = skill_bodies.get(skill_name, "")
                 if body:
-                    semi_text += f"\n\n## Skill: {skill_name}\n\n{body}"
+                    semi_text += f"\n\n## Skill: {skill_name} [active — loaded automatically]\n\n{body}"
 
         # Skills index (for on-demand loading)
         if skill_index:
-            semi_text += f"\n\n## Available Skills\n\n{skill_index}\n\nUse the `load_skill` tool to load a skill's full instructions."
+            semi_text += (
+                "\n\n## Skills Available for Loading\n\n"
+                "These skills are NOT loaded yet. Use the `load_skill` tool "
+                "with the skill name to load one.\n\n"
+                f"{skill_index}"
+            )
 
         if semi_text.strip():
             blocks.append({"text": semi_text, "tier": "semi_stable"})
 
         # Dynamic block: runtime metadata
-        dynamic = self._build_dynamic(source=source, extra=extra_dynamic)
+        dynamic = self._build_dynamic(
+            tier=tier, source=source, extra=extra_dynamic,
+            silent_tokens=silent_tokens, max_turns=max_turns,
+            max_cost=max_cost, compaction_threshold=compaction_threshold,
+            has_images=has_images, sender=sender,
+        )
         if dynamic.strip():
             blocks.append({"text": dynamic, "tier": "dynamic"})
 
@@ -96,24 +112,52 @@ class ContextBuilder:
         return [], []
 
     def _read_files(self, file_names: list[str]) -> str:
-        """Read and concatenate workspace files."""
+        """Read and concatenate workspace files with boundary markers."""
         parts = []
         for name in file_names:
             path = self.workspace / name
             if path.exists():
                 try:
                     content = path.read_text(encoding="utf-8")
-                    parts.append(content)
+                    parts.append(f"--- {name} ---\n{content}")
                 except Exception as e:
                     log.warning("Failed to read %s: %s", path, e)
             else:
                 log.debug("Context file not found: %s", path)
         return "\n\n".join(parts)
 
-    def _build_dynamic(self, source: str = "", extra: str = "") -> str:
+    def _build_dynamic(
+        self,
+        tier: str = "full",
+        source: str = "",
+        extra: str = "",
+        silent_tokens: list[str] | None = None,
+        max_turns: int = 0,
+        max_cost: float = 0.0,
+        compaction_threshold: int = 0,
+        has_images: bool = False,
+        sender: str = "",
+    ) -> str:
         """Build dynamic context block (changes every turn)."""
         now = time.strftime("%a, %d. %b %Y - %H:%M %Z")
         parts = [f"Current date/time: {now}"]
+
+        # Tier announcement — tell agent what context it has
+        if tier == "full":
+            parts.append(
+                "Context tier: full. All workspace files, memory, and skills are loaded."
+            )
+        elif tier == "operational":
+            parts.append(
+                "Context tier: operational. Only essential workspace files are loaded. "
+                "Memory files and some personality files are not available in this session."
+            )
+        elif tier == "minimal":
+            parts.append(
+                "Context tier: minimal. No workspace files are loaded. You have tools only."
+            )
+
+        # Source framing — tell agent where messages come from
         if source == "system":
             parts.append(
                 "Session type: automated infrastructure. "
@@ -129,6 +173,61 @@ class ContextBuilder:
                 "Process requests and return useful responses. "
                 "Use the message tool to notify the user on the primary channel if the results warrant it."
             )
+        elif source == "telegram":
+            parts.append(
+                "Session type: primary channel (Telegram). "
+                "Messages come from the user via Telegram."
+            )
+        elif source == "cli":
+            parts.append(
+                "Session type: CLI. "
+                "Messages come from a local command-line interface."
+            )
+
+        # Session contact
+        if sender:
+            parts.append(f"Session contact: {sender}")
+
+        # Framework conventions
+        parts.append(
+            "Messages prefixed with [system: ...] are framework notifications, not from the user."
+        )
+
+        # Consolidation pipeline awareness
+        parts.append(
+            "Background pipeline: facts, episodes, and commitments are automatically "
+            "extracted from your sessions and stored in structured memory. You do not "
+            "need to manually summarize conversations — the pipeline handles this."
+        )
+
+        # Silent tokens
+        if silent_tokens:
+            tokens_str = ", ".join(silent_tokens)
+            parts.append(
+                f"Silent response tokens: {tokens_str}. "
+                f"If your response starts or ends with one of these, "
+                f"it is NOT delivered to the user."
+            )
+
+        # Limits
+        if max_turns:
+            parts.append(f"Tool-use turn limit: {max_turns} per message.")
+        if max_cost > 0:
+            parts.append(f"Cost limit: ${max_cost:.2f} per message. Loop stops if exceeded.")
+        if compaction_threshold:
+            parts.append(
+                f"Compaction threshold: {compaction_threshold:,} tokens. "
+                f"Older messages are summarized when exceeded."
+            )
+
+        # Image ephemerality (only when images present)
+        if has_images:
+            parts.append(
+                "Note: Images are visible only on the turn they are received. "
+                "Previous-turn images are NOT in your conversation history. "
+                "Describe or summarize image content in text if you need to reference it later."
+            )
+
         if extra:
             parts.append(extra)
         return "\n".join(parts)

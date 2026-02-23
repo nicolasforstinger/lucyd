@@ -310,7 +310,10 @@ TOOLS = [
     },
     {
         "name": "web_fetch",
-        "description": "Fetch a URL and return its content as readable text.",
+        "description": (
+            "Fetch a URL and return its content as readable text. "
+            "Cannot fetch private/local network URLs (192.168.*, 10.*, 127.*, etc.)."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {

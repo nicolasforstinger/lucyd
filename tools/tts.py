@@ -34,7 +34,8 @@ def configure(api_key: str = "", provider: str = "elevenlabs",
               default_voice_id: str = "",
               default_model_id: str = "eleven_v3",
               speed: float = 1.0, stability: float = 0.5,
-              similarity_boost: float = 0.75) -> None:
+              similarity_boost: float = 0.75,
+              contact_names: list[str] | None = None) -> None:
     global _api_key, _provider, _output_dir, _channel
     global _default_voice_id, _default_model_id
     global _voice_speed, _voice_stability, _voice_similarity_boost
@@ -47,6 +48,11 @@ def configure(api_key: str = "", provider: str = "elevenlabs",
     _voice_speed = speed
     _voice_stability = stability
     _voice_similarity_boost = similarity_boost
+    if contact_names:
+        names = ", ".join(contact_names)
+        TOOLS[0]["input_schema"]["properties"]["send_to"]["description"] = (
+            f"Recipient contact name. Available contacts: {names}. If empty, saves to disk only."
+        )
 
 
 async def tool_tts(text: str, voice_id: str = "",
@@ -99,7 +105,7 @@ async def tool_tts(text: str, voice_id: str = "",
             os.chmod(output_file, 0o600)
         except Exception as e:
             log.error("TTS failed: %s", e, exc_info=True)
-            return "Error: TTS generation failed"
+            return f"Error: TTS generation failed: {type(e).__name__}"
     else:
         return f"Error: Unknown TTS provider: {_provider}"
 
