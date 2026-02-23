@@ -382,6 +382,8 @@ error_message = "I'm having trouble connecting right now. Try again in a moment.
 agent_timeout_seconds = 600                                            # Timeout per API call in the agentic loop
 max_turns_per_message = 50                                             # Max tool-use iterations per inbound message
 max_cost_per_message = 5.0                                             # USD circuit breaker per message (0.0 = disabled)
+api_retries = 2                                                        # Retry attempts for transient API errors (429, 5xx, connection). Default: 2
+api_retry_base_delay = 2.0                                             # Initial backoff delay in seconds (exponential with jitter). Default: 2.0
 ```
 
 ### [behavior.compaction]
@@ -410,6 +412,39 @@ log_file = "~/.lucyd/lucyd.log"
 ```
 
 All paths support `~` expansion.
+
+## Plugin System (`plugins.d/`)
+
+Custom tools are loaded from Python files in the `plugins.d/` directory (relative to the `lucyd.toml` location).
+
+Each plugin is a `.py` file exporting a `TOOLS` list (same format as built-in tool modules):
+
+```python
+# plugins.d/my_tool.py
+
+def tool_my_action(param: str) -> str:
+    """Do something custom."""
+    return f"Done: {param}"
+
+TOOLS = [
+    {
+        "name": "my_action",
+        "description": "Custom action tool.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "param": {"type": "string", "description": "Input parameter"},
+            },
+            "required": ["param"],
+        },
+        "function": tool_my_action,
+    },
+]
+```
+
+An optional `configure()` function receives dependencies by parameter name (e.g. `config`, `channel`, `session_mgr`, `providers`).
+
+Plugin tools must be listed in `[tools] enabled` to activate. Unlisted plugin tools are ignored. A failing plugin does not block other plugins or built-in tools from loading.
 
 ## Environment Variables
 
