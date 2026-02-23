@@ -901,6 +901,43 @@ class TestInboundTimestampCapture:
 
         assert daemon._last_inbound_ts["+431234"] == 2000
 
+    def test_queue_has_maxsize(self, tmp_path):
+        """Message queue has a bounded size to prevent unbounded memory growth."""
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        assert daemon.queue.maxsize == 1000
+
+    def test_eviction_at_1001_entries(self, tmp_path):
+        """OrderedDict evicts oldest when exceeding 1000 senders."""
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        for i in range(1001):
+            sender = f"sender_{i:05d}"
+            daemon._last_inbound_ts[sender] = i * 1000
+            daemon._last_inbound_ts.move_to_end(sender)
+            while len(daemon._last_inbound_ts) > 1000:
+                daemon._last_inbound_ts.popitem(last=False)
+
+        assert len(daemon._last_inbound_ts) == 1000
+        assert "sender_00000" not in daemon._last_inbound_ts
+        assert "sender_01000" in daemon._last_inbound_ts
+
+    def test_reaccess_does_not_grow_beyond_limit(self, tmp_path):
+        """Re-accessing existing sender doesn't increase size past 1000."""
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        for i in range(1000):
+            daemon._last_inbound_ts[f"s{i:04d}"] = i
+        assert len(daemon._last_inbound_ts) == 1000
+
+        daemon._last_inbound_ts["s0000"] = 9999
+        daemon._last_inbound_ts.move_to_end("s0000")
+        while len(daemon._last_inbound_ts) > 1000:
+            daemon._last_inbound_ts.popitem(last=False)
+
+        assert len(daemon._last_inbound_ts) == 1000
+        assert daemon._last_inbound_ts["s0000"] == 9999
+
 
 # ─── FIFO JSON Validation ───────────────────────────────────────
 

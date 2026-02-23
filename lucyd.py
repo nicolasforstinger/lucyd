@@ -282,7 +282,7 @@ class LucydDaemon:
         self.config = config
         self.running = True
         self.start_time = time.time()
-        self.queue: asyncio.Queue = asyncio.Queue()
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self.providers: dict[str, Any] = {}
         self.channel: Any = None
         self.session_mgr: SessionManager | None = None
