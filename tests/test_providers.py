@@ -619,3 +619,181 @@ class TestAnthropicSafeParseArgs:
         from providers.anthropic_compat import _safe_parse_args
         result = _safe_parse_args(None)
         assert result == {"raw": None}
+
+
+# ─── Provider complete() ─────────────────────────────────────────
+
+
+class TestAnthropicComplete:
+    """Unit tests for AnthropicCompatProvider.complete() with mocked SDK."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self):
+        pytest.importorskip("anthropic")
+
+    def _make_provider(self, **kwargs):
+        from providers.anthropic_compat import AnthropicCompatProvider
+        defaults = dict(api_key="test-key", model="test-model")
+        defaults.update(kwargs)
+        return AnthropicCompatProvider(**defaults)
+
+    def _mock_response(self, content_blocks, stop_reason="end_turn",
+                       input_tokens=50, output_tokens=30):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.content = content_blocks
+        resp.stop_reason = stop_reason
+        resp.usage.input_tokens = input_tokens
+        resp.usage.output_tokens = output_tokens
+        resp.usage.cache_read_input_tokens = 0
+        resp.usage.cache_creation_input_tokens = 0
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_text_response(self):
+        from unittest.mock import MagicMock, patch
+        p = self._make_provider()
+        block = MagicMock()
+        block.type = "text"
+        block.text = "Hello world"
+        resp = self._mock_response([block])
+
+        with patch.object(p.client.messages, "create", return_value=resp):
+            result = await p.complete(
+                system=[{"type": "text", "text": "system"}],
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+            )
+        assert result.text == "Hello world"
+        assert result.stop_reason == "end_turn"
+        assert result.usage.input_tokens == 50
+
+    @pytest.mark.asyncio
+    async def test_tool_use_response(self):
+        from unittest.mock import MagicMock, patch
+        p = self._make_provider()
+        block = MagicMock()
+        block.type = "tool_use"
+        block.id = "tc-1"
+        block.name = "read"
+        block.input = {"file_path": "/tmp/test"}
+        resp = self._mock_response([block], stop_reason="tool_use")
+
+        with patch.object(p.client.messages, "create", return_value=resp):
+            result = await p.complete(
+                system=[{"type": "text", "text": "sys"}],
+                messages=[{"role": "user", "content": "read file"}],
+                tools=[{"name": "read"}],
+            )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "read"
+        assert result.tool_calls[0].arguments == {"file_path": "/tmp/test"}
+        assert result.stop_reason == "tool_use"
+
+    @pytest.mark.asyncio
+    async def test_max_tokens_stop_reason(self):
+        from unittest.mock import MagicMock, patch
+        p = self._make_provider()
+        block = MagicMock()
+        block.type = "text"
+        block.text = "truncated"
+        resp = self._mock_response([block], stop_reason="max_tokens")
+
+        with patch.object(p.client.messages, "create", return_value=resp):
+            result = await p.complete(
+                system=[], messages=[{"role": "user", "content": "hi"}], tools=[],
+            )
+        assert result.stop_reason == "max_tokens"
+
+
+class TestOpenAIComplete:
+    """Unit tests for OpenAICompatProvider.complete() with mocked SDK."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self):
+        pytest.importorskip("openai")
+
+    def _make_provider(self, **kwargs):
+        from providers.openai_compat import OpenAICompatProvider
+        defaults = dict(api_key="test-key", model="test-model")
+        defaults.update(kwargs)
+        return OpenAICompatProvider(**defaults)
+
+    def _mock_response(self, content=None, tool_calls=None,
+                       finish_reason="stop", prompt_tokens=50,
+                       completion_tokens=30):
+        from unittest.mock import MagicMock
+        choice = MagicMock()
+        choice.message.content = content
+        choice.message.tool_calls = tool_calls
+        choice.finish_reason = finish_reason
+        resp = MagicMock()
+        resp.choices = [choice]
+        resp.usage.prompt_tokens = prompt_tokens
+        resp.usage.completion_tokens = completion_tokens
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_text_response(self):
+        from unittest.mock import patch
+        p = self._make_provider()
+        resp = self._mock_response(content="Hello")
+
+        with patch.object(p.client.chat.completions, "create", return_value=resp):
+            result = await p.complete(
+                system="system prompt",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+            )
+        assert result.text == "Hello"
+        assert result.stop_reason == "end_turn"
+        assert result.usage.input_tokens == 50
+
+    @pytest.mark.asyncio
+    async def test_tool_call_response(self):
+        from unittest.mock import MagicMock, patch
+        p = self._make_provider()
+        tc = MagicMock()
+        tc.id = "tc-1"
+        tc.function.name = "exec"
+        tc.function.arguments = '{"command": "ls"}'
+        resp = self._mock_response(tool_calls=[tc], finish_reason="tool_calls")
+
+        with patch.object(p.client.chat.completions, "create", return_value=resp):
+            result = await p.complete(
+                system="sys", messages=[{"role": "user", "content": "list files"}],
+                tools=[{"name": "exec"}],
+            )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "exec"
+        assert result.tool_calls[0].arguments == {"command": "ls"}
+        assert result.stop_reason == "tool_use"
+
+    @pytest.mark.asyncio
+    async def test_malformed_tool_args_fallback(self):
+        from unittest.mock import MagicMock, patch
+        p = self._make_provider()
+        tc = MagicMock()
+        tc.id = "tc-2"
+        tc.function.name = "read"
+        tc.function.arguments = "not valid json {{{"
+        resp = self._mock_response(tool_calls=[tc], finish_reason="tool_calls")
+
+        with patch.object(p.client.chat.completions, "create", return_value=resp):
+            result = await p.complete(
+                system="sys", messages=[{"role": "user", "content": "read"}],
+                tools=[{"name": "read"}],
+            )
+        assert result.tool_calls[0].arguments == {"raw": "not valid json {{{"}
+
+    @pytest.mark.asyncio
+    async def test_length_stop_reason(self):
+        from unittest.mock import patch
+        p = self._make_provider()
+        resp = self._mock_response(content="cut off", finish_reason="length")
+
+        with patch.object(p.client.chat.completions, "create", return_value=resp):
+            result = await p.complete(
+                system="", messages=[{"role": "user", "content": "hi"}], tools=[],
+            )
+        assert result.stop_reason == "max_tokens"

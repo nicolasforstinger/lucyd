@@ -709,6 +709,7 @@ class LucydDaemon:
         text, warning_consumed = _inject_warning(text, session.pending_system_warning)
         if warning_consumed:
             session.pending_system_warning = ""
+            session._save_state()  # Persist cleared warning before agentic loop
 
         # Inject timestamp so the agent always knows the current time
         timestamp = time.strftime("[%a, %d. %b %Y - %H:%M %Z]")

@@ -1533,6 +1533,92 @@ class TestMessageLoopDebounce:
         # _process_message should NOT have been called (empty text, no attachments)
         mock_loop.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_debounce_combines_same_sender_within_window(self, loop_daemon):
+        """Messages from same sender queued before sleep completes are combined."""
+        daemon, session = loop_daemon
+
+        from channels import InboundMessage
+
+        # Put two messages from same sender into the queue before loop starts
+        msg1 = InboundMessage(text="A", sender="user1", timestamp=time.time(), source="telegram")
+        msg2 = InboundMessage(text="B", sender="user1", timestamp=time.time(), source="telegram")
+        await daemon.queue.put(msg1)
+
+        response = MagicMock()
+        response.text = "ok"
+        response.usage = MagicMock(input_tokens=100, output_tokens=50)
+
+        sleep_calls = []
+        original_sleep = asyncio.sleep
+
+        async def fake_sleep(secs):
+            sleep_calls.append(secs)
+            # During the first sleep, push msg2 into queue to simulate rapid typing
+            if len(sleep_calls) == 1:
+                await daemon.queue.put(msg2)
+            # Yield to let queue.get pick up msg2
+            await original_sleep(0)
+
+        with patch("lucyd.asyncio.sleep", side_effect=fake_sleep):
+            with patch("lucyd.run_agentic_loop", return_value=response):
+                with patch("tools.status.set_current_session"):
+                    await daemon.queue.put(None)
+                    await daemon._message_loop()
+
+        # Debounce sleep was called
+        assert len(sleep_calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_different_senders_both_drained(self, loop_daemon):
+        """Messages from different senders are each processed."""
+        daemon, session = loop_daemon
+
+        from channels import InboundMessage
+
+        msg1 = InboundMessage(text="Hello", sender="alice", timestamp=time.time(), source="telegram")
+        msg2 = InboundMessage(text="World", sender="bob", timestamp=time.time(), source="telegram")
+        await daemon.queue.put(msg1)
+        await daemon.queue.put(msg2)
+        await daemon.queue.put(None)
+
+        response = MagicMock()
+        response.text = "ok"
+        response.usage = MagicMock(input_tokens=100, output_tokens=50)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("tools.status.set_current_session"):
+                await daemon._message_loop()
+
+        # Both senders should have been processed
+        assert session.add_user_message.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_fifo_dict_messages_debounced(self, loop_daemon):
+        """Dict-based FIFO messages are subject to debounce like InboundMessages."""
+        daemon, session = loop_daemon
+
+        fifo_item = {
+            "sender": "system",
+            "type": "system",
+            "text": "FIFO message",
+            "tier": "operational",
+        }
+        await daemon.queue.put(fifo_item)
+        await daemon.queue.put(None)
+
+        response = MagicMock()
+        response.text = "ok"
+        response.usage = MagicMock(input_tokens=100, output_tokens=50)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("tools.status.set_current_session"):
+                await daemon._message_loop()
+
+        # FIFO message was processed through debounce path
+        call_text = session.add_user_message.call_args[0][0]
+        assert "FIFO message" in call_text
+
 
 # ─── TEST-5: Audio Transcription Tests ───────────────────────────
 

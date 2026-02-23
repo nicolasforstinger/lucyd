@@ -444,3 +444,67 @@ class TestToolWebFetchIntegration:
             req = mock_opener.open.call_args[0][0]
             assert getattr(req, _REQ_RESOLVED_IP) == "93.184.216.34"
             assert getattr(req, _REQ_ORIGINAL_HOST) == "example.com"
+
+
+# ─── _HTMLToText ──────────────────────────────────────────────────
+
+
+from tools.web import _HTMLToText
+
+
+class TestHTMLToText:
+    """Unit tests for HTML→text conversion."""
+
+    def test_skips_script_content(self):
+        p = _HTMLToText()
+        p.feed("<div>visible</div><script>var x = 1;</script><div>also</div>")
+        assert "var x" not in p.get_text()
+        assert "visible" in p.get_text()
+
+    def test_skips_style_content(self):
+        p = _HTMLToText()
+        p.feed("<style>body { color: red; }</style><p>Hello</p>")
+        assert "color: red" not in p.get_text()
+        assert "Hello" in p.get_text()
+
+    def test_skips_noscript_content(self):
+        p = _HTMLToText()
+        p.feed("<noscript>Enable JS</noscript><p>Content</p>")
+        assert "Enable JS" not in p.get_text()
+        assert "Content" in p.get_text()
+
+    def test_extracts_link_urls(self):
+        p = _HTMLToText()
+        p.feed('<a href="http://example.com">click</a>')
+        text = p.get_text()
+        assert "[http://example.com]" in text
+        assert "click" in text
+
+    def test_preserves_pre_blocks(self):
+        p = _HTMLToText()
+        p.feed("<pre>def foo():\n    pass</pre>")
+        text = p.get_text()
+        assert "```" in text
+        assert "def foo():" in text
+
+    def test_block_elements_add_newlines(self):
+        p = _HTMLToText()
+        p.feed("<h1>Title</h1><p>Para one.</p><p>Para two.</p>")
+        text = p.get_text()
+        assert "Title" in text
+        assert "Para one." in text
+        assert "Para two." in text
+        # Should have line breaks between block elements
+        lines = [l for l in text.split("\n") if l.strip()]
+        assert len(lines) >= 3
+
+    def test_collapses_excessive_newlines(self):
+        p = _HTMLToText()
+        p.feed("<div></div><div></div><div></div><div></div><div>text</div>")
+        assert "\n\n\n" not in p.get_text()
+
+    def test_strips_outer_whitespace(self):
+        p = _HTMLToText()
+        p.feed("  <p>hello</p>  ")
+        text = p.get_text()
+        assert text == text.strip()

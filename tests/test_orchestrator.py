@@ -640,6 +640,36 @@ class TestWarningInjection:
         assert "hello" in call_text
 
     @pytest.mark.asyncio
+    async def test_warning_consumed_persists_before_agentic_loop(self, tmp_path):
+        """Cleared warning is saved to state before the agentic loop runs."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        session.pending_system_warning = "Context warning"
+        response = _make_response()
+
+        call_order = []
+        original_save = session._save_state
+        session._save_state = lambda: (call_order.append("save_state"), original_save())
+        original_add = session.add_user_message
+        session.add_user_message = lambda *a, **kw: (call_order.append("add_user_message"), original_add(*a, **kw))
+
+        async def fake_loop(**kwargs):
+            call_order.append("agentic_loop")
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                )
+
+        # _save_state must be called BEFORE agentic_loop
+        assert "save_state" in call_order
+        assert "agentic_loop" in call_order
+        save_idx = call_order.index("save_state")
+        loop_idx = call_order.index("agentic_loop")
+        assert save_idx < loop_idx, "Warning clear must be persisted before agentic loop"
+
+    @pytest.mark.asyncio
     async def test_no_warning_when_empty(self, tmp_path):
         """No pending warning → text not modified with [system:]."""
         daemon, provider, session = _make_daemon(tmp_path)
