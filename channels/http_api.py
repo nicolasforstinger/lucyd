@@ -163,7 +163,7 @@ class HTTPApi:
             data = base64.b64decode(data_b64)
             filename = item.get("filename", "attachment")
             ts = int(time.time() * 1000)
-            safe_name = f"{ts}_{filename}"
+            safe_name = f"{ts}_{Path(filename).name}"
             local_path = dl_dir / safe_name
             local_path.write_bytes(data)
 

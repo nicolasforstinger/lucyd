@@ -336,7 +336,7 @@ class TelegramChannel:
             # Determine local filename
             if not filename:
                 filename = Path(file_path).name
-            local_path = self.download_dir / f"{int(time.time())}_{filename}"
+            local_path = self.download_dir / f"{int(time.time())}_{Path(filename).name}"
 
             local_path.write_bytes(resp.content)
             actual_size = size or len(resp.content)

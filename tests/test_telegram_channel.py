@@ -590,6 +590,34 @@ class TestDownloadFile:
         att = await ch._download_file("file_id_123")
         assert att is None
 
+    @pytest.mark.asyncio
+    async def test_download_traversal_filename_sanitized(self, tmp_path):
+        """Filename with path traversal components saves as basename only."""
+        ch = _make_channel(download_dir=str(tmp_path))
+        mock_client = AsyncMock()
+        mock_client.is_closed = False
+        get_file_resp = _mock_response({
+            "ok": True,
+            "result": {"file_path": "docs/file_1.pdf"},
+        })
+        download_resp = MagicMock(spec=httpx.Response)
+        download_resp.raise_for_status = MagicMock()
+        download_resp.content = b"fake-content"
+        mock_client.post.return_value = get_file_resp
+        mock_client.get.return_value = download_resp
+        ch._client = mock_client
+
+        att = await ch._download_file(
+            "file_id_456", content_type="application/pdf",
+            filename="../../evil.pdf", size=100,
+        )
+        assert att is not None
+        local = Path(att.local_path)
+        assert local.parent == tmp_path
+        # Basename must not contain directory separators
+        assert "/" not in local.name.split("_", 1)[1]
+        assert local.name.endswith("evil.pdf")
+
 
 # ─── Poll Loop / getUpdates ────────────────────────────────────────
 

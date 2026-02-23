@@ -1872,6 +1872,32 @@ class TestHTTPAttachments:
         saved = Path(item["attachments"][0].local_path).read_bytes()
         assert saved == original
 
+    @pytest.mark.asyncio
+    async def test_traversal_filename_sanitized(self, api_with_dl, queue, auth_headers):
+        """Filename with path traversal saves as basename only."""
+        import base64
+
+        data_b64 = base64.b64encode(b"payload").decode()
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={
+                    "message": "traversal test",
+                    "attachments": [{"content_type": "text/plain",
+                                     "filename": "../../evil.txt",
+                                     "data": data_b64}],
+                },
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        local = Path(item["attachments"][0].local_path)
+        # File must be inside download dir, not escaped
+        assert "evil.txt" in local.name
+        assert "/" not in local.name.split("_", 1)[1]
+
 
 # ─── Config: HTTP Attachment Properties ──────────────────────────
 

@@ -65,6 +65,26 @@ class TestPathValidation:
         assert result is not None
         assert result.startswith("Error: Path not allowed")
 
+    def test_sibling_directory_name_rejected(self, fs_workspace):
+        """Sibling dir whose name starts with the allowed prefix is blocked."""
+        from pathlib import Path
+        sibling = Path(str(fs_workspace) + "evil")
+        sibling.mkdir(exist_ok=True)
+        secret = sibling / "secret.txt"
+        secret.write_text("gotcha")
+        try:
+            result = _check_path(str(secret))
+            assert result is not None
+            assert "not allowed" in result.lower()
+        finally:
+            secret.unlink()
+            sibling.rmdir()
+
+    def test_exact_prefix_directory_allowed(self, fs_workspace):
+        """The allowed directory path itself (exact match) is accepted."""
+        result = _check_path(str(fs_workspace))
+        assert result is None
+
 
 # ─── Read ────────────────────────────────────────────────────────
 

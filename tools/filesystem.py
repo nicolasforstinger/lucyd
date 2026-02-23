@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # Allowed path prefixes — set at startup via configure()
@@ -23,7 +24,7 @@ def _check_path(file_path: str) -> str | None:
     if not _PATH_ALLOW:
         return "Error: No allowed paths configured — filesystem access denied"
     for prefix in _PATH_ALLOW:
-        if resolved.startswith(prefix):
+        if resolved == prefix or resolved.startswith(prefix + os.sep):
             return None
     return f"Error: Path not allowed: {file_path} (allowed prefixes: {', '.join(_PATH_ALLOW)})"
 
