@@ -13,8 +13,9 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `session.py` | Session manager. Dual storage: JSONL audit trail (append-only) + state file (atomic snapshot). Handles compaction. |
 | `skills.py` | Scans workspace skills directory. Parses markdown with YAML frontmatter. Builds index for system prompt. |
 | `memory.py` | Long-term memory. SQLite FTS5 for keyword search, OpenAI embeddings for vector similarity. FTS-first strategy. Also handles structured recall (facts, episodes, commitments). |
-| `memory_schema.py` | Schema management for structured memory tables (6 tables). Safe to call on every startup — all `IF NOT EXISTS`. |
+| `memory_schema.py` | Schema management for all memory tables (10 tables: 6 structured + 4 unstructured). Safe to call on every startup — all `IF NOT EXISTS`. |
 | `consolidation.py` | Structured data extraction from sessions and workspace files via LLM. Extracts facts, episodes, commitments, and entity aliases. |
+| `synthesis.py` | Memory recall synthesis. Transforms raw recall blocks into prose (narrative/factual) before context injection. Optional — defaults to passthrough ("structured"). |
 | `channels/__init__.py` | Channel protocol definition (`connect`, `receive`, `send`, `send_typing`, `send_reaction`) and factory. |
 | `channels/telegram.py` | Telegram transport. Long polling via Bot API (httpx), sends via Bot API HTTP methods. |
 | `channels/cli.py` | stdin/stdout transport for testing. |

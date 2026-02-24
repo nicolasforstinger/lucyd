@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 _memory: Any = None
 _conn: sqlite3.Connection | None = None
 _config: Any = None
+_synth_provider: Any = None
 
 
 def set_memory(memory_interface: Any) -> None:
@@ -31,6 +32,12 @@ def set_structured_memory(conn: sqlite3.Connection, config: Any) -> None:
     _config = config
 
 
+def set_synthesis_provider(provider: Any) -> None:
+    """Set the provider used for memory synthesis (subagent model)."""
+    global _synth_provider
+    _synth_provider = provider
+
+
 async def tool_memory_search(query: str, top_k: int = 10) -> str:
     """Search long-term memory using structured facts, episodes, and vector similarity."""
     if _memory is None:
@@ -43,7 +50,18 @@ async def tool_memory_search(query: str, top_k: int = 10) -> str:
             max_tokens = getattr(_config, "recall_max_dynamic_tokens", 1000)
             blocks = await recall(query, _conn, _memory, _config, top_k)
             result = inject_recall(blocks, max_tokens)
-            return result if result else EMPTY_RECALL_FALLBACK
+            if not result:
+                return EMPTY_RECALL_FALLBACK
+            # Synthesize if style != structured and provider available
+            style = getattr(_config, "recall_synthesis_style", "structured")
+            if style != "structured" and _synth_provider is not None:
+                try:
+                    from synthesis import synthesize_recall
+                    synth_result = await synthesize_recall(result, style, _synth_provider)
+                    result = synth_result.text
+                except Exception:
+                    log.warning("Tool recall synthesis failed, using raw", exc_info=True)
+            return result
         except Exception:
             log.warning("Structured recall failed, falling back to vector", exc_info=True)
 

@@ -100,6 +100,7 @@ max_episodes_at_start = 3
 # fact_format = "natural"           # "natural" or "compact"
 # show_emotional_tone = true
 # episode_section_header = "Recent conversations"
+# synthesis_style = "structured"   # "structured" (raw), "narrative", or "factual"
 
 [memory.indexer]
 include_patterns = ["memory/*.md", "MEMORY.md"]

@@ -62,7 +62,7 @@ Lucyd is an agentic daemon — it connects to a messaging channel, receives mess
 
 ## Project Structure
 
-Top-level modules: `lucyd.py` (daemon entry point), `agentic.py` (tool-use loop), `config.py`, `context.py`, `session.py`, `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`. Subdirectories: `channels/` (Telegram, CLI, HTTP API), `providers/` (Anthropic, OpenAI-compatible), `tools/` (19 agent tools), `bin/` (CLI utilities), `workspace.example/` (starter template). See [architecture](docs/architecture.md#module-map) for the full module map.
+Top-level modules: `lucyd.py` (daemon entry point), `agentic.py` (tool-use loop), `config.py`, `context.py`, `session.py`, `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `synthesis.py`. Subdirectories: `channels/` (Telegram, CLI, HTTP API), `providers/` (Anthropic, OpenAI-compatible), `tools/` (19 agent tools), `bin/` (CLI utilities), `workspace.example/` (starter template). See [architecture](docs/architecture.md#module-map) for the full module map.
 
 ## Configuration
 
@@ -107,7 +107,7 @@ Lucyd connects to the Telegram Bot API directly via httpx long polling. No exter
 
 ## Testing
 
-**1232 tests**, all passing in ~88 seconds. Four testing strategies:
+**1299 tests**, all passing. Four testing strategies:
 
 ```bash
 # Run the full suite

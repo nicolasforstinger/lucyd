@@ -773,6 +773,28 @@ class LucydDaemon:
                             "Use memory_search or memory_get to access memory manually.]"
                         )
 
+        # Synthesis layer: transform raw recall blocks by style
+        # Uses the same provider routed for this message — no model mismatch.
+        if recall_text and self.config.recall_synthesis_style != "structured":
+            try:
+                from synthesis import synthesize_recall
+                synth_result = await synthesize_recall(
+                    recall_text,
+                    self.config.recall_synthesis_style,
+                    provider,
+                )
+                recall_text = synth_result.text
+                if synth_result.usage:
+                    from agentic import _record_cost
+                    _record_cost(
+                        str(self.config.cost_db), session.id,
+                        model_cfg.get("model", model_name),
+                        synth_result.usage,
+                        model_cfg.get("cost_per_mtok", []),
+                    )
+            except Exception:
+                log.exception("recall synthesis failed, using raw recall")
+
         system_blocks = self.context_builder.build(
             tier=tier,
             source=source,
@@ -796,6 +818,11 @@ class LucydDaemon:
                 await self.channel.send_typing(sender)
             except Exception as e:
                 log.debug("Typing indicator failed: %s", e)
+
+        # Wire current provider for memory_search synthesis (matches routed model)
+        if self.config.recall_synthesis_style != "structured":
+            from tools.memory_tools import set_synthesis_provider
+            set_synthesis_provider(provider)
 
         # Run agentic loop — it appends to session.messages in place
         tools = self.tool_registry.get_schemas()

@@ -333,6 +333,11 @@ class Config:
     def recall_episode_section_header(self) -> str:
         return _deep_get(self._data, "memory", "recall", "personality", "episode_section_header", default="Recent conversations")
 
+    @property
+    def recall_synthesis_style(self) -> str:
+        """Memory synthesis style: 'structured' (raw), 'narrative', or 'factual'."""
+        return _deep_get(self._data, "memory", "recall", "personality", "synthesis_style", default="structured")
+
     # --- Memory Maintenance ---
 
     @property

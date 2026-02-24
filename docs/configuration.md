@@ -260,9 +260,20 @@ priority_commitments = 40            # Priority for commitment blocks (default: 
 fact_format = "natural"              # "natural" (readable) or "compact"
 show_emotional_tone = true           # Include emotional tone in episode display
 episode_section_header = "Recent conversations"  # Header for episode section
+synthesis_style = "structured"       # "structured" (raw), "narrative", or "factual"
 ```
 
 Drop order under budget pressure: facts (15) → episodes (25) → vector (35) → commitments (40).
+
+**synthesis_style** controls how raw recall blocks are transformed before context injection:
+
+| Style | Behavior | Use case |
+|-------|----------|----------|
+| `structured` | No transformation — raw blocks as-is (default) | Clinical agents, debugging |
+| `narrative` | Temporal arc paragraph via subagent LLM call | Companions, creative agents |
+| `factual` | Concise fact summary via subagent LLM call | Professional, business agents |
+
+When set to `narrative` or `factual`, an LLM call rewrites the recall blocks before injection. Always uses the same model that handles the current message — no model mismatch. Falls back to raw blocks on any failure. Applies to both session-start recall and `memory_search` tool results.
 
 ### [memory.indexer]
 
