@@ -42,6 +42,7 @@ class ContextBuilder:
         max_cost: float = 0.0,
         compaction_threshold: int = 0,
         has_images: bool = False,
+        has_voice: bool = False,
         sender: str = "",
     ) -> list[dict]:
         """Build system prompt blocks for the given tier.
@@ -86,11 +87,16 @@ class ContextBuilder:
             blocks.append({"text": semi_text, "tier": "semi_stable"})
 
         # Dynamic block: runtime metadata
+        voice_reply = (
+            has_voice
+            and bool(tool_descriptions)
+            and any(n == "tts" for n, _ in tool_descriptions)
+        )
         dynamic = self._build_dynamic(
             tier=tier, source=source, extra=extra_dynamic,
             silent_tokens=silent_tokens, max_turns=max_turns,
             max_cost=max_cost, compaction_threshold=compaction_threshold,
-            has_images=has_images, sender=sender,
+            has_images=has_images, voice_reply=voice_reply, sender=sender,
         )
         if dynamic.strip():
             blocks.append({"text": dynamic, "tier": "dynamic"})
@@ -136,6 +142,7 @@ class ContextBuilder:
         max_cost: float = 0.0,
         compaction_threshold: int = 0,
         has_images: bool = False,
+        voice_reply: bool = False,
         sender: str = "",
     ) -> str:
         """Build dynamic context block (changes every turn)."""
@@ -226,6 +233,13 @@ class ContextBuilder:
                 "Note: Images are visible only on the turn they are received. "
                 "Previous-turn images are NOT in your conversation history. "
                 "Describe or summarize image content in text if you need to reference it later."
+            )
+
+        # Voice reply preference (only when voice message + tts available)
+        if voice_reply:
+            parts.append(
+                "The user sent a voice message. "
+                "Prefer replying via the tts tool with send_to set to the contact name."
             )
 
         if extra:

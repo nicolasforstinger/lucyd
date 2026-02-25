@@ -153,6 +153,7 @@ def _make_response(text="ok", stop_reason="end_turn", tool_calls=None,
     response.stop_reason = stop_reason
     response.tool_calls = tool_calls or []
     response.usage = usage
+    response.cost_limited = False
     return response
 
 

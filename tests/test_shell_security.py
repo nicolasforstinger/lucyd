@@ -4,6 +4,11 @@ Phase 1b: Shell Secret Filtering — tools/shell.py
 Tests _safe_env (per-suffix), tool_exec integration (leak, timeout, cap).
 """
 
+import asyncio
+import os
+import signal
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from tools.shell import _SECRET_PREFIXES, _SECRET_SUFFIXES, _safe_env, tool_exec
@@ -246,3 +251,208 @@ class TestExecOutputFormatting:
     async def test_empty_output_returns_no_output(self):
         result = await tool_exec("true")
         assert result == "(no output)"
+
+
+# ─── Mock-based kill chain tests ─────────────────────────────────
+
+
+def _make_mock_proc(pid=12345, returncode=0, stdout=b"", stderr=b""):
+    """Create a mock subprocess with configurable outputs."""
+    proc = AsyncMock()
+    proc.pid = pid
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout, stderr))
+    proc.wait = AsyncMock()
+    # kill() is synchronous on asyncio.subprocess.Process — use MagicMock
+    proc.kill = MagicMock()
+    return proc
+
+
+class TestExecKillChain:
+    """Mock-based tests for timeout kill chain and exception handling."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_calls_killpg(self):
+        """On timeout, os.killpg is called with process group and SIGKILL."""
+        proc = _make_mock_proc()
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", side_effect=TimeoutError), \
+             patch("os.killpg") as mock_killpg:
+            result = await tool_exec("test_cmd", timeout=10)
+        mock_killpg.assert_called_once_with(12345, signal.SIGKILL)
+        assert "timed out" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_killpg_fail_falls_back_to_proc_kill(self):
+        """When killpg raises, falls back to proc.kill()."""
+        proc = _make_mock_proc()
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", side_effect=TimeoutError), \
+             patch("os.killpg", side_effect=OSError("No such process")):
+            result = await tool_exec("test_cmd", timeout=10)
+        proc.kill.assert_called_once()
+        assert "timed out" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_proc_kill_fail_still_returns_timeout(self):
+        """When both killpg and proc.kill() fail, still returns timeout message."""
+        proc = _make_mock_proc()
+        proc.kill = MagicMock(side_effect=OSError("already dead"))
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", side_effect=TimeoutError), \
+             patch("os.killpg", side_effect=OSError("No such process")):
+            result = await tool_exec("test_cmd", timeout=10)
+        assert "timed out" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_killpg_success_does_not_call_proc_kill(self):
+        """When killpg succeeds, proc.kill() is NOT called."""
+        proc = _make_mock_proc()
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", side_effect=TimeoutError), \
+             patch("os.killpg"):
+            await tool_exec("test_cmd", timeout=10)
+        proc.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_timeout_waits_for_process_after_killpg(self):
+        """After killpg, proc.wait() is called to reap the process."""
+        proc = _make_mock_proc()
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", side_effect=TimeoutError), \
+             patch("os.killpg"):
+            await tool_exec("test_cmd", timeout=10)
+        proc.wait.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_waits_for_process_after_proc_kill(self):
+        """After proc.kill() fallback, proc.wait() is called to reap."""
+        proc = _make_mock_proc()
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", side_effect=TimeoutError), \
+             patch("os.killpg", side_effect=OSError):
+            await tool_exec("test_cmd", timeout=10)
+        # killpg raised before its proc.wait(), so wait() called once: after proc.kill()
+        proc.wait.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_message_includes_timeout_value(self):
+        """Timeout message includes the actual timeout seconds."""
+        proc = _make_mock_proc()
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", side_effect=TimeoutError), \
+             patch("os.killpg"):
+            result = await tool_exec("test_cmd", timeout=42)
+        assert "42s" in result
+
+
+class TestExecExceptionHandling:
+    """Mock-based tests for non-timeout exception paths."""
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_returns_error_string(self):
+        """Non-timeout exception returns error with exception type name."""
+        with patch("asyncio.create_subprocess_shell", side_effect=OSError("bad")):
+            result = await tool_exec("test_cmd")
+        assert "OSError" in result
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_format(self):
+        """Error format starts with 'Error: Command execution failed:'."""
+        with patch("asyncio.create_subprocess_shell", side_effect=PermissionError("denied")):
+            result = await tool_exec("test_cmd")
+        assert result == "Error: Command execution failed: PermissionError"
+
+
+class TestExecOutputEdgeCases:
+    """Mock-based tests for output assembly edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_stdout_none_treated_as_empty(self):
+        """When stdout is None, no crash and no 'None' in output."""
+        proc = _make_mock_proc(stdout=None, stderr=b"err")
+        proc.communicate = AsyncMock(return_value=(None, b"err"))
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", return_value=(None, b"err")):
+            result = await tool_exec("test_cmd")
+        assert "None" not in result
+
+    @pytest.mark.asyncio
+    async def test_stderr_none_treated_as_empty(self):
+        """When stderr is None, no crash."""
+        proc = _make_mock_proc(stdout=b"out", stderr=None)
+        proc.communicate = AsyncMock(return_value=(b"out", None))
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", return_value=(b"out", None)):
+            result = await tool_exec("test_cmd")
+        assert "out" in result
+        assert "STDERR" not in result
+
+    @pytest.mark.asyncio
+    async def test_negative_exit_code_shown(self):
+        """Negative exit code (e.g., signal kill) shown in output."""
+        proc = _make_mock_proc(returncode=-9, stdout=b"")
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", return_value=(b"", b"")):
+            result = await tool_exec("test_cmd")
+        assert "[exit code: -9]" in result
+
+    @pytest.mark.asyncio
+    async def test_utf8_replace_on_invalid_bytes(self):
+        """Invalid UTF-8 bytes are replaced, not raised."""
+        proc = _make_mock_proc(stdout=b"hello\xffworld")
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", return_value=(b"hello\xffworld", b"")):
+            result = await tool_exec("test_cmd")
+        assert "hello" in result
+        assert "world" in result
+
+    @pytest.mark.asyncio
+    async def test_stdout_with_stderr_separator(self):
+        """When both stdout and stderr present, separated by newline + STDERR:."""
+        proc = _make_mock_proc(stdout=b"out", stderr=b"err")
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", return_value=(b"out", b"err")):
+            result = await tool_exec("test_cmd")
+        assert "out\nSTDERR:\nerr" in result
+
+
+class TestExecTimeoutCapping:
+    """Mock-based tests for timeout parameter handling."""
+
+    @pytest.mark.asyncio
+    async def test_default_timeout_used_when_none(self, monkeypatch):
+        """When timeout is None, _DEFAULT_TIMEOUT is passed to wait_for."""
+        import tools.shell as shell_mod
+        monkeypatch.setattr(shell_mod, "_DEFAULT_TIMEOUT", 99)
+        monkeypatch.setattr(shell_mod, "_MAX_TIMEOUT", 999)
+        proc = _make_mock_proc(stdout=b"ok")
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", return_value=(b"ok", b"")) as mock_wait:
+            await tool_exec("test_cmd")
+        mock_wait.assert_called_once()
+        assert mock_wait.call_args[1].get("timeout", mock_wait.call_args[0][1] if len(mock_wait.call_args[0]) > 1 else None) == 99
+
+    @pytest.mark.asyncio
+    async def test_explicit_timeout_capped_at_max(self, monkeypatch):
+        """Explicit timeout > _MAX_TIMEOUT is capped."""
+        import tools.shell as shell_mod
+        monkeypatch.setattr(shell_mod, "_MAX_TIMEOUT", 100)
+        proc = _make_mock_proc(stdout=b"ok")
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", side_effect=TimeoutError) as mock_wait, \
+             patch("os.killpg"):
+            result = await tool_exec("test_cmd", timeout=9999)
+        assert "100s" in result  # Capped to _MAX_TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_explicit_timeout_below_max_used(self, monkeypatch):
+        """Explicit timeout < _MAX_TIMEOUT is used as-is."""
+        import tools.shell as shell_mod
+        monkeypatch.setattr(shell_mod, "_MAX_TIMEOUT", 999)
+        proc = _make_mock_proc(stdout=b"ok")
+        with patch("asyncio.create_subprocess_shell", return_value=proc), \
+             patch("asyncio.wait_for", side_effect=TimeoutError) as mock_wait, \
+             patch("os.killpg"):
+            result = await tool_exec("test_cmd", timeout=5)
+        assert "5s" in result

@@ -1897,6 +1897,59 @@ class TestHTTPAttachments:
         # File must be inside download dir, not escaped
         assert "evil.txt" in local.name
         assert "/" not in local.name.split("_", 1)[1]
+        # Attachment.filename is sanitized — no traversal components
+        assert item["attachments"][0].filename == "evil.txt"
+
+    @pytest.mark.asyncio
+    async def test_is_voice_passthrough(self, api_with_dl, queue, auth_headers):
+        """is_voice field passes through from HTTP body to Attachment."""
+        import base64
+
+        data_b64 = base64.b64encode(b"audio data").decode()
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={
+                    "message": "voice test",
+                    "attachments": [{
+                        "content_type": "audio/ogg",
+                        "filename": "voice.ogg",
+                        "data": data_b64,
+                        "is_voice": True,
+                    }],
+                },
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        assert item["attachments"][0].is_voice is True
+
+    @pytest.mark.asyncio
+    async def test_is_voice_defaults_false(self, api_with_dl, queue, auth_headers):
+        """is_voice defaults to False when not specified."""
+        import base64
+
+        data_b64 = base64.b64encode(b"audio data").decode()
+        app = _make_app(api_with_dl)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={
+                    "message": "audio file",
+                    "attachments": [{
+                        "content_type": "audio/mpeg",
+                        "filename": "song.mp3",
+                        "data": data_b64,
+                    }],
+                },
+            )
+            assert resp.status == 202
+
+        item = queue.get_nowait()
+        assert item["attachments"][0].is_voice is False
 
 
 # ─── Config: HTTP Attachment Properties ──────────────────────────

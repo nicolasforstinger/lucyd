@@ -435,6 +435,23 @@ As a resource exhaustion vector: could an attacker (or organic growth) cause unb
 
 ---
 
+## P-019: Stale gap carried without code verification
+
+**Origin:** Cycle 8 (2026-02-24) — `_check_path()` prefix match finding carried as OPEN for 6 cycles. The code already had the `os.sep` guard since implementation. A dedicated test (`test_sibling_directory_name_rejected`) verified it. The audit was tracking a phantom vulnerability because no cycle checked whether the gap was still open.
+
+**Class:** Known gap or security finding carried forward across audit cycles without verifying the actual code/tests. The audit report says "OPEN" but the code says "fixed." Erodes trust in the audit and wastes attention on resolved issues.
+
+**Check (Aggregate Report — Post-Audit Known Gaps Review):**
+For each gap carried from the previous cycle:
+1. Read the source code or tests referenced by the gap.
+2. Has the gap been fixed since it was reported? (code changed, tests added, config updated)
+3. If yes → status: Resolved (stale finding). Do NOT carry forward.
+4. If no → verify the gap is still exploitable/relevant given current architecture.
+
+This check is mandatory in `0-FULL-AUDIT.md` Post-Audit: Known Gaps Review (step 3). It applies at the aggregate report level, not per-stage.
+
+---
+
 ## Pattern Index by Stage
 
 | Stage | Applicable Patterns |
@@ -446,6 +463,7 @@ As a resource exhaustion vector: could an attacker (or organic growth) cause unb
 | 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order) |
 | 6. Security Audit | P-003, P-009, P-012, P-018 (resource exhaustion) |
 | 7. Documentation Audit | P-007, P-008, P-011 |
+| Aggregate Report | P-019 (gap verification) |
 
 ---
 

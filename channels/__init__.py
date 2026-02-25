@@ -20,6 +20,7 @@ class Attachment:
     local_path: str      # Absolute path on disk
     filename: str        # Original filename or ""
     size: int            # Bytes
+    is_voice: bool = False  # True = recorded voice message; False = audio file
 
 
 @dataclass

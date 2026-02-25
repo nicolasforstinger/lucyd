@@ -376,6 +376,23 @@ class Config:
         return _deep_get(self._data, "tools", "subagent_deny", default=None)
 
     @property
+    def subagent_model(self) -> str:
+        """Model name for sub-agents (default: 'primary')."""
+        return _deep_get(self._data, "tools", "subagent_model", default="primary")
+
+    @property
+    def subagent_max_turns(self) -> int:
+        """Max turns for sub-agents. 0 = use max_turns_per_message."""
+        val = _deep_get(self._data, "tools", "subagent_max_turns", default=0)
+        return val if val > 0 else self.max_turns
+
+    @property
+    def subagent_timeout(self) -> float:
+        """Timeout per API call for sub-agents. 0 = use agent_timeout_seconds."""
+        val = _deep_get(self._data, "tools", "subagent_timeout", default=0.0)
+        return float(val) if float(val) > 0 else self.agent_timeout
+
+    @property
     def tools_enabled(self) -> list[str]:
         return _deep_get(self._data, "tools", "enabled", default=[
             "read", "write", "edit", "exec",
@@ -424,6 +441,15 @@ class Config:
     def stt_voice_fail_msg(self) -> str:
         return _deep_get(self._data, "stt", "voice_fail_msg",
                          default="voice message — transcription failed")
+
+    @property
+    def stt_audio_label(self) -> str:
+        return _deep_get(self._data, "stt", "audio_label", default="audio transcription")
+
+    @property
+    def stt_audio_fail_msg(self) -> str:
+        return _deep_get(self._data, "stt", "audio_fail_msg",
+                         default="audio transcription — failed")
 
     @property
     def stt_local_endpoint(self) -> str:

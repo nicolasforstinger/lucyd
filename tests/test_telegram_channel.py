@@ -617,6 +617,8 @@ class TestDownloadFile:
         # Basename must not contain directory separators
         assert "/" not in local.name.split("_", 1)[1]
         assert local.name.endswith("evil.pdf")
+        # Attachment.filename is sanitized — no traversal components
+        assert att.filename == "evil.pdf"
 
 
 # ─── Poll Loop / getUpdates ────────────────────────────────────────
@@ -1042,6 +1044,7 @@ class TestExtractAttachments:
         assert len(atts) == 1
         assert atts[0].content_type == "audio/ogg"
         assert atts[0].size == 200
+        assert atts[0].is_voice is True
 
     @pytest.mark.asyncio
     async def test_document_extracted_with_filename(self, tmp_path):
@@ -1115,6 +1118,7 @@ class TestExtractAttachments:
         assert len(atts) == 1
         assert atts[0].content_type == "audio/mpeg"
         assert atts[0].filename == "song.mp3"
+        assert atts[0].is_voice is False
 
     @pytest.mark.asyncio
     async def test_sticker_extracted(self, tmp_path):
@@ -1202,6 +1206,7 @@ class TestExtractAttachments:
         })
         assert len(atts) == 1
         assert atts[0].content_type == "audio/ogg"
+        assert atts[0].is_voice is True
 
     @pytest.mark.asyncio
     async def test_document_default_mime(self, tmp_path):
@@ -1265,6 +1270,7 @@ class TestExtractAttachments:
         })
         assert len(atts) == 1
         assert atts[0].content_type == "audio/mpeg"
+        assert atts[0].is_voice is False
 
 
 # ─── MIME Guessing (Complete) ────────────────────────────────────

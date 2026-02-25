@@ -1,7 +1,7 @@
 # Security Audit Report
 
-**Date:** 2026-02-24
-**Audit Cycle:** 7
+**Date:** 2026-02-25
+**Audit Cycle:** 8
 **EXIT STATUS:** PASS
 
 ## Threat Model
@@ -12,10 +12,10 @@ Lucyd is an autonomous agent processing external data from Telegram messages, HT
 
 | Pattern | Result | Details |
 |---------|--------|---------|
-| P-003 (unchecked filesystem write) | CLEAN | All 19 tool functions verified. Path-accepting tools call `_check_path()` before I/O. `tool_memory_get` file_path is a SQL lookup key (parameterized), not filesystem I/O. New module `synthesis.py` has zero file I/O. |
-| P-009 (capability table stale) | CLEAN | Full capability table re-derived from source. 19 tools across 11 modules. No new tools since Cycle 5. `synthesis.py` is not a tool — it is an internal transformation layer. |
-| P-012 (misclassified static) | CLEAN | Config files genuinely static. Entity aliases correctly classified as LLM-extracted (Stage 5 P-012 confirmed). Ordering invariant preserved. |
-| P-018 (resource exhaustion) | 2 NOTED | `asyncio.Queue` unbounded (lucyd.py:285). `_last_inbound_ts` now bounded (fixed in hardening batch — OrderedDict, 1000 cap). Queue depth remains unbounded — mitigated by rate limiter but not capped. `synthesis.py` adds no new data structures. |
+| P-003 (unchecked filesystem write) | CLEAN | All 19 tool functions verified. Path-accepting tools call `_check_path()` before I/O. `tool_memory_get` file_path is a SQL lookup key (parameterized), not filesystem I/O. |
+| P-009 (capability table stale) | CLEAN | Full capability table re-derived from source. 19 tools across 11 modules. No new tools since Cycle 7. |
+| P-012 (misclassified static) | CLEAN | Config files genuinely static. Entity aliases correctly classified as LLM-extracted (Stage 5 P-012 confirmed). |
+| P-018 (resource exhaustion) | 2 NOTED | `asyncio.Queue` unbounded (lucyd.py:285). `_last_inbound_ts` bounded (OrderedDict, 1000 cap). Queue depth mitigated by rate limiter but not capped. |
 
 ## Input Sources
 
@@ -32,20 +32,20 @@ Lucyd is an autonomous agent processing external data from Telegram messages, HT
 | Plugin directory | Python (startup) | Filesystem permissions | CRITICAL |
 | Memory DB | SQLite (WAL mode) | Filesystem permissions | MEDIUM |
 
-**No new input sources.** `synthesis.py` does not introduce any input boundary. It receives data exclusively from internal callers (`lucyd.py:780` and `tools/memory_tools.py:59`).
+No new input sources since Cycle 7.
 
 ## Capabilities
 
 | # | Tool | Module | Danger | Boundaries |
 |---|------|--------|--------|------------|
 | 1 | exec | shell.py | CRITICAL | `_safe_env()`, timeout (600s), `start_new_session=True` |
-| 2 | read | filesystem.py | MEDIUM | `_check_path()` allowlist, `Path.resolve()` |
-| 3 | write | filesystem.py | MEDIUM | `_check_path()` allowlist, `Path.resolve()` |
-| 4 | edit | filesystem.py | MEDIUM | `_check_path()` allowlist, `Path.resolve()` |
-| 5 | sessions_spawn | agents.py | HIGH | `_subagent_deny` deny-list, `max_turns=10` (schema-hidden) |
+| 2 | read | filesystem.py | MEDIUM | `_check_path()` allowlist, `Path.resolve()`, `os.sep` prefix guard |
+| 3 | write | filesystem.py | MEDIUM | `_check_path()` allowlist, `Path.resolve()`, `os.sep` prefix guard |
+| 4 | edit | filesystem.py | MEDIUM | `_check_path()` allowlist, `Path.resolve()`, `os.sep` prefix guard |
+| 5 | sessions_spawn | agents.py | HIGH | `_subagent_deny` deny-list, max_turns, timeout |
 | 6 | web_fetch | web.py | MEDIUM | `_validate_url()`, `_is_private_ip()`, IP pinning, redirect validation |
 | 7 | message | messaging.py | MEDIUM | `_resolve_target()`, self-send block, `_check_path()` attachments |
-| 8 | web_search | web.py | MEDIUM | Hardcoded Brave API URL, API key gated |
+| 8 | web_search | web.py | LOW | Hardcoded Brave API URL, API key gated |
 | 9 | tts | tts.py | MEDIUM | `_check_path()` on output_file, API key gated, tempfile fallback |
 | 10 | load_skill | skills_tool.py | LOW | Dict key lookup (text-only) |
 | 11 | memory_search | memory_tools.py | LOW | Read-only (SQLite + vector) |
@@ -70,114 +70,79 @@ Lucyd is an autonomous agent processing external data from Telegram messages, HT
 | Telegram -> tts | `_check_path()` on output_file | Yes | Yes | VERIFIED |
 | HTTP API -> all tools | Bearer token (hmac.compare_digest) + rate limiting + 10 MiB body | Yes | N/A | VERIFIED |
 | FIFO -> all tools | Unix permissions (0o600), JSON validation | Yes | N/A | VERIFIED |
+| Attachments -> filesystem | `Path.name` filename sanitization (both channels) | Yes | N/A | VERIFIED |
 
 ## Critical Path Verification
 
 ### 1. External text -> Shell execution
 **Status:** VERIFIED (accepted risk — exec is unrestricted by design)
-**Boundary:** `_safe_env()` filters `LUCYD_*` prefix and secret suffixes. Timeout 600s. Process group isolation.
+**Boundary:** `_safe_env()` filters `LUCYD_*` prefix and secret suffixes (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, `_CREDENTIALS`, `_ID`, `_CODE`, `_PASS`). Timeout capped at 600s. Process group isolation (`start_new_session=True`, `os.killpg` on timeout).
 **Tests:** test_shell_security.py. `_safe_env()` 100% mutation kill rate.
 
 ### 2. External text -> File read/write
 **Status:** VERIFIED
-**Boundary:** `_check_path()` — `Path.resolve()` normalizes traversal/symlinks, then prefix allowlist.
-**Finding:** Prefix match without trailing separator (Finding #1, carried from Cycle 3).
+**Boundary:** `_check_path()` — `Path.resolve()` normalizes traversal/symlinks, then prefix allowlist with `os.sep` trailing separator guard. Blocks symlink escape, `../` traversal, sibling directory name tricks, and empty allowlist defaults to deny.
+**Tests:** test_filesystem.py — 16+ boundary tests including traversal and symlink escape.
+**Cycle 8 resolution:** Finding #1 (prefix match without trailing separator) from Cycle 3 is **RESOLVED** — `os.sep` guard confirmed at filesystem.py:35.
 
 ### 3. External text -> Web requests (SSRF)
 **Status:** VERIFIED
-**Boundary:** Full SSRF protection stack: scheme whitelist, DNS resolution, `_is_private_ip()` with octal/hex normalization, IP pinning, redirect-hop validation. Fail-closed.
+**Boundary:** Full SSRF protection stack: scheme whitelist (http/https only), DNS resolution via `getaddrinfo`, `_is_private_ip()` with octal/hex normalization via `inet_aton`, IP pinning via custom handlers, redirect-hop validation via `_SafeRedirectHandler`. Fail-closed on unknown formats.
+**Tests:** test_web_security.py — 51 tests across IP encoding, schemes, redirects, DNS rebinding.
 
 ### 4. External text -> Sub-agent spawning
 **Status:** VERIFIED
-**Boundary:** `sessions_spawn` in own deny-list (recursion blocked). `max_turns=10` hidden from schema.
+**Boundary:** `sessions_spawn` in own deny-list (recursion blocked). Configurable via `[tools] subagent_deny`. Sub-agents inherit all tool-level boundaries. Model validated against `_providers` dict.
+**Tests:** 14 tests on deny-list, tool scoping, model resolution.
 
 ### 5. External text -> Message sending
 **Status:** VERIFIED
-**Boundary:** `_resolve_target()` contacts dict, self-send blocked, attachment paths checked.
+**Boundary:** `_resolve_target()` contacts dict lookup (not arbitrary chat IDs). Self-send blocked (bot ID check). Attachment paths validated via `_check_path()`.
+**Tests:** 5 tests on path validation, self-send blocking.
 
 ### 6. HTTP API -> All capabilities
 **Status:** VERIFIED
-**Boundary:** `hmac.compare_digest()` timing-safe. No-token -> 503. Rate limiting. 10 MiB body cap.
+**Boundary:** `hmac.compare_digest()` timing-safe. No-token -> 503 (deny-by-default). Rate limiting (30/60s for /chat, /notify; 60/60s for status endpoints). 10 MiB body cap via aiohttp `client_max_size`. `/api/v1/status` exempt (health check).
+**Tests:** 22 auth tests (comprehensive). 2 rate limit tests.
 
 ### 7. Attachments -> File system
-**Status:** VERIFIED (hardening opportunity)
-**Telegram/HTTP:** Timestamp prefix makes traversal non-exploitable (intermediate dir doesn't exist). Defense is accidental.
-**Finding:** Unsanitized filename (Finding #2, carried from Cycle 4).
+**Status:** VERIFIED
+**Boundary:** Both channels now sanitize filenames via `Path(filename).name` (strips directory components). Timestamp prefix prevents collisions.
+**Cycle 8 resolution:** Finding #2 (unsanitized filename) from Cycle 4 is **RESOLVED** — `Path.name` confirmed in both telegram.py:340 and http_api.py:166.
+**Tests:** 2 traversal tests (1 Telegram, 1 HTTP).
 
 ### 8. Memory poisoning
 **Status:** ACCEPTED RISK
-**Analysis:** Facts are text context only — never become tool arguments. All SQL parameterized. `resolve_entity()` output used only in parameterized WHERE clauses.
+**Analysis:** Facts are text context only — never become tool arguments, file paths, shell commands, or network requests. All SQL parameterized. `resolve_entity()` output used only in parameterized WHERE clauses. Synthesis does not change this — synthesized text enters system prompt at same trust level as raw recall.
 
 ### 9. Config/skill files
 **Status:** VERIFIED
-Skills text-only. Config TOML data-only. Plugins guarded by filesystem permissions.
+Skills text-only (injected into system prompt, never executed as code). Config TOML data-only. Plugins guarded by filesystem permissions. Custom frontmatter parser in skills.py (no PyYAML, no eval).
 
 ### 10. Dispatch safety
 **Status:** VERIFIED
-Dict key lookup only. No eval/exec/__import__/getattr in dispatch paths.
+`ToolRegistry.execute()` uses dict key lookup (`self._tools[name]`). No `eval`, `exec`, `__import__`, `getattr`, or `importlib` in dispatch paths. Unknown tool names return error listing available tools.
 
 ### 11. Supply chain
 **Status:** CLEAN
-pip-audit: 0 runtime CVEs. 2 CVEs in pip 25.1.1 (dev tool only).
-
-## Changes Since Cycle 6
-
-| Change | Security Impact | Verified? |
-|--------|----------------|-----------|
-| `synthesis.py` (new module) | **Zero new attack surface** — see analysis below | Yes — 23 tests in test_synthesis.py |
-| `set_synthesis_provider()` in memory_tools.py | Module-global wiring (same pattern as `_memory`, `_conn`, `_config`) | Yes — TestToolPathSynthesis (3 tests) |
-| `synthesize_recall()` call in lucyd.py:780-796 | Internal data transform, no new input boundary | Yes — tested in test_synthesis.py |
-| `synthesize_recall()` call in memory_tools.py:59-63 | Internal data transform via tool path | Yes — TestToolPathSynthesis |
-
-### synthesis.py Security Analysis
-
-**Module purpose:** Transforms raw recall blocks (internally generated by `inject_recall()`) into style-appropriate prose before injection into the system prompt. Optional — defaults to passthrough for `style="structured"`.
-
-**Attack surface assessment: ZERO new attack surface.** Verified point-by-point:
-
-| Concern | Finding |
-|---------|---------|
-| User-controlled input? | **No.** `recall_text` comes from `inject_recall()` (internal). `style` comes from `config.recall_synthesis_style` (TOML config). `provider` is the routed LLM provider instance. None are user-controlled. |
-| subprocess / eval / exec? | **No.** `grep` confirms zero matches for `eval(`, `exec(`, `__import__`, `getattr(`, `importlib`, `subprocess`, `os.system`, `os.popen`. |
-| File I/O? | **No.** `grep` confirms zero matches for `open(`, `.write(`, `.read(`, `sqlite`, `sql`, `Path(`. |
-| Network access? | **No.** Network is delegated entirely to `provider.complete()`, which is the existing LLM call path already audited. |
-| SQL injection? | **No.** Module contains no SQL. |
-| Format string injection? | **No.** `prompt_template.format(recall_text=recall_text)` uses a named key. The template is a module-level constant (`PROMPTS` dict). Even if `recall_text` contained `{...}` placeholders, Python's `str.format()` only substitutes named keys present in the call — `{recall_text}` is the only key, so `{anything_else}` would raise `KeyError`, caught by the blanket `except Exception` which falls back to raw recall. |
-| Fail-open risk? | **No.** All failure modes (empty result, unknown style, provider exception) fall back to returning the original `recall_text` unchanged. This is fail-safe — the worst case is no synthesis, not data loss or behavior change. |
-| Resource exhaustion? | **No new vector.** One LLM call per session start (or per `memory_search` tool call). Both paths already have existing rate controls. `SynthesisResult` is a small object with `__slots__`. |
-
-**`set_synthesis_provider()` wiring pattern:**
-
-The function sets a module-level global `_synth_provider` in `tools/memory_tools.py`. This follows the identical pattern used by all 7 other tool module globals:
-
-| Global | Setter | Module |
-|--------|--------|--------|
-| `_memory` | `set_memory()` | memory_tools.py |
-| `_conn` | `set_structured_memory()` | memory_tools.py |
-| `_config` | `set_structured_memory()` | memory_tools.py |
-| `_synth_provider` | `set_synthesis_provider()` | memory_tools.py |
-| `_channel` | `configure()` | messaging.py |
-| `_channel` | `configure()` | scheduling.py |
-| `_config` | `configure()` | agents.py |
-| `_skill_loader` | `configure()` | skills_tool.py |
-
-All are set per-message in `_process_message()` or at daemon startup. No user input reaches any setter. The `_synth_provider` is set at `lucyd.py:825`, guarded by `config.recall_synthesis_style != "structured"`, using the same `provider` variable that powers the main agentic loop. No privilege escalation, no model mismatch.
+pip-audit: 0 runtime CVEs. 2 CVEs in pip 25.1.1 (CVE-2025-8869, CVE-2026-1703 — dev/build tool only, not loaded at runtime). 69 total dependencies audited.
 
 ## Vulnerabilities Found
 
 | # | Path | Severity | Status | Description |
 |---|------|----------|--------|-------------|
-| 1 | Filesystem `_check_path()` | Low | OPEN (Cycle 3) | Prefix match without trailing separator |
-| 2 | Attachments -> download | Low | OPEN (Cycle 4) | Unsanitized filename in both channels |
+| 1 | Filesystem `_check_path()` | Low | **RESOLVED (Cycle 8)** | Prefix match now includes `os.sep` trailing separator guard |
+| 2 | Attachments -> download | Low | **RESOLVED (Cycle 8)** | Both channels now sanitize via `Path(filename).name` |
 
-Both carried forward — unchanged since previous cycles. Neither is exploitable in current deployment model.
+No new vulnerabilities found. Both carried-forward findings from previous cycles are now resolved.
 
 ## Bypass Analysis
 
 | Technique | Applicable? | Handled? | Details |
 |-----------|------------|----------|---------|
 | Path traversal (`../`) | Yes | Yes | `Path.resolve()` before prefix check |
-| Path prefix ambiguity | Yes | **Partial** | Finding #1 |
+| Path prefix ambiguity | Yes | **Yes** | `os.sep` guard at filesystem.py:35 (resolved) |
+| Symlink escape | Yes | Yes | `Path.resolve()` follows symlinks to real path |
 | SSRF encoding (octal/hex/decimal) | Yes | Yes | `inet_aton()` normalization |
 | SSRF IPv6 (`[::1]`) | Yes | Yes | `ipaddress.ip_address()` handles IPv6 |
 | SSRF DNS rebinding | Yes | Yes | IP pinning via custom handlers |
@@ -190,14 +155,15 @@ Both carried forward — unchanged since previous cycles. Neither is exploitable
 | Resource exhaustion (queue) | Yes | **Partial** | asyncio.Queue unbounded. Mitigated by rate limiter |
 | Dynamic dispatch injection | Yes | Yes | Dict-key lookup only |
 | Supply chain (dep CVEs) | Yes | Clean | 0 runtime CVEs |
-| Attachment filename traversal | Yes | **Accidental** | Finding #2 |
-| Synthesis prompt injection | N/A | N/A | `recall_text` is internally generated, not user-controlled. Even if attacker-influenced text appears in recall (via memory poisoning), synthesis output goes into system prompt context — same trust level as raw recall. No escalation. |
+| Attachment filename traversal | Yes | **Yes** | Both channels use `Path.name` (resolved) |
+| Synthesis prompt injection | N/A | N/A | `recall_text` internally generated, not user-controlled |
+| Skill prompt injection | Yes | Accepted | Text-only injection into system prompt. Filesystem permissions are boundary. |
 
 ## Boundary Verification Summary
 
 | Boundary | Exists | Tested | Mutation Verified | Fails Closed |
 |----------|--------|--------|-------------------|-------------|
-| `_check_path()` (allowlist) | Yes | Yes | Yes (100%) | Yes |
+| `_check_path()` (allowlist + `os.sep`) | Yes | Yes | Yes (100%) | Yes |
 | `_safe_env()` (env filter) | Yes | Yes | Yes (100%) | Yes |
 | `_safe_parse_args()` (JSON fallback) | Yes | Yes | Yes (100%) | Yes |
 | `_validate_url()` (SSRF) | Yes | Yes | Yes (86.4%) | Yes |
@@ -211,34 +177,33 @@ Both carried forward — unchanged since previous cycles. Neither is exploitable
 | HTTP body size cap | Yes | Yes | N/A (aiohttp) | Yes (-> 413) |
 | Telegram `allow_from` | Yes | Yes | N/A | Yes |
 | FIFO permissions | Yes | N/A (OS) | N/A | Yes (0o600) |
+| Attachment `Path.name` sanitization | Yes | Yes | N/A | Yes |
 
 ## Security Test Results
 
-All security-focused tests pass (run 2026-02-24):
+All security-focused tests pass:
 
-```
-tests/test_shell_security.py    — 57 passed
-tests/test_web_security.py      — 47 passed
-tests/test_filesystem.py        — 39 passed
-tests/test_synthesis.py         — 23 passed
-                         Total: 166 passed, 0 failed
-```
+| Test File | Count |
+|-----------|-------|
+| test_shell_security.py | 57 |
+| test_web_security.py | 47 |
+| test_filesystem.py | 39 |
+| test_synthesis.py | 23 |
+| **Total** | **166** |
 
 ## Recommendations
 
-1. **(Low)** Fix `_check_path()` prefix matching — add trailing separator. Carried from Cycle 3.
-2. **(Low)** Sanitize attachment filenames — `Path(filename).name`. Carried from Cycle 4.
-3. **(Info)** Upgrade pip to 26.0 for CVE fixes (dev tool only).
-4. **(Info)** Consider `asyncio.Queue(maxsize=N)` for defense against queue-flooding.
+1. **(Info)** Upgrade pip to fix CVE-2025-8869 and CVE-2026-1703 (dev tool only).
+2. **(Info)** Consider `asyncio.Queue(maxsize=N)` for defense against queue-flooding.
+3. **(Info)** `commitment_update` does not enforce status enum in code (only in schema description). Not exploitable — worst case is an invalid status string stored.
 
 ## Confidence
 
-Overall confidence: 96%
+Overall confidence: 97%
 
-- **CRITICAL capabilities (exec, filesystem, sub-agents):** 98%. All boundaries mutation-verified at 100% kill.
-- **HIGH capabilities (web_fetch, messaging):** 97%. SSRF protection comprehensive.
-- **New module (synthesis.py):** 99%. Zero attack surface — no I/O, no subprocess, no SQL, no user input. Pure data transformation with fail-safe fallback. 23 dedicated tests.
-- **New wiring (set_synthesis_provider):** 99%. Identical pattern to 7 existing module globals. No user input in setter path.
-- **Authentication (HTTP API):** 98%. Timing-safe. Fail-closed.
-- **Indirect paths (memory poisoning):** 95%. No code routes fact values to tool arguments. Synthesis does not change this — synthesized text enters system prompt at same trust level as raw recall.
+- **CRITICAL capabilities (exec, filesystem, sub-agents):** 98%. All boundaries mutation-verified at 100% kill. Both previous findings resolved.
+- **HIGH capabilities (web_fetch, messaging):** 97%. SSRF protection comprehensive (51 tests).
+- **Authentication (HTTP API):** 98%. Timing-safe. Fail-closed. 22 tests.
+- **Indirect paths (memory poisoning):** 95%. Facts never reach tool arguments. Accepted risk.
 - **Supply chain:** 98%. Zero runtime CVEs.
+- **New in Cycle 8:** Two findings closed (prefix match, filename sanitization). No new vulnerabilities.

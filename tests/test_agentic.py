@@ -225,7 +225,7 @@ class TestAgenticLoop:
             model_name="opus", cost_rates=[5.0, 25.0, 0.5],
             max_cost=0.01,  # Very low limit
         )
-        assert "Cost limit" in (resp.text or "")
+        assert resp.cost_limited is True
 
     @pytest.mark.asyncio
     async def test_intermediate_text_dropped_when_final_has_text(self):
@@ -332,7 +332,7 @@ class TestCostAccumulation:
             model_name="opus", cost_rates=[5.0, 25.0, 0.5],
             max_cost=8.0,
         )
-        assert "Cost limit" in (resp.text or "")
+        assert resp.cost_limited is True
 
 
 class TestMaxCostZeroUnlimited:
@@ -365,12 +365,12 @@ class TestMaxCostZeroUnlimited:
         assert "Cost limit" not in (resp.text or "")
 
 
-class TestCostLimitAppends:
-    """Mutant #70: response.text += → response.text = (overwrites)."""
+class TestCostLimitPreservesText:
+    """Cost limit preserves agent text without appending framework noise."""
 
     @pytest.mark.asyncio
-    async def test_cost_limit_appends_not_replaces(self, cost_db):
-        """Cost limit message is APPENDED to existing text, not replacing it."""
+    async def test_cost_limit_preserves_agent_text(self, cost_db):
+        """Cost limit keeps agent text intact and sets cost_limited flag."""
         _init_cost_db(str(cost_db))
         resp1 = LLMResponse(
             text="Here is your answer",
@@ -389,9 +389,8 @@ class TestCostLimitAppends:
             model_name="opus", cost_rates=[5.0, 25.0, 0.5],
             max_cost=0.01,
         )
-        # Must contain BOTH the original text AND the cost limit message
-        assert "Here is your answer" in resp.text
-        assert "Cost limit" in resp.text
+        assert resp.text == "Here is your answer"
+        assert resp.cost_limited is True
 
 
 class TestLoopTermination:

@@ -39,6 +39,8 @@ class LLMResponse:
     raw: Any = None
     # Full thinking block with signature for Anthropic tool-use continuity
     _thinking_block: dict | None = field(default=None, repr=False)
+    # Set by agentic loop when per-message cost limit is exceeded
+    cost_limited: bool = False
 
     def to_internal_message(self) -> dict:
         """Convert to internal message format for session storage."""

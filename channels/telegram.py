@@ -247,6 +247,7 @@ class TelegramChannel:
                 size=voice.get("file_size", 0),
             )
             if att:
+                att.is_voice = True
                 attachments.append(att)
 
         # Documents — fall back to thumbnail for image documents
@@ -344,7 +345,7 @@ class TelegramChannel:
             return Attachment(
                 content_type=content_type,
                 local_path=str(local_path),
-                filename=filename,
+                filename=Path(filename).name,
                 size=actual_size,
             )
         except Exception as e:

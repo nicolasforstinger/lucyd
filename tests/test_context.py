@@ -194,3 +194,64 @@ class TestReload:
         assert len(before) == len(after)
         for b, a in zip(before, after, strict=True):
             assert b["tier"] == a["tier"]
+
+
+# ─── Voice Reply Injection ──────────────────────────────────────
+
+
+class TestVoiceReplyInjection:
+    """Voice reply instruction in dynamic block based on has_voice + tts tool."""
+
+    def _builder(self, tmp_workspace):
+        return ContextBuilder(
+            workspace=tmp_workspace,
+            stable_files=["SOUL.md"],
+            semi_stable_files=[],
+        )
+
+    def test_voice_with_tts_injects_preference(self, tmp_workspace):
+        """Voice message + tts tool → voice reply instruction injected."""
+        builder = self._builder(tmp_workspace)
+        blocks = builder.build(
+            tier="full",
+            has_voice=True,
+            tool_descriptions=[("message", "Send text"), ("tts", "Text to speech")],
+        )
+        dynamic = blocks[-1]["text"]
+        assert "voice message" in dynamic
+        assert "tts tool" in dynamic
+
+    def test_voice_without_tts_no_injection(self, tmp_workspace):
+        """Voice message but no tts tool → no injection."""
+        builder = self._builder(tmp_workspace)
+        blocks = builder.build(
+            tier="full",
+            has_voice=True,
+            tool_descriptions=[("message", "Send text")],
+        )
+        dynamic = blocks[-1]["text"]
+        assert "voice message" not in dynamic
+
+    def test_no_voice_no_injection(self, tmp_workspace):
+        """No voice message → no injection regardless of tools."""
+        builder = self._builder(tmp_workspace)
+        blocks = builder.build(
+            tier="full",
+            has_voice=False,
+            tool_descriptions=[("tts", "Text to speech")],
+        )
+        dynamic = blocks[-1]["text"]
+        assert "voice message" not in dynamic
+
+    def test_voice_with_images_both_inject(self, tmp_workspace):
+        """Both voice and images → both instructions present."""
+        builder = self._builder(tmp_workspace)
+        blocks = builder.build(
+            tier="full",
+            has_voice=True,
+            has_images=True,
+            tool_descriptions=[("tts", "Text to speech")],
+        )
+        dynamic = blocks[-1]["text"]
+        assert "voice message" in dynamic
+        assert "Images are visible only" in dynamic

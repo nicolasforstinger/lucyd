@@ -273,13 +273,36 @@ Review all bugs found and fixed during this audit cycle. The bug fix workflow (S
 ```
 1. Collect all "Known Gaps" from all 7 stage reports.
 2. Compare against the Known Gaps from the previous cycle's aggregate report.
-3. For each gap:
+3. For each carried-forward gap, VERIFY it is still open:
+   - Read the relevant source code or tests.
+   - If the gap has been fixed (code changed, tests added, config updated)
+     since it was first reported → status: Resolved (stale finding).
+   - Do NOT carry forward a gap without checking the code. Stale findings
+     erode trust in the audit.
+4. For each verified gap:
    - New this cycle → status: Open
-   - Carried from previous cycle, now fixed → status: Resolved (remove from gaps)
+   - Carried from previous cycle, now fixed → status: Resolved
    - Carried from previous cycle, mitigated by pattern/test → status: Mitigated
-   - Carried 2+ cycles without action → ESCALATE (flag in report)
-4. Record the final gaps table in the aggregate report.
+   - Carried 2+ cycles without action → status: Escalated
+5. Record the final gaps table in the aggregate report.
 ```
+
+### Post-Audit: Remediation Plan
+
+After the Known Gaps table, produce a remediation plan for all Open and Escalated gaps. This is the actionable output of the audit — the "fix these before next cycle" deliverable.
+
+For each gap:
+- **What:** One-sentence description of the fix
+- **Where:** File path(s) and function/line if known
+- **Scope:** Estimated lines of change (1-line, ~10 lines, ~50 lines, etc.)
+- **Priority:** severity × cycles_open (Escalated gaps are always Priority 1)
+
+```
+| # | Gap | Priority | What | Where | Scope |
+|---|-----|----------|------|-------|-------|
+```
+
+Sort by priority (highest first). This table goes in the aggregate report AND gets presented to the operator after audit completion as the next work items.
 
 ### Aggregate Report
 
@@ -344,8 +367,17 @@ EXIT STATUS: PASS / PARTIAL / FAIL
 | Gap | Source | Status | Cycles Open | Action |
 |-----|--------|--------|-------------|--------|
 
-Status: Open / Mitigated / Resolved / Accepted
+Status: Open / Mitigated / Resolved / Accepted / Escalated
 Gaps open 2+ cycles without action are escalated.
+Carried-forward gaps MUST be verified against current code before re-listing.
+
+## Remediation Plan
+
+| # | Gap | Priority | What | Where | Scope |
+|---|-----|----------|------|-------|-------|
+
+Sort by priority (highest first). Escalated gaps are always Priority 1.
+These items should be addressed before the next audit cycle.
 
 ## Deferred Items
 [Anything marked PARTIAL with justification for deferral]

@@ -634,6 +634,10 @@ class LucydDaemon:
             if vision_model in self.providers:
                 model_name = vision_model
 
+        has_voice = attachments and any(
+            a.content_type.startswith("audio/") and a.is_voice for a in attachments
+        )
+
         provider = self.providers.get(model_name)
         if provider is None:
             log.error("No provider for model '%s' (source: %s)", model_name, source)
@@ -675,15 +679,19 @@ class LucydDaemon:
                         text = (text + "\n" if text else "") + f"[{too_large_msg} — could not read file]"
 
                 elif att.content_type.startswith("audio/"):
-                    voice_label = self.config.stt_voice_label
+                    if att.is_voice:
+                        label = self.config.stt_voice_label
+                        fail_label = self.config.stt_voice_fail_msg
+                    else:
+                        label = self.config.stt_audio_label
+                        fail_label = self.config.stt_audio_fail_msg
                     try:
                         transcription = await self._transcribe_audio(att.local_path, att.content_type)
-                        text = (text + "\n" if text else "") + f"[{voice_label}]: {transcription}"
+                        text = (text + "\n" if text else "") + f"[{label}]: {transcription}"
                     except Exception as e:
                         log.error("STT transcription failed (%s): %s",
                                   self.config.stt_backend, e)
-                        voice_fail = self.config.stt_voice_fail_msg
-                        text = (text + "\n" if text else "") + f"[{voice_fail}]"
+                        text = (text + "\n" if text else "") + f"[{fail_label}]"
 
                 else:
                     doc_text = None
@@ -808,6 +816,7 @@ class LucydDaemon:
             max_cost=float(self.config.raw("behavior", "max_cost_per_message", default=0.0)),
             compaction_threshold=self.config.compaction_threshold,
             has_images=bool(image_blocks),
+            has_voice=has_voice,
             sender=sender,
         )
         fmt_system = provider.format_system(system_blocks)
@@ -943,6 +952,11 @@ class LucydDaemon:
         session._save_state()
 
         reply = response.text or ""
+
+        # Cost limit: deliver agent text if available, else friendly fallback
+        if response.cost_limited and not reply.strip():
+            reply = ("[cost limit reached — max_cost_per_message in lucyd.toml. "
+                     "raise or set to 0 to disable.]")
 
         # Silent token check
         silent = _is_silent(reply, self.config.silent_tokens)

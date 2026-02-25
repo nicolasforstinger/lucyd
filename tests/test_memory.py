@@ -346,3 +346,22 @@ class TestEmbedAPI:
         # but the auth header will be empty. The test verifies it doesn't crash.
         # If the implementation guards on api_key, result is [].
         assert isinstance(result, list)
+
+
+class TestMemorySearchRoundTrip:
+    """Round-trip: insert chunks + FTS → MemoryInterface.search() → results."""
+
+    @pytest.mark.asyncio
+    async def test_fts_search_returns_matching_chunks(self, memory_db):
+        """FTS-first path: query matches chunk text, returns results without embeddings."""
+        mi = MemoryInterface(db_path=memory_db)
+        results = await mi.search("hello")
+        assert len(results) >= 1
+        assert any("hello" in r["text"] for r in results)
+
+    @pytest.mark.asyncio
+    async def test_search_no_match_returns_empty(self, memory_db):
+        """Query with no FTS matches and no embed_fn returns empty."""
+        mi = MemoryInterface(db_path=memory_db)
+        results = await mi.search("zzz_nonexistent_term_zzz")
+        assert results == []

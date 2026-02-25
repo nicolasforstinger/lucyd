@@ -19,15 +19,21 @@ _tool_registry: Any = None
 _session_manager: Any = None
 
 # Tools that sub-agents should not have access to by default
-_DEFAULT_SUBAGENT_DENY = frozenset({"sessions_spawn", "tts", "load_skill", "react", "schedule_message"})
+_DEFAULT_SUBAGENT_DENY = frozenset({"sessions_spawn", "tts", "react", "schedule_message"})
 
 # Active deny set — overridden by config if tools.subagent_deny is set
 _subagent_deny: set[str] = set(_DEFAULT_SUBAGENT_DENY)
+
+# Sub-agent defaults — resolved from config at configure() time
+_default_model: str = "primary"
+_default_max_turns: int = 50
+_default_timeout: float = 600.0
 
 
 def configure(config: Any, providers: dict, tool_registry: Any,
               session_manager: Any) -> None:
     global _config, _providers, _tool_registry, _session_manager, _subagent_deny
+    global _default_model, _default_max_turns, _default_timeout
     _config = config
     _providers = providers
     _tool_registry = tool_registry
@@ -38,6 +44,10 @@ def configure(config: Any, providers: dict, tool_registry: Any,
         _subagent_deny = set(custom_deny)
     else:
         _subagent_deny = set(_DEFAULT_SUBAGENT_DENY)
+    # Resolve sub-agent defaults from config
+    _default_model = getattr(config, "subagent_model", "primary")
+    _default_max_turns = getattr(config, "subagent_max_turns", 50)
+    _default_timeout = getattr(config, "subagent_timeout", 600.0)
 
 
 def _build_subagent_preamble(
@@ -50,7 +60,7 @@ def _build_subagent_preamble(
     now = _time.strftime("%a, %d. %b %Y - %H:%M %Z")
     parts = [
         "You are a sub-agent spawned to complete a specific task. "
-        "Complete the task below and return a clear text result.",
+        "Complete the task and return a clear, concise text summary of what you did.",
         "",
         f"Current date/time: {now}",
         "",
@@ -112,24 +122,29 @@ def _build_subagent_preamble(
 
 async def tool_sessions_spawn(
     prompt: str,
-    model: str = "subagent",
+    model: str = "",
     tools: list[str] | None = None,
-    max_turns: int = 10,
-    timeout: float = 120.0,
+    max_turns: int = 0,
+    timeout: float = 0.0,
     parent_session_id: str = "",
 ) -> str:
     """Spawn a sub-agent for delegated work.
 
     Args:
         prompt: Task description / instructions for the sub-agent.
-        model: Model name from [models.*] config (default: "subagent").
+        model: Model name from [models.*] config (default: primary).
         tools: Tool names to make available (default: all except denied).
-        max_turns: Max agentic loop iterations.
-        timeout: Timeout per API call in seconds.
+        max_turns: Max agentic loop iterations (0 = use config default).
+        timeout: Timeout per API call in seconds (0 = use config default).
         parent_session_id: Parent session ID for audit trail.
     """
     if _config is None:
         return "Error: Agent system not initialized"
+
+    # Resolve defaults from config
+    model = model or _default_model
+    max_turns = max_turns if max_turns > 0 else _default_max_turns
+    timeout = timeout if timeout > 0 else _default_timeout
 
     provider = _providers.get(model)
     if provider is None:
@@ -197,20 +212,21 @@ TOOLS = [
     {
         "name": "sessions_spawn",
         "description": (
-            "Spawn a sub-agent for delegated or parallel work. Uses a cheaper/specialized model. "
-            "Sub-agents are limited to 10 tool-use turns and have no conversation history."
+            "Spawn a sub-agent for delegated work. Same model and tools as you, but ephemeral — "
+            "context is discarded after the task. Use for heavy tool work (document editing, "
+            "bulk file operations) to keep your main session clean."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "Task description / instructions for the sub-agent"},
-                "model": {"type": "string", "description": "Model name from config (default: 'subagent')", "default": "subagent"},
+                "model": {"type": "string", "description": "Model name from config (default: primary)"},
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tool names to make available (default: all except sessions_spawn, tts, load_skill, react, schedule_message)",
+                    "description": "Tool names to make available (default: all except sessions_spawn, tts, react, schedule_message)",
                 },
-                "timeout": {"type": "number", "description": "Timeout per API call in seconds (default: 120)", "default": 120},
+                "timeout": {"type": "number", "description": "Timeout per API call in seconds (default: same as parent agent)"},
             },
             "required": ["prompt"],
         },

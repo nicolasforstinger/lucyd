@@ -178,10 +178,10 @@ async def run_agentic_loop(
         if max_cost > 0 and accumulated_cost > max_cost:
             log.warning("Cost limit reached: $%.4f > $%.2f (turn %d)",
                         accumulated_cost, max_cost, turn)
-            if response.text:
-                response.text += f"\n[Cost limit reached: ${accumulated_cost:.4f}]"
-            else:
-                response.text = f"[Cost limit reached: ${accumulated_cost:.4f}]"
+            response.cost_limited = True
+            # Preserve any agent text; fall back to intermediate text
+            if not response.text and fallback_text:
+                response.text = "\n\n".join(fallback_text)
             return response
 
         # Add to messages

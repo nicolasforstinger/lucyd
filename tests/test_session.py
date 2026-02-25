@@ -104,6 +104,51 @@ class TestStateRoundTrip:
         assert loaded.pending_system_warning == "Context at 130k tokens"
         assert len(loaded.messages) == 1
 
+    def test_warning_survives_reload(self, tmp_sessions):
+        """Warning persists across save/load without being consumed."""
+        session = Session("warn-persist", tmp_sessions)
+        session.pending_system_warning = "Context at 130k"
+        session.messages = [{"role": "user", "content": "x"}]
+        session._save_state()
+        loaded = Session("warn-persist", tmp_sessions)
+        loaded.load()
+        assert loaded.pending_system_warning == "Context at 130k"
+
+    def test_warning_cleared_is_persisted(self, tmp_sessions):
+        """After clearing the warning and saving, reload shows empty."""
+        session = Session("warn-clear", tmp_sessions)
+        session.pending_system_warning = "Context at 130k"
+        session.messages = [{"role": "user", "content": "x"}]
+        session._save_state()
+        # Simulate delivery: clear and re-save
+        loaded = Session("warn-clear", tmp_sessions)
+        loaded.load()
+        loaded.pending_system_warning = ""
+        loaded._save_state()
+        reloaded = Session("warn-clear", tmp_sessions)
+        reloaded.load()
+        assert reloaded.pending_system_warning == ""
+
+    def test_warning_absent_defaults_empty(self, tmp_sessions):
+        """Session without warning set defaults to empty string."""
+        session = Session("no-warn", tmp_sessions)
+        session.messages = [{"role": "user", "content": "x"}]
+        session._save_state()
+        loaded = Session("no-warn", tmp_sessions)
+        loaded.load()
+        assert loaded.pending_system_warning == ""
+
+    def test_duplicate_warning_overwrites(self, tmp_sessions):
+        """Setting warning again overwrites (no duplication)."""
+        session = Session("warn-dup", tmp_sessions)
+        session.pending_system_warning = "First warning"
+        session.pending_system_warning = "Second warning"
+        session.messages = [{"role": "user", "content": "x"}]
+        session._save_state()
+        loaded = Session("warn-dup", tmp_sessions)
+        loaded.load()
+        assert loaded.pending_system_warning == "Second warning"
+
     def test_corrupt_state_falls_back_to_jsonl(self, tmp_sessions):
         sid = "test-corrupt"
         # Write valid JSONL

@@ -1619,6 +1619,175 @@ class TestMessageLoopDebounce:
         call_text = session.add_user_message.call_args[0][0]
         assert "FIFO message" in call_text
 
+    @pytest.mark.asyncio
+    async def test_reset_all_closes_every_session(self, loop_daemon):
+        """Reset with all=True closes every session in session_mgr._index."""
+        daemon, session = loop_daemon
+        daemon.session_mgr._index = {"alice": MagicMock(), "bob": MagicMock(), "system": MagicMock()}
+
+        await daemon.queue.put({"type": "reset", "all": True})
+        await daemon.queue.put(None)
+
+        await daemon._message_loop()
+
+        assert daemon.session_mgr.close_session.call_count == 3
+        closed = {c.args[0] for c in daemon.session_mgr.close_session.call_args_list}
+        assert closed == {"alice", "bob", "system"}
+
+    @pytest.mark.asyncio
+    async def test_reset_user_alias_resolves_contact(self, loop_daemon):
+        """Reset with sender='user' resolves to first non-system/cli contact."""
+        daemon, session = loop_daemon
+        daemon.session_mgr._index = {"system": MagicMock(), "cli": MagicMock(), "nicolas": MagicMock()}
+
+        await daemon.queue.put({"type": "reset", "sender": "user"})
+        await daemon.queue.put(None)
+
+        await daemon._message_loop()
+
+        daemon.session_mgr.close_session.assert_called_once_with("nicolas")
+
+    @pytest.mark.asyncio
+    async def test_reset_unknown_sender_logs_warning(self, loop_daemon):
+        """Reset for sender with no session → close_session returns False."""
+        daemon, session = loop_daemon
+        daemon.session_mgr.close_session = AsyncMock(return_value=False)
+
+        await daemon.queue.put({"type": "reset", "sender": "nobody"})
+        await daemon.queue.put(None)
+
+        await daemon._message_loop()
+
+        daemon.session_mgr.close_session.assert_called_once_with("nobody")
+
+    @pytest.mark.asyncio
+    async def test_dict_tier_defaults_operational_for_system(self, loop_daemon):
+        """FIFO dict with type='system' defaults tier to 'operational'."""
+        daemon, session = loop_daemon
+
+        await daemon.queue.put({"sender": "cron", "type": "system", "text": "heartbeat"})
+        await daemon.queue.put(None)
+
+        response = MagicMock(text="ok", usage=MagicMock(input_tokens=10, output_tokens=5))
+
+        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
+            await daemon._message_loop()
+
+        mock_pm.assert_called_once()
+        _, kwargs = mock_pm.call_args
+        # Positional: text, sender, source, tier
+        args = mock_pm.call_args.args
+        assert args[3] == "operational"
+
+    @pytest.mark.asyncio
+    async def test_dict_tier_defaults_full_for_user_type(self, loop_daemon):
+        """FIFO dict with type='user' defaults tier to 'full'."""
+        daemon, session = loop_daemon
+
+        await daemon.queue.put({"sender": "cli", "type": "user", "text": "hello"})
+        await daemon.queue.put(None)
+
+        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
+            await daemon._message_loop()
+
+        args = mock_pm.call_args.args
+        assert args[3] == "full"
+
+    @pytest.mark.asyncio
+    async def test_notify_meta_propagates_through_drain(self, loop_daemon):
+        """notify_meta from dict message arrives in _process_message."""
+        daemon, session = loop_daemon
+        meta = {"ref": "ticket-42", "source": "n8n"}
+
+        await daemon.queue.put({
+            "sender": "webhook", "type": "system",
+            "text": "new ticket", "notify_meta": meta,
+        })
+        await daemon.queue.put(None)
+
+        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
+            await daemon._message_loop()
+
+        mock_pm.assert_called_once()
+        assert mock_pm.call_args.kwargs["notify_meta"] == meta
+
+    @pytest.mark.asyncio
+    async def test_attachments_preserved_through_processing(self, loop_daemon):
+        """Message attachments pass through to _process_message."""
+        daemon, session = loop_daemon
+        from channels import Attachment, InboundMessage
+
+        att = Attachment(content_type="image/png", local_path="/tmp/a.png",
+                         filename="a.png", size=100)
+        msg = InboundMessage(text="pic", sender="user1", timestamp=time.time(),
+                             source="telegram", attachments=[att])
+
+        await daemon.queue.put(msg)
+        await daemon.queue.put(None)
+
+        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
+            await daemon._message_loop()
+
+        mock_pm.assert_called_once()
+        passed_atts = mock_pm.call_args.kwargs.get("attachments")
+        assert passed_atts is not None
+        assert len(passed_atts) == 1
+        assert passed_atts[0].filename == "a.png"
+
+    @pytest.mark.asyncio
+    async def test_inbound_message_timestamp_stored(self, loop_daemon):
+        """InboundMessage timestamp stored in _last_inbound_ts as ms int."""
+        daemon, session = loop_daemon
+        from channels import InboundMessage
+
+        ts = 1708790400.123  # Known timestamp
+        msg = InboundMessage(text="hi", sender="alice", timestamp=ts, source="telegram")
+        await daemon.queue.put(msg)
+        await daemon.queue.put(None)
+
+        response = MagicMock(text="ok", usage=MagicMock(input_tokens=10, output_tokens=5))
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("tools.status.set_current_session"):
+                await daemon._message_loop()
+
+        assert daemon._last_inbound_ts["alice"] == int(ts * 1000)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_exits_cleanly(self, loop_daemon):
+        """CancelledError during queue.get exits the loop without crash."""
+        daemon, session = loop_daemon
+
+        call_count = 0
+        original_get = daemon.queue.get
+
+        async def cancelling_get():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise asyncio.CancelledError()
+            return await original_get()
+
+        with patch.object(daemon.queue, "get", side_effect=cancelling_get):
+            await daemon._message_loop()
+
+        # Loop exited without crash — running state unchanged by CancelledError
+        # (CancelledError breaks out of while loop)
+
+    @pytest.mark.asyncio
+    async def test_unknown_item_type_skipped(self, loop_daemon):
+        """Non-dict, non-InboundMessage items are silently skipped."""
+        daemon, session = loop_daemon
+
+        await daemon.queue.put(42)  # Neither InboundMessage nor dict
+        await daemon.queue.put("stray string")
+        await daemon.queue.put(None)
+
+        with patch("lucyd.run_agentic_loop") as mock_loop:
+            await daemon._message_loop()
+
+        # Nothing was processed
+        mock_loop.assert_not_called()
+
 
 # ─── TEST-5: Audio Transcription Tests ───────────────────────────
 

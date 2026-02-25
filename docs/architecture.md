@@ -13,7 +13,7 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `session.py` | Session manager. Dual storage: JSONL audit trail (append-only) + state file (atomic snapshot). Handles compaction. |
 | `skills.py` | Scans workspace skills directory. Parses markdown with YAML frontmatter. Builds index for system prompt. |
 | `memory.py` | Long-term memory. SQLite FTS5 for keyword search, OpenAI embeddings for vector similarity. FTS-first strategy. Also handles structured recall (facts, episodes, commitments). |
-| `memory_schema.py` | Schema management for all memory tables (10 tables: 6 structured + 4 unstructured). Safe to call on every startup — all `IF NOT EXISTS`. |
+| `memory_schema.py` | Schema management for all memory tables (10 tables: 4 unstructured + 4 structured + 2 infrastructure). Safe to call on every startup — all `IF NOT EXISTS`. |
 | `consolidation.py` | Structured data extraction from sessions and workspace files via LLM. Extracts facts, episodes, commitments, and entity aliases. |
 | `synthesis.py` | Memory recall synthesis. Transforms raw recall blocks into prose (narrative/factual) before context injection. Optional — defaults to passthrough ("structured"). |
 | `channels/__init__.py` | Channel protocol definition (`connect`, `receive`, `send`, `send_typing`, `send_reaction`) and factory. |
@@ -202,6 +202,7 @@ Query embeddings are cached in an `embedding_cache` table (keyed by SHA-256 hash
 ### Tables
 
 **Unstructured memory (v1):**
+- `files` -- Indexed file metadata (path, hash, timestamps)
 - `chunks` -- Text chunks with source path, line ranges, and optional embeddings
 - `chunks_fts` -- FTS5 virtual table for full-text search
 - `embedding_cache` -- Cached query embeddings
@@ -293,7 +294,7 @@ The `ToolRegistry` dispatches tool calls from the agentic loop:
 - Catches all exceptions, returns error strings instead of crashing
 - Truncates output to `output_truncation` chars (default: 30,000)
 
-Sub-agents spawned via `sessions_spawn` default to `max_turns=10` (parameter exists in function but is not exposed in the tool schema). A deny-list prevents sub-agents from accessing `sessions_spawn`, `tts`, `load_skill`, `react`, and `schedule_message`.
+Sub-agents spawned via `sessions_spawn` have configurable `max_turns` (default: 50) and `timeout`. A deny-list prevents sub-agents from accessing `sessions_spawn`, `tts`, `react`, and `schedule_message` by default. Sub-agents CAN load skills.
 
 ## Cost Tracking
 

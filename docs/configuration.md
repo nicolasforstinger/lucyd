@@ -95,6 +95,7 @@ host = "127.0.0.1"          # Listen address (default: 127.0.0.1 — localhost o
 port = 8100                  # Listen port (default: 8100)
 callback_url = ""            # Webhook URL — POST after every processed message (default: "" = disabled)
 callback_token_env = ""      # Env var name containing the webhook bearer token (default: "" = no auth)
+max_body_bytes = 10485760    # Max request body size in bytes (default: 10 MB)
 ```
 
 Auth token is loaded from the `LUCYD_HTTP_TOKEN` environment variable. Webhook callback token is loaded from the env var named in `callback_token_env`. See [operations — HTTP API](operations.md#http-api) for endpoint details and [webhook callback](operations.md#webhook-callback) for the callback payload format.
@@ -215,6 +216,7 @@ fact_model = "subagent"               # Model for fact extraction (cheaper, high
 episode_model = "primary"             # Model for episode extraction (needs judgment)
 min_messages = 4                      # Minimum messages in session before extracting
 confidence_threshold = 0.6            # Minimum confidence for extracted facts
+max_extraction_chars = 50000          # Truncation limit for session text fed to extraction LLM
 ```
 
 When enabled, `bin/lucyd-consolidate` (cron at `:15`) extracts facts, episodes, commitments, and entity aliases from session transcripts. Also triggers on session close and pre-compaction. See `memory_schema.py` for table definitions.
@@ -305,10 +307,13 @@ enabled = [
 output_truncation = 30000    # Truncate tool output beyond this many characters
 exec_timeout = 120           # Default exec tool timeout (seconds)
 exec_max_timeout = 600       # Maximum allowed exec timeout (seconds)
-# subagent_deny = ["sessions_spawn", "tts", "load_skill", "react", "schedule_message"]  # Tools denied to sub-agents (default if omitted)
+# subagent_deny = ["sessions_spawn", "tts", "react", "schedule_message"]  # Tools denied to sub-agents (default if omitted)
+subagent_model = "primary"   # Model for sub-agents (default: "primary" = same as parent)
+subagent_max_turns = 0       # Max turns for sub-agents (0 = use max_turns_per_message)
+subagent_timeout = 0         # Timeout for sub-agents in seconds (0 = use agent_timeout_seconds)
 ```
 
-The `subagent_deny` list controls which tools are blocked for sub-agents spawned via `sessions_spawn`. When omitted, the default deny-list applies: `sessions_spawn` (prevents recursion), `tts`, `load_skill`, `react`, `schedule_message`. Set to `[]` to allow all tools.
+The `subagent_deny` list controls which tools are blocked for sub-agents spawned via `sessions_spawn`. When omitted, the default deny-list applies: `sessions_spawn` (prevents recursion), `tts`, `react`, `schedule_message`. Sub-agents CAN load skills by default. Set to `[]` to allow all tools.
 
 Tools are only registered if they appear in `enabled` AND their dependencies are met (e.g., `tts` requires `LUCYD_ELEVENLABS_KEY`, `memory_search` requires a configured `memory.db`).
 
@@ -347,6 +352,8 @@ Speech-to-text configuration for voice message transcription. Supports pluggable
 backend = "openai"                           # "openai" (cloud Whisper API) or "local" (whisper.cpp server)
 voice_label = "voice message"                # Label prefixed to transcriptions: "[voice message]: ..."
 voice_fail_msg = "voice message — transcription failed"  # Label on failure
+audio_label = "audio transcription"          # Label for non-voice audio files: "[audio transcription]: ..."
+audio_fail_msg = "audio transcription — failed"  # Label when audio file transcription fails
 ```
 
 **OpenAI backend** (default):
@@ -371,6 +378,22 @@ request_timeout = 60                                  # Timeout for whisper.cpp 
 ```
 
 The local backend converts audio to WAV (16kHz mono) via ffmpeg before sending to the whisper.cpp server. Requires `ffmpeg` installed on the system.
+
+## [documents]
+
+Document attachment processing. Extracts text from attachments (PDF, text files) so the agent sees content, not just `[attachment: file, type]` labels. PDF support requires `pypdf`.
+
+```toml
+[documents]
+enabled = true                  # Enable document text extraction (default: true)
+max_chars = 30000               # Truncation limit for extracted text (default: 30000)
+max_file_bytes = 10485760       # Skip files larger than this (default: 10 MB)
+# text_extensions = [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
+#     ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
+#     ".ini", ".cfg", ".log", ".sql", ".css"]
+```
+
+Files are matched by extension (for text) or MIME type (for PDF). Non-extractable formats fall through to label-only.
 
 ## [vision]
 

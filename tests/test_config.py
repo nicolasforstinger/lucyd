@@ -281,6 +281,35 @@ class TestPluginConfig:
         cfg = Config(minimal_toml_data)
         assert cfg.subagent_deny == []
 
+    def test_subagent_model_default(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.subagent_model == "primary"
+
+    def test_subagent_model_override(self, minimal_toml_data):
+        minimal_toml_data["tools"]["subagent_model"] = "subagent"
+        cfg = Config(minimal_toml_data)
+        assert cfg.subagent_model == "subagent"
+
+    def test_subagent_max_turns_default(self, minimal_toml_data):
+        """0 (default) resolves to parent's max_turns_per_message."""
+        cfg = Config(minimal_toml_data)
+        assert cfg.subagent_max_turns == cfg.max_turns
+
+    def test_subagent_max_turns_override(self, minimal_toml_data):
+        minimal_toml_data["tools"]["subagent_max_turns"] = 25
+        cfg = Config(minimal_toml_data)
+        assert cfg.subagent_max_turns == 25
+
+    def test_subagent_timeout_default(self, minimal_toml_data):
+        """0 (default) resolves to parent's agent_timeout."""
+        cfg = Config(minimal_toml_data)
+        assert cfg.subagent_timeout == cfg.agent_timeout
+
+    def test_subagent_timeout_override(self, minimal_toml_data):
+        minimal_toml_data["tools"]["subagent_timeout"] = 300.0
+        cfg = Config(minimal_toml_data)
+        assert cfg.subagent_timeout == 300.0
+
     def test_config_dir_exposed(self, minimal_toml_data):
         from pathlib import Path
         cfg = Config(minimal_toml_data, config_dir=Path("/some/dir"))

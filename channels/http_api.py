@@ -170,8 +170,9 @@ class HTTPApi:
             attachments.append(Attachment(
                 content_type=content_type,
                 local_path=str(local_path),
-                filename=filename,
+                filename=Path(filename).name,
                 size=len(data),
+                is_voice=bool(item.get("is_voice", False)),
             ))
             log.debug("HTTP attachment saved: %s (%d bytes)", local_path, len(data))
 
