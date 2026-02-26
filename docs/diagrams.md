@@ -21,8 +21,8 @@ flowchart TD
     subgraph Loop["Message Loop — lucyd.py:1361"]
         DEB["Debounce<br/>500ms window"]
         ROUTE["Route Model<br/>config.route_model(source)"]
-        SESSION["Get/Create Session<br/>session.py:285"]
         MEDIA["Process Attachments<br/>image / voice / document"]
+        SESSION["Get/Create Session<br/>session.py:285"]
         CTX["Build System Prompt<br/>context.py:31"]
         AGENTIC["Agentic Loop<br/>agentic.py:107"]
     end
@@ -39,7 +39,7 @@ flowchart TD
     TG --> Q
     HTTP --> Q
     FIFO --> Q
-    Q --> DEB --> ROUTE --> SESSION --> MEDIA --> CTX --> AGENTIC
+    Q --> DEB --> ROUTE --> MEDIA --> SESSION --> CTX --> AGENTIC
     AGENTIC --> PERSIST --> SILENT
     SILENT -->|"HEARTBEAT_OK / NO_REPLY"| WEBHOOK
     SILENT -->|normal| DELIVER --> WEBHOOK
@@ -79,8 +79,8 @@ flowchart TD
     COST_CHECK -->|no| APPEND --> CALLBACK_R --> STOP_CHECK
     STOP_CHECK -->|"end_turn / no tools"| RETURN
     STOP_CHECK -->|tool_use| TOOL_EXEC --> TOOL_RESULTS --> TURN_CHECK
-    TURN_CHECK -->|">= 2 left"| FORMAT
-    TURN_CHECK -->|"< 2 left"| WARN --> FORMAT
+    TURN_CHECK -->|"> 2 left"| FORMAT
+    TURN_CHECK -->|"== 2 left"| WARN --> FORMAT
 ```
 
 ---
@@ -273,7 +273,7 @@ Registration at startup, dispatch at runtime.
 flowchart TD
     subgraph Startup["Registration — lucyd.py:367"]
         CONFIG["lucyd.toml<br/>[tools] enabled list"]
-        BUILTIN["12 Built-in Modules<br/>19 tools"]
+        BUILTIN["11 Built-in Modules<br/>19 tools"]
         PLUGINS["plugins.d/*.py<br/>Custom tools"]
         CONFIG --> FILTER{"tool.name<br/>in enabled?"}
         BUILTIN --> FILTER
