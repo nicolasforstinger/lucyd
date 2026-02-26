@@ -198,19 +198,19 @@ SELECT timestamp FROM costs ORDER BY timestamp DESC LIMIT 1;
 -- Threshold: 24 hours (if daemon is running). Beyond = stale.
 
 -- Structured memory: most recent fact
-SELECT entity, attribute, updated_at FROM facts WHERE valid = 1 ORDER BY updated_at DESC LIMIT 1;
+SELECT entity, attribute, updated_at FROM facts WHERE invalidated_at IS NULL ORDER BY updated_at DESC LIMIT 1;
 -- Threshold: matches last consolidation run. If cron runs at :15, should be within 2 hours.
 
 -- Structured memory: consolidation state (has the pipeline run?)
-SELECT session_file, consolidated_at FROM consolidation_state ORDER BY consolidated_at DESC LIMIT 1;
+SELECT session_id, last_consolidated_at FROM consolidation_state ORDER BY last_consolidated_at DESC LIMIT 1;
 -- Threshold: should match last session activity. If sessions exist that aren't in consolidation_state, pipeline is behind.
 
 -- Structured memory: episodes
-SELECT title, created_at FROM episodes ORDER BY created_at DESC LIMIT 1;
+SELECT summary, created_at FROM episodes ORDER BY created_at DESC LIMIT 1;
 -- Threshold: 48 hours (depends on conversation activity).
 
 -- Structured memory: commitments
-SELECT description, updated_at FROM commitments WHERE status = 'open' ORDER BY updated_at DESC LIMIT 1;
+SELECT what, updated_at FROM commitments WHERE status = 'open' ORDER BY updated_at DESC LIMIT 1;
 -- Threshold: informational only — stale open commitments may be legitimate.
 ```
 

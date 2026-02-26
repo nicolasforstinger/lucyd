@@ -1,6 +1,6 @@
 """Schema management for all memory tables.
 
-Creates and migrates 10 tables:
+Creates and migrates 11 tables:
 
   Unstructured (v1) — used by lucyd-index and memory.py search:
     files              — indexed file metadata (path, hash, mtime)
@@ -15,6 +15,9 @@ Creates and migrates 10 tables:
     entity_aliases     — canonical name resolution (nickname → entity)
     consolidation_state       — tracks per-session processing progress
     consolidation_file_hashes — tracks file content hashes to avoid reprocessing
+
+  Evolution — used by lucyd-consolidate --evolve:
+    evolution_state    — tracks per-file evolution progress
 """
 
 from __future__ import annotations
@@ -131,6 +134,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             file_path         TEXT PRIMARY KEY,
             content_hash      TEXT NOT NULL,
             last_processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        -- ── Evolution — used by lucyd-consolidate --evolve ────
+
+        -- Tracks per-file evolution progress
+        CREATE TABLE IF NOT EXISTS evolution_state (
+            file_path       TEXT PRIMARY KEY,
+            last_evolved_at TEXT NOT NULL DEFAULT (datetime('now')),
+            content_hash    TEXT NOT NULL,
+            logs_through    TEXT
         );
 
         -- Indexes for common query patterns

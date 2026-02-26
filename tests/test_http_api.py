@@ -66,6 +66,7 @@ def _make_app(api_instance: HTTPApi) -> web.Application:
     app.router.add_get(
         "/api/v1/sessions/{session_id}/history", api_instance._handle_history,
     )
+    app.router.add_post("/api/v1/evolve", api_instance._handle_evolve)
     return app
 
 
@@ -2339,3 +2340,65 @@ class TestHistoryEndpoint:
                     headers=auth_headers,
                 )
                 assert resp.status == 200
+
+
+class TestEvolveEndpoint:
+    """POST /api/v1/evolve — trigger memory evolution."""
+
+    @pytest.fixture
+    def api_with_evolve(self, queue):
+        async def mock_evolve():
+            return {"evolved": ["MEMORY.md", "USER.md"], "skipped": [], "error": None}
+        return HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="test-token-123",
+            agent_timeout=5.0,
+            handle_evolve=mock_evolve,
+        )
+
+    @pytest.mark.asyncio
+    async def test_evolve_success(self, api_with_evolve, auth_headers):
+        app = _make_app(api_with_evolve)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/v1/evolve", headers=auth_headers)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["evolved"] == ["MEMORY.md", "USER.md"]
+            assert data["error"] is None
+
+    @pytest.mark.asyncio
+    async def test_evolve_no_callback(self, api, auth_headers):
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/v1/evolve", headers=auth_headers)
+            assert resp.status == 503
+            data = await resp.json()
+            assert data["error"] == "evolution not available"
+
+    @pytest.mark.asyncio
+    async def test_evolve_requires_auth(self, api_with_evolve):
+        app = _make_app(api_with_evolve)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/v1/evolve")
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_evolve_exception_returns_500(self, queue, auth_headers):
+        async def broken_evolve():
+            raise RuntimeError("DB locked")
+        api = HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="test-token-123",
+            agent_timeout=5.0,
+            handle_evolve=broken_evolve,
+        )
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/v1/evolve", headers=auth_headers)
+            assert resp.status == 500
+            data = await resp.json()
+            assert data["error"] == "internal error"

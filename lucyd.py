@@ -1442,6 +1442,23 @@ class LucydDaemon:
             "queue_depth": self.queue.qsize(),
         }
 
+    async def _handle_evolve(self) -> dict:
+        """Handle evolution request from HTTP API."""
+        import sqlite3
+
+        from evolution import run_evolution
+        from memory_schema import ensure_schema
+
+        conn = sqlite3.connect(str(self.config.memory_db), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+        ensure_schema(conn)
+        try:
+            result = await run_evolution(self.config, conn)
+        finally:
+            conn.close()
+        return result
+
     async def _message_loop(self) -> None:
         """Main message processing loop — sequential."""
         debounce_s = self.config.debounce_ms / 1000.0
@@ -1660,6 +1677,7 @@ class LucydDaemon:
                     get_monitor=self._build_monitor,
                     handle_reset=self._reset_session,
                     get_history=self._build_history,
+                    handle_evolve=self._handle_evolve,
                     download_dir=cfg.http_download_dir,
                     max_body_bytes=cfg.http_max_body_bytes,
                     rate_limit=cfg.http_rate_limit,

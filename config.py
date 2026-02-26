@@ -370,6 +370,40 @@ class Config:
         """Memory synthesis style: 'structured' (raw), 'narrative', or 'factual'."""
         return _deep_get(self._data, "memory", "recall", "personality", "synthesis_style", default="structured")
 
+    # --- Memory Evolution ---
+
+    @property
+    def evolution_enabled(self) -> bool:
+        return _deep_get(self._data, "memory", "evolution", "enabled", default=False)
+
+    @property
+    def evolution_model(self) -> str:
+        return _deep_get(self._data, "memory", "evolution", "model", default="primary")
+
+    @property
+    def evolution_files(self) -> list[str]:
+        return _deep_get(self._data, "memory", "evolution", "files", default=[])
+
+    @property
+    def evolution_anchor_file(self) -> str:
+        """File that constrains evolution (identity anchor, never modified)."""
+        return _deep_get(self._data, "memory", "evolution", "anchor_file", default="IDENTITY.md")
+
+    @property
+    def evolution_max_log_chars(self) -> int:
+        """Max chars from daily logs to feed into a single evolution prompt."""
+        return _deep_get(self._data, "memory", "evolution", "max_log_chars", default=80000)
+
+    @property
+    def evolution_max_facts(self) -> int:
+        """Max structured facts to include in evolution context."""
+        return _deep_get(self._data, "memory", "evolution", "max_facts", default=50)
+
+    @property
+    def evolution_max_episodes(self) -> int:
+        """Max recent episodes to include in evolution context."""
+        return _deep_get(self._data, "memory", "evolution", "max_episodes", default=20)
+
     # --- Memory Maintenance ---
 
     @property

@@ -249,6 +249,23 @@ stale_days = 90                       # Remove unaccessed facts older than this
 
 Runs via `bin/lucyd-consolidate --maintain` (cron daily at `04:00`).
 
+### [memory.evolution]
+
+Daily rewriting of workspace understanding files (e.g., `MEMORY.md`, `USER.md`) using accumulated daily logs, structured memory, and an identity anchor file.
+
+```toml
+[memory.evolution]
+enabled = false                      # Enable memory evolution (default: false)
+model = "primary"                    # Model for evolution LLM calls (default: "primary")
+files = ["MEMORY.md", "USER.md"]     # Workspace files to evolve (relative to workspace)
+anchor_file = "IDENTITY.md"          # Identity anchor file — read but never modified (relative to workspace)
+max_log_chars = 80000                # Max chars from daily logs per evolution prompt (default: 80000)
+max_facts = 50                       # Max structured facts in evolution context (default: 50)
+max_episodes = 20                    # Max recent episodes in evolution context (default: 20)
+```
+
+Runs via `bin/lucyd-consolidate --evolve` (cron daily at `04:20`, after maintenance). Also available via `POST /api/v1/evolve`. Files are evolved in order — later files can read freshly-evolved earlier files as context.
+
 ### [memory.recall]
 
 Controls how structured memory is injected into session context at startup.

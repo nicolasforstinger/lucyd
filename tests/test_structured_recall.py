@@ -520,12 +520,16 @@ class TestInjectRecall:
     def test_empty_blocks_returns_empty(self):
         assert inject_recall([], max_tokens=1000) == ""
 
-    def test_zero_budget_returns_empty(self):
+    def test_zero_budget_means_unlimited(self):
+        """max_tokens=0 means unlimited — all blocks included."""
         blocks = [
             RecallBlock(priority=40, section="[X]", text="data", est_tokens=10),
+            RecallBlock(priority=20, section="[Y]", text="more", est_tokens=10),
         ]
         result = inject_recall(blocks, max_tokens=0)
-        assert result == ""
+        assert "[X]" in result
+        assert "[Y]" in result
+        assert "no budget limit" in result
 
     def test_unlimited_budget_includes_all(self):
         blocks = [

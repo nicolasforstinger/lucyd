@@ -569,11 +569,32 @@ For each route in `channels/http_api.py`, verify `docs/operations.md` documents:
 
 ---
 
+## P-025: Python default parameter binding with module globals
+
+**Origin:** Audit cycle 10, Stage 5 dependency chain — embedding indexer freshness check revealed 48 cumulative failures in log.
+
+**Class:** Python function default parameters that reference module-level globals. Python evaluates defaults at function *definition* time, not call time. If the global is `""` at import and set by `configure()` later, functions using `param: str = GLOBAL` capture the empty string forever.
+
+**Root cause:** `tools/indexer.py` used `base_url: str = EMBEDDING_BASE_URL` where `EMBEDDING_BASE_URL` starts as `""` and gets set by `configure()`. Callers that omit `base_url` (like `bin/lucyd-index`) got the stale empty string.
+
+**Fix:** Use `None` sentinel: `param: str | None = None`, resolve at call time: `param = param if param is not None else MODULE_GLOBAL`.
+
+**Status:** FIXED in cycle 10 remediation. 3 functions patched: `embed_batch()`, `cache_embeddings()`, `index_workspace()`.
+
+**Check (Stage 1):**
+Grep for function signatures where a default value references a module-level `ALL_CAPS` variable:
+```
+grep -nP "def \w+\(.*:\s*\w+\s*=\s*[A-Z_]{2,}" *.py tools/*.py
+```
+Verify the default is either a constant (safe) or resolved via `None` sentinel (safe).
+
+---
+
 ## Pattern Index by Stage
 
 | Stage | Applicable Patterns |
 |-------|-------------------|
-| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021, P-022 |
+| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021, P-022, P-025 |
 | 2. Test Suite | P-005 (verify count), P-006 (fixture check), P-013, P-016 (ResourceWarning trigger) |
 | 3. Mutation Testing | P-004, P-013, P-015 (parity check) |
 | 4. Orchestrator Testing | P-017, P-023 |
@@ -615,3 +636,4 @@ For each route in `channels/http_api.py`, verify `docs/operations.md` documents:
 | 2026-02-26 | P-022 | Added from Cycle 9 interface parity review (channel-specific config paths in framework code) |
 | 2026-02-26 | P-023 | Added from Cycle 9 interface parity review (CLI/HTTP API return different data schemas) |
 | 2026-02-26 | P-024 | Added from Cycle 9 post-audit review (HTTP endpoints missing response schemas, error codes, rate limits) |
+| 2026-02-26 | P-025 | Added from Cycle 10 Stage 5 (indexer.py default parameter binding captures stale module global). FIXED same cycle. |

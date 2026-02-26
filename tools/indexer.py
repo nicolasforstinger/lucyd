@@ -226,8 +226,8 @@ def rebuild_fts(conn: sqlite3.Connection) -> None:
 def embed_batch(
     texts: list[str],
     api_key: str,
-    base_url: str = EMBEDDING_BASE_URL,
-    model: str = EMBEDDING_MODEL,
+    base_url: str | None = None,
+    model: str | None = None,
 ) -> list[list[float]]:
     """Embed texts via OpenAI-compatible batch API.
 
@@ -236,6 +236,9 @@ def embed_batch(
     """
     if not texts:
         return []
+
+    base_url = base_url if base_url is not None else EMBEDDING_BASE_URL
+    model = model if model is not None else EMBEDDING_MODEL
 
     all_embeddings: list[tuple[int, list[float]]] = []
 
@@ -268,10 +271,12 @@ def cache_embeddings(
     conn: sqlite3.Connection,
     texts: list[str],
     embeddings: list[list[float]],
-    model: str = EMBEDDING_MODEL,
-    provider: str = EMBEDDING_PROVIDER,
+    model: str | None = None,
+    provider: str | None = None,
 ) -> None:
     """Populate embedding_cache so memory.py runtime hits cache."""
+    model = model if model is not None else EMBEDDING_MODEL
+    provider = provider if provider is not None else EMBEDDING_PROVIDER
     now = int(time.time() * 1000)
     for text, embedding in zip(texts, embeddings, strict=True):
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -290,8 +295,8 @@ def index_workspace(
     workspace: Path,
     db_path: Path,
     api_key: str,
-    base_url: str = EMBEDDING_BASE_URL,
-    model: str = EMBEDDING_MODEL,
+    base_url: str | None = None,
+    model: str | None = None,
     force: bool = False,
 ) -> dict:
     """Scan workspace, chunk changed files, embed, and write to DB.
@@ -302,6 +307,9 @@ def index_workspace(
     """
     if not api_key:
         raise ValueError("API key required for embedding")
+
+    base_url = base_url if base_url is not None else EMBEDDING_BASE_URL
+    model = model if model is not None else EMBEDDING_MODEL
 
     # 1. Scan workspace
     file_list = scan_workspace(workspace)

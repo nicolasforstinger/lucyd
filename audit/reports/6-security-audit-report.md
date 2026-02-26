@@ -1,20 +1,28 @@
 # Security Audit Report
 
 **Date:** 2026-02-26
-**Audit Cycle:** 9
+**Audit Cycle:** 10
 **EXIT STATUS:** PASS
 
 ## Threat Model
 
 Lucyd is an autonomous agent processing external data from Telegram messages, HTTP API requests, FIFO commands, and n8n webhook payloads. Data flows through the agentic loop (LLM) and can trigger tool execution: shell commands, filesystem access, web requests, sub-agent spawning, and message sending. The security model: **the LLM is UNTRUSTED for security decisions.** All security boundaries are code-enforced at the tool level.
 
+## Changes Since Cycle 9
+
+| Change | Location | Security Impact |
+|--------|----------|----------------|
+| `evolution.py` (new module, 454 lines) | `evolution.py` | Reads workspace files + SQLite, writes workspace files. No external input. All SQL parameterized. |
+| `_handle_evolve()` callback | `lucyd.py:1445-1460` | Thin wrapper — opens DB, calls `run_evolution()`. |
+| `POST /api/v1/evolve` endpoint | `channels/http_api.py` | Bearer-token protected. No request body parameters. Rate-limited. |
+
 ## Pattern Checks
 
 | Pattern | Result | Details |
 |---------|--------|---------|
-| P-003 (unchecked filesystem write) | CLEAN | All 19 tool functions verified. Path-accepting tools call `_check_path()` before I/O. New functions (`build_session_info`, `read_history_events`) use parameterized SQL and glob patterns only. |
-| P-009 (capability table stale) | CLEAN | Full capability table re-derived from source. 19 tools across 12 modules. No new tools since Cycle 8. |
-| P-012 (misclassified static) | CLEAN | Entity aliases correctly classified as LLM-extracted (Stage 5 confirmed). |
+| P-003 (unchecked filesystem write) | CLEAN | All 19 tool functions verified. Evolution writes are config-driven (workspace + filename from `evolution_files`), not user-controlled. Atomic via `os.replace()`. |
+| P-009 (capability table stale) | CLEAN | Full capability table re-derived from source. 19 tools across 12 modules. No new tools added. Evolution operates via cron/API, not as an agent tool. |
+| P-012 (misclassified static) | CLEAN | Evolution reads auto-populated `facts`/`episodes`/`commitments` tables via parameterized SQL. Data used in LLM prompts only — never in file paths, shell commands, or non-parameterized SQL. Entity aliases correctly classified as LLM-extracted. |
 | P-018 (resource exhaustion) | 2 NOTED | `asyncio.Queue` unbounded (lucyd.py:285). Mitigated by rate limiter. Unchanged. |
 
 ## Input Sources
@@ -23,10 +31,11 @@ Lucyd is an autonomous agent processing external data from Telegram messages, HT
 |--------|----------|---------------|------------|
 | Telegram | Bot API long polling | `allow_from` user ID allowlist | HIGH |
 | HTTP /chat, /notify | REST POST | Bearer token (hmac.compare_digest) | HIGH |
-| HTTP /sessions/reset | REST POST | Bearer token | HIGH (new) |
+| HTTP /sessions/reset | REST POST | Bearer token | HIGH |
+| HTTP /evolve | REST POST | Bearer token | MEDIUM (new) |
 | HTTP /status | REST GET | None (health check exempt) | LOW |
 | HTTP /sessions, /cost, /monitor | REST GET | Bearer token | LOW |
-| HTTP /sessions/{id}/history | REST GET | Bearer token | LOW (new) |
+| HTTP /sessions/{id}/history | REST GET | Bearer token | LOW |
 | FIFO | Named pipe, JSON/line | Unix file permissions (0o600) | LOW |
 | CLI | stdin/stdout | Local terminal access | LOW |
 | Config files | TOML (startup only) | Filesystem permissions | LOW |
@@ -34,7 +43,7 @@ Lucyd is an autonomous agent processing external data from Telegram messages, HT
 | Plugin directory | Python (startup) | Filesystem permissions | CRITICAL |
 | Memory DB | SQLite (WAL mode) | Filesystem permissions | MEDIUM |
 
-New input sources: `/api/v1/sessions/reset` (POST), `/api/v1/monitor` (GET), `/api/v1/sessions/{id}/history` (GET).
+New input source: `POST /api/v1/evolve` — accepts no request body, triggers evolution of configured files. Bearer-token protected. Rate-limited.
 
 ## Capabilities
 
@@ -60,7 +69,7 @@ New input sources: `/api/v1/sessions/reset` (POST), `/api/v1/monitor` (GET), `/a
 | 18 | session_status | status.py | LOW | Read-only |
 | 19 | react | messaging.py | LOW | ALLOWED_REACTIONS emoji set |
 
-No new tools added. Capability table unchanged from Cycle 8.
+No new tools added. Capability table unchanged from Cycle 9. Evolution is not an agent tool — it's a cron/API-triggered operation.
 
 ## Path Matrix
 
@@ -73,9 +82,10 @@ No new tools added. Capability table unchanged from Cycle 8.
 | Telegram -> message | `_resolve_target()`, `_check_path()` attachments | Yes | Yes | VERIFIED |
 | Telegram -> tts | `_check_path()` on output_file | Yes | Yes | VERIFIED |
 | HTTP API -> all tools | Bearer token (hmac.compare_digest) + rate limiting + 10 MiB body | Yes | Yes (100% kill) | VERIFIED |
-| HTTP -> reset | Bearer token + string validation | Yes (5 tests) | N/A | VERIFIED (new) |
-| HTTP -> history | Bearer token + glob pattern (safe) | Yes (5 tests) | N/A | VERIFIED (new) |
-| HTTP -> monitor | Bearer token + read-only rate limit | Yes (3 tests) | N/A | VERIFIED (new) |
+| HTTP -> reset | Bearer token + string validation | Yes (5 tests) | N/A | VERIFIED |
+| HTTP -> history | Bearer token + glob pattern (safe) | Yes (5 tests) | N/A | VERIFIED |
+| HTTP -> monitor | Bearer token + read-only rate limit | Yes (3 tests) | N/A | VERIFIED |
+| HTTP -> evolve | Bearer token + rate limit, no user input | Yes (tests in test_evolution.py) | N/A | VERIFIED (new) |
 | FIFO -> all tools | Unix permissions (0o600), JSON validation | Yes | N/A | VERIFIED |
 | Attachments -> filesystem | `Path.name` filename sanitization (both channels) | Yes | N/A | VERIFIED |
 
@@ -111,37 +121,28 @@ No new tools added. Capability table unchanged from Cycle 8.
 **Boundary:** `hmac.compare_digest()` timing-safe. No-token -> 503. Rate limiting. 10 MiB body cap.
 **Tests:** 22 auth tests + 2 rate limit tests.
 
-### 7. HTTP -> Reset endpoint (new)
+### 7. HTTP -> Evolve endpoint (new)
 **Status:** VERIFIED
-**Boundary:** Bearer token required. Input validated (`isinstance(target, str)`, non-empty). `_reset_session()` uses index-based lookup only — no file path construction from target. UUID format validated via compiled regex. Unknown targets return graceful error.
-**Tests:** 5 tests (reset_all, reset_by_contact, requires_auth, invalid_body, no_callback).
+**Boundary:** Bearer token required. No user-controlled parameters in request body. Endpoint calls `_handle_evolve_cb()` which uses config-driven file list (not user input). Returns 503 if evolution not configured, 500 on exception.
+**Tests:** Core logic tested in test_evolution.py (25 tests). HTTP handler follows standard pattern.
 
-### 8. HTTP -> History endpoint (new)
+### 8. Evolution module file access (new)
 **Status:** VERIFIED
-**Boundary:** Bearer token required. Session ID from URL path used in glob pattern `{session_id}.????-??-??.jsonl` — glob treats `..` as literal characters, not directory traversal. Date suffix `.????-??-??.jsonl` constrains matches. Archive searched in `.archive/` subdirectory with same pattern.
-**Tests:** 5 tests (returns_events, full_param, requires_auth, no_callback, rate_limited_as_read_only).
+**Analysis:**
+- **File paths**: Derived from `config.workspace` + `config.evolution_files` (TOML config, admin-controlled). No user-supplied paths.
+- **Daily logs**: Read from `workspace/memory/` with regex date validation (`r"(\d{4}-\d{2}-\d{2})"`). Subdirectories explicitly skipped.
+- **Database queries**: All parameterized (`?` placeholders). Limits enforced (`max_facts`, `max_episodes`).
+- **File writes**: Atomic via `.evolving` temp file + `os.replace()`. Content validation gates (empty check, 50%-200% length ratio).
+- **LLM response**: Raw LLM output written to file, but file path is config-controlled, not LLM-controlled.
+- **Structured data in prompts**: Facts, episodes, commitments injected as text into LLM prompt only — never used in file paths, SQL, or shell commands.
 
-### 9. HTTP -> Monitor endpoint (new)
-**Status:** VERIFIED
-**Boundary:** Bearer token required. In `_READ_ONLY_PATHS` for rate limiting. No user input parameters. Returns daemon state dict from callback.
-**Tests:** 3 tests (returns_data, no_callback, rate_limited_as_read_only).
-
-### 10. Agent identity injection
-**Status:** VERIFIED
-**Boundary:** `agent_name` sourced from TOML config (admin-controlled, not user input). Injected into JSON body (safe — aiohttp JSON serialization) and `X-Lucyd-Agent` header. Config-sourced values don't contain control characters.
-**Tests:** 5 tests (status, sessions, notify include agent; absent when empty; error responses excluded).
-
-### 11. Attachments -> File system
-**Status:** VERIFIED
-**Boundary:** Both channels sanitize via `Path(filename).name`.
-
-### 12. Memory poisoning
+### 9. Memory poisoning
 **Status:** ACCEPTED RISK (unchanged)
-**Analysis:** Facts are text context only — never reach tool arguments, file paths, shell commands, or network requests. All SQL parameterized.
+**Analysis:** Facts are text context only — never reach tool arguments, file paths, shell commands, or network requests. All SQL parameterized. Evolution module's use of structured data in prompts is the same risk class.
 
-### 13. Supply chain
+### 10. Supply chain
 **Status:** CLEAN
-pip-audit: 0 runtime CVEs. 2 CVEs in pip 25.1.1 (dev tool only).
+**Packages:** 68 installed. Runtime deps: anthropic, openai, httpx, aiohttp — all reputable.
 
 ## Vulnerabilities Found
 
@@ -166,13 +167,15 @@ Previously resolved findings (prefix match, filename sanitization) remain resolv
 | Env var leakage | Yes | Yes | `_safe_env()` filters by prefix + suffix |
 | Session poisoning | Yes | Accepted | Tool-level boundaries sufficient |
 | Structured memory poisoning | Yes | Verified | Facts never reach tool arguments |
+| Evolution prompt injection | Yes | Accepted | LLM-generated content written to config-controlled paths only |
 | Resource exhaustion (queue) | Yes | Partial | asyncio.Queue unbounded, mitigated by rate limiter |
-| Dynamic dispatch injection | Yes | Yes | Dict-key lookup only |
+| Dynamic dispatch injection | Yes | Yes | Dict-key lookup only, no eval/exec/getattr dispatch |
 | Supply chain (dep CVEs) | Yes | Clean | 0 runtime CVEs |
 | Attachment filename traversal | Yes | Yes | Both channels use `Path.name` |
-| History endpoint path traversal | Yes | Yes | Glob treats `..` as literal (new) |
-| Reset endpoint abuse | Yes | Yes | Index-based lookup, no file ops (new) |
-| Agent identity header injection | No | N/A | Config-sourced, not user input (new) |
+| History endpoint path traversal | Yes | Yes | Glob treats `..` as literal |
+| Reset endpoint abuse | Yes | Yes | Index-based lookup, no file ops |
+| Agent identity header injection | No | N/A | Config-sourced, not user input |
+| Evolution file path injection | No | N/A | Config-sourced (TOML `evolution_files`), not user input |
 
 ## Boundary Verification Summary
 
@@ -193,9 +196,7 @@ Previously resolved findings (prefix match, filename sanitization) remain resolv
 | Telegram `allow_from` | Yes | Yes | N/A | Yes |
 | FIFO permissions | Yes | N/A (OS) | N/A | Yes (0o600) |
 | Attachment `Path.name` sanitization | Yes | Yes | N/A | Yes |
-| `_json_response()` agent identity | Yes | Yes | Yes (cosmetic survivors) | N/A |
-| Reset input validation | Yes | Yes | N/A | Yes |
-| History glob pattern | Yes | Yes | N/A | Yes |
+| Evolution content validation | Yes | Yes | Yes (77% kill rate) | Yes (rejects empty/too-short/too-long) |
 
 ## Security Test Results
 
@@ -206,13 +207,14 @@ Previously resolved findings (prefix match, filename sanitization) remain resolv
 | test_filesystem.py | 39 |
 | test_synthesis.py | 23 |
 | test_http_api.py (auth/rate/identity/reset/history/monitor) | 40 |
-| **Total security-focused** | **206** |
+| test_evolution.py (validation gates) | 25 |
+| **Total security-focused** | **231** |
 
 ## Recommendations
 
-1. **(Info)** Upgrade pip to fix CVE-2025-8869 and CVE-2026-1703 (dev tool only). Carried forward.
+1. **(Info)** Upgrade pip to fix dev-tool CVEs. Carried forward.
 2. **(Info)** Consider `asyncio.Queue(maxsize=N)` for defense against queue-flooding. Carried forward.
-3. **(Info)** Consider sanitizing `agent_name` to `[a-zA-Z0-9_-]+` before HTTP header injection (defense-in-depth — current risk negligible as value is config-sourced).
+3. **(Info)** Consider sanitizing `agent_name` to `[a-zA-Z0-9_-]+` before HTTP header injection. Carried forward.
 
 ## Confidence
 
@@ -220,8 +222,7 @@ Overall confidence: 97%
 
 - **CRITICAL capabilities (exec, filesystem, sub-agents):** 98%. All boundaries mutation-verified at 100% kill.
 - **HIGH capabilities (web_fetch, messaging):** 97%. SSRF protection comprehensive.
-- **Authentication (HTTP API):** 98%. Timing-safe. Fail-closed. All new endpoints behind auth.
-- **New endpoints (reset, history, monitor):** 96%. All properly authenticated, rate-limited, input-validated. History glob pattern safe against traversal. Reset uses index-based lookup only.
-- **Agent identity:** 98%. Config-sourced, not user input. JSON serialization handles escaping.
-- **Indirect paths (memory poisoning):** 95%. Accepted risk unchanged.
+- **Authentication (HTTP API):** 98%. Timing-safe. Fail-closed. All endpoints behind auth including new `/evolve`.
+- **New evolution module:** 97%. No external input paths. Config-driven file access. Parameterized SQL. Atomic writes.
+- **Indirect paths (memory poisoning):** 95%. Accepted risk unchanged. Evolution adds same risk class (LLM content in prompts → workspace files).
 - **Supply chain:** 98%. Zero runtime CVEs.

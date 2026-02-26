@@ -7,6 +7,7 @@ Endpoints:
     POST /api/v1/chat    — Synchronous: send message, await response
     POST /api/v1/notify  — Fire-and-forget: queue event, return immediately
     GET  /api/v1/status   — Health check + daemon stats
+    POST /api/v1/evolve  — Trigger memory evolution (rewrite understanding files)
 """
 
 from __future__ import annotations
@@ -74,6 +75,7 @@ class HTTPApi:
         get_monitor: Any = None,
         handle_reset: Any = None,
         get_history: Any = None,
+        handle_evolve: Any = None,
         download_dir: str = "/tmp/lucyd-http",  # noqa: S108 — default; overridden by config
         max_body_bytes: int = 10 * 1024 * 1024,
         rate_limit: int = 30,
@@ -93,6 +95,7 @@ class HTTPApi:
         self._get_monitor = get_monitor
         self._handle_reset_cb = handle_reset
         self._get_history = get_history
+        self._handle_evolve_cb = handle_evolve
         self._download_dir = download_dir
         self._max_body_bytes = max_body_bytes
         self._runner: web.AppRunner | None = None
@@ -128,6 +131,7 @@ class HTTPApi:
         app.router.add_get(
             "/api/v1/sessions/{session_id}/history", self._handle_history,
         )
+        app.router.add_post("/api/v1/evolve", self._handle_evolve)
 
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -436,3 +440,22 @@ class HTTPApi:
             history_data = {"session_id": session_id, "events": []}
 
         return self._json_response(history_data, status=200)
+
+    async def _handle_evolve(self, request: web.Request) -> web.Response:
+        """POST /api/v1/evolve — trigger memory evolution."""
+        if not self._handle_evolve_cb:
+            return self._json_response(
+                {"evolved": [], "skipped": [], "error": "evolution not available"},
+                status=503,
+            )
+
+        try:
+            result = await self._handle_evolve_cb()
+        except Exception:
+            log.exception("Evolution endpoint failed")
+            return self._json_response(
+                {"evolved": [], "skipped": [], "error": "internal error"},
+                status=500,
+            )
+
+        return self._json_response(result, status=200)

@@ -552,11 +552,14 @@ def inject_recall(blocks: list[RecallBlock], max_tokens: int) -> str:
     until budget exhausted, dropping lowest-priority blocks.
     Appends a footer showing what was loaded vs. budget, plus
     any dropped sections so the agent knows what it's missing.
+
+    When max_tokens is 0, all blocks are included (unlimited budget).
     """
+    unlimited = max_tokens == 0
     result = []
     included_sections = []
     dropped_sections = []
-    remaining = max_tokens
+    remaining = float("inf") if unlimited else max_tokens
     for block in blocks:
         if block.est_tokens <= remaining:
             result.append(f"{block.section}\n{block.text}")
@@ -566,15 +569,23 @@ def inject_recall(blocks: list[RecallBlock], max_tokens: int) -> str:
             dropped_sections.append(block.section.strip("[]"))
 
     if not result:
-        log.debug("Recall budget: no blocks included (0/%d tokens)", max_tokens)
+        log.debug("Recall budget: no blocks included (0/%s tokens)",
+                  "unlimited" if unlimited else max_tokens)
         return ""
 
-    used = max_tokens - remaining
-    log.debug("Recall budget: included=[%s] (%d/%d tokens), dropped=[%s]",
-              ", ".join(included_sections), used, max_tokens,
-              ", ".join(dropped_sections) if dropped_sections else "none")
+    used = sum(b.est_tokens for b in blocks
+               if b.section.strip("[]") in included_sections)
     sections_str = ", ".join(included_sections)
-    footer = f"[Memory loaded: {sections_str} | {used}/{max_tokens} tokens used]"
+
+    if unlimited:
+        log.debug("Recall budget: included=[%s] (%d tokens, no limit)",
+                  sections_str, used)
+        footer = f"[Memory loaded: {sections_str} | {used} tokens loaded (no budget limit)]"
+    else:
+        log.debug("Recall budget: included=[%s] (%d/%d tokens), dropped=[%s]",
+                  sections_str, used, max_tokens,
+                  ", ".join(dropped_sections) if dropped_sections else "none")
+        footer = f"[Memory loaded: {sections_str} | {used}/{max_tokens} tokens used]"
     if dropped_sections:
         dropped_str = ", ".join(dropped_sections)
         footer += f"\n[Dropped (over budget): {dropped_str} — use memory_search to access]"
