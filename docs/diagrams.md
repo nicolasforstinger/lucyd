@@ -13,12 +13,12 @@ flowchart TD
     subgraph Sources["Inbound Sources"]
         TG["Telegram Channel<br/>telegram.py"]
         HTTP["HTTP API<br/>http_api.py"]
-        FIFO["Control FIFO<br/>lucyd.py:73"]
+        FIFO["Control FIFO<br/>lucyd.py:83"]
     end
 
-    Q["asyncio.Queue<br/>lucyd.py:286"]
+    Q["asyncio.Queue<br/>lucyd.py:296"]
 
-    subgraph Loop["Message Loop — lucyd.py:1361"]
+    subgraph Loop["Message Loop — lucyd.py:1445"]
         DEB["Debounce<br/>500ms window"]
         ROUTE["Route Model<br/>config.route_model(source)"]
         MEDIA["Process Attachments<br/>image / voice / document"]
@@ -31,7 +31,7 @@ flowchart TD
         PERSIST["Persist Messages<br/>session.py:167"]
         SILENT{"Silent Token?"}
         DELIVER["Channel Delivery<br/>channel.send()"]
-        WEBHOOK["Webhook Callback<br/>lucyd.py:1207"]
+        WEBHOOK["Webhook Callback<br/>lucyd.py:1219"]
         COMPACT{"Compaction<br/>Needed?"}
         DO_COMPACT["Compact Session<br/>session.py:450"]
     end
@@ -146,7 +146,7 @@ flowchart TD
     subgraph Unstructured["Unstructured Memory (v1)"]
         FTS["FTS5 Search<br/>memory.py:96"]
         FTS_CHECK{">=3 results?"}
-        EMBED["Embed Query<br/>memory.py:168"]
+        EMBED["Embed Query<br/>_embed()<br/>memory.py:168"]
         VECTOR["Vector Search<br/>memory.py:128"]
         MERGE["Merge + Dedup"]
     end
@@ -271,7 +271,7 @@ Registration at startup, dispatch at runtime.
 
 ```mermaid
 flowchart TD
-    subgraph Startup["Registration — lucyd.py:367"]
+    subgraph Startup["Registration — lucyd.py:377"]
         CONFIG["lucyd.toml<br/>[tools] enabled list"]
         BUILTIN["11 Built-in Modules<br/>19 tools"]
         PLUGINS["plugins.d/*.py<br/>Custom tools"]
@@ -327,16 +327,19 @@ flowchart TD
         STATUS["/api/v1/status<br/>GET → health"]
         SESSIONS_EP["/api/v1/sessions<br/>GET → list"]
         COST_EP["/api/v1/cost<br/>GET → breakdown"]
+        MONITOR_EP["/api/v1/monitor<br/>GET → loop state"]
+        RESET_EP["/api/v1/sessions/reset<br/>POST → reset sessions"]
+        HISTORY_EP["/api/v1/sessions/{id}/history<br/>GET → event history"]
         AUTH["Bearer Token Auth<br/>hmac.compare_digest()"]
         RATE["Rate Limiter<br/>per-sender window"]
     end
 
-    subgraph CLI["FIFO — lucyd.py:73"]
+    subgraph CLI["FIFO — lucyd.py:83"]
         PIPE["control.pipe<br/>JSON lines"]
         SEND_CLI["lucyd-send<br/>bin/lucyd-send"]
     end
 
-    Q["asyncio.Queue<br/>lucyd.py:286<br/>maxsize=1000"]
+    Q["asyncio.Queue<br/>lucyd.py:296<br/>maxsize=1000"]
 
     POLL --> PARSE --> DL --> Q
     SEND_CLI --> PIPE --> Q
@@ -344,8 +347,8 @@ flowchart TD
     NOTIFY --> AUTH
     AUTH --> RATE --> Q
 
-    Q --> LOOP["_message_loop()<br/>lucyd.py:1361"]
-    LOOP --> PROCESS["_process_message()<br/>lucyd.py:616"]
+    Q --> LOOP["_message_loop()<br/>lucyd.py:1445"]
+    LOOP --> PROCESS["_process_message()<br/>lucyd.py:626"]
 
     PROCESS -->|telegram| SEND_TG
     PROCESS -->|http| FUTURE["Resolve Future<br/>→ HTTP response"]
