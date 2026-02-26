@@ -232,35 +232,33 @@ flowchart LR
 Dual storage model with compaction lifecycle.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Active: get_or_create()\nsession.py:285
+flowchart TD
+    CREATE["get_or_create()\nsession.py:285"]
 
-    state Active {
-        [*] --> UserMsg: add_user_message()
-        UserMsg --> Agentic: run_agentic_loop()
-        Agentic --> Persist: persist messages
+    subgraph Active["Active Session"]
+        USER_MSG["add_user_message()"]
+        AGENTIC["run_agentic_loop()"]
 
-        state Persist {
-            JSONL: Append to JSONL\n{id}.{YYYY-MM-DD}.jsonl
-            State: Atomic write\n{id}.state.json
-        }
+        subgraph Persist["Dual Storage"]
+            JSONL["Append to JSONL\nid.YYYY-MM-DD.jsonl"]
+            STATE["Atomic write\nid.state.json"]
+        end
 
-        Persist --> Threshold
+        THRESHOLD{"Token usage\nvs threshold?"}
+        NORMAL((" "))
+        WARN["Inject warning\npending_system_warning"]
+        COMPACT["compact_session()\nsession.py:450\nreplace 2/3 messages\nwith summary"]
+    end
 
-        state Threshold <<choice>>
-        Threshold --> Normal: under 80%
-        Threshold --> Warn: 80-100%
-        Threshold --> Compact: over 100%
+    CLOSE["close_session()\nsession.py:323"]
+    ARCHIVE["Move to .archive/"]
+    DONE((" "))
 
-        Normal --> [*]
-        Warn --> InjectWarn: Set pending_system_warning
-        InjectWarn --> [*]
-        Compact --> Summarize: compact_session()
-        Summarize --> [*]: replace 2/3 messages\nwith summary
-    }
-
-    Active --> Archive: close_session()\nsession.py:323
-    Archive --> [*]: move to .archive/
+    CREATE --> USER_MSG --> AGENTIC --> Persist --> THRESHOLD
+    THRESHOLD -->|"under 80%"| NORMAL
+    THRESHOLD -->|"80-100%"| WARN --> NORMAL
+    THRESHOLD -->|"over 100%"| COMPACT --> NORMAL
+    Active --> CLOSE --> ARCHIVE --> DONE
 ```
 
 ---
