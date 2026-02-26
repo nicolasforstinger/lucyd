@@ -342,8 +342,16 @@ def list_sessions(state_dir: Path) -> None:
 
     # Load config for name resolution and max context tokens
     config = _load_config()
-    contacts = config.get("channel", {}).get("telegram", {}).get("contacts", {})
-    allow_from = config.get("channel", {}).get("telegram", {}).get("allow_from", [])
+    # Collect contacts from all channel configs (channel-agnostic)
+    contacts = {}
+    allow_from = []
+    channel_cfg = config.get("channel", {})
+    for section_key, section_val in channel_cfg.items():
+        if isinstance(section_val, dict):
+            if "contacts" in section_val:
+                contacts.update(section_val["contacts"])
+            if "allow_from" in section_val:
+                allow_from.extend(section_val["allow_from"])
     max_context = config.get("models", {}).get("primary", {}).get("max_context_tokens", 0)
 
     cost_db = state_dir / "cost.db"
@@ -438,6 +446,98 @@ def list_sessions(state_dir: Path) -> None:
     print()
 
 
+# ─── Session History ─────────────────────────────────────────────
+
+
+def show_history(state_dir: Path, target: str, full: bool = False) -> None:
+    """Read and display session history for a contact or session ID."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from session import read_history_events
+
+    sessions_dir = state_dir / "sessions"
+    index_path = sessions_dir / "sessions.json"
+
+    # Resolve contact name to session ID
+    session_id = target
+    contact_name = target
+    if not _is_uuid(target):
+        # Look up in session index
+        if index_path.exists():
+            try:
+                with open(index_path, "r", encoding="utf-8") as f:
+                    index = json.load(f)
+                entry = index.get(target)
+                if entry:
+                    session_id = entry.get("session_id", "")
+                else:
+                    # Try case-insensitive match
+                    for key, val in index.items():
+                        if key.lower() == target.lower():
+                            session_id = val.get("session_id", "")
+                            contact_name = key
+                            break
+                    else:
+                        # Check archive for matching contact
+                        archive = sessions_dir / ".archive"
+                        if archive.exists():
+                            for sf in archive.glob("*.state.json"):
+                                try:
+                                    with open(sf, encoding="utf-8") as fh:
+                                        state = json.load(fh)
+                                    if state.get("contact", "").lower() == target.lower():
+                                        session_id = state.get("id", "")
+                                        contact_name = state.get("contact", target)
+                                        break
+                                except (json.JSONDecodeError, OSError):
+                                    continue
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    if not session_id:
+        print(f"No session found for: {target}", file=sys.stderr)
+        sys.exit(1)
+
+    events = read_history_events(sessions_dir, session_id, full=full)
+
+    if not events:
+        print(f"No history found for: {contact_name} ({session_id})")
+        return
+
+    # Get agent name from config
+    config = _load_config()
+    agent_name = config.get("agent", {}).get("name", "Assistant")
+
+    print(f"\nSession History: {contact_name}")
+    print(f"ID: {session_id}")
+    print(f"Events: {len(events)}")
+    print("\u2500" * 60)
+
+    for event in events:
+        ts = event.get("timestamp", 0)
+        ts_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "?"
+
+        etype = event.get("type", "")
+        if etype == "message":
+            role = event.get("role", "")
+            if role == "user":
+                sender = event.get("from", "") or "user"
+                content = event.get("content", "")
+                # Strip timestamp prefix
+                if content.startswith("[") and "]\n" in content[:60]:
+                    content = content[content.index("]\n") + 2:]
+                print(f"\n[{ts_str}] {sender}:")
+                print(f"  {content[:500]}")
+            elif role == "assistant":
+                text = event.get("text", "")
+                if text:
+                    print(f"\n[{ts_str}] {agent_name}:")
+                    print(f"  {text[:500]}")
+        elif full:
+            print(f"\n[{ts_str}] [{etype}] {json.dumps(event, default=str)[:200]}")
+
+    print()
+
+
 # ─── Main ─────────────────────────────────────────────────────────
 
 def main():
@@ -453,6 +553,10 @@ def main():
                         help="Reset session by sender name or UUID; no argument resets all")
     parser.add_argument("-a", "--attach", action="append", metavar="FILE",
                         help="Attach a file (repeatable); requires --message or --system")
+    parser.add_argument("--history", nargs="?", const="__default__", metavar="CONTACT_OR_ID",
+                        help="Show session history for a contact or session ID")
+    parser.add_argument("--full", action="store_true",
+                        help="Include all events in --history (tool calls, metadata)")
     parser.add_argument("--state-dir", default="~/.lucyd", help="Lucyd state directory")
     args = parser.parse_args()
 
@@ -471,6 +575,15 @@ def main():
         config = _load_config()
         agent_name = config.get("agent", {}).get("name", "Lucy")
         show_monitor(state_dir, agent_name=agent_name)
+        return
+
+    if args.history is not None:
+        target = args.history
+        if target == "__default__":
+            # No argument — show usage hint
+            print("Usage: lucyd-send --history <contact_name_or_session_id>", file=sys.stderr)
+            sys.exit(1)
+        show_history(state_dir, target, full=args.full)
         return
 
     if not args.message and not args.system and not args.reset:

@@ -38,6 +38,16 @@ from tools import ToolRegistry
 
 log = logging.getLogger("lucyd")
 
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _is_uuid(s: str) -> bool:
+    return bool(_UUID_RE.match(s))
+
+
 # ─── PID File ────────────────────────────────────────────────────
 
 def _check_pid_file(path: Path) -> None:
@@ -646,6 +656,8 @@ class LucydDaemon:
             a.content_type.startswith("audio/") and a.is_voice for a in attachments
         )
 
+        log.debug("Model routing: source=%s -> model=%s", source, model_name)
+
         provider = self.providers.get(model_name)
         if provider is None:
             log.error("No provider for model '%s' (source: %s)", model_name, source)
@@ -1228,6 +1240,7 @@ class LucydDaemon:
             "source": source,
             "silent": silent,
             "tokens": tokens,
+            "agent": self.config.agent_name,
         }
         if notify_meta:
             payload["notify_meta"] = notify_meta
@@ -1243,23 +1256,70 @@ class LucydDaemon:
         except Exception as e:
             log.warning("Webhook callback failed (%s): %s", url, e)
 
+    async def _reset_session(self, target: str, by_id: bool = False) -> dict:
+        """Reset session by target: 'all', session ID, or contact name.
+
+        When by_id=True, target is treated as a session ID directly.
+        Otherwise, UUIDs are auto-detected and routed to close_session_by_id.
+        Returns result dict with reset status.
+        """
+        if not self.session_mgr:
+            return {"reset": False, "reason": "no session manager"}
+
+        if target == "all":
+            contacts = list(self.session_mgr._index.keys())
+            for contact in contacts:
+                await self.session_mgr.close_session(contact)
+            return {"reset": True, "target": "all", "count": len(contacts)}
+
+        if by_id or _is_uuid(target):
+            if await self.session_mgr.close_session_by_id(target):
+                return {"reset": True, "target": target, "type": "session_id"}
+            return {"reset": False, "reason": f"no session found for ID: {target}"}
+
+        # "user" shortcut: find primary operator contact
+        if target == "user":
+            for contact in self.session_mgr._index:
+                # Skip framework-internal senders
+                if contact in ("system",) or contact.startswith(("http-", "cli")):
+                    continue
+                target = contact
+                break
+            else:
+                return {"reset": False, "reason": "no user session found"}
+
+        if await self.session_mgr.close_session(target):
+            return {"reset": True, "target": target, "type": "contact"}
+        return {"reset": False, "reason": f"no session found for: {target}"}
+
     def _build_sessions(self) -> list[dict]:
         """Build session list for HTTP /sessions."""
+        from session import build_session_info
+
         if not self.session_mgr:
             return []
+
+        max_ctx = 0
+        try:
+            model_cfg = self.config.model_config("primary")
+            max_ctx = model_cfg.get("max_context_tokens", 0)
+        except Exception:  # noqa: S110 — config lookup for session listing; graceful degradation to 0
+            pass
+
         result = []
         for contact, entry in self.session_mgr._index.items():
             session_id = entry.get("session_id", "")
-            info = {
-                "session_id": session_id,
-                "contact": contact,
-                "created_at": entry.get("created_at"),
-            }
-            # Enrich from live session if loaded
             live = self.session_mgr._sessions.get(contact)
+            info = build_session_info(
+                sessions_dir=self.session_mgr.dir,
+                session_id=session_id,
+                session=live,
+                cost_db_path=str(self.config.cost_db),
+                max_context_tokens=max_ctx,
+            )
+            info["contact"] = contact
+            info["created_at"] = entry.get("created_at")
             if live:
-                info["message_count"] = len(live.messages)
-                info["compaction_count"] = live.compaction_count
                 info["model"] = live.model
             result.append(info)
         return result
@@ -1284,7 +1344,7 @@ class LucydDaemon:
                 if period == "today":
                     ts_filter = today_start_ts()
                 elif period == "week":
-                    ts_filter = today_start_ts() - 6 * 86400
+                    ts_filter = int(time.time()) - 7 * 86400
                 else:  # "all"
                     ts_filter = 0
 
@@ -1292,6 +1352,8 @@ class LucydDaemon:
                     """SELECT model,
                               SUM(input_tokens) AS input_tokens,
                               SUM(output_tokens) AS output_tokens,
+                              SUM(cache_read_tokens) AS cache_read_tokens,
+                              SUM(cache_write_tokens) AS cache_write_tokens,
                               SUM(cost_usd) AS cost_usd
                        FROM costs
                        WHERE timestamp >= ?
@@ -1310,6 +1372,8 @@ class LucydDaemon:
                     "model": r["model"],
                     "input_tokens": r["input_tokens"] or 0,
                     "output_tokens": r["output_tokens"] or 0,
+                    "cache_read_tokens": r["cache_read_tokens"] or 0,
+                    "cache_write_tokens": r["cache_write_tokens"] or 0,
                     "cost_usd": round(cost, 6),
                 })
 
@@ -1321,6 +1385,26 @@ class LucydDaemon:
         except Exception:
             log.exception("Failed to query cost DB")
             return empty
+
+    def _build_monitor(self) -> dict:
+        """Build monitor data for HTTP /monitor."""
+        monitor_path = self.config.state_dir / "monitor.json"
+        if not monitor_path.exists():
+            return {"state": "unknown"}
+        try:
+            return json.loads(monitor_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {"state": "unknown"}
+
+    def _build_history(self, session_id: str, full: bool = False) -> dict:
+        """Build session history for HTTP /sessions/{id}/history."""
+        from session import read_history_events
+
+        if not self.session_mgr:
+            return {"session_id": session_id, "events": []}
+
+        events = read_history_events(self.session_mgr.dir, session_id, full=full)
+        return {"session_id": session_id, "events": events}
 
     def _build_status(self) -> dict:
         """Build status dict for HTTP /status and SIGUSR2."""
@@ -1429,32 +1513,17 @@ class LucydDaemon:
             elif isinstance(item, dict):
                 # Handle session reset before normal message processing
                 if item.get("type") == "reset":
-                    if item.get("all") and self.session_mgr:
-                        # Reset all sessions
-                        contacts = list(self.session_mgr._index.keys())
-                        for contact in contacts:
-                            await self.session_mgr.close_session(contact)
-                        log.info("All sessions reset (%d)", len(contacts))
-                    elif item.get("session_id") and self.session_mgr:
-                        # Reset by session UUID (from --reset <uuid>)
-                        session_id = item["session_id"]
-                        if await self.session_mgr.close_session_by_id(session_id):
-                            log.info("Session reset by ID: %s", session_id)
-                        else:
-                            log.warning("No session found for ID: %s", session_id)
+                    if item.get("all"):
+                        target = "all"
+                        by_id = False
+                    elif item.get("session_id"):
+                        target = item["session_id"]
+                        by_id = True
                     else:
-                        # Reset by sender name (existing behavior)
                         target = item.get("sender", "")
-                        if target == "user" and self.session_mgr:
-                            for contact in self.session_mgr._index:
-                                if contact not in ("system", "cli"):
-                                    target = contact
-                                    break
-                        if target and self.session_mgr:
-                            if await self.session_mgr.close_session(target):
-                                log.info("Session reset for %s", target)
-                            else:
-                                log.warning("No session found to reset for %s", target)
+                        by_id = False
+                    result = await self._reset_session(target, by_id=by_id)
+                    log.info("Reset: %s", result)
                     continue
 
                 # HTTP /chat — process immediately, bypass debouncing
@@ -1588,11 +1657,15 @@ class LucydDaemon:
                     get_status=self._build_status,
                     get_sessions=self._build_sessions,
                     get_cost=self._build_cost,
+                    get_monitor=self._build_monitor,
+                    handle_reset=self._reset_session,
+                    get_history=self._build_history,
                     download_dir=cfg.http_download_dir,
                     max_body_bytes=cfg.http_max_body_bytes,
                     rate_limit=cfg.http_rate_limit,
                     rate_window=cfg.http_rate_window,
                     status_rate_limit=cfg.http_status_rate_limit,
+                    agent_name=cfg.agent_name,
                 )
                 await self._http_api.start()
 
@@ -1624,7 +1697,7 @@ class LucydDaemon:
                 for session in list(self.session_mgr._sessions.values()):
                     try:
                         session._save_state()
-                    except Exception:
+                    except Exception:  # noqa: S110 — session state persist on shutdown; failure is benign
                         pass
 
             # Disconnect channel (close httpx client, clean downloads)

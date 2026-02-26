@@ -1681,8 +1681,6 @@ class TestMessageLoopDebounce:
         await daemon.queue.put({"sender": "cron", "type": "system", "text": "heartbeat"})
         await daemon.queue.put(None)
 
-        response = MagicMock(text="ok", usage=MagicMock(input_tokens=10, output_tokens=5))
-
         with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
             await daemon._message_loop()
 
@@ -2193,7 +2191,14 @@ class TestBuildSessions:
 
         bob = next(s for s in result if s["contact"] == "bob")
         assert bob["session_id"] == "s-2"
-        assert "message_count" not in bob  # Not loaded in memory
+        # build_session_info always includes enriched fields (defaults when no state)
+        assert bob["message_count"] == 0
+        assert bob["compaction_count"] == 0
+        assert bob["context_tokens"] == 0
+        assert bob["context_pct"] == 0
+        assert "cost_usd" in bob
+        assert "log_files" in bob
+        assert "log_bytes" in bob
 
     def test_empty_sessions(self, tmp_path):
         """No active sessions returns empty list."""
@@ -2549,3 +2554,254 @@ class TestFifoAttachmentReconstruction:
 
         assert item["text"] == "hello"
         assert "attachments" not in item or item.get("attachments") is None
+
+
+# ─── _reset_session Tests ────────────────────────────────────────
+
+
+class TestResetSession:
+    """Tests for the extracted _reset_session() method."""
+
+    @pytest.mark.asyncio
+    async def test_reset_all(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.session_mgr = MagicMock()
+        daemon.session_mgr._index = {"alice": {}, "bob": {}}
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+
+        result = await daemon._reset_session("all")
+
+        assert result["reset"] is True
+        assert result["count"] == 2
+        assert daemon.session_mgr.close_session.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_reset_by_uuid(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.session_mgr = MagicMock()
+        daemon.session_mgr.close_session_by_id = AsyncMock(return_value=True)
+
+        sid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        result = await daemon._reset_session(sid)
+
+        assert result["reset"] is True
+        assert result["type"] == "session_id"
+        daemon.session_mgr.close_session_by_id.assert_called_once_with(sid)
+
+    @pytest.mark.asyncio
+    async def test_reset_by_id_flag(self, tmp_path):
+        """by_id=True treats any string as session ID."""
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.session_mgr = MagicMock()
+        daemon.session_mgr.close_session_by_id = AsyncMock(return_value=True)
+
+        result = await daemon._reset_session("not-a-uuid", by_id=True)
+
+        assert result["reset"] is True
+        daemon.session_mgr.close_session_by_id.assert_called_once_with("not-a-uuid")
+
+    @pytest.mark.asyncio
+    async def test_reset_by_contact(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.session_mgr = MagicMock()
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+
+        result = await daemon._reset_session("alice")
+
+        assert result["reset"] is True
+        assert result["type"] == "contact"
+        daemon.session_mgr.close_session.assert_called_once_with("alice")
+
+    @pytest.mark.asyncio
+    async def test_reset_user_skips_internal_senders(self, tmp_path):
+        """'user' alias skips system, http-*, and cli contacts."""
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.session_mgr = MagicMock()
+        daemon.session_mgr._index = {
+            "system": {}, "cli": {}, "http-n8n": {},
+            "nicolas": {},
+        }
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+
+        result = await daemon._reset_session("user")
+
+        assert result["reset"] is True
+        daemon.session_mgr.close_session.assert_called_once_with("nicolas")
+
+    @pytest.mark.asyncio
+    async def test_reset_user_no_user_found(self, tmp_path):
+        """'user' alias with only internal senders returns not found."""
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.session_mgr = MagicMock()
+        daemon.session_mgr._index = {"system": {}, "http-api": {}}
+
+        result = await daemon._reset_session("user")
+
+        assert result["reset"] is False
+        assert "no user session found" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_reset_no_session_mgr(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.session_mgr = None
+
+        result = await daemon._reset_session("all")
+
+        assert result["reset"] is False
+
+    @pytest.mark.asyncio
+    async def test_reset_unknown_contact(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.session_mgr = MagicMock()
+        daemon.session_mgr.close_session = AsyncMock(return_value=False)
+
+        result = await daemon._reset_session("nobody")
+
+        assert result["reset"] is False
+
+
+# ─── _build_monitor Tests ────────────────────────────────────────
+
+
+class TestBuildMonitor:
+    """Tests for _build_monitor()."""
+
+    def test_reads_monitor_json(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+
+        monitor_path = tmp_path / "state" / "monitor.json"
+        monitor_path.write_text(json.dumps({
+            "state": "thinking",
+            "contact": "alice",
+            "turn": 3,
+        }))
+
+        result = daemon._build_monitor()
+        assert result["state"] == "thinking"
+        assert result["contact"] == "alice"
+
+    def test_no_monitor_file(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+
+        result = daemon._build_monitor()
+        assert result["state"] == "unknown"
+
+
+# ─── _build_history Tests ────────────────────────────────────────
+
+
+class TestBuildHistory:
+    """Tests for _build_history()."""
+
+    def test_returns_events(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir(exist_ok=True)
+
+        from session import SessionManager
+        daemon.session_mgr = SessionManager(sessions_dir)
+
+        # Write JSONL
+        events = [
+            {"type": "message", "role": "user", "content": "test", "timestamp": 1.0},
+        ]
+        (sessions_dir / "s-h1.2026-02-26.jsonl").write_text(
+            json.dumps(events[0]) + "\n"
+        )
+
+        result = daemon._build_history("s-h1")
+        assert result["session_id"] == "s-h1"
+        assert len(result["events"]) == 1
+
+    def test_no_session_mgr(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.session_mgr = None
+
+        result = daemon._build_history("any")
+        assert result["events"] == []
+
+
+# ─── _build_cost cache tokens Tests ──────────────────────────────
+
+
+class TestBuildCostCacheTokens:
+    """Tests for cache token fields in _build_cost."""
+
+    def test_cost_includes_cache_tokens(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.providers = {"primary": MagicMock()}
+
+        now = int(time.time())
+        _make_cost_db(tmp_path / "cost.db", [
+            (now, "s1", "test-model", 1000, 500, 200, 50, 0.01),
+        ])
+
+        result = daemon._build_cost("today")
+        assert len(result["models"]) == 1
+        model = result["models"][0]
+        assert model["cache_read_tokens"] == 200
+        assert model["cache_write_tokens"] == 50
+
+    def test_cost_week_uses_unix_time(self, tmp_path):
+        """Week window uses int(time.time()) - 7*86400, not today_start - 6*86400."""
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.providers = {"primary": MagicMock()}
+
+        now = int(time.time())
+        _make_cost_db(tmp_path / "cost.db", [
+            (now - 8 * 86400, "s1", "test-model", 100, 50, 0, 0, 0.001),  # > 7 days ago
+            (now - 5 * 86400, "s1", "test-model", 200, 100, 0, 0, 0.002),  # within 7 days
+        ])
+
+        result = daemon._build_cost("week")
+        assert len(result["models"]) == 1
+        assert result["models"][0]["input_tokens"] == 200  # Only the recent one
+
+
+# ─── Webhook agent field Tests ───────────────────────────────────
+
+
+class TestWebhookAgentField:
+    """Tests for agent name in webhook payload."""
+
+    @pytest.mark.asyncio
+    async def test_webhook_includes_agent(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+        daemon.config = MagicMock()
+        daemon.config.http_callback_url = "https://test/hook"
+        daemon.config.http_callback_token = ""
+        daemon.config.http_callback_timeout = 10
+        daemon.config.agent_name = "TestAgent"
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=MagicMock())
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            await daemon._fire_webhook(
+                reply="test", session_id="s1", sender="alice",
+                source="telegram", silent=False,
+                tokens={"input": 100, "output": 50},
+                notify_meta=None,
+            )
+
+        call_kwargs = mock_client.post.call_args
+        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert payload["agent"] == "TestAgent"

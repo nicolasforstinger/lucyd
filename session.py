@@ -523,3 +523,159 @@ class SessionManager:
         })
         log.info("Compacted session %s: %d messages → summary + %d recent",
                  session.id, len(old_messages), len(recent_messages))
+
+
+# ─── Shared Query Functions ──────────────────────────────────────
+
+
+def build_session_info(
+    sessions_dir: Path,
+    session_id: str,
+    session: Session | None = None,
+    cost_db_path: str = "",
+    max_context_tokens: int = 0,
+) -> dict:
+    """Build enriched session info dict. Used by both CLI and HTTP API.
+
+    Returns dict with: session_id, context_tokens, context_pct, cost_usd,
+    message_count, compaction_count, log_files, log_bytes.
+    """
+    import sqlite3
+
+    info: dict[str, Any] = {"session_id": session_id}
+
+    # Load from live session or state file
+    messages: list[dict] = []
+    compaction_count = 0
+    if session:
+        messages = session.messages
+        compaction_count = session.compaction_count
+    else:
+        state_path = sessions_dir / f"{session_id}.state.json"
+        if state_path.exists():
+            try:
+                with open(state_path, encoding="utf-8") as f:
+                    state = json.load(f)
+                messages = state.get("messages", [])
+                compaction_count = state.get("compaction_count", 0)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    info["message_count"] = len(messages)
+    info["compaction_count"] = compaction_count
+
+    # Context tokens from last assistant message (input + cache_read + cache_write)
+    context_tokens = 0
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            usage = msg.get("usage", {})
+            context_tokens = (
+                usage.get("input_tokens", 0)
+                + usage.get("cache_read_tokens", 0)
+                + usage.get("cache_write_tokens", 0)
+            )
+            break
+    info["context_tokens"] = context_tokens
+    if context_tokens > 0 and max_context_tokens > 0:
+        info["context_pct"] = context_tokens * 100 // max_context_tokens
+    else:
+        info["context_pct"] = 0
+
+    # Per-session cost
+    cost_usd = 0.0
+    if cost_db_path and Path(cost_db_path).exists():
+        try:
+            conn = sqlite3.connect(cost_db_path)
+            row = conn.execute(
+                "SELECT SUM(cost_usd) FROM costs WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            conn.close()
+            cost_usd = row[0] or 0.0 if row else 0.0
+        except Exception:  # noqa: S110 — cost DB query for session info; graceful degradation to 0.0
+            pass
+    info["cost_usd"] = round(cost_usd, 6)
+
+    # Log file metadata
+    log_files = sorted(sessions_dir.glob(f"{session_id}.????-??-??.jsonl"))
+    info["log_files"] = len(log_files)
+    info["log_bytes"] = sum(f.stat().st_size for f in log_files)
+
+    return info
+
+
+def read_history_events(
+    sessions_dir: Path,
+    session_id: str,
+    full: bool = False,
+) -> list[dict]:
+    """Read session history from JSONL files.
+
+    Globs active + archive directories. Deduplicates by timestamp.
+    When full=False, returns only message events (user + assistant text).
+    When full=True, includes tool calls/results and session metadata.
+    Returns chronological list[dict].
+    """
+    archive_dir = sessions_dir / ".archive"
+    all_files: list[Path] = []
+
+    # Active session logs
+    all_files.extend(sorted(sessions_dir.glob(f"{session_id}.????-??-??.jsonl")))
+    # Archived session logs
+    if archive_dir.exists():
+        all_files.extend(sorted(archive_dir.glob(f"{session_id}.????-??-??.jsonl")))
+
+    if not all_files:
+        return []
+
+    seen_ts: set[float] = set()
+    events: list[dict] = []
+
+    for path in all_files:
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    # Deduplicate by timestamp
+                    ts = event.get("timestamp", 0)
+                    if ts and ts in seen_ts:
+                        continue
+                    if ts:
+                        seen_ts.add(ts)
+
+                    if full:
+                        events.append(event)
+                    else:
+                        etype = event.get("type", "")
+                        if etype == "message":
+                            role = event.get("role", "")
+                            if role == "user":
+                                events.append({
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": _text_from_content(
+                                        event.get("content", ""),
+                                    ),
+                                    "from": event.get("from", ""),
+                                    "timestamp": ts,
+                                })
+                            elif role == "assistant":
+                                events.append({
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "text": event.get("text", ""),
+                                    "timestamp": ts,
+                                })
+        except OSError:
+            continue
+
+    # Sort chronologically
+    events.sort(key=lambda e: e.get("timestamp", 0))
+    return events

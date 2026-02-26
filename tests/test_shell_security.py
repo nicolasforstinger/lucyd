@@ -4,8 +4,6 @@ Phase 1b: Shell Secret Filtering — tools/shell.py
 Tests _safe_env (per-suffix), tool_exec integration (leak, timeout, cap).
 """
 
-import asyncio
-import os
 import signal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -440,7 +438,7 @@ class TestExecTimeoutCapping:
         monkeypatch.setattr(shell_mod, "_MAX_TIMEOUT", 100)
         proc = _make_mock_proc(stdout=b"ok")
         with patch("asyncio.create_subprocess_shell", return_value=proc), \
-             patch("asyncio.wait_for", side_effect=TimeoutError) as mock_wait, \
+             patch("asyncio.wait_for", side_effect=TimeoutError), \
              patch("os.killpg"):
             result = await tool_exec("test_cmd", timeout=9999)
         assert "100s" in result  # Capped to _MAX_TIMEOUT
@@ -452,7 +450,7 @@ class TestExecTimeoutCapping:
         monkeypatch.setattr(shell_mod, "_MAX_TIMEOUT", 999)
         proc = _make_mock_proc(stdout=b"ok")
         with patch("asyncio.create_subprocess_shell", return_value=proc), \
-             patch("asyncio.wait_for", side_effect=TimeoutError) as mock_wait, \
+             patch("asyncio.wait_for", side_effect=TimeoutError), \
              patch("os.killpg"):
             result = await tool_exec("test_cmd", timeout=5)
         assert "5s" in result

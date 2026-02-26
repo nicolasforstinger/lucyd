@@ -38,7 +38,10 @@ After executing any step:
 
 ## Pattern Checks
 
-**Before starting Phase 1, check `audit/PATTERN.md` for any patterns indexed to Stage 4.** Currently no patterns are indexed to this stage. If new patterns have been added since this file was last updated, run those checks and report results.
+**Before starting Phase 1, check `audit/PATTERN.md` for any patterns indexed to Stage 4.** Currently indexed patterns: P-017 (compaction state persistence order), P-023 (CLI/API data parity). Run those checks and report results.
+
+### P-023: CLI/API Interface Parity
+Verify that `build_session_info()` (shared function) is used by both CLI and HTTP API, and that cost queries return `cache_read_tokens`/`cache_write_tokens` on both interfaces. Enforced by `tests/test_audit_agnostic.py:TestInterfaceParity`.
 
 If `audit/PATTERN.md` does not exist (first audit cycle), skip this section.
 

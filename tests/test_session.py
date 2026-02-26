@@ -905,3 +905,266 @@ class TestCompactionStatePersistenceOrder:
         save_idx = call_order.index("save_state")
         append_idx = call_order.index("append_event")
         assert save_idx < append_idx, "_save_state must be called before append_event"
+
+
+# ─── build_session_info Tests ────────────────────────────────────
+
+
+class TestBuildSessionInfo:
+    """Tests for the shared build_session_info() function."""
+
+    def test_with_live_session(self, tmp_path):
+        """Enriches from live session object."""
+        from session import Session, build_session_info
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        session = Session("sess-1", sessions_dir, model="primary", contact="alice")
+        session.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "text": "hi", "usage": {
+                "input_tokens": 500, "output_tokens": 100,
+                "cache_read_tokens": 200, "cache_write_tokens": 50,
+            }},
+        ]
+        session.compaction_count = 2
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="sess-1",
+            session=session,
+            max_context_tokens=10000,
+        )
+
+        assert info["session_id"] == "sess-1"
+        assert info["message_count"] == 2
+        assert info["compaction_count"] == 2
+        assert info["context_tokens"] == 500 + 200 + 50  # input + cache_read + cache_write
+        assert info["context_pct"] == 750 * 100 // 10000
+        assert info["log_files"] == 0
+        assert info["log_bytes"] == 0
+
+    def test_from_state_file(self, tmp_path):
+        """Loads from state file when no live session."""
+        from session import Session, build_session_info
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Create a session, save state, then query without live session
+        session = Session("sess-2", sessions_dir)
+        session.messages = [
+            {"role": "user", "content": "test"},
+            {"role": "assistant", "text": "ok", "usage": {"input_tokens": 300}},
+        ]
+        session.compaction_count = 1
+        session._save_state()
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="sess-2",
+        )
+
+        assert info["message_count"] == 2
+        assert info["compaction_count"] == 1
+        assert info["context_tokens"] == 300
+
+    def test_no_state_no_session(self, tmp_path):
+        """Returns defaults when no state file and no live session."""
+        from session import build_session_info
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="nonexistent",
+        )
+
+        assert info["message_count"] == 0
+        assert info["compaction_count"] == 0
+        assert info["context_tokens"] == 0
+        assert info["context_pct"] == 0
+        assert info["cost_usd"] == 0.0
+
+    def test_with_cost_db(self, tmp_path):
+        """Includes per-session cost from cost.db."""
+        import sqlite3
+        from session import build_session_info
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Create cost DB
+        cost_path = tmp_path / "cost.db"
+        conn = sqlite3.connect(str(cost_path))
+        conn.execute("""
+            CREATE TABLE costs (
+                timestamp INTEGER, session_id TEXT, model TEXT,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                cost_usd REAL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO costs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (1707000000, "sess-3", "model", 100, 50, 0, 0, 0.5),
+        )
+        conn.commit()
+        conn.close()
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="sess-3",
+            cost_db_path=str(cost_path),
+        )
+
+        assert info["cost_usd"] == 0.5
+
+    def test_log_file_metadata(self, tmp_path):
+        """Counts log files and total bytes."""
+        from session import build_session_info
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Create some JSONL log files
+        (sessions_dir / "sess-4.2026-02-25.jsonl").write_text('{"test": 1}\n')
+        (sessions_dir / "sess-4.2026-02-26.jsonl").write_text('{"test": 2}\n{"test": 3}\n')
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="sess-4",
+        )
+
+        assert info["log_files"] == 2
+        assert info["log_bytes"] > 0
+
+
+# ─── read_history_events Tests ───────────────────────────────────
+
+
+class TestReadHistoryEvents:
+    """Tests for read_history_events()."""
+
+    def test_reads_user_and_assistant(self, tmp_path):
+        """Default mode returns user + assistant messages."""
+        import json
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        events = [
+            {"type": "session", "id": "s-1", "timestamp": 1.0},
+            {"type": "message", "role": "user", "content": "hello",
+             "from": "alice", "timestamp": 2.0},
+            {"type": "message", "role": "assistant", "text": "hi there",
+             "timestamp": 3.0},
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok",
+             "timestamp": 4.0},
+        ]
+        log_path = sessions_dir / "s-1.2026-02-26.jsonl"
+        log_path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+        result = read_history_events(sessions_dir, "s-1")
+
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == "hello"
+        assert result[0]["from"] == "alice"
+        assert result[1]["role"] == "assistant"
+        assert result[1]["text"] == "hi there"
+
+    def test_full_mode_includes_all(self, tmp_path):
+        """Full mode includes session, tool_result, etc."""
+        import json
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        events = [
+            {"type": "session", "id": "s-1", "timestamp": 1.0},
+            {"type": "message", "role": "user", "content": "hello", "timestamp": 2.0},
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok", "timestamp": 3.0},
+            {"type": "message", "role": "assistant", "text": "done", "timestamp": 4.0},
+        ]
+        log_path = sessions_dir / "s-1.2026-02-26.jsonl"
+        log_path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+        result = read_history_events(sessions_dir, "s-1", full=True)
+
+        assert len(result) == 4
+        assert result[0]["type"] == "session"
+        assert result[2]["type"] == "tool_result"
+
+    def test_reads_from_archive(self, tmp_path):
+        """Reads archived JSONL files."""
+        import json
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        archive_dir = sessions_dir / ".archive"
+        archive_dir.mkdir()
+
+        events = [
+            {"type": "message", "role": "user", "content": "archived msg", "timestamp": 1.0},
+        ]
+        log_path = archive_dir / "s-2.2026-02-20.jsonl"
+        log_path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+        result = read_history_events(sessions_dir, "s-2")
+
+        assert len(result) == 1
+        assert result[0]["content"] == "archived msg"
+
+    def test_deduplicates_by_timestamp(self, tmp_path):
+        """Duplicate timestamps are deduplicated."""
+        import json
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Same event in two files (e.g. migration)
+        event = {"type": "message", "role": "user", "content": "dup", "timestamp": 1.0}
+        (sessions_dir / "s-3.2026-02-25.jsonl").write_text(json.dumps(event) + "\n")
+        (sessions_dir / "s-3.2026-02-26.jsonl").write_text(json.dumps(event) + "\n")
+
+        result = read_history_events(sessions_dir, "s-3")
+
+        assert len(result) == 1
+
+    def test_empty_session(self, tmp_path):
+        """No files returns empty list."""
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        result = read_history_events(sessions_dir, "nonexistent")
+        assert result == []
+
+    def test_chronological_order(self, tmp_path):
+        """Events sorted by timestamp across files."""
+        import json
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Event in file 2 is older than event in file 1
+        (sessions_dir / "s-4.2026-02-26.jsonl").write_text(
+            json.dumps({"type": "message", "role": "user", "content": "later", "timestamp": 10.0}) + "\n"
+        )
+        (sessions_dir / "s-4.2026-02-25.jsonl").write_text(
+            json.dumps({"type": "message", "role": "user", "content": "earlier", "timestamp": 5.0}) + "\n"
+        )
+
+        result = read_history_events(sessions_dir, "s-4")
+
+        assert result[0]["content"] == "earlier"
+        assert result[1]["content"] == "later"

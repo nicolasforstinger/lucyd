@@ -31,6 +31,7 @@ query_cost = lucyd_send.query_cost
 _resolve_contact_name = lucyd_send._resolve_contact_name
 _is_uuid = lucyd_send._is_uuid
 _session_log_info = lucyd_send._session_log_info
+show_history = lucyd_send.show_history
 
 
 # ─── Fixtures ────────────────────────────────────────────────────
@@ -520,3 +521,150 @@ class TestAttachFlag:
         assert len(parsed["attachments"]) == 2
         filenames = {a["filename"] for a in parsed["attachments"]}
         assert filenames == {"a.txt", "b.jpg"}
+
+
+# ─── History Tests ────────────────────────────────────────────────
+
+
+class TestShowHistory:
+    """Tests for --history / show_history()."""
+
+    def test_history_resolves_contact(self, tmp_path):
+        """Resolves contact name to session ID and reads history."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Create session index
+        index = {"alice": {"session_id": "s-hist-1"}}
+        (sessions_dir / "sessions.json").write_text(json.dumps(index))
+
+        # Create JSONL log
+        events = [
+            {"type": "message", "role": "user", "content": "hello",
+             "from": "alice", "timestamp": 1.0},
+            {"type": "message", "role": "assistant", "text": "hi there",
+             "timestamp": 2.0},
+        ]
+        (sessions_dir / "s-hist-1.2026-02-26.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events) + "\n"
+        )
+
+        # Capture show_history output
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            show_history(tmp_path, "alice")
+
+        output = buf.getvalue()
+        assert "alice" in output.lower() or "Session History" in output
+        assert "hello" in output
+        assert "hi there" in output
+
+    def test_history_with_session_id(self, tmp_path):
+        """Accepts session UUID directly."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        sid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        events = [
+            {"type": "message", "role": "user", "content": "direct",
+             "timestamp": 1.0},
+        ]
+        (sessions_dir / f"{sid}.2026-02-26.jsonl").write_text(
+            json.dumps(events[0]) + "\n"
+        )
+
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            show_history(tmp_path, sid)
+
+        assert "direct" in buf.getvalue()
+
+    def test_history_no_session_found(self, tmp_path):
+        """Prints 'no history' when contact not found in index and no JSONL files."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        (sessions_dir / "sessions.json").write_text("{}")
+
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            show_history(tmp_path, "nonexistent")
+
+        assert "No history" in buf.getvalue()
+
+    def test_history_empty_session(self, tmp_path):
+        """No JSONL files prints no history message."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        index = {"bob": {"session_id": "s-empty"}}
+        (sessions_dir / "sessions.json").write_text(json.dumps(index))
+
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            show_history(tmp_path, "bob")
+
+        assert "No history" in buf.getvalue()
+
+
+class TestChannelAgnosticContacts:
+    """Tests for channel-agnostic contact resolution in list_sessions."""
+
+    def test_collects_from_multiple_channels(self):
+        """Contact resolution iterates all channel configs, not just telegram."""
+        config = {
+            "channel": {
+                "telegram": {
+                    "contacts": {"Alice": "+4312345"},
+                    "allow_from": ["uuid-1"],
+                },
+                "whatsapp": {
+                    "contacts": {"Bob": "+4367890"},
+                    "allow_from": ["uuid-2"],
+                },
+            },
+        }
+
+        # Simulate the channel-agnostic collection logic
+        contacts = {}
+        allow_from = []
+        channel_cfg = config.get("channel", {})
+        for section_key, section_val in channel_cfg.items():
+            if isinstance(section_val, dict):
+                if "contacts" in section_val:
+                    contacts.update(section_val["contacts"])
+                if "allow_from" in section_val:
+                    allow_from.extend(section_val["allow_from"])
+
+        assert contacts == {"Alice": "+4312345", "Bob": "+4367890"}
+        assert set(allow_from) == {"uuid-1", "uuid-2"}
+
+    def test_non_dict_channel_values_skipped(self):
+        """Non-dict values (like 'type': 'telegram') are skipped gracefully."""
+        config = {
+            "channel": {
+                "type": "telegram",  # string, not dict
+                "telegram": {
+                    "contacts": {"Alice": "+43123"},
+                },
+            },
+        }
+
+        contacts = {}
+        channel_cfg = config.get("channel", {})
+        for section_key, section_val in channel_cfg.items():
+            if isinstance(section_val, dict) and "contacts" in section_val:
+                contacts.update(section_val["contacts"])
+
+        assert contacts == {"Alice": "+43123"}

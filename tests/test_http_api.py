@@ -61,6 +61,11 @@ def _make_app(api_instance: HTTPApi) -> web.Application:
     app.router.add_get("/api/v1/status", api_instance._handle_status)
     app.router.add_get("/api/v1/sessions", api_instance._handle_sessions)
     app.router.add_get("/api/v1/cost", api_instance._handle_cost)
+    app.router.add_get("/api/v1/monitor", api_instance._handle_monitor)
+    app.router.add_post("/api/v1/sessions/reset", api_instance._handle_reset)
+    app.router.add_get(
+        "/api/v1/sessions/{session_id}/history", api_instance._handle_history,
+    )
     return app
 
 
@@ -2046,3 +2051,291 @@ class TestHTTPAttachmentConfig:
             "http": {"max_body_bytes": 5_000_000},
         })
         assert cfg.http_max_body_bytes == 5_000_000
+
+
+# ─── Agent Identity Tests ────────────────────────────────────────
+
+
+class TestAgentIdentity:
+    """Feature A: Agent name injected into all success responses."""
+
+    @pytest.fixture
+    def api_with_name(self, queue):
+        return HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="test-token-123",
+            agent_timeout=5.0,
+            agent_name="Lucy",
+            get_status=lambda: {"status": "ok"},
+            get_sessions=lambda: [],
+            get_cost=lambda period: {"period": period, "total_cost": 0.0, "models": []},
+        )
+
+    @pytest.mark.asyncio
+    async def test_status_includes_agent_name(self, api_with_name):
+        app = _make_app(api_with_name)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/v1/status")
+            data = await resp.json()
+            assert data["agent"] == "Lucy"
+            assert resp.headers["X-Lucyd-Agent"] == "Lucy"
+
+    @pytest.mark.asyncio
+    async def test_sessions_includes_agent_name(self, api_with_name, auth_headers):
+        app = _make_app(api_with_name)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/v1/sessions", headers=auth_headers)
+            data = await resp.json()
+            assert data["agent"] == "Lucy"
+            assert resp.headers["X-Lucyd-Agent"] == "Lucy"
+
+    @pytest.mark.asyncio
+    async def test_notify_includes_agent_name(self, api_with_name, auth_headers):
+        app = _make_app(api_with_name)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/notify",
+                json={"message": "test"},
+                headers=auth_headers,
+            )
+            data = await resp.json()
+            assert data["agent"] == "Lucy"
+
+    @pytest.mark.asyncio
+    async def test_no_agent_when_empty(self, api, auth_headers):
+        """Agent name absent when not configured."""
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/v1/status")
+            data = await resp.json()
+            assert "agent" not in data
+            assert "X-Lucyd-Agent" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_error_responses_no_agent(self, api_with_name, auth_headers):
+        """400/error responses don't include agent identity."""
+        app = _make_app(api_with_name)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/v1/cost?period=invalid",
+                headers=auth_headers,
+            )
+            data = await resp.json()
+            assert resp.status == 400
+            assert "agent" not in data
+
+
+# ─── Monitor Endpoint Tests ──────────────────────────────────────
+
+
+class TestMonitorEndpoint:
+    """Feature B3: GET /api/v1/monitor."""
+
+    @pytest.fixture
+    def api_with_monitor(self, queue):
+        return HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="test-token-123",
+            agent_timeout=5.0,
+            get_monitor=lambda: {
+                "state": "thinking",
+                "contact": "alice",
+                "model": "test-model",
+                "turn": 2,
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_monitor_returns_data(self, api_with_monitor, auth_headers):
+        app = _make_app(api_with_monitor)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/v1/monitor", headers=auth_headers)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["state"] == "thinking"
+            assert data["contact"] == "alice"
+            assert data["turn"] == 2
+
+    @pytest.mark.asyncio
+    async def test_monitor_no_callback(self, api, auth_headers):
+        """No monitor callback returns unknown state."""
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/v1/monitor", headers=auth_headers)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["state"] == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_monitor_rate_limited_as_read_only(self, api_with_monitor, auth_headers):
+        """Monitor uses read-only rate limiter (higher limit)."""
+        app = _make_app(api_with_monitor)
+        async with TestClient(TestServer(app)) as client:
+            # Should succeed many times (read-only limit is 60/min)
+            for _ in range(10):
+                resp = await client.get("/api/v1/monitor", headers=auth_headers)
+                assert resp.status == 200
+
+
+# ─── Reset Endpoint Tests ────────────────────────────────────────
+
+
+class TestResetEndpoint:
+    """Feature B4: POST /api/v1/sessions/reset."""
+
+    @pytest.fixture
+    def api_with_reset(self, queue):
+        async def mock_reset(target):
+            return {"reset": True, "target": target}
+        return HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="test-token-123",
+            agent_timeout=5.0,
+            handle_reset=mock_reset,
+        )
+
+    @pytest.mark.asyncio
+    async def test_reset_all(self, api_with_reset, auth_headers):
+        app = _make_app(api_with_reset)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/sessions/reset",
+                json={"target": "all"},
+                headers=auth_headers,
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["reset"] is True
+            assert data["target"] == "all"
+
+    @pytest.mark.asyncio
+    async def test_reset_by_contact(self, api_with_reset, auth_headers):
+        app = _make_app(api_with_reset)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/sessions/reset",
+                json={"target": "alice"},
+                headers=auth_headers,
+            )
+            data = await resp.json()
+            assert data["target"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_reset_requires_auth(self, api_with_reset):
+        app = _make_app(api_with_reset)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/sessions/reset",
+                json={"target": "all"},
+            )
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_reset_invalid_body(self, api_with_reset, auth_headers):
+        app = _make_app(api_with_reset)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/sessions/reset",
+                data=b"not json",
+                headers={**auth_headers, "Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_reset_no_callback(self, api, auth_headers):
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/sessions/reset",
+                json={"target": "all"},
+                headers=auth_headers,
+            )
+            data = await resp.json()
+            assert data["reset"] is False
+
+
+# ─── History Endpoint Tests ──────────────────────────────────────
+
+
+class TestHistoryEndpoint:
+    """Feature C3: GET /api/v1/sessions/{session_id}/history."""
+
+    @pytest.fixture
+    def api_with_history(self, queue):
+        def mock_history(session_id, full=False):
+            return {
+                "session_id": session_id,
+                "events": [
+                    {"type": "message", "role": "user", "content": "hello"},
+                    {"type": "message", "role": "assistant", "text": "hi there"},
+                ],
+            }
+        return HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="test-token-123",
+            agent_timeout=5.0,
+            get_history=mock_history,
+        )
+
+    @pytest.mark.asyncio
+    async def test_history_returns_events(self, api_with_history, auth_headers):
+        app = _make_app(api_with_history)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/v1/sessions/test-session-123/history",
+                headers=auth_headers,
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["session_id"] == "test-session-123"
+            assert len(data["events"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_history_full_param(self, api_with_history, auth_headers):
+        app = _make_app(api_with_history)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/v1/sessions/test-session-123/history?full=true",
+                headers=auth_headers,
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_history_requires_auth(self, api_with_history):
+        app = _make_app(api_with_history)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/v1/sessions/test-session-123/history",
+            )
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_history_no_callback(self, api, auth_headers):
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/v1/sessions/test-id/history",
+                headers=auth_headers,
+            )
+            data = await resp.json()
+            assert data["events"] == []
+
+    @pytest.mark.asyncio
+    async def test_history_rate_limited_as_read_only(self, api_with_history, auth_headers):
+        """History GET uses read-only rate limiter."""
+        app = _make_app(api_with_history)
+        async with TestClient(TestServer(app)) as client:
+            for _ in range(5):
+                resp = await client.get(
+                    "/api/v1/sessions/s-1/history",
+                    headers=auth_headers,
+                )
+                assert resp.status == 200

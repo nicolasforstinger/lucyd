@@ -126,6 +126,15 @@ grep -rn 'elevenlabs\|eleven_' --include='*.py' | grep -v test | grep -v __pycac
 ```
 For each result: is this a provider-specific value used as a framework default? Allowed in provider files and runtime dispatch branches. NOT allowed as config.py property defaults, function parameter defaults, or module constants in framework code.
 
+### P-022: Channel/transport identifiers in framework code
+```bash
+grep -rn "telegram\|whatsapp\|signal\|discord" lucyd/ \
+  --exclude-dir=channels --exclude-dir=providers \
+  --exclude-dir=providers.d --exclude-dir=tests \
+  --include="*.py"
+```
+Expected: zero matches. Channel names belong in `channels/` modules and config, never in framework logic. Also enforced by `tests/test_audit_agnostic.py:TestChannelAgnosticism`.
+
 ---
 
 ## Phase 1: Discovery — Scope the Codebase

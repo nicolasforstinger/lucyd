@@ -107,7 +107,7 @@ Lucyd connects to the Telegram Bot API directly via httpx long polling. No exter
 
 ## Testing
 
-**1394 tests**, all passing. Five testing strategies:
+**1460 tests**, all passing. Five testing strategies:
 
 ```bash
 # Run the full suite

@@ -566,9 +566,13 @@ def inject_recall(blocks: list[RecallBlock], max_tokens: int) -> str:
             dropped_sections.append(block.section.strip("[]"))
 
     if not result:
+        log.debug("Recall budget: no blocks included (0/%d tokens)", max_tokens)
         return ""
 
     used = max_tokens - remaining
+    log.debug("Recall budget: included=[%s] (%d/%d tokens), dropped=[%s]",
+              ", ".join(included_sections), used, max_tokens,
+              ", ".join(dropped_sections) if dropped_sections else "none")
     sections_str = ", ".join(included_sections)
     footer = f"[Memory loaded: {sections_str} | {used}/{max_tokens} tokens used]"
     if dropped_sections:

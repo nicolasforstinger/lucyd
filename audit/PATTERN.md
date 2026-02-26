@@ -517,14 +517,51 @@ Verify that `lucyd.toml.example` and `providers.d/*.toml.example` make the provi
 
 ---
 
+## P-022: Hardcoded channel or transport identifiers in framework code
+
+**Origin:** Audit cycle 9, CLI/API parity review — framework code referenced Telegram-specific config paths for contact resolution, making session listing fail for non-Telegram deployments. Channel-specific identifiers belong only in `channels/` modules and config, never in framework logic.
+
+**Class:** Coupling — framework code references specific channels/transports by name (e.g., `"telegram"`, `"whatsapp"`) outside of `channels/` modules.
+
+**Check (Stage 1):**
+```bash
+grep -rn "telegram\|whatsapp\|signal\|discord" lucyd/ \
+  --exclude-dir=channels --exclude-dir=providers \
+  --exclude-dir=providers.d --exclude-dir=tests \
+  --include="*.py"
+```
+Expected: zero matches. Channel names belong in `channels/` modules and config files, never in framework logic (`lucyd.py`, `session.py`, `context.py`, `agentic.py`, `tools/`, etc.).
+
+Allowed in: `channels/*.py`, `providers/*.py`, `tests/`, config examples, comments.
+
+**Enforcement:** `tests/test_audit_agnostic.py:TestChannelAgnosticism` — static grep over framework source.
+
+---
+
+## P-023: CLI and HTTP API return different data for the same query
+
+**Origin:** Audit cycle 9, interface parity review — CLI `--sessions` returned context tokens, per-session cost, cache tokens, and log metadata, while HTTP `/api/v1/sessions` returned only basic info. CLI `--cost` returned `cache_read_tokens`, HTTP `/cost` did not. The `build_session_info()` shared function now ensures both interfaces return equivalent data.
+
+**Class:** Inconsistency — same query returns different fields/values depending on interface (CLI vs HTTP API).
+
+**Check (Stage 4):**
+Contract test that verifies CLI query functions and HTTP callback functions return equivalent data schemas:
+- Sessions: both include `context_tokens`, `context_pct`, `cost_usd`, `message_count`, `compaction_count`, `log_files`, `log_bytes`
+- Cost: both include `cache_read_tokens`, `cache_write_tokens`, same week window definition
+- Monitor: both read from same `monitor.json`
+
+**Enforcement:** `tests/test_audit_agnostic.py:TestInterfaceParity` — verifies shared function output schema.
+
+---
+
 ## Pattern Index by Stage
 
 | Stage | Applicable Patterns |
 |-------|-------------------|
-| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021 |
+| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021, P-022 |
 | 2. Test Suite | P-005 (verify count), P-006 (fixture check), P-013, P-016 (ResourceWarning trigger) |
 | 3. Mutation Testing | P-004, P-013, P-015 (parity check) |
-| 4. Orchestrator Testing | P-017 |
+| 4. Orchestrator Testing | P-017, P-023 |
 | 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order) |
 | 6. Security Audit | P-003, P-009, P-012, P-018 (resource exhaustion) |
 | 7. Documentation Audit | P-007, P-008, P-011, P-020 (config-to-default parity), P-021 (provider split) |
@@ -560,3 +597,5 @@ Verify that `lucyd.toml.example` and `providers.d/*.toml.example` make the provi
 | 2026-02-22 | — | Added Retrospective Protocol, Known Gaps Lifecycle, Pattern Retirement rules |
 | 2026-02-25 | P-020 | Added from production hardening retrospective (18 magic numbers across framework) |
 | 2026-02-25 | P-021 | Added from production hardening retrospective (OpenAI/Anthropic/ElevenLabs defaults in framework code) |
+| 2026-02-26 | P-022 | Added from Cycle 9 interface parity review (channel-specific config paths in framework code) |
+| 2026-02-26 | P-023 | Added from Cycle 9 interface parity review (CLI/HTTP API return different data schemas) |

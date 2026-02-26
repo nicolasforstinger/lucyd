@@ -151,6 +151,9 @@ An optional HTTP server (`channels/http_api.py`) runs alongside the primary chan
 | `/api/v1/status` | GET | Health check + daemon stats (uptime, cost, sessions) |
 | `/api/v1/sessions` | GET | List active sessions |
 | `/api/v1/cost` | GET | Cost breakdown by period (`?period=today\|week\|all`) |
+| `/api/v1/monitor` | GET | Live agentic loop state (model, contact, turn) |
+| `/api/v1/sessions/reset` | POST | Reset sessions by target (all, contact name, UUID) |
+| `/api/v1/sessions/{id}/history` | GET | Session event history (`?full=true` for tool calls) |
 
 **Design**: HTTP is not a Channel implementation. It feeds messages directly into the daemon's `asyncio.Queue` alongside Telegram and FIFO. For `/chat`, an `asyncio.Future` is attached to the queue item; `_process_message` resolves it with the reply. For `/notify`, no Future — the event is queued and the caller gets 202 immediately.
 

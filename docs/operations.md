@@ -75,6 +75,8 @@ CLI tool for injecting messages into the running daemon via its control FIFO (`~
 | `--sessions` | List active sessions with context %, cost, log size, date range. Filesystem-only — no daemon needed. |
 | `--monitor` | Show live API call monitor state. Filesystem-only — reads `~/.lucyd/monitor.json`. Use with `watch -n 1` for live updates. |
 | `--reset [target]` | Reset sessions. No argument resets all. Target: sender name (`system` / `user`) or session UUID. Archives to `.archive/`, next message starts fresh. |
+| `--history [contact\|id]` | Show session history. Resolves contact name to session ID. Use with `--full` for tool calls. |
+| `--full` | With `--history`: include tool calls and system events, not just messages. |
 | `-a`, `--attach <file>` | Attach file(s) to the message. Can be repeated for multiple files. |
 | `--state-dir <path>` | Override state directory (default: `~/.lucyd`) |
 
@@ -195,6 +197,12 @@ curl -H "Authorization: Bearer $TOKEN" "http://localhost:8100/api/v1/cost?period
 **`/api/v1/sessions`** — Returns list of active sessions with context %, cost, log size, and date range. Same data as `lucyd-send --sessions`.
 
 **`/api/v1/cost`** — Query cost breakdown by period. Query parameter: `period` (`today` | `week` | `all`, default: `today`). Same data as `lucyd-send --cost`.
+
+**`/api/v1/monitor`** — Returns live agentic loop state (model, contact, turn, state). Same data as `lucyd-send --monitor`. Read-only rate limit.
+
+**`/api/v1/sessions/reset`** — POST with `{"target": "all"|"user"|"<contact>"|"<uuid>"}`. Resets target sessions (archives, never deletes). Same logic as `lucyd-send --reset`.
+
+**`/api/v1/sessions/{session_id}/history`** — Returns chronological event history for a session. Query parameter: `full=true` includes tool calls and system events. Same data as `lucyd-send --history`.
 
 ### Behavior
 

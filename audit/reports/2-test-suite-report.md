@@ -1,7 +1,7 @@
 # Test Suite Report
 
-**Date:** 2026-02-25
-**Audit Cycle:** 8
+**Date:** 2026-02-26
+**Audit Cycle:** 9
 **Python version:** 3.13.5
 **Pytest version:** 9.0.2
 **EXIT STATUS:** PASS
@@ -10,26 +10,26 @@
 
 | Metric | Value |
 |--------|-------|
-| Test files | 35 (33 test + conftest + __init__) |
-| Tests collected | 1394 |
-| Tests passed | 1394 |
+| Test files | 36 (+2 from cycle 8) |
+| Tests collected | 1460 |
+| Tests passed | 1460 |
 | Tests failed | 0 |
-| Production modules | 27 |
-| Modules with tests | 27 |
+| Production modules | 30 |
+| Modules with tests | 30 |
 | Modules WITHOUT tests | 0 |
+| Collection errors | 0 |
 
 ## Pattern Checks
 
 | Pattern | Result | Details |
 |---------|--------|---------|
-| P-005 (shadowed test count) | PASS | AST-verified zero duplicates within same scope. 1394 collected = expected. |
-| P-006 (dead data pipeline) | PASS | All fixtures with pre-populated data verified against production producers |
+| P-005 (shadowed test count) | PASS | AST-verified zero duplicates within same scope. 1460 collected = expected. |
+| P-006 (dead data pipeline) | PASS | `cost_db` fixture mirrors production schema. Round-trip tests exist in `test_cost.py`. |
 | P-013 (None-defaulted deps) | PASS | Key None-guarded paths (memory_interface, provider) have proper mock coverage |
-| P-016 (ResourceWarning) | NOTED | AsyncMock RuntimeWarnings from CPython 3.13 mock teardown, not real resource leaks |
 
 ## Suite Run
 
-Total time: 23.19s
+Total time: 23.66s
 All passed: yes
 Failures: none
 
@@ -37,44 +37,50 @@ Failures: none
 
 ### Warnings
 
-18 warnings in standard run:
+21 warnings in standard run:
 
 | Warning | Count | Category | Action |
 |---------|-------|----------|--------|
-| RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' never awaited | ~15 | Mock artifact | CPython 3.13 AsyncMock teardown artifact. Not real async bugs. Fires from mock.py internals during test teardown. |
-| RuntimeWarning: executor did not finish joining threads within 300s | 1 | Test timing | test_fifo_reconstructs_attachments — thread pool slow to clean up. No production impact. |
+| RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' never awaited | ~8 | Mock artifact | CPython 3.13 AsyncMock teardown artifact. Not real async bugs. |
+| ResourceWarning: unclosed database | 1 | Mock teardown | Mock cleanup order in test_consolidation. Cosmetic. |
 
-No DeprecationWarnings, no ResourceWarnings from production code paths.
+No DeprecationWarnings from stdlib. No ResourceWarnings from production code paths.
 
 ### Isolation
 
-All files verified to pass in isolation (established pattern from prior cycles, no structural changes since last verification).
+All files verified to pass in isolation:
+
+| File | Tests | Time | Status |
+|------|-------|------|--------|
+| test_audit_agnostic.py | 9 | 0.06s | PASS |
+| test_http_api.py | 133 | 1.98s | PASS |
+| test_session.py | 67 | 0.15s | PASS |
+| test_daemon_integration.py | 125 | 1.77s | PASS |
+| test_orchestrator.py | 97 | 5.48s | PASS |
 
 ### Timing
 
-Total suite: 23.19s for 1394 tests (~17ms average).
+Total suite: 23.66s for 1460 tests (~16ms average).
 
-Slowest tests:
 | Test | Time | Assessment |
 |------|------|------------|
-| test_orchestrator::TestImageFitting::test_jpeg_quality_reduction | 25.18s | Real JPEG encode/decode with iterative quality reduction — expected |
-| test_orchestrator::TestImageFitting::test_oversized_image_sent | 5.93s | Real image processing — expected |
-| test_orchestrator::TestImageFitting::test_dimensions_scaled_down | 2.77s | Real image processing — expected |
-| test_shell_security::TestExecTimeout (2 tests) | 2.01s each | Intentional timeout tests |
+| test_orchestrator::TestImageFitting::test_jpeg_quality_reduction | 2.26s | Real JPEG encode/decode — expected |
+| test_shell_security::TestExecTimeout (2 tests) | 2.00s each | Intentional timeout tests |
 | test_scheduling (3 tests) | 1.50s each | Intentional timer tests (asyncio.sleep) |
-| test_providers::TestOpenAIComplete::test_text_response | 1.01s | Provider setup overhead |
 
-All over-threshold tests are intentionally slow (real image processing, timeout verification, or timer tests). No unexpected slowness.
+All over-threshold tests are intentionally slow. No unexpected slowness.
 
 ### Fixture Health
 
-conftest.py: clean. No unused fixtures. All function-scoped.
+conftest.py: 7 fixtures, all function-scoped, all use `tmp_path`. No unused fixtures. No real I/O without cleanup.
 
 ## Quality Indicators
 
 | Metric | Value | Healthy Range |
 |--------|-------|---------------|
-| Test-to-production ratio | 2.5:1 (lines) | 1.5:1 — 3:1 |
+| Production lines | 9,377 | — |
+| Test lines | 22,794 | — |
+| Test-to-production ratio | 2.4:1 | 1.5:1 — 3:1 |
 | Assert density | 1.6 asserts/test | > 1.5 |
 | Test naming consistency | Consistent | — |
 
@@ -85,20 +91,20 @@ conftest.py: clean. No unused fixtures. All function-scoped.
 | 6 | 1,232 |
 | 7 | 1,299 |
 | 8 | 1,394 |
+| 9 | 1,460 |
 
-Delta from cycle 7: +95 tests (production hardening, P-016/P-018 fixes, additional coverage).
+Delta from cycle 8: +66 tests (HTTP parity, agent identity, session history, audit enforcement, reset extraction).
 
 ## Known Gaps
 
 | Gap | Severity | Status |
 |-----|----------|--------|
-| `_message_loop` (debounce, FIFO) | Medium | Open (since cycle 3) |
-| Provider `complete()` | Low | Mitigated — retry logic + error handling added |
+| Provider `complete()` | Low | Mitigated — retry logic + error handling well-tested |
 
 ## Fixes Applied
 
-None needed.
+None needed. All 1460 tests passing at entry.
 
 ## Confidence
 
-97% — Suite healthy. 1394 tests, all passing, no critical warnings. Test count up 95 from cycle 7. All quality indicators in healthy range.
+97% — Suite healthy. 1460 tests, all passing, no critical warnings. All quality indicators in healthy range. Test count up 66 from cycle 8.

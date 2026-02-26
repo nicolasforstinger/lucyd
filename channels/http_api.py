@@ -54,6 +54,12 @@ class HTTPApi:
     """HTTP API server that feeds messages into the daemon's queue."""
 
     _AUTH_EXEMPT_PATHS = frozenset({"/api/v1/status"})
+    _READ_ONLY_PATHS = frozenset({
+        "/api/v1/status",
+        "/api/v1/sessions",
+        "/api/v1/cost",
+        "/api/v1/monitor",
+    })
 
     def __init__(
         self,
@@ -65,25 +71,44 @@ class HTTPApi:
         get_status: Any = None,
         get_sessions: Any = None,
         get_cost: Any = None,
+        get_monitor: Any = None,
+        handle_reset: Any = None,
+        get_history: Any = None,
         download_dir: str = "/tmp/lucyd-http",  # noqa: S108 — default; overridden by config
         max_body_bytes: int = 10 * 1024 * 1024,
         rate_limit: int = 30,
         rate_window: int = 60,
         status_rate_limit: int = 60,
+        agent_name: str = "",
     ):
         self.queue = queue
         self.host = host
         self.port = port
         self.auth_token = auth_token
         self.agent_timeout = agent_timeout
+        self.agent_name = agent_name
         self._get_status = get_status
         self._get_sessions = get_sessions
         self._get_cost = get_cost
+        self._get_monitor = get_monitor
+        self._handle_reset_cb = handle_reset
+        self._get_history = get_history
         self._download_dir = download_dir
         self._max_body_bytes = max_body_bytes
         self._runner: web.AppRunner | None = None
         self._rate_limiter = _RateLimiter(max_requests=rate_limit, window_seconds=rate_window)
         self._status_rate_limiter = _RateLimiter(max_requests=status_rate_limit, window_seconds=rate_window)
+
+    # ─── Response Helper ─────────────────────────────────────────
+
+    def _json_response(self, data: dict, status: int = 200) -> web.Response:
+        """Wrap web.json_response with agent identity injection."""
+        if self.agent_name:
+            data["agent"] = self.agent_name
+        resp = web.json_response(data, status=status)
+        if self.agent_name:
+            resp.headers["X-Lucyd-Agent"] = self.agent_name
+        return resp
 
     # ─── Lifecycle ────────────────────────────────────────────────
 
@@ -98,6 +123,11 @@ class HTTPApi:
         app.router.add_get("/api/v1/status", self._handle_status)
         app.router.add_get("/api/v1/sessions", self._handle_sessions)
         app.router.add_get("/api/v1/cost", self._handle_cost)
+        app.router.add_get("/api/v1/monitor", self._handle_monitor)
+        app.router.add_post("/api/v1/sessions/reset", self._handle_reset)
+        app.router.add_get(
+            "/api/v1/sessions/{session_id}/history", self._handle_history,
+        )
 
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -149,7 +179,10 @@ class HTTPApi:
     @web.middleware
     async def _rate_middleware(self, request: web.Request, handler):
         client_ip = request.remote or "unknown"
-        if request.path in ("/api/v1/status", "/api/v1/sessions", "/api/v1/cost"):
+        if request.path in self._READ_ONLY_PATHS or (
+            request.path.startswith("/api/v1/sessions/")
+            and request.method == "GET"
+        ):
             limiter = self._status_rate_limiter
         else:
             limiter = self._rate_limiter
@@ -249,7 +282,7 @@ class HTTPApi:
 
         try:
             result = await asyncio.wait_for(future, timeout=self.agent_timeout)
-            return web.json_response(result, status=200)
+            return self._json_response(result, status=200)
         except TimeoutError:
             log.error("HTTP /chat timeout for sender=%s", sender)
             return web.json_response(
@@ -321,7 +354,7 @@ class HTTPApi:
         log.info("HTTP /notify queued: sender=%s source=%s ref=%s attachments=%d",
                  sender, source_label, ref, len(attachments) if attachments else 0)
 
-        return web.json_response(
+        return self._json_response(
             {"accepted": True, "queued_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
             status=202,
         )
@@ -333,7 +366,7 @@ class HTTPApi:
         else:
             status = {"status": "ok"}
 
-        return web.json_response(status, status=200)
+        return self._json_response(status, status=200)
 
     async def _handle_sessions(self, request: web.Request) -> web.Response:
         """GET /api/v1/sessions — list active sessions."""
@@ -342,7 +375,7 @@ class HTTPApi:
         else:
             sessions = []
 
-        return web.json_response({"sessions": sessions}, status=200)
+        return self._json_response({"sessions": sessions}, status=200)
 
     async def _handle_cost(self, request: web.Request) -> web.Response:
         """GET /api/v1/cost — query cost by period."""
@@ -357,4 +390,49 @@ class HTTPApi:
         else:
             cost_data = {"period": period, "total_cost": 0.0, "models": []}
 
-        return web.json_response(cost_data, status=200)
+        return self._json_response(cost_data, status=200)
+
+    async def _handle_monitor(self, request: web.Request) -> web.Response:
+        """GET /api/v1/monitor — live agentic loop state."""
+        if self._get_monitor:
+            monitor_data = self._get_monitor()
+        else:
+            monitor_data = {"state": "unknown"}
+
+        return self._json_response(monitor_data, status=200)
+
+    async def _handle_reset(self, request: web.Request) -> web.Response:
+        """POST /api/v1/sessions/reset — reset sessions."""
+        try:
+            body = await request.json()
+        except web.HTTPException:
+            raise
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(
+                {"error": "invalid JSON body"}, status=400,
+            )
+
+        target = body.get("target", "all")
+        if not target or not isinstance(target, str):
+            return web.json_response(
+                {"error": "\"target\" must be a non-empty string"}, status=400,
+            )
+
+        if self._handle_reset_cb:
+            result = await self._handle_reset_cb(target)
+        else:
+            result = {"reset": False, "reason": "not available"}
+
+        return self._json_response(result, status=200)
+
+    async def _handle_history(self, request: web.Request) -> web.Response:
+        """GET /api/v1/sessions/{session_id}/history — session transcript."""
+        session_id = request.match_info["session_id"]
+        full = request.query.get("full", "").lower() in ("true", "1", "yes")
+
+        if self._get_history:
+            history_data = self._get_history(session_id, full)
+        else:
+            history_data = {"session_id": session_id, "events": []}
+
+        return self._json_response(history_data, status=200)

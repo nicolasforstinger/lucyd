@@ -2148,7 +2148,7 @@ class TestMessageLevelRetry:
 
         assert call_count[0] == 2
         # Both attempts should have seen list content (image blocks injected)
-        assert all(t == list for t in content_snapshots)
+        assert all(t is list for t in content_snapshots)
         # After completion, content should be restored to text
         user_msgs = [m for m in session.messages if m.get("role") == "user"]
         if user_msgs:

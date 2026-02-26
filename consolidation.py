@@ -444,7 +444,7 @@ async def consolidate_session(
     except Exception:
         try:
             conn.rollback()
-        except Exception:
+        except Exception:  # noqa: S110 — rollback after failed commit; if rollback itself fails, nothing more to do; outer raises
             pass
         raise
 
@@ -497,7 +497,7 @@ async def extract_from_file(
     except Exception:
         try:
             conn.rollback()
-        except Exception:
+        except Exception:  # noqa: S110 — rollback after failed commit; if rollback itself fails, nothing more to do; outer raises
             pass
         raise
 

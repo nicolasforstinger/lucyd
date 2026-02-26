@@ -53,6 +53,8 @@ class ContextBuilder:
 
         # Determine file lists for this tier
         stable, semi_stable = self._files_for_tier(tier)
+        log.debug("Context tier=%s: %d stable, %d semi-stable files",
+                  tier, len(stable), len(semi_stable))
 
         # Stable block: persona files + tool instructions
         stable_text = self._read_files(stable)
