@@ -24,7 +24,7 @@ flowchart TD
         SESSION["Get/Create Session<br/>session.py:285"]
         MEDIA["Process Attachments<br/>image / voice / document"]
         CTX["Build System Prompt<br/>context.py:31"]
-        AGENTIC["Agentic Loop<br/>agentic.py:99"]
+        AGENTIC["Agentic Loop<br/>agentic.py:107"]
     end
 
     subgraph Post["Post-Processing"]
@@ -57,17 +57,17 @@ The core thinking-acting cycle that processes each message.
 
 ```mermaid
 flowchart TD
-    START["run_agentic_loop()<br/>agentic.py:99"]
+    START["run_agentic_loop()<br/>agentic.py:107"]
     FORMAT["Format messages + tools<br/>provider.format_*()"]
-    API["provider.complete()<br/>agentic.py:154"]
-    COST["Record cost<br/>agentic.py:53"]
+    API["provider.complete()<br/>agentic.py:162"]
+    COST["Record cost<br/>agentic.py:61"]
 
     COST_CHECK{"Cost limit<br/>exceeded?"}
     APPEND["Append response<br/>to session.messages"]
     CALLBACK_R["on_response<br/>callback"]
 
     STOP_CHECK{"stop_reason?"}
-    TOOL_EXEC["Execute tools<br/>asyncio.gather()<br/>agentic.py:227"]
+    TOOL_EXEC["Execute tools<br/>asyncio.gather()<br/>agentic.py:235"]
     TOOL_RESULTS["Append tool_results<br/>to messages"]
     TURN_CHECK{"Turns<br/>remaining?"}
     WARN["Inject warning:<br/>final tool-use turn"]
@@ -144,7 +144,7 @@ flowchart TD
     end
 
     subgraph Unstructured["Unstructured Memory (v1)"]
-        FTS["FTS5 Search<br/>memory.py:59"]
+        FTS["FTS5 Search<br/>memory.py:96"]
         FTS_CHECK{">=3 results?"}
         EMBED["Embed Query<br/>memory.py:168"]
         VECTOR["Vector Search<br/>memory.py:128"]
@@ -190,24 +190,25 @@ flowchart LR
     end
 
     subgraph Protocol["LLMProvider Protocol<br/>providers/__init__.py"]
-        FM["format_messages()"]
+        FM["format_messages()<br/>+ _convert_content_blocks()"]
         FS["format_system()"]
         FT["format_tools()"]
-        COMPLETE["complete()"]
     end
 
     subgraph Anthropic["AnthropicCompatProvider"]
         A_SYS["System: list of dicts<br/>+ cache_control"]
         A_MSG["Content blocks<br/>thinking preservation"]
         A_IMG["source.type: base64<br/>media_type"]
-        A_API["messages.create()"]
+        A_TOOLS["Tool schemas"]
+        A_API["complete()<br/>messages.create()"]
     end
 
     subgraph OpenAI["OpenAICompatProvider"]
         O_SYS["System: single string"]
         O_MSG["Standard messages<br/>function_call format"]
         O_IMG["data: URI images"]
-        O_API["chat.completions.create()"]
+        O_TOOLS["Tool schemas"]
+        O_API["complete()<br/>chat.completions.create()"]
     end
 
     RESP["LLMResponse<br/>text + tool_calls + usage"]
@@ -218,11 +219,12 @@ flowchart LR
     IMG --> FM
 
     FM --> A_MSG & O_MSG
+    FM --> A_IMG & O_IMG
     FS --> A_SYS & O_SYS
-    FT --> A_IMG & O_IMG
+    FT --> A_TOOLS & O_TOOLS
 
-    A_MSG & A_SYS & A_IMG --> A_API --> RESP
-    O_MSG & O_SYS & O_IMG --> O_API --> RESP
+    A_MSG & A_SYS & A_IMG & A_TOOLS --> A_API --> RESP
+    O_MSG & O_SYS & O_IMG & O_TOOLS --> O_API --> RESP
 ```
 
 ---
@@ -288,7 +290,7 @@ flowchart TD
         MSG_CFG["messaging:<br/>channel, contacts"]
     end
 
-    subgraph Runtime["Dispatch — agentic.py:221"]
+    subgraph Runtime["Dispatch — agentic.py:231"]
         CALL["Tool call from LLM<br/>name + arguments"]
         LOOKUP{"name in<br/>registry?"}
         EXEC["execute()<br/>tools/__init__.py:54"]
