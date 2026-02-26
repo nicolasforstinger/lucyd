@@ -219,10 +219,10 @@ flowchart LR
 
     FM --> A_MSG & O_MSG
     FS --> A_SYS & O_SYS
-    FT --> Anthropic & OpenAI
+    FT --> A_IMG & O_IMG
 
-    A_API --> RESP
-    O_API --> RESP
+    A_MSG & A_SYS & A_IMG --> A_API --> RESP
+    O_MSG & O_SYS & O_IMG --> O_API --> RESP
 ```
 
 ---
