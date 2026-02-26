@@ -183,10 +183,9 @@ How internal neutral format translates to provider-specific API calls.
 ```mermaid
 flowchart LR
     subgraph Internal["Internal Neutral Format"]
-        MSG["Messages<br/>role + content"]
+        MSG["Messages<br/>role + content + image blocks"]
         SYS["System Blocks<br/>tier-tagged dicts"]
         TOOLS_INT["Tool Schemas<br/>name + desc + input_schema"]
-        IMG["Image Blocks<br/>type: image + base64"]
     end
 
     subgraph Protocol["LLMProvider Protocol<br/>providers/__init__.py"]
@@ -195,18 +194,16 @@ flowchart LR
         FT["format_tools()"]
     end
 
-    subgraph Anthropic["AnthropicCompatProvider"]
+    subgraph Anthropic["AnthropicCompatProvider<br/>anthropic_compat.py"]
+        A_MSG["Messages + base64 images<br/>+ thinking preservation"]
         A_SYS["System: list of dicts<br/>+ cache_control"]
-        A_MSG["Content blocks<br/>thinking preservation"]
-        A_IMG["source.type: base64<br/>media_type"]
         A_TOOLS["Tool schemas"]
         A_API["complete()<br/>messages.create()"]
     end
 
-    subgraph OpenAI["OpenAICompatProvider"]
+    subgraph OpenAI["OpenAICompatProvider<br/>openai_compat.py"]
+        O_MSG["Messages + data URI images"]
         O_SYS["System: single string"]
-        O_MSG["Standard messages<br/>function_call format"]
-        O_IMG["data: URI images"]
         O_TOOLS["Tool schemas"]
         O_API["complete()<br/>chat.completions.create()"]
     end
@@ -216,15 +213,16 @@ flowchart LR
     MSG --> FM
     SYS --> FS
     TOOLS_INT --> FT
-    IMG --> FM
 
-    FM --> A_MSG & O_MSG
-    FM --> A_IMG & O_IMG
-    FS --> A_SYS & O_SYS
-    FT --> A_TOOLS & O_TOOLS
+    FM --> A_MSG --> A_API
+    FM --> O_MSG --> O_API
+    FS --> A_SYS --> A_API
+    FS --> O_SYS --> O_API
+    FT --> A_TOOLS --> A_API
+    FT --> O_TOOLS --> O_API
 
-    A_MSG & A_SYS & A_IMG & A_TOOLS --> A_API --> RESP
-    O_MSG & O_SYS & O_IMG & O_TOOLS --> O_API --> RESP
+    A_API --> RESP
+    O_API --> RESP
 ```
 
 ---
