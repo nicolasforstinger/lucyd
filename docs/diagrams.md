@@ -330,6 +330,7 @@ flowchart TD
         MONITOR_EP["/api/v1/monitor<br/>GET → loop state"]
         RESET_EP["/api/v1/sessions/reset<br/>POST → reset sessions"]
         HISTORY_EP["/api/v1/sessions/{id}/history<br/>GET → event history"]
+        EVOLVE_EP["/api/v1/evolve<br/>POST → trigger evolution"]
         AUTH["Bearer Token Auth<br/>hmac.compare_digest()"]
         RATE["Rate Limiter<br/>per-sender window"]
     end

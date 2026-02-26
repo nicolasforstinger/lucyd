@@ -82,6 +82,30 @@ CLI tool for injecting messages into the running daemon via its control FIFO (`~
 
 If the daemon is not running, `lucyd-send` exits with an error ("no reader on FIFO").
 
+## lucyd-consolidate
+
+CLI tool for structured memory extraction and maintenance. Operates on the memory SQLite DB directly (no daemon needed).
+
+```bash
+# Extract facts, episodes, commitments from sessions (cron at :15)
+~/lucyd/bin/lucyd-consolidate --config ~/lucyd/lucyd.toml
+
+# Maintenance: clean low-confidence facts and stale entries (cron at 4:05)
+~/lucyd/bin/lucyd-consolidate --config ~/lucyd/lucyd.toml --maintain
+
+# Evolution: rewrite workspace understanding files (cron at 4:20)
+~/lucyd/bin/lucyd-consolidate --config ~/lucyd/lucyd.toml --evolve
+```
+
+**Flags:**
+
+| Flag | Purpose |
+|---|---|
+| `--config <path>` | Path to `lucyd.toml` (required unless `LUCYD_CONFIG` env var is set) |
+| `--maintain` | Run maintenance: remove low-confidence facts and stale entries |
+| `--evolve` | Run evolution: rewrite configured workspace files using daily logs and structured memory |
+| `--backfill` | Backfill from archived sessions |
+
 ### Live Monitor
 
 When the daemon processes a message, it writes real-time state to `~/.lucyd/monitor.json`. The `--monitor` flag reads this file and formats it for terminal display.
@@ -165,7 +189,7 @@ Token is loaded from the `LUCYD_HTTP_TOKEN` environment variable (set in `.env` 
 | Group | Limit | Endpoints |
 |---|---|---|
 | Read-only | `status_rate_limit` (default 60) per `rate_window` (default 60s) | `/status`, `/sessions`, `/cost`, `/monitor`, `/sessions/{id}/history` |
-| Standard | `rate_limit` (default 30) per `rate_window` (default 60s) | `/chat`, `/notify`, `/sessions/reset` |
+| Standard | `rate_limit` (default 30) per `rate_window` (default 60s) | `/chat`, `/notify`, `/sessions/reset`, `/evolve` |
 
 Rate limit key is client IP.
 
@@ -571,6 +595,45 @@ Events are deduplicated by `timestamp` across active and archive log files, sort
 
 **Rate limit group:** Read-only
 
+---
+
+#### `POST /api/v1/evolve`
+
+Trigger memory evolution — rewrites configured workspace files (e.g., MEMORY.md, USER.md) using daily logs, structured memory, and the identity anchor. Synchronous — waits for evolution to complete.
+
+Requires `[memory.evolution] enabled = true` in config.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8100/api/v1/evolve
+```
+
+**Response (200 — success):**
+
+```json
+{
+  "evolved": ["MEMORY.md", "USER.md"],
+  "skipped": [],
+  "error": null
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `evolved` | string[] | Files that were rewritten |
+| `skipped` | string[] | Files skipped (no new logs, validation failure) |
+| `error` | string\|null | Error message, or null on success |
+
+**Error responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| 503 | `{"evolved": [], "skipped": [], "error": "evolution not available"}` | Evolution not configured or disabled |
+| 500 | `{"evolved": [], "skipped": [], "error": "internal error"}` | Exception during evolution |
+
+**Rate limit group:** Standard
+
+---
+
 ### Behavior
 
 - `/chat` waits for the agentic loop to complete (up to `agent_timeout_seconds`). Returns 408 on timeout.
@@ -722,6 +785,7 @@ Recommended cron jobs for long-running deployments:
 | `15 * * * *` | Memory consolidation | `lucyd-consolidate` — extracts structured facts, episodes, commitments from sessions |
 | `5 3 * * *` | Trash cleanup | Delete files in `.trash/` older than 30 days |
 | `5 4 * * *` | Memory maintenance | `lucyd-consolidate --maintain` — clean up low-confidence facts and stale entries |
+| `20 4 * * *` | Memory evolution | `lucyd-consolidate --evolve` — rewrite workspace understanding files (MEMORY.md, USER.md) |
 | `5 4 * * 0` | DB integrity check | `PRAGMA integrity_check` on memory SQLite DB |
 | `5 8 * * *` | Heartbeat | `lucyd-send --system` to trigger `HEARTBEAT.md` tasks |
 

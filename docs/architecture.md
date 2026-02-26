@@ -13,9 +13,10 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `session.py` | Session manager. Dual storage: JSONL audit trail (append-only) + state file (atomic snapshot). Handles compaction. |
 | `skills.py` | Scans workspace skills directory. Parses markdown with YAML frontmatter. Builds index for system prompt. |
 | `memory.py` | Long-term memory. SQLite FTS5 for keyword search, pluggable embeddings for vector similarity. FTS-first strategy. Gracefully degrades to FTS5-only when no embedding provider is configured. Also handles structured recall (facts, episodes, commitments). |
-| `memory_schema.py` | Schema management for all memory tables (10 tables: 4 unstructured + 4 structured + 2 infrastructure). Safe to call on every startup — all `IF NOT EXISTS`. |
+| `memory_schema.py` | Schema management for all memory tables (11 tables: 4 unstructured + 4 structured + 2 infrastructure + 1 evolution). Safe to call on every startup — all `IF NOT EXISTS`. |
 | `consolidation.py` | Structured data extraction from sessions and workspace files via LLM. Extracts facts, episodes, commitments, and entity aliases. |
 | `synthesis.py` | Memory recall synthesis. Transforms raw recall blocks into prose (narrative/factual) before context injection. Optional — defaults to passthrough ("structured"). |
+| `evolution.py` | Memory evolution. Daily LLM-based rewriting of workspace understanding files (e.g., MEMORY.md, USER.md) using daily logs, structured memory, and an identity anchor (IDENTITY.md). Triggered by cron (`lucyd-consolidate --evolve`) or HTTP API (`POST /api/v1/evolve`). |
 | `channels/__init__.py` | Channel protocol definition (`connect`, `receive`, `send`, `send_typing`, `send_reaction`) and factory. |
 | `channels/telegram.py` | Telegram transport. Long polling via Bot API (httpx), sends via Bot API HTTP methods. |
 | `channels/cli.py` | stdin/stdout transport for testing. |
@@ -38,7 +39,7 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `tools/indexer.py` | Memory indexer. Scans workspace, chunks files, embeds via configurable provider, writes to SQLite FTS5 + vector DB. Used by `bin/lucyd-index`. Provider-agnostic — embedding model, base URL, and provider are set via `configure()`. |
 | `bin/lucyd-send` | CLI script. Writes JSON to the control FIFO. Queries cost DB and monitor state directly. |
 | `bin/lucyd-index` | Memory indexer CLI. Scans workspace, chunks, embeds, writes to SQLite FTS5 + vector DB. Cron at `:10`. |
-| `bin/lucyd-consolidate` | Memory consolidation CLI. Extracts structured facts/episodes/commitments from sessions. Cron at `:15`. |
+| `bin/lucyd-consolidate` | Memory consolidation CLI. Extracts structured facts/episodes/commitments from sessions (cron at `:15`). Also runs maintenance (`--maintain`, daily at `4:05`) and evolution (`--evolve`, daily at `4:20`). |
 | `providers.d/*.toml` | Provider config files. Each defines connection type, API key env var, and `[models.*]` sections. Loaded via `[providers] load` in `lucyd.toml`. |
 
 ## Message Flow
@@ -154,6 +155,7 @@ An optional HTTP server (`channels/http_api.py`) runs alongside the primary chan
 | `/api/v1/monitor` | GET | Live agentic loop state (model, contact, turn) |
 | `/api/v1/sessions/reset` | POST | Reset sessions by target (all, contact name, UUID) |
 | `/api/v1/sessions/{id}/history` | GET | Session event history (`?full=true` for tool calls) |
+| `/api/v1/evolve` | POST | Trigger memory evolution (rewrite configured workspace files) |
 
 **Design**: HTTP is not a Channel implementation. It feeds messages directly into the daemon's `asyncio.Queue` alongside Telegram and FIFO. For `/chat`, an `asyncio.Future` is attached to the queue item; `_process_message` resolves it with the reply. For `/notify`, no Future — the event is queued and the caller gets 202 immediately.
 
@@ -218,7 +220,22 @@ Query embeddings are cached in an `embedding_cache` table (keyed by SHA-256 hash
 - `consolidation_state` -- Tracks per-session processing progress (dedup)
 - `consolidation_file_hashes` -- Tracks file content hashes to skip unchanged files
 
+**Evolution:**
+- `evolution_state` -- Tracks per-file evolution progress (last evolved, content hash, logs through date)
+
 Schema management is in `memory_schema.py` — all tables use `IF NOT EXISTS`. Structured data is extracted by `consolidation.py` via LLM (cron at `:15`), and also written directly by the `memory_write` and `commitment_update` agent tools. All SQL is parameterized.
+
+### Memory Evolution
+
+The evolution system (`evolution.py`) rewrites workspace understanding files daily using accumulated knowledge. It reads daily memory logs, structured facts/episodes/commitments, and an identity anchor file (IDENTITY.md), then asks the LLM to produce a fresh interpretation of each configured file (e.g., MEMORY.md, USER.md).
+
+**Pipeline:** `:05` git auto-commit → `:10` index → `:15` consolidate → `4:05` maintain → `4:20` evolve
+
+**Validation gates:** Rejects empty output, output shorter than 50% of original, or output longer than 200% of original. Writes atomically via temp file + `os.replace()`.
+
+**Files are evolved in order** — later files receive the freshly-evolved content of earlier files as extra context (e.g., USER.md sees the new MEMORY.md). The identity anchor (IDENTITY.md) is read but never modified.
+
+**Trigger:** `lucyd-consolidate --evolve` (cron) or `POST /api/v1/evolve` (HTTP API, bearer-token protected).
 
 ## Provider Abstraction
 

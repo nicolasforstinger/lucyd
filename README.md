@@ -58,11 +58,12 @@ Lucyd is an agentic daemon — it connects to a messaging channel, receives mess
 - **Message reactions** — React to messages via Telegram reaction API
 - **Scheduled messages** — Queue messages for future delivery
 - **Live monitoring** — Real-time agentic loop state via `lucyd-send --monitor`
+- **Memory evolution** — Daily LLM-based rewriting of workspace understanding files, anchored against a static identity file
 - **Modular providers** — Swap LLM providers by editing a load list, no model config changes
 
 ## Project Structure
 
-Top-level modules: `lucyd.py` (daemon entry point), `agentic.py` (tool-use loop), `config.py`, `context.py`, `session.py`, `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `synthesis.py`. Subdirectories: `channels/` (Telegram, CLI, HTTP API), `providers/` (Anthropic, OpenAI-compatible), `tools/` (19 agent tools), `bin/` (CLI utilities), `workspace.example/` (starter template). See [architecture](docs/architecture.md#module-map) for the full module map.
+Top-level modules: `lucyd.py` (daemon entry point), `agentic.py` (tool-use loop), `config.py`, `context.py`, `session.py`, `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `synthesis.py`, `evolution.py` (memory evolution). Subdirectories: `channels/` (Telegram, CLI, HTTP API), `providers/` (Anthropic, OpenAI-compatible), `tools/` (19 agent tools), `bin/` (CLI utilities), `workspace.example/` (starter template). See [architecture](docs/architecture.md#module-map) for the full module map.
 
 ## Configuration
 
@@ -107,7 +108,7 @@ Lucyd connects to the Telegram Bot API directly via httpx long polling. No exter
 
 ## Testing
 
-**1460 tests**, all passing. Five testing strategies:
+**1489 tests**, all passing. Five testing strategies:
 
 ```bash
 # Run the full suite

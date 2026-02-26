@@ -92,15 +92,23 @@ confidence_threshold = 0.6
 # max_extraction_chars = 50000                      # Truncation limit for session text fed to LLM
 
 # [memory.maintenance]
-# enabled = true
-# min_confidence = 0.3
-# stale_days = 90
+# enabled = false
+# stale_threshold_days = 90
+
+# [memory.evolution]
+# enabled = false                              # Enable daily evolution of workspace files
+# model = "primary"                            # Model for evolution LLM calls
+# files = ["MEMORY.md", "USER.md"]             # Workspace files to evolve (in order)
+# anchor_file = "IDENTITY.md"                  # Identity anchor — read but never modified
+# max_log_chars = 80000                        # Max chars from daily logs per prompt
+# max_facts = 50                               # Max structured facts in context
+# max_episodes = 20                            # Max recent episodes in context
 
 [memory.recall]
 structured_first = true
 decay_rate = 0.03
 max_facts_in_context = 20
-max_dynamic_tokens = 1000
+max_dynamic_tokens = 1500
 max_episodes_at_start = 3
 
 # [memory.recall.personality]
@@ -220,7 +228,9 @@ error_message = "I'm having trouble connecting right now. Try again in a moment.
 agent_timeout_seconds = 600
 max_turns_per_message = 50
 max_cost_per_message = 5.0             # USD limit per message (0.0 = disabled)
-message_retries = 2                    # Message-level retries on transient API failure
+api_retries = 2                        # API-level retries for transient errors (429, 5xx, connection)
+api_retry_base_delay = 2.0             # Initial backoff delay for API retries (seconds, exponential with jitter)
+message_retries = 2                    # Message-level retries on persistent failure
 message_retry_base_delay = 30          # Base delay between message retries (seconds)
 audit_truncation_limit = 500           # Max chars per message in audit log truncation
 
