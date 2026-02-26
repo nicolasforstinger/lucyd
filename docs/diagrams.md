@@ -11,29 +11,29 @@ How an inbound message flows from channel to response delivery.
 ```mermaid
 flowchart TD
     subgraph Sources["Inbound Sources"]
-        TG["Telegram Channel\ntelegram.py"]
-        HTTP["HTTP API\nhttp_api.py"]
-        FIFO["Control FIFO\nlucyd.py:73"]
+        TG["Telegram Channel<br/>telegram.py"]
+        HTTP["HTTP API<br/>http_api.py"]
+        FIFO["Control FIFO<br/>lucyd.py:73"]
     end
 
-    Q["asyncio.Queue\nlucyd.py:286"]
+    Q["asyncio.Queue<br/>lucyd.py:286"]
 
     subgraph Loop["Message Loop — lucyd.py:1361"]
-        DEB["Debounce\n500ms window"]
-        ROUTE["Route Model\nconfig.route_model(source)"]
-        SESSION["Get/Create Session\nsession.py:285"]
-        MEDIA["Process Attachments\nimage / voice / document"]
-        CTX["Build System Prompt\ncontext.py:31"]
-        AGENTIC["Agentic Loop\nagentic.py:99"]
+        DEB["Debounce<br/>500ms window"]
+        ROUTE["Route Model<br/>config.route_model(source)"]
+        SESSION["Get/Create Session<br/>session.py:285"]
+        MEDIA["Process Attachments<br/>image / voice / document"]
+        CTX["Build System Prompt<br/>context.py:31"]
+        AGENTIC["Agentic Loop<br/>agentic.py:99"]
     end
 
     subgraph Post["Post-Processing"]
-        PERSIST["Persist Messages\nsession.py:167"]
+        PERSIST["Persist Messages<br/>session.py:167"]
         SILENT{"Silent Token?"}
-        DELIVER["Channel Delivery\nchannel.send()"]
-        WEBHOOK["Webhook Callback\nlucyd.py:1207"]
-        COMPACT{"Compaction\nNeeded?"}
-        DO_COMPACT["Compact Session\nsession.py:450"]
+        DELIVER["Channel Delivery<br/>channel.send()"]
+        WEBHOOK["Webhook Callback<br/>lucyd.py:1207"]
+        COMPACT{"Compaction<br/>Needed?"}
+        DO_COMPACT["Compact Session<br/>session.py:450"]
     end
 
     TG --> Q
@@ -57,22 +57,22 @@ The core thinking-acting cycle that processes each message.
 
 ```mermaid
 flowchart TD
-    START["run_agentic_loop()\nagentic.py:99"]
-    FORMAT["Format messages + tools\nprovider.format_*()"]
-    API["provider.complete()\nagentic.py:154"]
-    COST["Record cost\nagentic.py:53"]
+    START["run_agentic_loop()<br/>agentic.py:99"]
+    FORMAT["Format messages + tools<br/>provider.format_*()"]
+    API["provider.complete()<br/>agentic.py:154"]
+    COST["Record cost<br/>agentic.py:53"]
 
-    COST_CHECK{"Cost limit\nexceeded?"}
-    APPEND["Append response\nto session.messages"]
-    CALLBACK_R["on_response\ncallback"]
+    COST_CHECK{"Cost limit<br/>exceeded?"}
+    APPEND["Append response<br/>to session.messages"]
+    CALLBACK_R["on_response<br/>callback"]
 
     STOP_CHECK{"stop_reason?"}
-    TOOL_EXEC["Execute tools\nasyncio.gather()\nagentic.py:227"]
-    TOOL_RESULTS["Append tool_results\nto messages"]
-    TURN_CHECK{"Turns\nremaining?"}
-    WARN["Inject warning:\nfinal tool-use turn"]
+    TOOL_EXEC["Execute tools<br/>asyncio.gather()<br/>agentic.py:227"]
+    TOOL_RESULTS["Append tool_results<br/>to messages"]
+    TURN_CHECK{"Turns<br/>remaining?"}
+    WARN["Inject warning:<br/>final tool-use turn"]
 
-    RETURN["Return LLMResponse\ntext + usage + cost"]
+    RETURN["Return LLMResponse<br/>text + usage + cost"]
 
     START --> FORMAT --> API --> COST --> COST_CHECK
     COST_CHECK -->|yes| RETURN
@@ -97,7 +97,7 @@ flowchart LR
         TOOLS_MD["TOOLS.md"]
         IDENTITY["IDENTITY.md"]
         USER_MD["USER.md"]
-        TOOL_DESC["Tool Descriptions\nname + one-liner"]
+        TOOL_DESC["Tool Descriptions<br/>name + one-liner"]
     end
 
     subgraph Semi["Semi-Stable Tier — cached @ $0.30/Mtok"]
@@ -114,10 +114,10 @@ flowchart LR
         VOICE["Voice / Image Hints"]
     end
 
-    BUILD["ContextBuilder.build()\ncontext.py:31"]
-    BLOCKS["list of dict\ntier-tagged blocks"]
-    FORMAT["provider.format_system()\nanthropic_compat.py:79"]
-    CACHED["cache_control: ephemeral\non stable + semi_stable"]
+    BUILD["ContextBuilder.build()<br/>context.py:31"]
+    BLOCKS["list of dict<br/>tier-tagged blocks"]
+    FORMAT["provider.format_system()<br/>anthropic_compat.py:79"]
+    CACHED["cache_control: ephemeral<br/>on stable + semi_stable"]
 
     Stable --> BUILD
     Semi --> BUILD
@@ -133,31 +133,31 @@ How relevant context is retrieved from the memory system at session start.
 
 ```mermaid
 flowchart TD
-    QUERY["Session Start\nQuery: sender + recent text"]
+    QUERY["Session Start<br/>Query: sender + recent text"]
 
     subgraph Structured["Structured Memory (v2)"]
-        ENTITIES["Extract Entities\nmemory.py:331"]
-        FACTS["Lookup Facts\nmemory.py:379"]
+        ENTITIES["Extract Entities<br/>memory.py:331"]
+        FACTS["Lookup Facts<br/>memory.py:379"]
         KEYWORDS["Extract Keywords"]
-        EPISODES["Search Episodes\nmemory.py:414"]
-        COMMITMENTS["Open Commitments\nmemory.py:446"]
+        EPISODES["Search Episodes<br/>memory.py:414"]
+        COMMITMENTS["Open Commitments<br/>memory.py:446"]
     end
 
     subgraph Unstructured["Unstructured Memory (v1)"]
-        FTS["FTS5 Search\nmemory.py:59"]
+        FTS["FTS5 Search<br/>memory.py:59"]
         FTS_CHECK{">=3 results?"}
-        EMBED["Embed Query\nmemory.py:168"]
-        VECTOR["Vector Search\nmemory.py:128"]
+        EMBED["Embed Query<br/>memory.py:168"]
+        VECTOR["Vector Search<br/>memory.py:128"]
         MERGE["Merge + Dedup"]
     end
 
-    PRIORITY["Priority Sort\ncommitments > vector >\nepisodes > facts"]
-    BUDGET["Token Budget\ninject_recall()\nmemory.py:548"]
+    PRIORITY["Priority Sort<br/>commitments > vector ><br/>episodes > facts"]
+    BUDGET["Token Budget<br/>inject_recall()<br/>memory.py:548"]
 
     SYNTH_CHECK{"synthesis_style?"}
-    RAW["Raw blocks\n→ system prompt"]
-    LLM_SYNTH["Synthesize\nsynthesis.py:88"]
-    PROSE["Prose\n→ system prompt"]
+    RAW["Raw blocks<br/>→ system prompt"]
+    LLM_SYNTH["Synthesize<br/>synthesis.py:88"]
+    PROSE["Prose<br/>→ system prompt"]
 
     QUERY --> ENTITIES --> FACTS
     QUERY --> KEYWORDS --> EPISODES
@@ -183,13 +183,13 @@ How internal neutral format translates to provider-specific API calls.
 ```mermaid
 flowchart LR
     subgraph Internal["Internal Neutral Format"]
-        MSG["Messages\nrole + content"]
-        SYS["System Blocks\ntier-tagged dicts"]
-        TOOLS_INT["Tool Schemas\nname + desc + input_schema"]
-        IMG["Image Blocks\ntype: image + base64"]
+        MSG["Messages<br/>role + content"]
+        SYS["System Blocks<br/>tier-tagged dicts"]
+        TOOLS_INT["Tool Schemas<br/>name + desc + input_schema"]
+        IMG["Image Blocks<br/>type: image + base64"]
     end
 
-    subgraph Protocol["LLMProvider Protocol\nproviders/__init__.py"]
+    subgraph Protocol["LLMProvider Protocol<br/>providers/__init__.py"]
         FM["format_messages()"]
         FS["format_system()"]
         FT["format_tools()"]
@@ -197,20 +197,20 @@ flowchart LR
     end
 
     subgraph Anthropic["AnthropicCompatProvider"]
-        A_SYS["System: list of dicts\n+ cache_control"]
-        A_MSG["Content blocks\nthinking preservation"]
-        A_IMG["source.type: base64\nmedia_type"]
+        A_SYS["System: list of dicts<br/>+ cache_control"]
+        A_MSG["Content blocks<br/>thinking preservation"]
+        A_IMG["source.type: base64<br/>media_type"]
         A_API["messages.create()"]
     end
 
     subgraph OpenAI["OpenAICompatProvider"]
         O_SYS["System: single string"]
-        O_MSG["Standard messages\nfunction_call format"]
+        O_MSG["Standard messages<br/>function_call format"]
         O_IMG["data: URI images"]
         O_API["chat.completions.create()"]
     end
 
-    RESP["LLMResponse\ntext + tool_calls + usage"]
+    RESP["LLMResponse<br/>text + tool_calls + usage"]
 
     MSG --> FM
     SYS --> FS
@@ -233,24 +233,24 @@ Dual storage model with compaction lifecycle.
 
 ```mermaid
 flowchart TD
-    CREATE["get_or_create()\nsession.py:285"]
+    CREATE["get_or_create()<br/>session.py:285"]
 
     subgraph Active["Active Session"]
         USER_MSG["add_user_message()"]
         AGENTIC["run_agentic_loop()"]
 
         subgraph Persist["Dual Storage"]
-            JSONL["Append to JSONL\nid.YYYY-MM-DD.jsonl"]
-            STATE["Atomic write\nid.state.json"]
+            JSONL["Append to JSONL<br/>id.YYYY-MM-DD.jsonl"]
+            STATE["Atomic write<br/>id.state.json"]
         end
 
-        THRESHOLD{"Token usage\nvs threshold?"}
+        THRESHOLD{"Token usage<br/>vs threshold?"}
         NORMAL((" "))
-        WARN["Inject warning\npending_system_warning"]
-        COMPACT["compact_session()\nsession.py:450\nreplace 2/3 messages\nwith summary"]
+        WARN["Inject warning<br/>pending_system_warning"]
+        COMPACT["compact_session()<br/>session.py:450<br/>replace 2/3 messages<br/>with summary"]
     end
 
-    CLOSE["close_session()\nsession.py:323"]
+    CLOSE["close_session()<br/>session.py:323"]
     ARCHIVE["Move to .archive/"]
     DONE((" "))
 
@@ -270,30 +270,30 @@ Registration at startup, dispatch at runtime.
 ```mermaid
 flowchart TD
     subgraph Startup["Registration — lucyd.py:367"]
-        CONFIG["lucyd.toml\n[tools] enabled list"]
-        BUILTIN["12 Built-in Modules\n19 tools"]
-        PLUGINS["plugins.d/*.py\nCustom tools"]
-        CONFIG --> FILTER{"tool.name\nin enabled?"}
+        CONFIG["lucyd.toml<br/>[tools] enabled list"]
+        BUILTIN["12 Built-in Modules<br/>19 tools"]
+        PLUGINS["plugins.d/*.py<br/>Custom tools"]
+        CONFIG --> FILTER{"tool.name<br/>in enabled?"}
         BUILTIN --> FILTER
         PLUGINS --> FILTER
-        FILTER -->|yes| REG["ToolRegistry.register()\ntools/__init__.py:19"]
+        FILTER -->|yes| REG["ToolRegistry.register()<br/>tools/__init__.py:19"]
         FILTER -->|no| SKIP["Not loaded"]
     end
 
     subgraph Configure["Per-module configure()"]
         direction LR
-        FS_CFG["filesystem:\nallowed_paths"]
-        WEB_CFG["web: api_key\nSSRF protection"]
-        MEM_CFG["memory: db_path\nembeddings"]
-        MSG_CFG["messaging:\nchannel, contacts"]
+        FS_CFG["filesystem:<br/>allowed_paths"]
+        WEB_CFG["web: api_key<br/>SSRF protection"]
+        MEM_CFG["memory: db_path<br/>embeddings"]
+        MSG_CFG["messaging:<br/>channel, contacts"]
     end
 
     subgraph Runtime["Dispatch — agentic.py:221"]
-        CALL["Tool call from LLM\nname + arguments"]
-        LOOKUP{"name in\nregistry?"}
-        EXEC["execute()\ntools/__init__.py:54"]
-        TRUNC["Truncate output\n> output_truncation chars"]
-        RESULT["String result\n→ tool_results message"]
+        CALL["Tool call from LLM<br/>name + arguments"]
+        LOOKUP{"name in<br/>registry?"}
+        EXEC["execute()<br/>tools/__init__.py:54"]
+        TRUNC["Truncate output<br/>> output_truncation chars"]
+        RESULT["String result<br/>→ tool_results message"]
         ERR["Error: tool not available"]
     end
 
@@ -313,38 +313,38 @@ Parallel transports feeding one processing queue.
 ```mermaid
 flowchart TD
     subgraph Telegram["Telegram — telegram.py"]
-        POLL["Long Poll\ngetUpdates"]
-        PARSE["Parse Message\ntext + sender + attachments"]
-        DL["Download Media\n/tmp/lucyd-telegram/"]
-        SEND_TG["send() / send_voice()\nBot API"]
+        POLL["Long Poll<br/>getUpdates"]
+        PARSE["Parse Message<br/>text + sender + attachments"]
+        DL["Download Media<br/>/tmp/lucyd-telegram/"]
+        SEND_TG["send() / send_voice()<br/>Bot API"]
     end
 
     subgraph HTTP["HTTP API — http_api.py"]
-        CHAT["/api/v1/chat\nPOST → sync response"]
-        NOTIFY["/api/v1/notify\nPOST → 202 accepted"]
-        STATUS["/api/v1/status\nGET → health"]
-        SESSIONS_EP["/api/v1/sessions\nGET → list"]
-        COST_EP["/api/v1/cost\nGET → breakdown"]
-        AUTH["Bearer Token Auth\nhmac.compare_digest()"]
-        RATE["Rate Limiter\nper-sender window"]
+        CHAT["/api/v1/chat<br/>POST → sync response"]
+        NOTIFY["/api/v1/notify<br/>POST → 202 accepted"]
+        STATUS["/api/v1/status<br/>GET → health"]
+        SESSIONS_EP["/api/v1/sessions<br/>GET → list"]
+        COST_EP["/api/v1/cost<br/>GET → breakdown"]
+        AUTH["Bearer Token Auth<br/>hmac.compare_digest()"]
+        RATE["Rate Limiter<br/>per-sender window"]
     end
 
     subgraph CLI["FIFO — lucyd.py:73"]
-        PIPE["control.pipe\nJSON lines"]
-        SEND_CLI["lucyd-send\nbin/lucyd-send"]
+        PIPE["control.pipe<br/>JSON lines"]
+        SEND_CLI["lucyd-send<br/>bin/lucyd-send"]
     end
 
-    Q["asyncio.Queue\nlucyd.py:286\nmaxsize=1000"]
+    Q["asyncio.Queue<br/>lucyd.py:286<br/>maxsize=1000"]
 
     POLL --> PARSE --> DL --> Q
     SEND_CLI --> PIPE --> Q
     CHAT --> AUTH --> RATE --> Q
     NOTIFY --> AUTH --> RATE --> Q
 
-    Q --> LOOP["_message_loop()\nlucyd.py:1361"]
-    LOOP --> PROCESS["_process_message()\nlucyd.py:616"]
+    Q --> LOOP["_message_loop()<br/>lucyd.py:1361"]
+    LOOP --> PROCESS["_process_message()<br/>lucyd.py:616"]
 
     PROCESS -->|telegram| SEND_TG
-    PROCESS -->|http| FUTURE["Resolve Future\n→ HTTP response"]
-    PROCESS -->|system| SUPPRESS["No channel delivery\n(silent processing)"]
+    PROCESS -->|http| FUTURE["Resolve Future<br/>→ HTTP response"]
+    PROCESS -->|system| SUPPRESS["No channel delivery<br/>(silent processing)"]
 ```
