@@ -78,6 +78,15 @@ cat lucyd.toml.example
 ```
 For each `config.py` property: is the default value documented in `lucyd.toml.example`? If a property exists in `config.py` but the setting is missing from the example file, operators won't know it exists. If the example file states a value that differs from the `config.py` default, the documentation is misleading.
 
+### P-024: HTTP endpoint documentation completeness
+For each route in `channels/http_api.py`:
+1. Request format documented? (method, body/query fields, types)
+2. Response JSON schema documented? (all fields, types)
+3. All status codes documented? (success + errors)
+4. Rate limit group documented? (standard vs read-only)
+
+Cross-reference `docs/operations.md` Endpoints section. Every route must have all four items documented. One-sentence descriptions without response schemas are a finding.
+
 ### P-021: Provider split in documentation
 ```bash
 # Check for provider-specific values in lucyd.toml.example

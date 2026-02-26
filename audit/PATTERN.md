@@ -554,6 +554,21 @@ Contract test that verifies CLI query functions and HTTP callback functions retu
 
 ---
 
+## P-024: HTTP endpoint documentation incomplete
+
+**Origin:** Audit cycle 9 post-audit review — Stage 7 passed despite 6/8 endpoints missing response schemas, all endpoints missing error code documentation, and 3 new endpoints having only one-sentence descriptions.
+
+**Class:** API documentation that lists an endpoint's existence and purpose but omits the response JSON schema, error status codes, or rate limit classification. Operators integrating via HTTP need all three.
+
+**Check (Stage 7):**
+For each route in `channels/http_api.py`, verify `docs/operations.md` documents:
+1. Request fields with types
+2. Response JSON schema with field descriptions
+3. All status codes and when they fire
+4. Which rate limit group applies
+
+---
+
 ## Pattern Index by Stage
 
 | Stage | Applicable Patterns |
@@ -564,7 +579,7 @@ Contract test that verifies CLI query functions and HTTP callback functions retu
 | 4. Orchestrator Testing | P-017, P-023 |
 | 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order) |
 | 6. Security Audit | P-003, P-009, P-012, P-018 (resource exhaustion) |
-| 7. Documentation Audit | P-007, P-008, P-011, P-020 (config-to-default parity), P-021 (provider split) |
+| 7. Documentation Audit | P-007, P-008, P-011, P-020 (config-to-default parity), P-021 (provider split), P-024 |
 | Aggregate Report | P-019 (gap verification) |
 
 ---
@@ -599,3 +614,4 @@ Contract test that verifies CLI query functions and HTTP callback functions retu
 | 2026-02-25 | P-021 | Added from production hardening retrospective (OpenAI/Anthropic/ElevenLabs defaults in framework code) |
 | 2026-02-26 | P-022 | Added from Cycle 9 interface parity review (channel-specific config paths in framework code) |
 | 2026-02-26 | P-023 | Added from Cycle 9 interface parity review (CLI/HTTP API return different data schemas) |
+| 2026-02-26 | P-024 | Added from Cycle 9 post-audit review (HTTP endpoints missing response schemas, error codes, rate limits) |

@@ -152,6 +152,31 @@ port = 8100
 
 Token is loaded from the `LUCYD_HTTP_TOKEN` environment variable (set in `.env` in the same directory as `lucyd.toml`).
 
+### Shared Behaviors
+
+**Agent identity:** When `agent_name` is configured, all endpoint responses include an `"agent"` field in the JSON body and an `X-Lucyd-Agent` response header. Infrastructure error responses (auth, rate limit, body size) do not include these.
+
+**Authentication:** Bearer token from `LUCYD_HTTP_TOKEN` env var. All endpoints except `/api/v1/status` require auth. Deny-by-default — no token configured means 503 on all protected endpoints.
+
+**Body size:** Request bodies capped at `[http] max_body_bytes` (default: 10 MiB). Oversized requests get HTTP 413 from aiohttp.
+
+**Rate limit groups:**
+
+| Group | Limit | Endpoints |
+|---|---|---|
+| Read-only | `status_rate_limit` (default 60) per `rate_window` (default 60s) | `/status`, `/sessions`, `/cost`, `/monitor`, `/sessions/{id}/history` |
+| Standard | `rate_limit` (default 30) per `rate_window` (default 60s) | `/chat`, `/notify`, `/sessions/reset` |
+
+Rate limit key is client IP.
+
+**Infrastructure error responses** (no agent identity injection):
+
+| Status | Body | Condition |
+|---|---|---|
+| 401 | `{"error": "unauthorized"}` | Missing or invalid Bearer token |
+| 429 | `{"error": "rate limit exceeded"}` | Rate limit exceeded for client IP |
+| 503 | `{"error": "No auth token configured"}` | No `LUCYD_HTTP_TOKEN` in environment |
+
 ### Endpoints
 
 ```bash
@@ -175,9 +200,28 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8100/api/v1/sessions
 
 # Cost (query token costs by period)
 curl -H "Authorization: Bearer $TOKEN" "http://localhost:8100/api/v1/cost?period=today"
+
+# Monitor (live agentic loop state)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8100/api/v1/monitor
+
+# Reset sessions
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"target": "all"}' \
+  http://localhost:8100/api/v1/sessions/reset
+
+# Session history
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8100/api/v1/sessions/abc-123/history?full=true"
 ```
 
-**`/api/v1/chat`** fields:
+---
+
+#### `POST /api/v1/chat`
+
+Synchronous — sends a message and waits for the agent to respond.
+
+**Request fields:**
+
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `message` | yes | — | Message text |
@@ -185,7 +229,47 @@ curl -H "Authorization: Bearer $TOKEN" "http://localhost:8100/api/v1/cost?period
 | `context` | no | — | Freeform label prepended as `[context]` (for debugging) |
 | `tier` | no | `"full"` | Context tier override |
 
-**`/api/v1/notify`** fields:
+**Response (200 — success):**
+
+```json
+{
+  "reply": "agent response text",
+  "session_id": "uuid-string",
+  "tokens": {"input": 1500, "output": 200}
+}
+```
+
+When the reply matches a configured `silent_token`, the response includes `"silent": true`. Non-silent replies omit the field entirely.
+
+**Response (200 — agentic loop error):**
+
+```json
+{
+  "error": "exception message",
+  "session_id": "uuid-string"
+}
+```
+
+Provider failures during the agentic loop return HTTP 200 with an `error` field instead of `reply`. No `tokens` field.
+
+**Error responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| 400 | `{"error": "invalid JSON body"}` | Malformed JSON |
+| 400 | `{"error": "\"message\" field is required"}` | Missing `message` field |
+| 408 | `{"error": "processing timeout"}` | Exceeds `agent_timeout_seconds` |
+
+**Rate limit group:** Standard
+
+---
+
+#### `POST /api/v1/notify`
+
+Fire-and-forget — queues the message and returns immediately. The agent processes it asynchronously.
+
+**Request fields:**
+
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `message` | yes | — | Natural language message for the LLM |
@@ -194,15 +278,298 @@ curl -H "Authorization: Bearer $TOKEN" "http://localhost:8100/api/v1/cost?period
 | `data` | no | — | Arbitrary JSON payload (passed through as `notify_meta` to webhook, not in LLM text) |
 | `sender` | no | `"default"` | Session key (prefixed with `http-`) |
 
-**`/api/v1/sessions`** — Returns list of active sessions with context %, cost, log size, and date range. Same data as `lucyd-send --sessions`.
+**Response (202 — accepted):**
 
-**`/api/v1/cost`** — Query cost breakdown by period. Query parameter: `period` (`today` | `week` | `all`, default: `today`). Same data as `lucyd-send --cost`.
+```json
+{
+  "accepted": true,
+  "queued_at": "2026-02-26T14:30:00Z"
+}
+```
 
-**`/api/v1/monitor`** — Returns live agentic loop state (model, contact, turn, state). Same data as `lucyd-send --monitor`. Read-only rate limit.
+`queued_at` is UTC, second precision, Z suffix.
 
-**`/api/v1/sessions/reset`** — POST with `{"target": "all"|"user"|"<contact>"|"<uuid>"}`. Resets target sessions (archives, never deletes). Same logic as `lucyd-send --reset`.
+**Error responses:**
 
-**`/api/v1/sessions/{session_id}/history`** — Returns chronological event history for a session. Query parameter: `full=true` includes tool calls and system events. Same data as `lucyd-send --history`.
+| Status | Body | Condition |
+|---|---|---|
+| 400 | `{"error": "invalid JSON body"}` | Malformed JSON |
+| 400 | `{"error": "\"message\" field is required"}` | Missing `message` field |
+
+**Rate limit group:** Standard
+
+---
+
+#### `GET /api/v1/status`
+
+Health check. Auth-exempt — always accessible without a Bearer token.
+
+**Response (200):**
+
+```json
+{
+  "status": "ok",
+  "pid": 12345,
+  "uptime_seconds": 3600,
+  "channel": "telegram",
+  "models": ["claude-sonnet-4-6"],
+  "active_sessions": 3,
+  "today_cost": 4.2150,
+  "queue_depth": 0
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | Always `"ok"` |
+| `pid` | int | Daemon process ID |
+| `uptime_seconds` | int | Seconds since daemon start |
+| `channel` | string | Active channel type |
+| `models` | string[] | Loaded model names |
+| `active_sessions` | int | Number of tracked sessions |
+| `today_cost` | float | Today's cost in USD (4 decimal places), `0.0` if cost DB unavailable |
+| `queue_depth` | int | Messages waiting in queue |
+
+**Rate limit group:** Read-only
+
+---
+
+#### `GET /api/v1/sessions`
+
+List active sessions with context usage, cost, and log metadata. Same data as `lucyd-send --sessions`.
+
+**Response (200):**
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "uuid-string",
+      "contact": "Nicolas",
+      "created_at": "2026-02-26T08:00:00",
+      "model": "claude-sonnet-4-6",
+      "message_count": 42,
+      "compaction_count": 1,
+      "context_tokens": 15000,
+      "context_pct": 7,
+      "cost_usd": 0.045000,
+      "log_files": 3,
+      "log_bytes": 128000
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `session_id` | string | Session UUID |
+| `contact` | string | Sender name |
+| `created_at` | string | Session creation timestamp |
+| `model` | string | Current model (only present for live/in-memory sessions) |
+| `message_count` | int | Total messages in session |
+| `compaction_count` | int | Number of compactions performed |
+| `context_tokens` | int | Current context token usage |
+| `context_pct` | int | Context usage as percentage of model max (0–100) |
+| `cost_usd` | float | Session cost in USD (6 decimal places), `0.0` if cost DB unavailable |
+| `log_files` | int | Number of JSONL log files |
+| `log_bytes` | int | Total log file size in bytes |
+
+**Rate limit group:** Read-only
+
+---
+
+#### `GET /api/v1/cost`
+
+Token cost breakdown by period. Same data as `lucyd-send --cost`.
+
+**Query parameter:** `period` — `today` (default), `week`, or `all`.
+
+**Response (200):**
+
+```json
+{
+  "period": "today",
+  "total_cost": 4.2150,
+  "models": [
+    {
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 50000,
+      "output_tokens": 12000,
+      "cache_read_tokens": 30000,
+      "cache_write_tokens": 5000,
+      "cost_usd": 4.215000
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `period` | string | Requested period |
+| `total_cost` | float | Total cost in USD (4 decimal places) |
+| `models` | object[] | Per-model breakdown |
+| `models[].model` | string | Model name |
+| `models[].input_tokens` | int | Input tokens consumed |
+| `models[].output_tokens` | int | Output tokens consumed |
+| `models[].cache_read_tokens` | int | Cache read tokens |
+| `models[].cache_write_tokens` | int | Cache write tokens |
+| `models[].cost_usd` | float | Per-model cost in USD (6 decimal places) |
+
+Degrades to `{"period": "...", "total_cost": 0.0, "models": []}` if cost DB is unavailable.
+
+**Error responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| 400 | `{"error": "period must be 'today', 'week', or 'all'"}` | Invalid period value |
+
+**Rate limit group:** Read-only
+
+---
+
+#### `GET /api/v1/monitor`
+
+Live agentic loop state. Same data as `lucyd-send --monitor`. Returns the contents of `monitor.json` as written by the daemon during message processing.
+
+**Response (200 — active processing):**
+
+```json
+{
+  "state": "thinking",
+  "contact": "Nicolas",
+  "session_id": "uuid-string",
+  "model": "claude-sonnet-4-6",
+  "turn": 3,
+  "message_started_at": "2026-02-26T14:30:00Z",
+  "turn_started_at": "2026-02-26T14:30:12Z",
+  "tools_in_flight": ["memory_search"],
+  "turns": [
+    {
+      "duration_ms": 3200,
+      "input_tokens": 15000,
+      "output_tokens": 156,
+      "cache_read_tokens": 10000,
+      "cache_write_tokens": 2000,
+      "stop_reason": "tool_use",
+      "tools": ["memory_search"]
+    }
+  ],
+  "updated_at": "2026-02-26T14:30:15Z"
+}
+```
+
+**Response (200 — file missing or unparseable):**
+
+```json
+{"state": "unknown"}
+```
+
+Returns `monitor.json` verbatim. No guaranteed schema beyond the `{"state": "unknown"}` fallback.
+
+**Rate limit group:** Read-only
+
+---
+
+#### `POST /api/v1/sessions/reset`
+
+Reset sessions by target. Archives session state and logs — never deletes. Same logic as `lucyd-send --reset`.
+
+**Request fields:**
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `target` | no | `"all"` | Reset target: `"all"`, `"user"`, a contact name, or a session UUID |
+
+**Response (200 — success):**
+
+```json
+{"reset": true, "target": "all", "count": 3}
+```
+
+```json
+{"reset": true, "target": "Nicolas", "type": "contact"}
+```
+
+```json
+{"reset": true, "target": "abc-uuid", "type": "session_id"}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `reset` | bool | Whether the reset succeeded |
+| `target` | string | The target that was reset |
+| `count` | int | Number of sessions reset (only for `"all"` target) |
+| `type` | string | `"session_id"` or `"contact"` (only for specific targets) |
+
+**Response (200 — no match):**
+
+```json
+{"reset": false, "reason": "no session found for: <contact>"}
+```
+
+```json
+{"reset": false, "reason": "no session found for ID: <uuid>"}
+```
+
+```json
+{"reset": false, "reason": "no user session found"}
+```
+
+**Error responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| 400 | `{"error": "invalid JSON body"}` | Malformed JSON |
+| 400 | `{"error": "\"target\" must be a non-empty string"}` | Empty or non-string target |
+
+**Rate limit group:** Standard
+
+---
+
+#### `GET /api/v1/sessions/{session_id}/history`
+
+Chronological event history for a session. Same data as `lucyd-send --history`.
+
+**Query parameter:** `full` — `true`, `1`, or `yes` to include all JSONL events. Default: messages only.
+
+**Response (200 — messages only, `full=false`):**
+
+```json
+{
+  "session_id": "uuid-string",
+  "events": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "hello",
+      "from": "Nicolas",
+      "timestamp": 1740580200.0
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "text": "hey there",
+      "timestamp": 1740580205.0
+    }
+  ]
+}
+```
+
+**Response (200 — full events, `full=true`):**
+
+Returns all raw JSONL event objects as-is (tool calls, tool results, system events, compaction events, etc.). No field transformation.
+
+**Response (200 — session not found):**
+
+```json
+{"session_id": "uuid-string", "events": []}
+```
+
+Returns empty events when no log files exist for the session ID. Not an error.
+
+Events are deduplicated by `timestamp` across active and archive log files, sorted chronologically ascending.
+
+**Rate limit group:** Read-only
 
 ### Behavior
 
