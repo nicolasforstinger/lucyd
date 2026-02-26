@@ -91,7 +91,7 @@ How the system prompt is assembled from workspace files with cache tiers.
 
 ```mermaid
 flowchart LR
-    subgraph Stable["Stable Tier — cached @ $0.30/Mtok"]
+    subgraph Stable["Stable Tier — cached"]
         SOUL["SOUL.md"]
         AGENTS["AGENTS.md"]
         TOOLS_MD["TOOLS.md"]
@@ -100,13 +100,13 @@ flowchart LR
         TOOL_DESC["Tool Descriptions<br/>name + one-liner"]
     end
 
-    subgraph Semi["Semi-Stable Tier — cached @ $0.30/Mtok"]
+    subgraph Semi["Semi-Stable Tier — cached"]
         MEMORY_MD["MEMORY.md"]
         SKILLS["Always-on Skill Bodies"]
         SKILL_IDX["Skill Index"]
     end
 
-    subgraph Dynamic["Dynamic Tier — uncached @ $3.00/Mtok"]
+    subgraph Dynamic["Dynamic Tier — uncached"]
         TIME["Date / Time / Sender"]
         SOURCE["Source + Tier Framing"]
         RECALL["Memory Recall Block"]
