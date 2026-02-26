@@ -199,6 +199,7 @@ flowchart LR
         A_SYS["System: list of dicts<br/>+ cache_control"]
         A_TOOLS["Tool schemas"]
         A_API["complete()<br/>messages.create()"]
+        A_PARSE["Parse response<br/>stop_reason, thinking,<br/>tool_calls, usage"]
     end
 
     subgraph OpenAI["OpenAICompatProvider<br/>openai_compat.py"]
@@ -206,6 +207,7 @@ flowchart LR
         O_SYS["System: single string"]
         O_TOOLS["Tool schemas"]
         O_API["complete()<br/>chat.completions.create()"]
+        O_PARSE["Parse response<br/>finish_reason, function_call,<br/>tool_calls, usage"]
     end
 
     RESP["LLMResponse<br/>text + tool_calls + usage"]
@@ -221,8 +223,8 @@ flowchart LR
     FT --> A_TOOLS --> A_API
     FT --> O_TOOLS --> O_API
 
-    A_API --> RESP
-    O_API --> RESP
+    A_API --> A_PARSE --> RESP
+    O_API --> O_PARSE --> RESP
 ```
 
 ---
