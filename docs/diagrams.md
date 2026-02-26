@@ -299,7 +299,7 @@ flowchart TD
         ERR["Error: tool not available"]
     end
 
-    REG --> Configure
+    Configure --> REG
 
     CALL --> LOOKUP
     LOOKUP -->|yes| EXEC --> TRUNC --> RESULT
