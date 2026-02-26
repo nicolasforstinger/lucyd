@@ -68,6 +68,26 @@ grep -ri 'opus\|sonnet\|haiku' docs/ README.md
 ```
 Verify that every model reference in documentation matches the actual model string in the config files. Check parenthetical labels like "(Opus)" or "(Sonnet)" against the actual model string. Config files are ground truth.
 
+### P-020: Config-to-default parity
+```bash
+# Extract all config.py property defaults
+grep -A2 'def [a-z_]*.*self.*:' config.py | grep 'default='
+
+# Compare against lucyd.toml.example values
+cat lucyd.toml.example
+```
+For each `config.py` property: is the default value documented in `lucyd.toml.example`? If a property exists in `config.py` but the setting is missing from the example file, operators won't know it exists. If the example file states a value that differs from the `config.py` default, the documentation is misleading.
+
+### P-021: Provider split in documentation
+```bash
+# Check for provider-specific values in lucyd.toml.example
+grep -in 'openai\|anthropic\|elevenlabs\|eleven_\|api\.openai' lucyd.toml.example
+
+# Check provider files have their own settings
+cat providers.d/*.toml.example
+```
+Verify that `lucyd.toml.example` contains only framework settings (provider-agnostic). Provider-specific values (model names, API URLs, provider capabilities like `supports_vision`) belong in `providers.d/*.toml.example`. If a provider-specific value appears in `lucyd.toml.example`, it should be clearly marked as deployment-specific (e.g., TTS api_url with a comment that it's provider-dependent).
+
 ---
 
 ## Phase 1: Source Inventory

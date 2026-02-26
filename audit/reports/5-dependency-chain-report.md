@@ -17,7 +17,7 @@
 |----------|-----------|----------|---------------|--------|
 | `memory.py` search/recall | `main.sqlite` (chunks, chunks_fts) | `bin/lucyd-index` (cron :10) | Yes | HEALTHY |
 | `memory.py` embeddings | `main.sqlite` (embedding_cache) | `bin/lucyd-index` (cron :10) | Yes | HEALTHY |
-| `memory_schema.py` | `main.sqlite` (all 10 tables) | `ensure_schema()` in daemon + indexer | Yes | HEALTHY |
+| `memory_schema.py` | `main.sqlite` (all 10 tables incl. FTS5) | `ensure_schema()` in daemon + indexer | Yes | HEALTHY |
 | `session.py` load | `sessions/*.jsonl` + `.state.json` | `session.py` save (daemon) | Yes | HEALTHY |
 | `context.py` build | `workspace/*.md` | Manual + git auto-commit | N/A (manual) | HEALTHY |
 | `config.py` load | `lucyd.toml`, `providers.d/*.toml` | Manual (static) | N/A | HEALTHY |

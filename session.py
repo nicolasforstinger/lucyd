@@ -21,6 +21,12 @@ log = logging.getLogger(__name__)
 AUDIT_TRUNCATION_LIMIT = 500
 
 
+def set_audit_truncation(limit: int) -> None:
+    """Set audit truncation limit from config."""
+    global AUDIT_TRUNCATION_LIMIT
+    AUDIT_TRUNCATION_LIMIT = limit
+
+
 def _text_from_content(content: Any) -> str:
     """Extract text from string or content block list.
 
@@ -378,7 +384,8 @@ class SessionManager:
                     jsonl_files = sorted(archive.glob(f"{session_id}.*.jsonl"))
                     for jf in jsonl_files[:1]:
                         try:
-                            first_line = jf.open("r", encoding="utf-8").readline()
+                            with jf.open("r", encoding="utf-8") as fh:
+                                first_line = fh.readline()
                             event = json.loads(first_line)
                             file_contact = event.get("contact", "")
                         except Exception:  # noqa: S110 — session discovery; skip unreadable JSONL files

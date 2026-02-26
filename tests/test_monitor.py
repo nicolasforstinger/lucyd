@@ -139,6 +139,8 @@ def _make_daemon_for_monitor(tmp_path, monitor_dir):
     daemon.config.compaction_threshold = 150000
     daemon.config.always_on_skills = []
     daemon.config.error_message = "Error"
+    daemon.config.message_retries = 0
+    daemon.config.message_retry_base_delay = 0.01
     daemon.config.raw = MagicMock(return_value=0.0)
 
     monitor_path = monitor_dir / "monitor.json"

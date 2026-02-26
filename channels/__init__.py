@@ -66,5 +66,9 @@ def create_channel(config: Config) -> Channel:
             chunk_limit=tg.get("text_chunk_limit", 4000),
             contacts=tg.get("contacts", {}),
             download_dir=tg.get("download_dir", "/tmp/lucyd-telegram"),  # noqa: S108 — config default; overridden by lucyd.toml
+            reconnect_initial=config.telegram_reconnect_initial,
+            reconnect_max=config.telegram_reconnect_max,
+            reconnect_factor=config.telegram_reconnect_factor,
+            reconnect_jitter=config.telegram_reconnect_jitter,
         )
     raise ValueError(f"Unknown channel type: {ch_type!r}")

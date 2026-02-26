@@ -996,6 +996,7 @@ class TestContentType:
             assert resp.status in (400, 500)
 
     @pytest.mark.asyncio
+    @pytest.mark.filterwarnings("ignore::ResourceWarning")
     async def test_oversized_body_rejected(self, queue, auth_headers):
         """POST with body > max_body_bytes gets 413 Request Entity Too Large."""
         api = HTTPApi(
@@ -1006,6 +1007,7 @@ class TestContentType:
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             # Build valid JSON that exceeds 1 MiB
+            # (aiohttp test client warns about large byte payloads — suppressed)
             oversized = {"message": "x" * (1_048_576 + 1)}
             resp = await client.post(
                 "/api/v1/chat",
@@ -1041,6 +1043,53 @@ class TestLifecycle:
         await api.start()
         await api.stop()
         await api.stop()  # Second stop should be safe
+
+    @pytest.mark.asyncio
+    async def test_stop_cleans_download_dir(self, queue, tmp_path):
+        """P-016: stop() cleans transient attachment files from download dir."""
+        dl_dir = tmp_path / "http-downloads"
+        dl_dir.mkdir()
+        # Create some fake attachment files
+        (dl_dir / "12345_photo.jpg").write_bytes(b"fake image")
+        (dl_dir / "67890_doc.pdf").write_bytes(b"fake pdf")
+
+        api = HTTPApi(
+            queue=queue, host="127.0.0.1", port=0,
+            auth_token="", agent_timeout=5.0,
+            download_dir=str(dl_dir),
+        )
+        assert len(list(dl_dir.iterdir())) == 2
+        await api.stop()
+        assert list(dl_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_stop_handles_missing_download_dir(self, queue, tmp_path):
+        """stop() doesn't crash if download dir doesn't exist."""
+        api = HTTPApi(
+            queue=queue, host="127.0.0.1", port=0,
+            auth_token="", agent_timeout=5.0,
+            download_dir=str(tmp_path / "nonexistent"),
+        )
+        await api.stop()  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_stop_cleans_files_not_subdirs(self, queue, tmp_path):
+        """stop() only cleans files, not subdirectories."""
+        dl_dir = tmp_path / "http-downloads"
+        dl_dir.mkdir()
+        (dl_dir / "file.jpg").write_bytes(b"data")
+        subdir = dl_dir / "subdir"
+        subdir.mkdir()
+
+        api = HTTPApi(
+            queue=queue, host="127.0.0.1", port=0,
+            auth_token="", agent_timeout=5.0,
+            download_dir=str(dl_dir),
+        )
+        await api.stop()
+        # File cleaned, subdir preserved
+        assert not (dl_dir / "file.jpg").exists()
+        assert subdir.exists()
 
 
 # ─── Route / Method Tests ────────────────────────────────────────

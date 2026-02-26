@@ -39,9 +39,10 @@ class MemoryInterface:
         self,
         db_path: str,
         embedding_api_key: str = "",
-        embedding_model: str = "text-embedding-3-small",
-        embedding_base_url: str = "https://api.openai.com/v1",
-        embedding_provider: str = "openai",
+        embedding_model: str = "",
+        embedding_base_url: str = "",
+        embedding_provider: str = "",
+        embedding_timeout: int = 15,
         top_k: int = 10,
     ):
         self.db_path = db_path
@@ -49,6 +50,7 @@ class MemoryInterface:
         self.model = embedding_model
         self.base_url = embedding_base_url.rstrip("/")
         self.provider = embedding_provider
+        self.embedding_timeout = embedding_timeout
         self.top_k = top_k
 
         if not Path(db_path).exists():
@@ -165,6 +167,9 @@ class MemoryInterface:
 
     async def _embed(self, text: str) -> list[float]:
         """Get embedding via OpenAI-compatible API."""
+        if not self.base_url or not self.model:
+            return []
+
         # Check cache first
         cached = await self._get_cached_embedding(text)
         if cached:
@@ -182,7 +187,7 @@ class MemoryInterface:
         })
 
         try:
-            resp = await asyncio.to_thread(urllib.request.urlopen, req, timeout=15)
+            resp = await asyncio.to_thread(urllib.request.urlopen, req, timeout=self.embedding_timeout)
             data = json.loads(resp.read().decode("utf-8"))
             embedding = data["data"][0]["embedding"]
 
@@ -486,9 +491,10 @@ async def recall(
             ))
 
     # Stage 2: Episode search
+    max_ep = getattr(config, "recall_max_episodes_at_start", 3)
     keywords = [w for w in query.lower().split() if len(w) > 3]
     if keywords:
-        episodes = search_episodes(keywords, conn, max_results=3)
+        episodes = search_episodes(keywords, conn, max_results=max_ep)
         if episodes:
             lines = [_format_episode(e, show_tone) for e in episodes]
             text = "\n".join(lines)

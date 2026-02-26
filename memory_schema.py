@@ -29,6 +29,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     Enables WAL mode for concurrent read/write performance.
     """
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=1000")
 
     conn.executescript("""
         -- ── Unstructured (v1): indexer + search ──────────────

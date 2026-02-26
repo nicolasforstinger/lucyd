@@ -147,20 +147,29 @@ Verify that tests which add environment variables place both matching and non-ma
 ```bash
 # Find duplicate class names within test files
 for f in tests/test_*.py; do
-  grep -n '^class ' "$f" | awk -F'[: (]' '{print $2}' | sort | uniq -d | while read cls; do
+  grep -oP '^class \K[A-Za-z_]+' "$f" | sort | uniq -d | while read cls; do
     echo "DUPLICATE: $cls in $f"
   done
 done
 ```
-Any output is a finding — a test is being silently dropped.
+Any output is a finding — a test class is being silently shadowed.
 
-Also check function names:
-```bash
-for f in tests/test_*.py; do
-  grep -n '^\s*def test_' "$f" | awk -F'def |(' '{print $2}' | sort | uniq -d | while read fn; do
-    echo "DUPLICATE: $fn in $f"
-  done
-done
+Also check for same-method shadowing within a class (the real danger):
+```python
+python3 -c "
+import ast
+for fname in __import__('glob').glob('tests/test_*.py'):
+    tree = ast.parse(open(fname).read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            methods = [n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            seen = {}
+            for m in methods:
+                if m in seen:
+                    print(f'SHADOW: {node.name}.{m}() in {fname}')
+                else:
+                    seen[m] = True
+"
 ```
 
 ---
@@ -452,17 +461,73 @@ This check is mandatory in `0-FULL-AUDIT.md` Post-Audit: Known Gaps Review (step
 
 ---
 
+## P-020: Magic numbers / hardcoded runtime values
+
+**Origin:** Production hardening 2026-02-25 — systematic audit found 18 hardcoded magic numbers across the framework: timeout values (`timeout=15`, `timeout=60`), rate limits (`max_requests=30`), log rotation params (`maxBytes=10*1024*1024, backupCount=3`), JPEG quality steps (`[85, 60, 40]`), scheduling limits (`_MAX_SCHEDULED = 50`), context token assumptions (`MAX_CONTEXT_TOKENS = 200_000`), chunk sizes, read limits, reconnect backoff params. All were reasonable values but none were configurable by operators. A local deployment needing different timeouts, limits, or quality settings required source code changes.
+
+**Class:** Any numeric literal, URL string, or behavioral constant in production source that controls runtime behavior and could reasonably differ between deployments. These should be config-driven (`config.py` property → `configure()` param → module global) with sensible defaults.
+
+**Check (Stage 1):**
+```bash
+# Find numeric literals in function signatures (timeout, limit, max, etc.)
+grep -rn 'timeout\s*=\s*[0-9]\|limit\s*=\s*[0-9]\|max_\w*\s*=\s*[0-9]' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v 'config\.'
+
+# Find module-level numeric constants (ALL_CAPS = number)
+grep -rn '^[A-Z_]*\s*=\s*[0-9]' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants
+
+# Find hardcoded URL strings in production code
+grep -rn 'https\?://.*\.\(com\|io\|org\|net\)' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v '#'
+```
+For each result: is this value deployment-specific (could different operators need different values)? If yes, it should be read from config with a sensible default. Mathematical constants (e.g., `1000` for ms-to-seconds), protocol constants (HTTP status codes), and framework-internal invariants that no operator would change are exempt.
+
+**Check (Stage 7):**
+For each configurable value documented in `docs/configuration.md` or `lucyd.toml.example`, verify the default matches the `config.py` property default. If a new config property was added without updating the example file, that's a documentation gap — the operator doesn't know the setting exists.
+
+---
+
+## P-021: Provider-specific defaults in framework code
+
+**Origin:** Production hardening 2026-02-25 — framework code contained OpenAI-specific defaults (`text-embedding-3-small`, `https://api.openai.com/...`), Anthropic-specific assumptions (`MAX_CONTEXT_TOKENS = 200_000`, `supports_vision` defaulting to `True`), and ElevenLabs-specific URLs hardcoded in source. A deployment using only local models (Ollama + whisper.cpp) would inherit cloud-provider defaults, requiring manual overrides even if those providers aren't used. Provider-specific config belongs in provider files (`providers.d/*.toml`) or explicit TOML settings, not in framework defaults.
+
+**Class:** Any default value in framework source code (config.py defaults, function parameter defaults, module constants) that assumes a specific provider (OpenAI, Anthropic, ElevenLabs, etc.). Framework defaults must be provider-agnostic — empty strings, `False`, or `0` for provider-specific capabilities.
+
+**Check (Stage 1):**
+```bash
+# OpenAI-specific defaults
+grep -rn 'openai\|text-embedding\|whisper-1\|gpt-' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v providers/ | grep -v '#'
+
+# Anthropic-specific defaults
+grep -rn '200.000\|200000\|anthropic\|claude-' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v providers/ | grep -v '#'
+
+# ElevenLabs-specific defaults
+grep -rn 'elevenlabs\|eleven_' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v '#'
+```
+For each result: is this a provider-specific value used as a framework default (in a function signature, `config.py` property, or module constant)? Provider-specific values are allowed in:
+- Provider files (`providers.d/*.toml`, `providers/*.py`)
+- Provider-specific `if provider == "..."` branches (runtime dispatch, not defaults)
+- TOML config (operator's explicit choice)
+
+They are NOT allowed as:
+- `config.py` property defaults
+- Function parameter defaults in tools, channels, or core modules
+- Module-level constants in framework code
+
+**Check (Stage 7):**
+Verify that `lucyd.toml.example` and `providers.d/*.toml.example` make the provider split clear: framework settings in `lucyd.toml`, provider-specific settings in `providers.d/*.toml`. If a provider-specific value appears in `lucyd.toml.example` without being clearly labeled as deployment-specific, flag it.
+
+---
+
 ## Pattern Index by Stage
 
 | Stage | Applicable Patterns |
 |-------|-------------------|
-| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018 |
+| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021 |
 | 2. Test Suite | P-005 (verify count), P-006 (fixture check), P-013, P-016 (ResourceWarning trigger) |
 | 3. Mutation Testing | P-004, P-013, P-015 (parity check) |
 | 4. Orchestrator Testing | P-017 |
 | 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order) |
 | 6. Security Audit | P-003, P-009, P-012, P-018 (resource exhaustion) |
-| 7. Documentation Audit | P-007, P-008, P-011 |
+| 7. Documentation Audit | P-007, P-008, P-011, P-020 (config-to-default parity), P-021 (provider split) |
 | Aggregate Report | P-019 (gap verification) |
 
 ---
@@ -493,3 +558,5 @@ This check is mandatory in `0-FULL-AUDIT.md` Post-Audit: Known Gaps Review (step
 | 2026-02-22 | P-017 | Added from production hardening retrospective (compaction state persisted after event log) |
 | 2026-02-22 | P-018 | Added from production hardening retrospective (_last_inbound_ts unbounded dict) |
 | 2026-02-22 | — | Added Retrospective Protocol, Known Gaps Lifecycle, Pattern Retirement rules |
+| 2026-02-25 | P-020 | Added from production hardening retrospective (18 magic numbers across framework) |
+| 2026-02-25 | P-021 | Added from production hardening retrospective (OpenAI/Anthropic/ElevenLabs defaults in framework code) |

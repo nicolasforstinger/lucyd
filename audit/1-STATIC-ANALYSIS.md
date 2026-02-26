@@ -100,6 +100,32 @@ grep -rn 'noqa: S' --include='*.py' | grep -v __pycache__
 ```
 For each suppression: read the justification comment, then read the surrounding code. Is the justification still accurate? Has the data flow changed?
 
+### P-020: Magic numbers / hardcoded runtime values
+```bash
+# Numeric literals in function signatures (timeout, limit, max, etc.)
+grep -rn 'timeout\s*=\s*[0-9]\|limit\s*=\s*[0-9]\|max_\w*\s*=\s*[0-9]' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v 'config\.'
+
+# Module-level numeric constants (ALL_CAPS = number)
+grep -rn '^[A-Z_]*\s*=\s*[0-9]' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants
+
+# Hardcoded URLs in production code
+grep -rn 'https\?://.*\.\(com\|io\|org\|net\)' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v '#'
+```
+For each result: could a different deployment need a different value? If yes, it should be config-driven. Exempt: mathematical constants, protocol constants, framework-internal invariants.
+
+### P-021: Provider-specific defaults in framework code
+```bash
+# OpenAI-specific defaults (outside providers/)
+grep -rn 'openai\|text-embedding\|whisper-1\|gpt-' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v providers/ | grep -v '#'
+
+# Anthropic-specific defaults (outside providers/)
+grep -rn '200.000\|200000\|anthropic\|claude-' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v providers/ | grep -v '#'
+
+# ElevenLabs-specific defaults (outside providers/)
+grep -rn 'elevenlabs\|eleven_' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v mutants | grep -v '#'
+```
+For each result: is this a provider-specific value used as a framework default? Allowed in provider files and runtime dispatch branches. NOT allowed as config.py property defaults, function parameter defaults, or module constants in framework code.
+
 ---
 
 ## Phase 1: Discovery — Scope the Codebase

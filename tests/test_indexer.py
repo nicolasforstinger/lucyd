@@ -518,7 +518,8 @@ class TestEmbedBatch:
                 return json.dumps(fake_response).encode()
 
         with patch("tools.indexer.urllib.request.urlopen", return_value=FakeResp()):
-            result = embed_batch(["text a", "text b"], "fake-key")
+            result = embed_batch(["text a", "text b"], "fake-key",
+                                 base_url="https://api.example.com/v1")
 
         assert len(result) == 2
         # Should be sorted by index

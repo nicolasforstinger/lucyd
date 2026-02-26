@@ -7,6 +7,7 @@ Outbound: Bot API HTTP calls (httpx async).
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import random
 import time
@@ -18,12 +19,6 @@ import httpx
 from . import Attachment, InboundMessage
 
 log = logging.getLogger(__name__)
-
-# Reconnect policy: 1s initial -> 10s max, factor 2, 20% jitter
-_RECONNECT_INITIAL = 1.0
-_RECONNECT_MAX = 10.0
-_RECONNECT_FACTOR = 2.0
-_RECONNECT_JITTER = 0.2
 
 # Telegram Bot API base URL
 _API_BASE = "https://api.telegram.org/bot{token}"
@@ -50,6 +45,10 @@ class TelegramChannel:
         chunk_limit: int = 4000,
         contacts: dict[str, int] | None = None,
         download_dir: str = "/tmp/lucyd-telegram",  # noqa: S108 — config default; overridden by lucyd.toml
+        reconnect_initial: float = 1.0,
+        reconnect_max: float = 10.0,
+        reconnect_factor: float = 2.0,
+        reconnect_jitter: float = 0.2,
     ):
         self.token = token
         self.base_url = _API_BASE.format(token=token)
@@ -57,6 +56,10 @@ class TelegramChannel:
         self.chunk_limit = chunk_limit
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        self._reconnect_initial = reconnect_initial
+        self._reconnect_max = reconnect_max
+        self._reconnect_factor = reconnect_factor
+        self._reconnect_jitter = reconnect_jitter
 
         # Name -> user_id for outbound resolution
         self._contacts: dict[str, int] = {}
@@ -71,8 +74,8 @@ class TelegramChannel:
         self._bot_id: int = 0
         self._bot_username: str = ""
         self._offset: int = 0  # getUpdates offset
-        # Last message_id per chat for reaction support
-        self._last_message_ids: dict[int, int] = {}
+        # Last message_id per chat for reaction support (bounded to prevent unbounded growth)
+        self._last_message_ids: collections.OrderedDict[int, int] = collections.OrderedDict()
 
         self._client: httpx.AsyncClient | None = None
 
@@ -135,20 +138,20 @@ class TelegramChannel:
 
     async def receive(self) -> AsyncIterator[InboundMessage]:
         """Long-polling loop. Auto-reconnects on failure."""
-        backoff = _RECONNECT_INITIAL
+        backoff = self._reconnect_initial
         while True:
             try:
                 async for msg in self._poll_loop():
                     yield msg
-                    backoff = _RECONNECT_INITIAL
+                    backoff = self._reconnect_initial
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                jitter = backoff * _RECONNECT_JITTER * (random.random() * 2 - 1)  # noqa: S311 — timing jitter, not cryptographic
+                jitter = backoff * self._reconnect_jitter * (random.random() * 2 - 1)  # noqa: S311 — timing jitter, not cryptographic
                 wait = backoff + jitter
                 log.warning("Telegram poll disconnected (%s), reconnecting in %.1fs", e, wait)
                 await asyncio.sleep(wait)
-                backoff = min(backoff * _RECONNECT_FACTOR, _RECONNECT_MAX)
+                backoff = min(backoff * self._reconnect_factor, self._reconnect_max)
 
     async def _poll_loop(self) -> AsyncIterator[InboundMessage]:
         """Single polling session — yields messages until error."""
@@ -194,8 +197,10 @@ class TelegramChannel:
         if not sender:
             sender = from_user.get("username") or from_user.get("first_name") or str(user_id)
 
-        # Track message_id for reactions
+        # Track message_id for reactions (cap at 1000 entries)
         self._last_message_ids[chat_id] = message_id
+        if len(self._last_message_ids) > 1000:
+            self._last_message_ids.popitem(last=False)
 
         # Extract text
         text = message.get("text", "") or message.get("caption", "") or ""

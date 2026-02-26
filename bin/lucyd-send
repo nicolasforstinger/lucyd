@@ -344,7 +344,7 @@ def list_sessions(state_dir: Path) -> None:
     config = _load_config()
     contacts = config.get("channel", {}).get("telegram", {}).get("contacts", {})
     allow_from = config.get("channel", {}).get("telegram", {}).get("allow_from", [])
-    max_context = config.get("models", {}).get("primary", {}).get("max_context_tokens", 200_000)
+    max_context = config.get("models", {}).get("primary", {}).get("max_context_tokens", 0)
 
     cost_db = state_dir / "cost.db"
 
@@ -384,9 +384,11 @@ def list_sessions(state_dir: Path) -> None:
                 pass
 
         # Context percentage
-        if context_tokens > 0:
+        if context_tokens > 0 and max_context > 0:
             pct = context_tokens * 100 // max_context
             context_str = f"{context_tokens:>7,} ({pct:>2}%)"
+        elif context_tokens > 0:
+            context_str = f"{context_tokens:>7,}"
         else:
             context_str = "      — (—%)" if msg_count == "?" else "      0 (0%)"
 

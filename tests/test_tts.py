@@ -1,6 +1,6 @@
-"""Tests for tools/tts.py — TTS output file permissions and path validation."""
+"""Tests for tools/tts.py — TTS output file permissions, path validation, and cleanup."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -107,3 +107,89 @@ class TestTTSOutputPathValidation:
 
         # Should succeed even though /tmp may not be in allowlist
         assert "Audio saved to" in result
+
+
+class TestTTSTempfileCleanup:
+    """P-016: TTS tempfile should be cleaned after successful send."""
+
+    @pytest.mark.asyncio
+    async def test_tempfile_cleaned_after_send(self, tmp_path):
+        """Tempfile is unlinked after successful channel send."""
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock()
+
+        configure(api_key="test-key", provider="elevenlabs",
+                  output_dir=str(tmp_path), default_voice_id="test-voice",
+                  channel=mock_channel)
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"fake audio"
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            result = await tool_tts("Hello", send_to="Nicolas")
+
+        assert "Voice message sent" in result
+        mock_channel.send.assert_awaited_once()
+        # Tempfile should be cleaned up
+        assert list(tmp_path.glob("lucyd-tts-*")) == []
+
+    @pytest.mark.asyncio
+    async def test_tempfile_kept_on_send_failure(self, tmp_path):
+        """Tempfile is kept when channel send fails (user can retry)."""
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(side_effect=Exception("send failed"))
+
+        configure(api_key="test-key", provider="elevenlabs",
+                  output_dir=str(tmp_path), default_voice_id="test-voice",
+                  channel=mock_channel)
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"fake audio"
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            result = await tool_tts("Hello", send_to="Nicolas")
+
+        assert "delivery failed" in result
+        # Tempfile should still exist (user might want to retry)
+        assert len(list(tmp_path.glob("lucyd-tts-*"))) == 1
+
+    @pytest.mark.asyncio
+    async def test_explicit_output_not_cleaned_after_send(self, tmp_path):
+        """User-specified output_file is NOT cleaned after send."""
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock()
+
+        configure(api_key="test-key", provider="elevenlabs",
+                  output_dir=str(tmp_path), default_voice_id="test-voice",
+                  channel=mock_channel)
+
+        import tools.filesystem as fs_mod
+        fs_mod.configure(allowed_paths=[str(tmp_path)])
+
+        output_path = tmp_path / "keep_this.mp3"
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"fake audio"
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            result = await tool_tts("Hello", output_file=str(output_path), send_to="Nicolas")
+
+        assert "Voice message sent" in result
+        # User-specified file should still exist
+        assert output_path.exists()
+
+        fs_mod.configure(allowed_paths=[])
+
+    @pytest.mark.asyncio
+    async def test_tempfile_kept_when_no_send(self, tmp_path):
+        """Tempfile is kept when not sending (just saving)."""
+        configure(api_key="test-key", provider="elevenlabs",
+                  output_dir=str(tmp_path), default_voice_id="test-voice")
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"fake audio"
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            result = await tool_tts("Hello")
+
+        assert "Audio saved to" in result
+        assert len(list(tmp_path.glob("lucyd-tts-*"))) == 1

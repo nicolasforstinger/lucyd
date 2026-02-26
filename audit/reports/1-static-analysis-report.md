@@ -30,8 +30,8 @@ Per-file: tests/* exempt from S101, S104, S105, S106, S108, S310. memory.py exem
 | P-010 (suppressed security findings) | PASS | 26 `# noqa: S*` suppressions, all have justification comments, all verified current |
 | P-014 (error at boundaries) | PASS | `provider.complete()` wrapped in retry with backoff in `agentic.py:152-180`. `synthesis.py` wrapped with raw recall fallback. |
 | P-015 (impl parity) | PASS | Both providers have safe JSON parsing. All channels implement `connect()`/`disconnect()`. |
-| P-016 (resource lifecycle) | 2 LOW | TTS tempfile not cleaned after channel send. HTTP download dir not cleaned on shutdown. |
-| P-018 (unbounded collections) | 1 LOW | `_RateLimiter._hits` keys never pruned (empty lists persist). All others bounded by config or have eviction. |
+| P-016 (resource lifecycle) | 5 FIXED | All resolved: TTS tempfile cleanup after send, HTTP download dir cleanup on stop, SQLite try/finally ×2, file handle context manager. |
+| P-018 (unbounded collections) | 2 FIXED | All resolved: `telegram.py` OrderedDict with 1000 cap, `_RateLimiter._hits` stale key eviction. |
 
 ## Findings Summary
 
@@ -58,7 +58,15 @@ Per-file: tests/* exempt from S101, S104, S105, S106, S108, S310. memory.py exem
 
 ## Fixes Applied
 
-None. Zero new security, bug, or dead code findings.
+| Fix | File | Pattern | Description |
+|-----|------|---------|-------------|
+| TTS tempfile cleanup | tts.py:122-126 | P-016 | Tempfile unlinked after successful channel send |
+| HTTP download cleanup | http_api.py:112-118 | P-016 | `stop()` cleans transient attachment files |
+| SQLite try/finally | lucyd.py:1280 | P-016 | `_build_cost_report` connection wrapped in try/finally |
+| SQLite try/finally | lucyd.py:1330 | P-016 | `_build_status` connection wrapped in try/finally |
+| Context manager | session.py:387 | P-016 | File handle now uses `with` statement |
+| OrderedDict cap | telegram.py:77 | P-018 | `_last_message_ids` → OrderedDict with 1000 entry cap |
+| Stale key eviction | http_api.py:35 | P-018 | `_RateLimiter._hits` evicts stale keys when dict exceeds 1000 |
 
 ## Suppressions Added
 
@@ -82,9 +90,17 @@ None. All existing suppressions verified as current.
 
 ## Known Findings (Carried Forward)
 
-1. **P-016: TTS tempfile leak** — `tools/tts.py:80` creates tempfile, not cleaned after `channel.send()`. LOW — /tmp is OS-managed, volume is agent-initiated (low frequency).
-2. **P-016: HTTP download dir** — `channels/http_api.py` saves attachments to `/tmp/lucyd-http/`, not cleaned on `stop()`. LOW — Telegram channel cleans its equivalent dir; HTTP does not.
-3. **P-018: _RateLimiter._hits** — `channels/http_api.py:35` — `defaultdict(list)` keys persist after timestamps expire. LOW — SMB deployment, 1-5 clients typical.
+None. All P-016 and P-018 findings resolved this cycle.
+
+### Findings Resolved This Cycle
+
+1. **P-016: TTS tempfile leak** — `tools/tts.py` tempfile not cleaned after `channel.send()`. FIXED: unlink after successful send; preserved on failure and when user specifies explicit path.
+2. **P-016: HTTP download dir** — `channels/http_api.py` attachments not cleaned on `stop()`. FIXED: `stop()` now iterates download dir and unlinks files (same pattern as Telegram channel).
+3. **P-016: SQLite connection leak in `_build_cost_report`** — `lucyd.py:1280` could leak on exception. FIXED with try/finally.
+4. **P-016: SQLite connection leak in `_build_status`** — `lucyd.py:1330` could leak on exception. FIXED with try/finally.
+5. **P-016: File handle without context manager** — `session.py:387` used bare `open()`. FIXED with `with` statement.
+6. **P-018: Unbounded `_last_message_ids`** — `telegram.py` plain dict grew without limit. FIXED with OrderedDict + 1000 cap.
+7. **P-018: Unbounded `_RateLimiter._hits`** — `http_api.py` stale keys persisted forever. FIXED with eviction when dict exceeds 1000 entries.
 
 ## Type Checking
 

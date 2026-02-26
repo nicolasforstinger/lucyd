@@ -85,9 +85,25 @@ def main() -> None:
         sys.exit(0)
 
     try:
-        api_key = os.environ.get("LUCYD_OPENAI_KEY", "")
-        if not api_key:
-            print("Error: LUCYD_OPENAI_KEY not set", file=sys.stderr)
+        # Load config for embedding and indexer settings
+        from config import load_config
+        config_path = os.environ.get("LUCYD_CONFIG", str(project_root / "lucyd.toml"))
+        try:
+            cfg = load_config(config_path)
+            embedding_model = cfg.embedding_model
+            embedding_base_url = cfg.embedding_base_url
+            embedding_api_key = cfg.embedding_api_key or os.environ.get("LUCYD_OPENAI_KEY", "")
+        except Exception:
+            embedding_model = ""
+            embedding_base_url = ""
+            embedding_api_key = os.environ.get("LUCYD_OPENAI_KEY", "")
+
+        if not embedding_api_key:
+            print("Error: No embedding API key configured", file=sys.stderr)
+            sys.exit(1)
+
+        if not embedding_model:
+            print("Error: No embedding model configured (add [models.embeddings] to provider file)", file=sys.stderr)
             sys.exit(1)
 
         if not db_path.exists():
@@ -98,13 +114,27 @@ def main() -> None:
             print(f"Error: Workspace not found at {workspace}", file=sys.stderr)
             sys.exit(1)
 
+        from tools.indexer import configure as indexer_configure
         from tools.indexer import index_workspace
+
+        # Configure indexer from TOML settings
+        try:
+            indexer_configure(
+                chunk_size=cfg.indexer_chunk_size,
+                chunk_overlap=cfg.indexer_chunk_overlap,
+                embed_batch_limit=cfg.indexer_embed_batch_limit,
+                embedding_model=embedding_model,
+                embedding_base_url=embedding_base_url,
+                embedding_provider=cfg.embedding_provider,
+            )
+        except Exception:
+            pass  # Use defaults if config load failed
 
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         summary = index_workspace(
             workspace=workspace,
             db_path=db_path,
-            api_key=api_key,
+            api_key=embedding_api_key,
             force=args.full,
         )
 

@@ -17,9 +17,22 @@
 | `tools/` (13 modules) | 2208 | 1210 | 799 | 190 | 9 | 54.8% |
 | `providers/` (3 modules) | 718 | 395 | 319 | 4 | 0 | 55.0% |
 | `agentic.py` | 356 | 188 | 168 | 0 | 0 | 52.8% |
-| **Total** | **3282** | **1793** | **1286** | **194** | **9** | **54.6%** |
+| `channels/` (4 modules) | 1548 | 1058 | 104 | 374 | 12 | 69.1% |
+| **Total** | **4830** | **2851** | **1390** | **568** | **21** | **59.4%** |
 
 **Excluded:** `lucyd.py` (orchestrator — Rule 13, handled by Stage 4), `synthesis.py` (unchanged from cycle 7 — 61.5% kill rate, 35 cosmetic survivors in prompt strings)
+
+### Supplemental: channels/ (added post-P-016/P-018 fixes)
+
+| Target | Total Mutants | Killed | Survived | Untested | Timeout | Kill Rate |
+|--------|--------------|--------|----------|----------|---------|-----------|
+| `channels/http_api.py` | — | — | 151 | — | — | — |
+| `channels/telegram.py` | — | — | 223 | — | — | — |
+| `channels/` (all) | 1548 | 1058 | 104 | 374 | 12 | 69.1% |
+
+Kill rate on tested mutants only: (1058 + 12) / (1548 - 374) = 91.1%
+
+**Security verification:** Auth middleware (`_auth_middleware`) and rate middleware (`_rate_middleware`) have **zero survivors** — all mutations killed. `hmac.compare_digest` timing-safe comparison fully verified.
 
 ## Pattern Checks
 
@@ -102,6 +115,33 @@ Survivor distribution follows established pattern:
 |--------|-------|-------------|
 | web.py | 6 | Boolean chain, passthrough params, fail-safe crash |
 | **Total** | **6** | |
+
+## channels/ Survivor Analysis
+
+### http_api.py (151 survived)
+- `_decode_attachments` (25 survivors) — file I/O paths, timestamp formatting
+- `_handle_chat` (30 survivors) — queue item construction, sender formatting
+- `_handle_notify` (37 survivors) — metadata assembly, text formatting
+- `start` (22 survivors) — aiohttp app setup, route registration
+- `__init__` (13 survivors) — constructor attribute assignment
+- `_handle_cost` (6 survivors) — period validation (cosmetic)
+- `_RateLimiter.check` (10 survivors) — eviction logic, list pruning
+- Other (8 survivors) — stop(), sessions, status
+
+### telegram.py (223 survivors)
+- `_extract_attachments` (94 survivors) — media type detection, file extension inference
+- `_parse_message` (30 survivors) — message field extraction
+- `__init__` (19 survivors) — constructor attribute assignment
+- `send` (17 survivors) — chunking, markdown formatting
+- `_download_file` (17 survivors) — Bot API URL construction
+- `connect` (14 survivors) — polling setup
+- Other (32 survivors) — receive, send_typing, _resolve_target, _poll_loop, _chunk_text, _get_client
+
+### Security Functions
+- `_auth_middleware`: **0 survivors** — VERIFIED
+- `_rate_middleware`: **0 survivors** — VERIFIED
+- `hmac.compare_digest`: **0 survivors** — VERIFIED
+- `_decode_attachments` `Path(filename).name` sanitization: tested in test_http_api.py
 
 ## Fixes Applied
 

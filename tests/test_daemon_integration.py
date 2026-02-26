@@ -40,6 +40,7 @@ def _make_config(tmp_path, **overrides):
                 "model": "test-model",
                 "max_tokens": 1024,
                 "cost_per_mtok": [1.0, 5.0, 0.1],
+                "supports_vision": True,
             },
         },
         "paths": {
@@ -401,6 +402,8 @@ class TestResolveIntegration:
         daemon.config.compaction_threshold = 150000
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
+        daemon.config.message_retries = 0
+        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
 
         loop = asyncio.get_running_loop()
@@ -445,6 +448,8 @@ class TestResolveIntegration:
         daemon.config.compaction_threshold = 150000
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
+        daemon.config.message_retries = 0
+        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
 
         loop = asyncio.get_running_loop()
@@ -530,6 +535,8 @@ class TestChannelDeliverySuppression:
         daemon.config.compaction_threshold = 150000
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
+        daemon.config.message_retries = 0
+        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
 
         usage = MagicMock()
@@ -1035,6 +1042,7 @@ class TestProcessMessageIntegration:
         daemon.config.route_model = MagicMock(return_value="primary")
         daemon.config.model_config = MagicMock(return_value={
             "model": "test-model", "cost_per_mtok": [1.0, 5.0, 0.1],
+            "supports_vision": True,
         })
         daemon.config.typing_indicators = False
         daemon.config.max_turns = 10
@@ -1048,8 +1056,11 @@ class TestProcessMessageIntegration:
         daemon.config.consolidation_enabled = False
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Something went wrong."
+        daemon.config.message_retries = 0
+        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
         daemon.config.vision_max_image_bytes = 5 * 1024 * 1024
+        daemon.config.vision_max_dimension = 1568
         daemon.config.vision_default_caption = "image"
         daemon.config.vision_too_large_msg = "image too large to display"
 
@@ -1378,6 +1389,8 @@ class TestMessageLoopDebounce:
         daemon.config.consolidation_enabled = False
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
+        daemon.config.message_retries = 0
+        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
         # Very short debounce for fast tests
         daemon.config.debounce_ms = 50

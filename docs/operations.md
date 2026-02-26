@@ -220,7 +220,7 @@ When `[http] callback_url` is configured, the daemon POSTs a JSON payload after 
 ```
 
 - **Auth:** Bearer token via `[http] callback_token_env` (env var name in config, value loaded from environment)
-- **Timeout:** 10 seconds. Log-and-forget on failure — webhook errors never block message processing.
+- **Timeout:** Configurable via `[http] callback_timeout` (default: 10 seconds). Log-and-forget on failure — webhook errors never block message processing.
 - **Zero overhead** when unconfigured (empty `callback_url` = no-op).
 - **`notify_meta`:** Echoes the `source`, `ref`, and `data` fields from `/notify` requests. `null` for non-notify messages.
 

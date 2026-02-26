@@ -73,7 +73,6 @@ def update_consolidation_state(
             (session_id, last_compaction_count, last_message_count, last_consolidated_at)
         VALUES (?, ?, ?, datetime('now'))
     """, (session_id, compaction_count, message_count))
-    conn.commit()
 
 
 # ─── Message Serializer ─────────────────────────────────────────
@@ -274,7 +273,6 @@ async def extract_facts(
         )
         count += 1
 
-    conn.commit()
     return count
 
 
@@ -392,7 +390,6 @@ async def extract_episode(
                 (episode_id, who, what, deadline),
             )
 
-    conn.commit()
     return episode_id
 
 
@@ -428,18 +425,28 @@ async def consolidate_session(
         return {"facts_added": 0, "episode_id": None}
 
     threshold = getattr(config, "consolidation_confidence_threshold", 0.6)
-    facts_added = await extract_facts(
-        text, session_id, subagent_provider, conn, threshold,
-    )
 
-    persona_blocks = context_builder.build_stable()
-    episode_id = await extract_episode(
-        text, session_id, primary_provider, persona_blocks, conn,
-    )
+    try:
+        facts_added = await extract_facts(
+            text, session_id, subagent_provider, conn, threshold,
+        )
 
-    update_consolidation_state(
-        session_id, compaction_count, len(messages), conn,
-    )
+        persona_blocks = context_builder.build_stable()
+        episode_id = await extract_episode(
+            text, session_id, primary_provider, persona_blocks, conn,
+        )
+
+        update_consolidation_state(
+            session_id, compaction_count, len(messages), conn,
+        )
+
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
 
     return {"facts_added": facts_added, "episode_id": episode_id}
 
@@ -475,16 +482,23 @@ async def extract_from_file(
     if existing and existing[0] == content_hash:
         return 0
 
-    count = await extract_facts(
-        content, f"file:{file_path}", provider, conn, confidence_threshold,
-    )
+    try:
+        count = await extract_facts(
+            content, f"file:{file_path}", provider, conn, confidence_threshold,
+        )
 
-    conn.execute(
-        "INSERT OR REPLACE INTO consolidation_file_hashes "
-        "(file_path, content_hash, last_processed_at) "
-        "VALUES (?, ?, datetime('now'))",
-        (file_path, content_hash),
-    )
-    conn.commit()
+        conn.execute(
+            "INSERT OR REPLACE INTO consolidation_file_hashes "
+            "(file_path, content_hash, last_processed_at) "
+            "VALUES (?, ?, datetime('now'))",
+            (file_path, content_hash),
+        )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
 
     return count

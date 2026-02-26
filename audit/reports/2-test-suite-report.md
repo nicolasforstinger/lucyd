@@ -11,8 +11,8 @@
 | Metric | Value |
 |--------|-------|
 | Test files | 35 (33 test + conftest + __init__) |
-| Tests collected | 1327 |
-| Tests passed | 1327 |
+| Tests collected | 1394 |
+| Tests passed | 1394 |
 | Tests failed | 0 |
 | Production modules | 27 |
 | Modules with tests | 27 |
@@ -22,14 +22,14 @@
 
 | Pattern | Result | Details |
 |---------|--------|---------|
-| P-005 (shadowed test count) | PASS | AST-verified zero duplicates within same scope. 1327 collected = expected. |
+| P-005 (shadowed test count) | PASS | AST-verified zero duplicates within same scope. 1394 collected = expected. |
 | P-006 (dead data pipeline) | PASS | All fixtures with pre-populated data verified against production producers |
 | P-013 (None-defaulted deps) | PASS | Key None-guarded paths (memory_interface, provider) have proper mock coverage |
 | P-016 (ResourceWarning) | NOTED | AsyncMock RuntimeWarnings from CPython 3.13 mock teardown, not real resource leaks |
 
 ## Suite Run
 
-Total time: 70.10s (first run), 340.15s (background run with output buffering)
+Total time: 23.19s
 All passed: yes
 Failures: none
 
@@ -52,7 +52,7 @@ All files verified to pass in isolation (established pattern from prior cycles, 
 
 ### Timing
 
-Total suite: 70.10s for 1327 tests (~53ms average).
+Total suite: 23.19s for 1394 tests (~17ms average).
 
 Slowest tests:
 | Test | Time | Assessment |
@@ -74,8 +74,8 @@ conftest.py: clean. No unused fixtures. All function-scoped.
 
 | Metric | Value | Healthy Range |
 |--------|-------|---------------|
-| Test-to-production ratio | 2.4:1 (20,671 / 8,746 lines) | 1.5:1 — 3:1 |
-| Assert density | 1.6 asserts/test (2,163 / 1,327) | > 1.5 |
+| Test-to-production ratio | 2.5:1 (lines) | 1.5:1 — 3:1 |
+| Assert density | 1.6 asserts/test | > 1.5 |
 | Test naming consistency | Consistent | — |
 
 ## Test Count Progression
@@ -84,9 +84,9 @@ conftest.py: clean. No unused fixtures. All function-scoped.
 |-------|-------|
 | 6 | 1,232 |
 | 7 | 1,299 |
-| 8 | 1,327 |
+| 8 | 1,394 |
 
-Delta from cycle 7: +28 tests (production hardening, additional coverage).
+Delta from cycle 7: +95 tests (production hardening, P-016/P-018 fixes, additional coverage).
 
 ## Known Gaps
 
@@ -101,4 +101,4 @@ None needed.
 
 ## Confidence
 
-97% — Suite healthy. 1327 tests, all passing, no critical warnings. Test count up 28 from cycle 7. All quality indicators in healthy range.
+97% — Suite healthy. 1394 tests, all passing, no critical warnings. Test count up 95 from cycle 7. All quality indicators in healthy range.

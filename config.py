@@ -186,6 +186,22 @@ class Config:
         return _deep_get(self._data, "channel", "telegram", default={})
 
     @property
+    def telegram_reconnect_initial(self) -> float:
+        return float(_deep_get(self._data, "channel", "telegram", "reconnect_initial", default=1.0))
+
+    @property
+    def telegram_reconnect_max(self) -> float:
+        return float(_deep_get(self._data, "channel", "telegram", "reconnect_max", default=10.0))
+
+    @property
+    def telegram_reconnect_factor(self) -> float:
+        return float(_deep_get(self._data, "channel", "telegram", "reconnect_factor", default=2.0))
+
+    @property
+    def telegram_reconnect_jitter(self) -> float:
+        return float(_deep_get(self._data, "channel", "telegram", "reconnect_jitter", default=0.2))
+
+    @property
     def contact_names(self) -> list[str]:
         """Contact names from channel config (for tool descriptions)."""
         contacts = _deep_get(
@@ -227,6 +243,22 @@ class Config:
     def http_callback_token(self) -> str:
         env_var = _deep_get(self._data, "http", "callback_token_env", default="")
         return os.environ.get(env_var, "") if env_var else ""
+
+    @property
+    def http_callback_timeout(self) -> int:
+        return _deep_get(self._data, "http", "callback_timeout", default=10)
+
+    @property
+    def http_rate_limit(self) -> int:
+        return _deep_get(self._data, "http", "rate_limit", default=30)
+
+    @property
+    def http_rate_window(self) -> int:
+        return _deep_get(self._data, "http", "rate_window", default=60)
+
+    @property
+    def http_status_rate_limit(self) -> int:
+        return _deep_get(self._data, "http", "status_rate_limit", default=60)
 
     # --- Models ---
 
@@ -359,6 +391,52 @@ class Config:
     def indexer_exclude_dirs(self) -> list[str]:
         return _deep_get(self._data, "memory", "indexer", "exclude_dirs", default=[])
 
+    @property
+    def indexer_chunk_size(self) -> int:
+        return _deep_get(self._data, "memory", "indexer", "chunk_size_chars", default=1600)
+
+    @property
+    def indexer_chunk_overlap(self) -> int:
+        return _deep_get(self._data, "memory", "indexer", "chunk_overlap_chars", default=320)
+
+    @property
+    def indexer_embed_batch_limit(self) -> int:
+        return _deep_get(self._data, "memory", "indexer", "embed_batch_limit", default=100)
+
+    # --- Embedding (Provider-Agnostic) ---
+
+    @property
+    def embedding_model(self) -> str:
+        """Read from [models.embeddings] (provider file) or [memory] override. Empty = not configured."""
+        if "embeddings" in self.all_model_names:
+            return self.model_config("embeddings").get("model", "")
+        return _deep_get(self._data, "memory", "embedding_model", default="")
+
+    @property
+    def embedding_base_url(self) -> str:
+        if "embeddings" in self.all_model_names:
+            return self.model_config("embeddings").get("base_url", "")
+        return _deep_get(self._data, "memory", "embedding_base_url", default="")
+
+    @property
+    def embedding_provider(self) -> str:
+        if "embeddings" in self.all_model_names:
+            return self.model_config("embeddings").get("provider", "")
+        return _deep_get(self._data, "memory", "embedding_provider", default="")
+
+    @property
+    def embedding_api_key(self) -> str:
+        """Resolve API key for the embeddings provider."""
+        if "embeddings" in self.all_model_names:
+            key_env = self.model_config("embeddings").get("api_key_env", "")
+            if key_env:
+                return os.environ.get(key_env, "")
+        return ""
+
+    @property
+    def embedding_timeout(self) -> int:
+        return _deep_get(self._data, "memory", "embedding_timeout", default=15)
+
     # --- Tools ---
 
     @property
@@ -425,13 +503,53 @@ class Config:
 
     @property
     def tts_provider(self) -> str:
-        return _deep_get(self._data, "tools", "tts", "provider", default="elevenlabs")
+        return _deep_get(self._data, "tools", "tts", "provider", default="")
+
+    @property
+    def tts_api_key(self) -> str:
+        """Resolve TTS API key: explicit api_key_env first, then provider key map."""
+        key_env = _deep_get(self._data, "tools", "tts", "api_key_env", default="")
+        if key_env:
+            return os.environ.get(key_env, "")
+        provider = self.tts_provider
+        if provider:
+            return self.api_key(provider)
+        return ""
+
+    @property
+    def tts_timeout(self) -> int:
+        return _deep_get(self._data, "tools", "tts", "timeout", default=60)
+
+    @property
+    def tts_api_url(self) -> str:
+        """TTS API URL template. Empty = provider-specific default."""
+        return _deep_get(self._data, "tools", "tts", "api_url", default="")
+
+    @property
+    def web_search_timeout(self) -> int:
+        return _deep_get(self._data, "tools", "web_search", "timeout", default=15)
+
+    @property
+    def web_fetch_timeout(self) -> int:
+        return _deep_get(self._data, "tools", "web_fetch", "timeout", default=15)
+
+    @property
+    def scheduling_max_scheduled(self) -> int:
+        return _deep_get(self._data, "tools", "scheduling", "max_scheduled", default=50)
+
+    @property
+    def scheduling_max_delay(self) -> int:
+        return _deep_get(self._data, "tools", "scheduling", "max_delay", default=86400)
+
+    @property
+    def filesystem_default_read_limit(self) -> int:
+        return _deep_get(self._data, "tools", "filesystem", "default_read_limit", default=2000)
 
     # --- STT (Speech-to-Text) ---
 
     @property
     def stt_backend(self) -> str:
-        return _deep_get(self._data, "stt", "backend", default="openai")
+        return _deep_get(self._data, "stt", "backend", default="")
 
     @property
     def stt_voice_label(self) -> str:
@@ -502,11 +620,25 @@ class Config:
                                   ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
                                   ".ini", ".cfg", ".log", ".sql", ".css"])
 
+    # --- Logging ---
+
+    @property
+    def log_max_bytes(self) -> int:
+        return _deep_get(self._data, "logging", "max_bytes", default=10 * 1024 * 1024)
+
+    @property
+    def log_backup_count(self) -> int:
+        return _deep_get(self._data, "logging", "backup_count", default=3)
+
     # --- Vision ---
 
     @property
     def vision_max_image_bytes(self) -> int:
         return _deep_get(self._data, "vision", "max_image_bytes", default=5 * 1024 * 1024)
+
+    @property
+    def vision_max_dimension(self) -> int:
+        return _deep_get(self._data, "vision", "max_dimension", default=1568)
 
     @property
     def vision_default_caption(self) -> str:
@@ -516,6 +648,10 @@ class Config:
     def vision_too_large_msg(self) -> str:
         return _deep_get(self._data, "vision", "too_large_msg",
                          default="image too large to display")
+
+    @property
+    def vision_jpeg_quality_steps(self) -> list[int]:
+        return _deep_get(self._data, "vision", "jpeg_quality_steps", default=[85, 60, 40])
 
     # --- Behavior ---
 
@@ -540,6 +676,18 @@ class Config:
     @property
     def api_retry_base_delay(self) -> float:
         return float(_deep_get(self._data, "behavior", "api_retry_base_delay", default=2.0))
+
+    @property
+    def message_retries(self) -> int:
+        return _deep_get(self._data, "behavior", "message_retries", default=2)
+
+    @property
+    def message_retry_base_delay(self) -> float:
+        return float(_deep_get(self._data, "behavior", "message_retry_base_delay", default=30.0))
+
+    @property
+    def audit_truncation_limit(self) -> int:
+        return _deep_get(self._data, "behavior", "audit_truncation_limit", default=500)
 
     @property
     def agent_timeout(self) -> float:

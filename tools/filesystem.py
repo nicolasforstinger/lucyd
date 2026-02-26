@@ -7,10 +7,12 @@ from pathlib import Path
 
 # Allowed path prefixes — set at startup via configure()
 _PATH_ALLOW: list[str] = []
+_default_read_limit: int = 2000
 
 
-def configure(allowed_paths: list[str] | None = None) -> None:
-    global _PATH_ALLOW
+def configure(allowed_paths: list[str] | None = None,
+              default_read_limit: int = 2000) -> None:
+    global _PATH_ALLOW, _default_read_limit
     if allowed_paths is not None:
         _PATH_ALLOW = allowed_paths
         # Patch file_path descriptions with allowed paths
@@ -21,6 +23,7 @@ def configure(allowed_paths: list[str] | None = None) -> None:
                 schema["description"] = (
                     f"Absolute path to the file. Allowed paths: {paths_str}"
                 )
+    _default_read_limit = default_read_limit
 
 
 def _check_path(file_path: str) -> str | None:
@@ -37,8 +40,10 @@ def _check_path(file_path: str) -> str | None:
     return f"Error: Path not allowed: {file_path} (allowed prefixes: {', '.join(_PATH_ALLOW)})"
 
 
-def tool_read(file_path: str, offset: int = 0, limit: int = 2000) -> str:
+def tool_read(file_path: str, offset: int = 0, limit: int = 0) -> str:
     """Read a file with optional offset and line limit."""
+    if limit <= 0:
+        limit = _default_read_limit
     err = _check_path(file_path)
     if err:
         return err

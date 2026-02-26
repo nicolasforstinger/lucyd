@@ -72,6 +72,16 @@ download_dir = "/tmp/lucyd-telegram"         # Directory for downloaded attachme
 
 The bot token is loaded from the environment variable specified by `token_env` (default: `LUCYD_TELEGRAM_TOKEN`, set in `.env`). No external daemon is needed — Lucyd connects directly to the Telegram Bot API via httpx long polling.
 
+Reconnect backoff parameters control retry behavior when the Telegram connection drops:
+
+```toml
+[channel.telegram]
+reconnect_initial = 1.0      # Initial backoff delay (seconds, default: 1.0)
+reconnect_max = 10.0          # Maximum backoff delay (seconds, default: 10.0)
+reconnect_factor = 2.0        # Exponential multiplier (default: 2.0)
+reconnect_jitter = 0.2        # Random jitter fraction (0.0–1.0, default: 0.2)
+```
+
 ### [channel.telegram.contacts]
 
 Name-to-ID mapping for outbound messages. Allows the agent to send messages using contact names instead of raw Telegram user IDs.
@@ -95,7 +105,11 @@ host = "127.0.0.1"          # Listen address (default: 127.0.0.1 — localhost o
 port = 8100                  # Listen port (default: 8100)
 callback_url = ""            # Webhook URL — POST after every processed message (default: "" = disabled)
 callback_token_env = ""      # Env var name containing the webhook bearer token (default: "" = no auth)
+callback_timeout = 10        # Webhook callback timeout in seconds (default: 10)
 max_body_bytes = 10485760    # Max request body size in bytes (default: 10 MB)
+rate_limit = 30              # Max requests per rate_window per sender (default: 30)
+rate_window = 60             # Rate limit window in seconds (default: 60)
+status_rate_limit = 60       # Max /status requests per rate_window (default: 60)
 ```
 
 Auth token is loaded from the `LUCYD_HTTP_TOKEN` environment variable. Webhook callback token is loaded from the env var named in `callback_token_env`. See [operations — HTTP API](operations.md#http-api) for endpoint details and [webhook callback](operations.md#webhook-callback) for the callback payload format.
@@ -165,7 +179,7 @@ Model names (`primary`, `subagent`, `compaction`, `embeddings`) are referenced b
 | `max_tokens` | Maximum output tokens per API call |
 | `max_context_tokens` | Maximum input context window size (used by `session_status` tool for context % display) |
 | `cost_per_mtok` | Cost per million tokens as `[input, output, cache_read]` — used for cost tracking |
-| `supports_vision` | Enable vision/image input for this model (default: `true`) |
+| `supports_vision` | Enable vision/image input for this model (default: `false` — must be declared per-model in provider files) |
 
 **Provider-specific options:**
 
@@ -201,6 +215,7 @@ Long-term memory configuration.
 [memory]
 db = "~/.lucyd/memory/main.sqlite"            # SQLite DB with FTS5 + embeddings
 search_top_k = 10                             # Default result limit for memory searches
+embedding_timeout = 15                        # Embedding API request timeout (seconds)
 ```
 
 The memory DB is optional. If the path is empty or the file does not exist, memory tools are not registered.
@@ -285,6 +300,9 @@ Controls which workspace files are indexed into the FTS5 + vector memory DB.
 [memory.indexer]
 include_patterns = ["memory/*.md", "MEMORY.md"]   # Glob patterns relative to workspace
 exclude_dirs = []                                  # Directories to skip
+chunk_size_chars = 1600                            # Characters per text chunk (default: 1600)
+chunk_overlap_chars = 320                          # Overlap between chunks (default: 320)
+embed_batch_limit = 100                            # Max chunks per embedding API batch (default: 100)
 ```
 
 The indexer (`bin/lucyd-index`) runs hourly at `:10` via cron. Incremental — skips files whose content hash hasn't changed.
@@ -322,6 +340,7 @@ Tools are only registered if they appear in `enabled` AND their dependencies are
 ```toml
 [tools.filesystem]
 allowed_paths = ["~/.lucyd/workspace", "/tmp/"]    # Path prefixes the agent can read/write (defaults to workspace + /tmp/)
+default_read_limit = 2000                          # Max lines returned by the read tool (default: 2000)
 ```
 
 ### [tools.web_search]
@@ -329,18 +348,41 @@ allowed_paths = ["~/.lucyd/workspace", "/tmp/"]    # Path prefixes the agent can
 ```toml
 [tools.web_search]
 provider = "brave"    # Web search provider (currently only "brave")
+timeout = 15          # Request timeout in seconds (default: 15)
+```
+
+### [tools.web_fetch]
+
+```toml
+[tools.web_fetch]
+timeout = 15          # Request timeout in seconds (default: 15)
 ```
 
 ### [tools.tts]
 
 ```toml
 [tools.tts]
-provider = "elevenlabs"                # TTS provider (currently only "elevenlabs")
-default_voice_id = "your-voice-id"     # ElevenLabs voice identifier
-default_model_id = "eleven_v3"         # ElevenLabs model
+provider = "elevenlabs"                # TTS provider (required if tts enabled; empty = TTS disabled)
+# api_key_env = "LUCYD_ELEVENLABS_KEY" # Env var for TTS API key (default: looks up provider name in api_keys)
+default_voice_id = "your-voice-id"     # Voice identifier
+default_model_id = "eleven_v3"         # TTS model (provider-specific; ElevenLabs default: eleven_v3)
 speed = 1.0                            # Speech speed
 stability = 0.5                        # Voice stability (0.0–1.0)
 similarity_boost = 0.75                # Voice similarity boost (0.0–1.0)
+timeout = 60                           # API request timeout in seconds (default: 60)
+# api_url = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"  # TTS endpoint URL template (provider-specific)
+```
+
+The `api_url` setting accepts a `{voice_id}` placeholder. When empty, the provider-specific default is used (e.g., ElevenLabs URL for `provider = "elevenlabs"`).
+
+**API key resolution:** If `api_key_env` is set, the key is loaded from that environment variable. Otherwise, the provider name is looked up in the global API key map (e.g., `provider = "elevenlabs"` resolves `LUCYD_ELEVENLABS_KEY`). This allows custom TTS providers without modifying the framework's env var mapping.
+
+### [tools.scheduling]
+
+```toml
+[tools.scheduling]
+max_scheduled = 50     # Max concurrent scheduled messages (default: 50)
+max_delay = 86400      # Max delay in seconds (default: 86400 = 24 hours)
 ```
 
 ## [stt]
@@ -349,7 +391,7 @@ Speech-to-text configuration for voice message transcription. Supports pluggable
 
 ```toml
 [stt]
-backend = "openai"                           # "openai" (cloud Whisper API) or "local" (whisper.cpp server)
+backend = "openai"                           # "openai" or "local" (required if voice messages enabled; empty = transcription disabled)
 voice_label = "voice message"                # Label prefixed to transcriptions: "[voice message]: ..."
 voice_fail_msg = "voice message — transcription failed"  # Label on failure
 audio_label = "audio transcription"          # Label for non-voice audio files: "[audio transcription]: ..."
@@ -402,7 +444,13 @@ Image processing settings for inbound images.
 ```toml
 [vision]
 max_image_bytes = 5242880              # Skip inbound images larger than this (bytes, default 5 MB)
+# max_dimension = 1568                # Max px on longest side (default: 1568)
+# default_caption = "image"           # Default caption for image attachments
+# too_large_msg = "image too large to display"  # Message when image exceeds size limit
+jpeg_quality_steps = [85, 60, 40]      # JPEG quality reduction steps for fitting oversized images
 ```
+
+When an image exceeds `max_image_bytes`, the daemon tries dimension scaling first, then iterates through `jpeg_quality_steps` to reduce JPEG quality. If the image still exceeds the limit after all steps (e.g., PNG which can't be quality-reduced), the `too_large_msg` fallback is used.
 
 ## [behavior]
 
@@ -418,7 +466,12 @@ max_turns_per_message = 50                                             # Max too
 max_cost_per_message = 5.0                                             # USD circuit breaker per message (0.0 = disabled)
 api_retries = 2                                                        # Retry attempts for transient API errors (429, 5xx, connection). Default: 2
 api_retry_base_delay = 2.0                                             # Initial backoff delay in seconds (exponential with jitter). Default: 2.0
+message_retries = 2                                                    # Message-level retries on persistent failure (default: 2)
+message_retry_base_delay = 30                                          # Base delay between message retries in seconds (default: 30)
+audit_truncation_limit = 500                                           # Max chars per message in session audit truncation (default: 500)
 ```
+
+**Two-tier retry architecture:** `api_retries` handles transient errors (429, 5xx, connection) within a single agentic loop call (fast, 1–8s backoff). `message_retries` retries the entire message processing when the agentic loop fails after exhausting API retries (slower, 30–60s backoff with jitter).
 
 ### [behavior.compaction]
 
@@ -432,6 +485,16 @@ prompt = "Summarize this conversation preserving all factual details, decisions,
 ```
 
 Compaction takes the oldest 2/3 of messages, summarizes them, and replaces them with the summary. The JSONL audit trail retains the full history.
+
+## [logging]
+
+Log file rotation settings.
+
+```toml
+[logging]
+max_bytes = 10485760    # Max log file size before rotation (default: 10 MB)
+backup_count = 3        # Number of rotated backups to keep (default: 3)
+```
 
 ## [paths]
 

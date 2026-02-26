@@ -16,7 +16,7 @@ _cost_db_path: str = ""
 _daemon_start_time: float = 0.0
 _current_session: Any = None  # Set by LucydDaemon before each _process_message
 
-MAX_CONTEXT_TOKENS = 200_000
+MAX_CONTEXT_TOKENS = 0
 
 
 def configure(session_manager: Any = None, cost_db: str = "",
@@ -41,8 +41,11 @@ def tool_session_status() -> str:
     # Context utilization (from current session)
     if _current_session is not None:
         tokens = _current_session.last_input_tokens
-        pct = tokens * 100 / MAX_CONTEXT_TOKENS if tokens and MAX_CONTEXT_TOKENS > 0 else 0
-        lines.append(f"Context: {tokens:,} tokens ({pct:.0f}% of {MAX_CONTEXT_TOKENS:,})")
+        if MAX_CONTEXT_TOKENS > 0:
+            pct = tokens * 100 / MAX_CONTEXT_TOKENS if tokens else 0
+            lines.append(f"Context: {tokens:,} tokens ({pct:.0f}% of {MAX_CONTEXT_TOKENS:,})")
+        else:
+            lines.append(f"Context: {tokens:,} tokens")
         lines.append(f"Messages: {len(_current_session.messages)}")
         lines.append(f"Compactions: {_current_session.compaction_count}")
 

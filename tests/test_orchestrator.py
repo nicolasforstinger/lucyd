@@ -46,6 +46,7 @@ def _make_config(tmp_path, **overrides):
                 "model": "test-model",
                 "max_tokens": 1024,
                 "cost_per_mtok": [1.0, 5.0, 0.1],
+                "supports_vision": True,
             },
         },
         "paths": {
@@ -120,6 +121,7 @@ def _make_daemon(tmp_path):
     daemon.config.route_model = MagicMock(return_value="primary")
     daemon.config.model_config = MagicMock(return_value={
         "model": "test-model", "cost_per_mtok": [1.0, 5.0, 0.1],
+        "supports_vision": True,
     })
     daemon.config.typing_indicators = False
     daemon.config.max_turns = 10
@@ -129,6 +131,8 @@ def _make_daemon(tmp_path):
     daemon.config.compaction_threshold = 150000
     daemon.config.always_on_skills = []
     daemon.config.error_message = "Something went wrong."
+    daemon.config.message_retries = 0
+    daemon.config.message_retry_base_delay = 0.01
     daemon.config.raw = MagicMock(return_value=0.0)
     daemon.config.compaction_model = "compaction"
     daemon.config.compaction_prompt = "Compact this."
@@ -1276,6 +1280,7 @@ class TestErrorRecoveryOrphanedMessages:
         """Error with image attachments → image blocks restored AND user message popped."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.vision_max_image_bytes = 10 * 1024 * 1024
+        daemon.config.vision_max_dimension = 1568
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
@@ -1862,7 +1867,7 @@ class TestImageFitting:
     """Verify _fit_image scales dimensions and reduces quality."""
 
     def test_dimensions_scaled_down(self):
-        """Image >8000px is scaled to fit."""
+        """Image exceeding max_dimension is scaled to fit."""
         from io import BytesIO
         from PIL import Image
         from lucyd import _fit_image
@@ -1872,9 +1877,9 @@ class TestImageFitting:
         img.save(buf, format="JPEG", quality=95)
         data = buf.getvalue()
 
-        result = _fit_image(data, "image/jpeg", 5 * 1024 * 1024)
+        result = _fit_image(data, "image/jpeg", 5 * 1024 * 1024, 1568)
         with Image.open(BytesIO(result)) as fitted:
-            assert max(fitted.size) <= 8000
+            assert max(fitted.size) <= 1568
 
     def test_small_image_unchanged(self):
         """Image within all limits is returned as-is."""
@@ -1887,7 +1892,7 @@ class TestImageFitting:
         img.save(buf, format="JPEG", quality=90)
         data = buf.getvalue()
 
-        result = _fit_image(data, "image/jpeg", 5 * 1024 * 1024)
+        result = _fit_image(data, "image/jpeg", 5 * 1024 * 1024, 1568)
         assert result == data
 
     def test_jpeg_quality_reduction(self):
@@ -1898,11 +1903,11 @@ class TestImageFitting:
 
         # Create a noisy image that compresses poorly
         import random
-        img = Image.new("RGB", (4000, 3000))
+        img = Image.new("RGB", (1500, 1200))
         pixels = img.load()
         rng = random.Random(42)
-        for y in range(3000):
-            for x in range(4000):
+        for y in range(1200):
+            for x in range(1500):
                 pixels[x, y] = (rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
         buf = BytesIO()
         img.save(buf, format="JPEG", quality=98)
@@ -1910,7 +1915,7 @@ class TestImageFitting:
 
         # Set a tight limit so quality reduction kicks in
         limit = len(data) // 2
-        result = _fit_image(data, "image/jpeg", limit)
+        result = _fit_image(data, "image/jpeg", limit, 1568)
         assert len(result) <= limit
 
     def test_png_too_large_raises(self):
@@ -1919,14 +1924,46 @@ class TestImageFitting:
         from PIL import Image
         from lucyd import _ImageTooLarge, _fit_image
 
-        img = Image.new("RGB", (4000, 3000), color="red")
+        img = Image.new("RGB", (1000, 800), color="red")
         buf = BytesIO()
         img.save(buf, format="PNG")
         data = buf.getvalue()
 
         # Set absurdly low limit — PNG is lossless, can't reduce quality
         with pytest.raises(_ImageTooLarge):
-            _fit_image(data, "image/png", 100)
+            _fit_image(data, "image/png", 100, 1568)
+
+    def test_phone_photo_scaled_to_max_dimension(self):
+        """4000x3000 phone photo gets scaled to 1568px longest side."""
+        from io import BytesIO
+        from PIL import Image
+        from lucyd import _fit_image
+
+        img = Image.new("RGB", (4000, 3000), color="green")
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        data = buf.getvalue()
+
+        result = _fit_image(data, "image/jpeg", 5 * 1024 * 1024, 1568)
+        with Image.open(BytesIO(result)) as fitted:
+            assert max(fitted.size) <= 1568
+            # Aspect ratio preserved
+            assert abs(fitted.size[0] / fitted.size[1] - 4 / 3) < 0.01
+
+    def test_custom_max_dimension(self):
+        """Custom max_dimension=768 scales a 1024x768 image."""
+        from io import BytesIO
+        from PIL import Image
+        from lucyd import _fit_image
+
+        img = Image.new("RGB", (1024, 768), color="yellow")
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        data = buf.getvalue()
+
+        result = _fit_image(data, "image/jpeg", 5 * 1024 * 1024, 768)
+        with Image.open(BytesIO(result)) as fitted:
+            assert max(fitted.size) <= 768
 
     @pytest.mark.asyncio
     async def test_oversized_image_sent_after_fitting(self, tmp_path):
@@ -1935,6 +1972,7 @@ class TestImageFitting:
 
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.vision_max_image_bytes = 5 * 1024 * 1024
+        daemon.config.vision_max_dimension = 1568
         daemon.config.vision_default_caption = "image"
         daemon.config.vision_too_large_msg = "image too large"
 
@@ -1962,3 +2000,156 @@ class TestImageFitting:
         call_text = session.add_user_message.call_args[0][0]
         assert "[image]" in call_text
         assert "too large" not in call_text
+
+
+# ─── Message-Level Retry ─────────────────────────────────────────
+
+
+class TestMessageLevelRetry:
+    """Contract: transient API failures trigger message-level retry."""
+
+    @pytest.mark.asyncio
+    async def test_retry_succeeds_on_second_attempt(self, tmp_path):
+        """Transient error on first loop call, success on second."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.message_retries = 2
+        daemon.config.message_retry_base_delay = 0.01
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        call_count = [0]
+        response = _make_response(text="recovered!")
+        InternalServerError = type("InternalServerError", (Exception,), {})
+
+        async def fake_loop(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise InternalServerError("500")
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                )
+
+        assert call_count[0] == 2
+        # Reply delivered, not the error message
+        daemon.channel.send.assert_called_once()
+        assert daemon.channel.send.call_args[0][1] == "recovered!"
+
+    @pytest.mark.asyncio
+    async def test_non_transient_error_does_not_retry(self, tmp_path):
+        """Auth errors bypass retry — fail immediately."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.message_retries = 2
+        daemon.config.message_retry_base_delay = 0.01
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        call_count = [0]
+        AuthenticationError = type("AuthenticationError", (Exception,), {})
+
+        async def fake_loop(**kwargs):
+            call_count[0] += 1
+            raise AuthenticationError("bad key")
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                )
+
+        assert call_count[0] == 1  # No retry
+        # Error message sent
+        daemon.channel.send.assert_called_once_with("user", "Something went wrong.")
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_sends_error(self, tmp_path):
+        """All retries exhausted → error message sent, user message popped."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.message_retries = 2
+        daemon.config.message_retry_base_delay = 0.01
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        call_count = [0]
+        InternalServerError = type("InternalServerError", (Exception,), {})
+
+        async def fake_loop(**kwargs):
+            call_count[0] += 1
+            raise InternalServerError("500 always")
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                )
+
+        assert call_count[0] == 3  # 1 initial + 2 retries
+        # Error message sent, orphaned user message cleaned up
+        daemon.channel.send.assert_called_once_with("user", "Something went wrong.")
+        assert not session.messages or session.messages[-1].get("role") != "user"
+
+    @pytest.mark.asyncio
+    async def test_image_blocks_reinjected_per_attempt(self, tmp_path):
+        """Image blocks restored before wait, re-injected before retry."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.message_retries = 1
+        daemon.config.message_retry_base_delay = 0.01
+        daemon.config.vision_max_image_bytes = 10 * 1024 * 1024
+        daemon.config.vision_max_dimension = 1568
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        call_count = [0]
+        content_snapshots = []
+        response = _make_response(text="I see!")
+        InternalServerError = type("InternalServerError", (Exception,), {})
+
+        async def fake_loop(**kwargs):
+            call_count[0] += 1
+            # Capture what the message content looks like at API call time
+            user_msgs = [m for m in kwargs["messages"] if m.get("role") == "user"]
+            if user_msgs:
+                content_snapshots.append(type(user_msgs[-1]["content"]))
+            if call_count[0] == 1:
+                raise InternalServerError("500")
+            return response
+
+        # Create a valid tiny PNG image
+        from PIL import Image
+        img_path = tmp_path / "test.png"
+        img = Image.new("RGB", (2, 2), color="red")
+        img.save(str(img_path), format="PNG")
+
+        from channels import Attachment
+        att = Attachment(
+            content_type="image/png",
+            filename="test.png",
+            local_path=str(img_path),
+            size=img_path.stat().st_size,
+        )
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="look at this", sender="user", source="telegram",
+                    attachments=[att],
+                )
+
+        assert call_count[0] == 2
+        # Both attempts should have seen list content (image blocks injected)
+        assert all(t == list for t in content_snapshots)
+        # After completion, content should be restored to text
+        user_msgs = [m for m in session.messages if m.get("role") == "user"]
+        if user_msgs:
+            assert isinstance(user_msgs[-1]["content"], str)

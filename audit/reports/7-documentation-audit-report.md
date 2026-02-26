@@ -16,7 +16,7 @@
 
 | Category | Count | Verified Against |
 |----------|-------|------------------|
-| Tools | 19 (across 11 tool-exporting modules) | `TOOLS` lists in `tools/*.py` |
+| Tools | 19 (across 12 tool-exporting modules) | `TOOLS` lists in `tools/*.py` |
 | Channels | 3 (telegram, cli, http_api) | `channels/*.py` |
 | Providers | 2 (anthropic-compat, openai-compat) | `providers/*.py` |
 | Provider configs | 2 live + 3 examples | `providers.d/` |
@@ -24,8 +24,8 @@
 | Config sections | 14 top-level + sub-sections | `config.py` |
 | Environment variables | 6 | `.env.example` + `config.py` |
 | HTTP endpoints | 5 | `channels/http_api.py` |
-| Source modules | 30 (8,746 lines) | All .py files excl tests/venv/mutants |
-| Test functions | 1327 | `pytest --collect-only -q` |
+| Source modules | 30 (9,014 lines) | All .py files excl tests/venv/mutants |
+| Test functions | 1394 | `pytest --collect-only -q` |
 
 ## Files Audited
 
@@ -47,7 +47,7 @@
 
 | # | File | Issue | Fix Applied |
 |---|------|-------|-------------|
-| 1 | README.md line 110 | `1299 tests` | Updated to `1327 tests` |
+| 1 | README.md line 110 | `1299 tests` | Updated to `1394 tests` |
 | 2 | docs/architecture.md line 16 | "10 tables: 6 structured + 4 unstructured" | Updated to "4 unstructured + 4 structured + 2 infrastructure" |
 | 3 | docs/architecture.md lines 204-207 | `files` table missing from unstructured tables list | Added `files` table |
 | 4 | docs/architecture.md line 296 | "max_turns=10" and deny-list includes `load_skill` | Fixed max_turns to 50, removed `load_skill` from deny-list, noted sub-agents CAN load skills |
@@ -98,7 +98,7 @@ All missing items are LOW severity — either documented in CLAUDE.md or are non
 
 ## Verification
 
-Tests re-run after documentation fixes to verify no accidental source changes. All 1327 tests pass.
+Tests re-run after documentation fixes to verify no accidental source changes. All 1394 tests pass.
 
 ## Confidence
 

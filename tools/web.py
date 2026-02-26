@@ -23,12 +23,17 @@ log = logging.getLogger(__name__)
 # Set at startup
 _search_api_key: str = ""
 _search_provider: str = "brave"
+_search_timeout: int = 15
+_fetch_timeout: int = 15
 
 
-def configure(api_key: str = "", provider: str = "brave") -> None:
-    global _search_api_key, _search_provider
+def configure(api_key: str = "", provider: str = "brave",
+              search_timeout: int = 15, fetch_timeout: int = 15) -> None:
+    global _search_api_key, _search_provider, _search_timeout, _fetch_timeout
     _search_api_key = api_key
     _search_provider = provider
+    _search_timeout = search_timeout
+    _fetch_timeout = fetch_timeout
 
 
 # ─── SSRF Protection ────────────────────────────────────────────
@@ -186,7 +191,7 @@ async def tool_web_search(query: str, count: int = 10) -> str:
         return f"Error: Unknown search provider: {_search_provider}"
 
     try:
-        resp = await asyncio.to_thread(_safe_opener.open, req, timeout=15)
+        resp = await asyncio.to_thread(_safe_opener.open, req, timeout=_search_timeout)
         body = resp.read()
         # Handle gzip
         if resp.headers.get("Content-Encoding") == "gzip":
@@ -269,7 +274,7 @@ async def tool_web_fetch(url: str, max_chars: int = 50000) -> str:
         parsed = urllib.parse.urlparse(url)
         setattr(req, _REQ_RESOLVED_IP, resolved_ip)
         setattr(req, _REQ_ORIGINAL_HOST, parsed.hostname)
-        resp = await asyncio.to_thread(_safe_opener.open, req, timeout=15)
+        resp = await asyncio.to_thread(_safe_opener.open, req, timeout=_fetch_timeout)
         content_type = resp.headers.get("Content-Type", "")
         body = resp.read()
 

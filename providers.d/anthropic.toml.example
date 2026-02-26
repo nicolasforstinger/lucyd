@@ -11,6 +11,7 @@ cost_per_mtok = [3.0, 15.0, 0.3]   # [input, output, cache_read]
 cache_control = true
 thinking_enabled = true
 thinking_mode = "adaptive"          # "adaptive" | "budgeted" | "disabled"
+supports_vision = true              # Enable image input for this model
 # thinking_budget = 10000           # Only used when thinking_mode = "budgeted"
 # thinking_effort = "high"          # Only used with adaptive: "high" | "medium" | "low"
 

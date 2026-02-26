@@ -25,12 +25,14 @@ from typing import Any
 # Add lucyd directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from agentic import _init_cost_db, run_agentic_loop
+import random
+
+from agentic import _init_cost_db, is_transient_error, run_agentic_loop
 from channels import Attachment, InboundMessage, create_channel
 from config import Config, ConfigError, load_config
 from context import ContextBuilder
 from providers import create_provider
-from session import SessionManager, _text_from_content
+from session import SessionManager, _text_from_content, set_audit_truncation
 from skills import SkillLoader
 from tools import ToolRegistry
 
@@ -178,18 +180,16 @@ def _is_silent(text: str, tokens: list[str]) -> bool:
 
 # ─── Image Fitting ───────────────────────────────────────────────
 
-_MAX_IMAGE_DIMENSION = 8000
-_QUALITY_STEPS = [85, 60, 40]
-
-
 class _ImageTooLarge(Exception):
     """Raised when an image can't be fit within API limits."""
 
 
-def _fit_image(data: bytes, content_type: str, max_bytes: int, path: str = "") -> bytes:
+def _fit_image(data: bytes, content_type: str, max_bytes: int,
+               max_dimension: int, quality_steps: list[int] | None = None,
+               path: str = "") -> bytes:
     """Scale dimensions and reduce quality to fit within API limits.
 
-    Strategy: (1) shrink to 8000px per side, (2) step down JPEG quality.
+    Strategy: (1) shrink to max_dimension per side, (2) step down JPEG quality.
     Raises _ImageTooLarge if nothing works.
     """
     from io import BytesIO
@@ -199,11 +199,11 @@ def _fit_image(data: bytes, content_type: str, max_bytes: int, path: str = "") -
     is_jpeg = content_type == "image/jpeg"
     img = Image.open(BytesIO(data))
 
-    # Step 1: scale dimensions if any side > 8000px
-    if max(img.size) > _MAX_IMAGE_DIMENSION:
+    # Step 1: scale dimensions if any side exceeds max_dimension
+    if max(img.size) > max_dimension:
         log.info("Scaling %dx%d to fit %dpx: %s", img.size[0], img.size[1],
-                 _MAX_IMAGE_DIMENSION, path)
-        img.thumbnail((_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION))
+                 max_dimension, path)
+        img.thumbnail((max_dimension, max_dimension))
         buf = BytesIO()
         if is_jpeg:
             img.save(buf, format="JPEG", quality=90)
@@ -218,7 +218,8 @@ def _fit_image(data: bytes, content_type: str, max_bytes: int, path: str = "") -
 
     # Step 2: reduce JPEG quality (only works for JPEG — PNG is lossless)
     if is_jpeg:
-        for q in _QUALITY_STEPS:
+        steps = quality_steps if quality_steps is not None else [85, 60, 40]
+        for q in steps:
             buf = BytesIO()
             img.save(buf, format="JPEG", quality=q)
             data = buf.getvalue()
@@ -303,9 +304,9 @@ class LucydDaemon:
             "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        # File handler (rotating: 10 MB max, 3 backups)
         fh = logging.handlers.RotatingFileHandler(
-            log_file, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8",
+            log_file, maxBytes=self.config.log_max_bytes,
+            backupCount=self.config.log_backup_count, encoding="utf-8",
         )
         fh.setFormatter(fmt)
         fh.setLevel(logging.DEBUG)
@@ -357,6 +358,7 @@ class LucydDaemon:
         self.channel = create_channel(self.config)
 
     def _init_sessions(self) -> None:
+        set_audit_truncation(self.config.audit_truncation_limit)
         self.session_mgr = SessionManager(
             self.config.sessions_dir,
             agent_name=self.config.agent_name,
@@ -374,7 +376,8 @@ class LucydDaemon:
         if enabled & {"read", "write", "edit"}:
             from tools.filesystem import TOOLS as fs_tools
             from tools.filesystem import configure as fs_configure
-            fs_configure(self.config.filesystem_allowed_paths)
+            fs_configure(self.config.filesystem_allowed_paths,
+                        default_read_limit=self.config.filesystem_default_read_limit)
             for t in fs_tools:
                 if t["name"] in enabled:
                     self.tool_registry.register_many([t])
@@ -405,6 +408,8 @@ class LucydDaemon:
             web_configure(
                 api_key=self.config.api_key("brave"),
                 provider=self.config.web_search_provider,
+                search_timeout=self.config.web_search_timeout,
+                fetch_timeout=self.config.web_fetch_timeout,
             )
             for t in web_tools:
                 if t["name"] in enabled:
@@ -417,11 +422,10 @@ class LucydDaemon:
             from tools.memory_tools import set_memory
             mem = MemoryInterface(
                 db_path=str(Path(self.config.memory_db).expanduser()),
-                embedding_api_key=self.config.api_key("openai"),
-                embedding_model=self.config.model_config("embeddings").get("model", "text-embedding-3-small")
-                    if "embeddings" in self.config.all_model_names else "text-embedding-3-small",
-                embedding_base_url=self.config.model_config("embeddings").get("base_url", "https://api.openai.com/v1")
-                    if "embeddings" in self.config.all_model_names else "https://api.openai.com/v1",
+                embedding_api_key=self.config.embedding_api_key,
+                embedding_model=self.config.embedding_model,
+                embedding_base_url=self.config.embedding_base_url,
+                embedding_timeout=self.config.embedding_timeout,
                 top_k=self.config.memory_top_k,
             )
             set_memory(mem)
@@ -446,19 +450,21 @@ class LucydDaemon:
             self.tool_registry.register_many(agent_tools)
 
         # TTS
-        if "tts" in enabled and self.config.api_key("elevenlabs"):
+        if "tts" in enabled and self.config.tts_api_key:
             from tools.tts import TOOLS as tts_tools
             from tools.tts import configure as tts_configure
             tts_cfg = self.config.raw("tools", "tts", default={})
             tts_configure(
-                api_key=self.config.api_key("elevenlabs"),
+                api_key=self.config.tts_api_key,
                 provider=self.config.tts_provider,
                 channel=self.channel,
                 default_voice_id=tts_cfg.get("default_voice_id", ""),
-                default_model_id=tts_cfg.get("default_model_id", "eleven_v3"),
+                default_model_id=tts_cfg.get("default_model_id", ""),
                 speed=tts_cfg.get("speed", 1.0),
                 stability=tts_cfg.get("stability", 0.5),
                 similarity_boost=tts_cfg.get("similarity_boost", 0.75),
+                timeout=self.config.tts_timeout,
+                api_url=self.config.tts_api_url,
                 contact_names=self.config.contact_names,
             )
             self.tool_registry.register_many(tts_tools)
@@ -467,7 +473,9 @@ class LucydDaemon:
         if enabled & {"schedule_message", "list_scheduled"}:
             from tools.scheduling import TOOLS as sched_tools
             from tools.scheduling import configure as sched_configure
-            sched_configure(channel=self.channel, contact_names=self.config.contact_names)
+            sched_configure(channel=self.channel, contact_names=self.config.contact_names,
+                           max_scheduled=self.config.scheduling_max_scheduled,
+                           max_delay=self.config.scheduling_max_delay)
             for t in sched_tools:
                 if t["name"] in enabled:
                     self.tool_registry.register_many([t])
@@ -650,7 +658,7 @@ class LucydDaemon:
         # Image blocks use neutral format: {"type": "image", "media_type": ..., "data": ...}
         # Provider adapters convert to their native API format in format_messages().
         image_blocks = []
-        supports_vision = model_cfg.get("supports_vision", True)
+        supports_vision = model_cfg.get("supports_vision", False)
         max_image_bytes = self.config.vision_max_image_bytes
         if attachments:
             caption = self.config.vision_default_caption
@@ -664,7 +672,10 @@ class LucydDaemon:
                         img_path = Path(att.local_path)
                         img_data = img_path.read_bytes()
                         try:
-                            img_data = _fit_image(img_data, att.content_type, max_image_bytes, att.local_path)
+                            img_data = _fit_image(img_data, att.content_type, max_image_bytes,
+                                                 self.config.vision_max_dimension,
+                                                 self.config.vision_jpeg_quality_steps,
+                                                 att.local_path)
                         except _ImageTooLarge as exc:
                             text = (text + "\n" if text else "") + f"[{too_large_msg} — {exc}]"
                             continue
@@ -893,26 +904,56 @@ class LucydDaemon:
 
         _write_monitor("thinking")
 
+        message_retries = self.config.message_retries
+        message_retry_delay = self.config.message_retry_base_delay
+        response = None
+
         try:
-            max_cost = self.config.raw("behavior", "max_cost_per_message", default=0.0)
-            response = await run_agentic_loop(
-                provider=provider,
-                system=fmt_system,
-                messages=session.messages,
-                tools=tools,
-                tool_executor=self.tool_registry,
-                max_turns=self.config.max_turns,
-                timeout=self.config.agent_timeout,
-                cost_db=str(self.config.cost_db),
-                session_id=session.id,
-                model_name=model_cfg.get("model", ""),
-                cost_rates=cost_rates,
-                max_cost=float(max_cost),
-                on_response=_on_response,
-                on_tool_results=_on_tool_results,
-                api_retries=self.config.api_retries,
-                api_retry_base_delay=self.config.api_retry_base_delay,
-            )
+            for msg_attempt in range(1 + message_retries):
+                try:
+                    max_cost = self.config.raw("behavior", "max_cost_per_message", default=0.0)
+                    response = await run_agentic_loop(
+                        provider=provider,
+                        system=fmt_system,
+                        messages=session.messages,
+                        tools=tools,
+                        tool_executor=self.tool_registry,
+                        max_turns=self.config.max_turns,
+                        timeout=self.config.agent_timeout,
+                        cost_db=str(self.config.cost_db),
+                        session_id=session.id,
+                        model_name=model_cfg.get("model", ""),
+                        cost_rates=cost_rates,
+                        max_cost=float(max_cost),
+                        on_response=_on_response,
+                        on_tool_results=_on_tool_results,
+                        api_retries=self.config.api_retries,
+                        api_retry_base_delay=self.config.api_retry_base_delay,
+                    )
+                    break  # Success
+                except Exception as e:
+                    if not is_transient_error(e) or msg_attempt >= message_retries:
+                        raise  # Non-transient or exhausted — fall through to outer except
+
+                    # Restore text-only content before waiting
+                    if image_blocks:
+                        session.messages[user_msg_idx]["content"] = text
+
+                    delay = message_retry_delay * (2 ** msg_attempt) * (0.5 + random.random())  # noqa: S311
+                    log.warning(
+                        "Message retry (%d/%d) for %s: %s — waiting %.0fs",
+                        msg_attempt + 1, message_retries, sender, e, delay,
+                    )
+                    _write_monitor("retry_wait")
+                    await asyncio.sleep(delay)
+
+                    # Re-inject image blocks for next attempt
+                    if image_blocks:
+                        api_content = image_blocks + [{"type": "text", "text": text}]
+                        session.messages[user_msg_idx]["content"] = api_content
+
+                    _write_monitor("thinking")
+
         except Exception as e:
             log.error("Agentic loop failed: %s", e)
             # Restore text-only content before returning
@@ -1197,7 +1238,7 @@ class LucydDaemon:
             headers["Authorization"] = f"Bearer {token}"
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=self.config.http_callback_timeout) as client:
                 await client.post(url, json=payload, headers=headers)
         except Exception as e:
             log.warning("Webhook callback failed (%s): %s", url, e)
@@ -1237,26 +1278,28 @@ class LucydDaemon:
 
         try:
             conn = sqlite3.connect(cost_path)
-            conn.row_factory = sqlite3.Row
+            try:
+                conn.row_factory = sqlite3.Row
 
-            if period == "today":
-                ts_filter = today_start_ts()
-            elif period == "week":
-                ts_filter = today_start_ts() - 6 * 86400
-            else:  # "all"
-                ts_filter = 0
+                if period == "today":
+                    ts_filter = today_start_ts()
+                elif period == "week":
+                    ts_filter = today_start_ts() - 6 * 86400
+                else:  # "all"
+                    ts_filter = 0
 
-            rows = conn.execute(
-                """SELECT model,
-                          SUM(input_tokens) AS input_tokens,
-                          SUM(output_tokens) AS output_tokens,
-                          SUM(cost_usd) AS cost_usd
-                   FROM costs
-                   WHERE timestamp >= ?
-                   GROUP BY model""",
-                (ts_filter,),
-            ).fetchall()
-            conn.close()
+                rows = conn.execute(
+                    """SELECT model,
+                              SUM(input_tokens) AS input_tokens,
+                              SUM(output_tokens) AS output_tokens,
+                              SUM(cost_usd) AS cost_usd
+                       FROM costs
+                       WHERE timestamp >= ?
+                       GROUP BY model""",
+                    (ts_filter,),
+                ).fetchall()
+            finally:
+                conn.close()
 
             models = []
             total = 0.0
@@ -1287,14 +1330,16 @@ class LucydDaemon:
             cost_path = str(self.config.cost_db)
             if Path(cost_path).exists():
                 conn = sqlite3.connect(cost_path)
-                from config import today_start_ts
-                today_start = today_start_ts()
-                row = conn.execute(
-                    "SELECT SUM(cost_usd) FROM costs WHERE timestamp >= ?",
-                    (today_start,),
-                ).fetchone()
-                conn.close()
-                today_cost = row[0] or 0.0 if row else 0.0
+                try:
+                    from config import today_start_ts
+                    today_start = today_start_ts()
+                    row = conn.execute(
+                        "SELECT SUM(cost_usd) FROM costs WHERE timestamp >= ?",
+                        (today_start,),
+                    ).fetchone()
+                    today_cost = row[0] or 0.0 if row else 0.0
+                finally:
+                    conn.close()
         except Exception:  # noqa: S110 — cost DB query for status; graceful degradation
             pass
 
@@ -1545,6 +1590,9 @@ class LucydDaemon:
                     get_cost=self._build_cost,
                     download_dir=cfg.http_download_dir,
                     max_body_bytes=cfg.http_max_body_bytes,
+                    rate_limit=cfg.http_rate_limit,
+                    rate_window=cfg.http_rate_window,
+                    status_rate_limit=cfg.http_status_rate_limit,
                 )
                 await self._http_api.start()
 
@@ -1568,6 +1616,17 @@ class LucydDaemon:
             log.error("Fatal error: %s", e, exc_info=True)
             raise
         finally:
+            # Persist active session state before cleanup.
+            # Does NOT call close_session() (which triggers LLM consolidation
+            # callbacks and archival — wrong during shutdown). Sessions resume
+            # from state files on next startup via get_or_create().
+            if hasattr(self, "session_mgr") and self.session_mgr:
+                for session in list(self.session_mgr._sessions.values()):
+                    try:
+                        session._save_state()
+                    except Exception:
+                        pass
+
             # Disconnect channel (close httpx client, clean downloads)
             if self.channel is not None:
                 try:

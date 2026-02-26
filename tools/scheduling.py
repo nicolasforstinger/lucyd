@@ -12,12 +12,16 @@ from typing import Any
 _channel: Any = None
 _scheduled: dict[str, dict] = {}  # id → {target, text, fire_at, task}
 _counter = 0
-_MAX_SCHEDULED = 50
+_max_scheduled: int = 50
+_max_delay: int = 86400
 
 
-def configure(channel: Any, contact_names: list[str] | None = None) -> None:
-    global _channel
+def configure(channel: Any, contact_names: list[str] | None = None,
+              max_scheduled: int = 50, max_delay: int = 86400) -> None:
+    global _channel, _max_scheduled, _max_delay
     _channel = channel
+    _max_scheduled = max_scheduled
+    _max_delay = max_delay
     if contact_names:
         names = ", ".join(contact_names)
         TOOLS[0]["input_schema"]["properties"]["target"]["description"] = (
@@ -29,12 +33,12 @@ async def tool_schedule_message(target: str, text: str, delay_seconds: int) -> s
     """Schedule a message for future delivery."""
     if _channel is None:
         return "Error: No channel configured"
-    if len(_scheduled) >= _MAX_SCHEDULED:
-        return f"Error: Maximum {_MAX_SCHEDULED} scheduled messages reached"
+    if len(_scheduled) >= _max_scheduled:
+        return f"Error: Maximum {_max_scheduled} scheduled messages reached"
     if delay_seconds <= 0:
         return "Error: delay_seconds must be positive"
-    if delay_seconds > 86400:
-        return "Error: Maximum delay is 24 hours (86400 seconds)"
+    if delay_seconds > _max_delay:
+        return f"Error: Maximum delay is {_max_delay} seconds"
     if not text:
         return "Error: Message text is required"
 

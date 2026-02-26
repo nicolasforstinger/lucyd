@@ -33,6 +33,8 @@ def _init_cost_db(path: str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS costs (
                 timestamp INTEGER,
@@ -45,6 +47,12 @@ def _init_cost_db(path: str) -> None:
                 cost_usd REAL
             )
         """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_costs_timestamp ON costs(timestamp)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_costs_session ON costs(session_id)"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -159,7 +167,7 @@ async def run_agentic_loop(
                 log.error("API call timed out after %.0fs (turn %d)", timeout, turn)
                 raise
             except Exception as exc:
-                if not _is_transient_error(exc) or attempt >= api_retries:
+                if not is_transient_error(exc) or attempt >= api_retries:
                     raise
                 delay = api_retry_base_delay * (2 ** attempt) * (0.5 + random.random())  # noqa: S311 — jitter for backoff timing
                 log.warning("Transient API error (attempt %d/%d): %s — retrying in %.1fs",
@@ -267,7 +275,7 @@ async def run_agentic_loop(
     return response  # type: ignore[return-value]
 
 
-def _is_transient_error(exc: BaseException) -> bool:
+def is_transient_error(exc: BaseException) -> bool:
     """Check if an exception is transient and worth retrying.
 
     Uses class name matching to work with both Anthropic and OpenAI SDKs

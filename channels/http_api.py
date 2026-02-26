@@ -36,6 +36,12 @@ class _RateLimiter:
 
     def check(self, key: str) -> bool:
         now = time.monotonic()
+        # Periodic sweep: evict stale keys when dict grows large
+        if len(self._hits) > 1000:
+            stale = [k for k, v in self._hits.items()
+                     if not v or now - v[-1] >= self.window]
+            for k in stale:
+                del self._hits[k]
         hits = self._hits[key]
         self._hits[key] = [t for t in hits if now - t < self.window]
         if len(self._hits[key]) >= self.max_requests:
@@ -61,6 +67,9 @@ class HTTPApi:
         get_cost: Any = None,
         download_dir: str = "/tmp/lucyd-http",  # noqa: S108 — default; overridden by config
         max_body_bytes: int = 10 * 1024 * 1024,
+        rate_limit: int = 30,
+        rate_window: int = 60,
+        status_rate_limit: int = 60,
     ):
         self.queue = queue
         self.host = host
@@ -73,8 +82,8 @@ class HTTPApi:
         self._download_dir = download_dir
         self._max_body_bytes = max_body_bytes
         self._runner: web.AppRunner | None = None
-        self._rate_limiter = _RateLimiter(max_requests=30, window_seconds=60)
-        self._status_rate_limiter = _RateLimiter(max_requests=60, window_seconds=60)
+        self._rate_limiter = _RateLimiter(max_requests=rate_limit, window_seconds=rate_window)
+        self._status_rate_limiter = _RateLimiter(max_requests=status_rate_limit, window_seconds=rate_window)
 
     # ─── Lifecycle ────────────────────────────────────────────────
 
@@ -100,7 +109,16 @@ class HTTPApi:
         """Graceful shutdown."""
         if self._runner:
             await self._runner.cleanup()
-            log.info("HTTP API stopped")
+        # Clean transient download files
+        dl_dir = Path(self._download_dir)
+        if dl_dir.exists():
+            for f in dl_dir.iterdir():
+                try:
+                    if f.is_file():
+                        f.unlink()
+                except OSError:
+                    pass
+        log.info("HTTP API stopped")
 
     # ─── Auth Middleware ──────────────────────────────────────────
 

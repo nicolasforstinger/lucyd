@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from agentic import _init_cost_db, _is_transient_error, _record_cost, _truncate_args, run_agentic_loop
+from agentic import _init_cost_db, is_transient_error, _record_cost, _truncate_args, run_agentic_loop
 from providers import LLMResponse, ToolCall, Usage
 from tools import ToolRegistry
 
@@ -684,81 +684,81 @@ class TestCostInit:
 
 
 class TestIsTransientError:
-    """_is_transient_error classification."""
+    """is_transient_error classification."""
 
     def test_rate_limit_is_transient(self):
         class RateLimitError(Exception): pass
-        assert _is_transient_error(RateLimitError("429")) is True
+        assert is_transient_error(RateLimitError("429")) is True
 
     def test_connection_error_is_transient(self):
-        assert _is_transient_error(ConnectionError("reset")) is True
+        assert is_transient_error(ConnectionError("reset")) is True
 
     def test_os_error_is_transient(self):
-        assert _is_transient_error(OSError("network down")) is True
+        assert is_transient_error(OSError("network down")) is True
 
     def test_auth_error_not_transient(self):
         class AuthenticationError(Exception): pass
-        assert _is_transient_error(AuthenticationError("bad key")) is False
+        assert is_transient_error(AuthenticationError("bad key")) is False
 
     def test_bad_request_not_transient(self):
         class BadRequestError(Exception): pass
-        assert _is_transient_error(BadRequestError("invalid")) is False
+        assert is_transient_error(BadRequestError("invalid")) is False
 
     def test_permission_denied_not_transient(self):
         class PermissionDeniedError(Exception): pass
-        assert _is_transient_error(PermissionDeniedError("denied")) is False
+        assert is_transient_error(PermissionDeniedError("denied")) is False
 
     def test_unknown_error_not_transient(self):
-        assert _is_transient_error(ValueError("nope")) is False
+        assert is_transient_error(ValueError("nope")) is False
 
     def test_api_status_error_with_500(self):
         class APIStatusError(Exception):
             status_code = 500
-        assert _is_transient_error(APIStatusError("server error")) is True
+        assert is_transient_error(APIStatusError("server error")) is True
 
     def test_api_status_error_with_400(self):
         class APIStatusError(Exception):
             status_code = 400
-        assert _is_transient_error(APIStatusError("bad request")) is False
+        assert is_transient_error(APIStatusError("bad request")) is False
 
     def test_not_found_error_not_transient(self):
         class NotFoundError(Exception): pass
-        assert _is_transient_error(NotFoundError("404")) is False
+        assert is_transient_error(NotFoundError("404")) is False
 
     def test_unprocessable_entity_not_transient(self):
         class UnprocessableEntityError(Exception): pass
-        assert _is_transient_error(UnprocessableEntityError("422")) is False
+        assert is_transient_error(UnprocessableEntityError("422")) is False
 
     def test_api_connection_error_is_transient(self):
         class APIConnectionError(Exception): pass
-        assert _is_transient_error(APIConnectionError("reset")) is True
+        assert is_transient_error(APIConnectionError("reset")) is True
 
     def test_api_timeout_error_is_transient(self):
         class APITimeoutError(Exception): pass
-        assert _is_transient_error(APITimeoutError("timeout")) is True
+        assert is_transient_error(APITimeoutError("timeout")) is True
 
     def test_internal_server_error_is_transient(self):
         class InternalServerError(Exception): pass
-        assert _is_transient_error(InternalServerError("500")) is True
+        assert is_transient_error(InternalServerError("500")) is True
 
     def test_overloaded_error_is_transient(self):
         class OverloadedError(Exception): pass
-        assert _is_transient_error(OverloadedError("overloaded")) is True
+        assert is_transient_error(OverloadedError("overloaded")) is True
 
     def test_api_status_error_with_429_is_transient(self):
         class APIStatusError(Exception):
             status_code = 429
-        assert _is_transient_error(APIStatusError("rate limited")) is True
+        assert is_transient_error(APIStatusError("rate limited")) is True
 
     def test_api_status_error_with_503_is_transient(self):
         class APIStatusError(Exception):
             status_code = 503
-        assert _is_transient_error(APIStatusError("service unavailable")) is True
+        assert is_transient_error(APIStatusError("service unavailable")) is True
 
     def test_api_status_error_with_401_not_transient(self):
         class APIStatusError(Exception):
             status_code = 401
-        assert _is_transient_error(APIStatusError("unauthorized")) is False
+        assert is_transient_error(APIStatusError("unauthorized")) is False
 
 
 class TestRetryLogic:

@@ -109,7 +109,7 @@ Additional coverage: TestResolvePattern, TestResolveIntegration, TestMessageLoop
 | test_synthesis.py | 23 (3 tool-path, 20 synthesis layer) |
 | **Orchestrator total** | **272** |
 
-All 272 pass. Full suite: 1,327 tests, all passing.
+All 272 pass. Full suite: 1,394 tests, all passing.
 
 ## _process_message Metrics
 

@@ -16,17 +16,32 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# ─── Constants (matching existing DB config) ─────────────────────
+# ─── Module config (set by configure(), defaults for standalone use) ──
 
 CHUNK_SIZE_CHARS = 1600       # ~400 tokens at ~4 chars/token
 CHUNK_OVERLAP_CHARS = 320     # ~80 tokens overlap
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_PROVIDER = "openai"
-EMBEDDING_BASE_URL = "https://api.openai.com/v1"
+EMBEDDING_MODEL = ""
+EMBEDDING_PROVIDER = ""
+EMBEDDING_BASE_URL = ""
 SOURCE = "memory"
 INCLUDE_PATTERNS = ["memory/*.md", "MEMORY.md"]
 EXCLUDE_DIRS = {"memory/cache"}
-_EMBED_BATCH_LIMIT = 100      # OpenAI API max per call
+_EMBED_BATCH_LIMIT = 100
+
+
+def configure(chunk_size: int = 1600, chunk_overlap: int = 320,
+              embed_batch_limit: int = 100,
+              embedding_model: str = "", embedding_base_url: str = "",
+              embedding_provider: str = "") -> None:
+    """Set indexer config from lucyd.toml values."""
+    global CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, _EMBED_BATCH_LIMIT
+    global EMBEDDING_MODEL, EMBEDDING_BASE_URL, EMBEDDING_PROVIDER
+    CHUNK_SIZE_CHARS = chunk_size
+    CHUNK_OVERLAP_CHARS = chunk_overlap
+    _EMBED_BATCH_LIMIT = embed_batch_limit
+    EMBEDDING_MODEL = embedding_model
+    EMBEDDING_BASE_URL = embedding_base_url
+    EMBEDDING_PROVIDER = embedding_provider
 
 
 # ─── Pure Functions ──────────────────────────────────────────────

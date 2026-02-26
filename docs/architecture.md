@@ -12,7 +12,7 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `context.py` | Builds system prompt blocks from workspace files. Organizes into cache tiers (stable/semi_stable/dynamic). |
 | `session.py` | Session manager. Dual storage: JSONL audit trail (append-only) + state file (atomic snapshot). Handles compaction. |
 | `skills.py` | Scans workspace skills directory. Parses markdown with YAML frontmatter. Builds index for system prompt. |
-| `memory.py` | Long-term memory. SQLite FTS5 for keyword search, OpenAI embeddings for vector similarity. FTS-first strategy. Also handles structured recall (facts, episodes, commitments). |
+| `memory.py` | Long-term memory. SQLite FTS5 for keyword search, pluggable embeddings for vector similarity. FTS-first strategy. Gracefully degrades to FTS5-only when no embedding provider is configured. Also handles structured recall (facts, episodes, commitments). |
 | `memory_schema.py` | Schema management for all memory tables (10 tables: 4 unstructured + 4 structured + 2 infrastructure). Safe to call on every startup — all `IF NOT EXISTS`. |
 | `consolidation.py` | Structured data extraction from sessions and workspace files via LLM. Extracts facts, episodes, commitments, and entity aliases. |
 | `synthesis.py` | Memory recall synthesis. Transforms raw recall blocks into prose (narrative/factual) before context injection. Optional — defaults to passthrough ("structured"). |
@@ -35,7 +35,7 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `tools/status.py` | `session_status` tool. Returns uptime, today's cost, token counts. |
 | `tools/scheduling.py` | `schedule_message` and `list_scheduled` tools. Asyncio timer-based delayed message delivery. |
 | `tools/tts.py` | `tts` tool. Text-to-speech via ElevenLabs API. |
-| `tools/indexer.py` | Memory indexer. Scans workspace, chunks files, embeds via OpenAI, writes to SQLite FTS5 + vector DB. Used by `bin/lucyd-index`. |
+| `tools/indexer.py` | Memory indexer. Scans workspace, chunks files, embeds via configurable provider, writes to SQLite FTS5 + vector DB. Used by `bin/lucyd-index`. Provider-agnostic — embedding model, base URL, and provider are set via `configure()`. |
 | `bin/lucyd-send` | CLI script. Writes JSON to the control FIFO. Queries cost DB and monitor state directly. |
 | `bin/lucyd-index` | Memory indexer CLI. Scans workspace, chunks, embeds, writes to SQLite FTS5 + vector DB. Cron at `:10`. |
 | `bin/lucyd-consolidate` | Memory consolidation CLI. Extracts structured facts/episodes/commitments from sessions. Cron at `:15`. |
@@ -190,10 +190,10 @@ FTS-first, vector fallback:
 
 1. Run FTS5 full-text search on the query
 2. If FTS returns >= 3 results: return them (no API call needed)
-3. If FTS returns < 3: embed the query via OpenAI API, compute cosine similarity against stored embeddings
+3. If FTS returns < 3: embed the query via the configured embedding provider, compute cosine similarity against stored embeddings
 4. Merge and deduplicate FTS + vector results, sort by score, return top-k
 
-This handles ~80% of queries without an embedding API call.
+This handles ~80% of queries without an embedding API call. When no embedding provider is configured (empty model/base_url), vector search is skipped entirely — FTS5 keyword search still works.
 
 ### Embedding Cache
 

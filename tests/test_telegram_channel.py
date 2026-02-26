@@ -10,8 +10,6 @@ import pytest
 
 from channels import InboundMessage
 from channels.telegram import (
-    _RECONNECT_JITTER,
-    _RECONNECT_MAX,
     TelegramChannel,
     _guess_mime,
 )
@@ -2811,10 +2809,10 @@ class TestReceive:
             except aio.CancelledError:
                 pass
 
-        # After many failures, sleep should be capped around _RECONNECT_MAX
+        # After many failures, sleep should be capped around reconnect_max
         for s in sleep_args:
             # Max = 10.0, jitter = 20%, so max with jitter ≈ 12.0
-            assert s <= _RECONNECT_MAX * (1 + _RECONNECT_JITTER)
+            assert s <= ch._reconnect_max * (1 + ch._reconnect_jitter)
 
 
 # ─── Disconnect Lifecycle ────────────────────────────────────────

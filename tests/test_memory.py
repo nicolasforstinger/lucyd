@@ -246,6 +246,7 @@ class TestEmbedAPI:
             db_path=memory_db,
             embedding_api_key="test-key",
             embedding_model="text-embedding-3-small",
+            embedding_base_url="https://api.example.com/v1",
         )
 
         with patch("urllib.request.urlopen", return_value=mock_resp):
@@ -284,6 +285,7 @@ class TestEmbedAPI:
             db_path=memory_db,
             embedding_api_key="test-key",
             embedding_model="text-embedding-3-small",
+            embedding_base_url="https://api.example.com/v1",
         )
 
         with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
@@ -305,6 +307,7 @@ class TestEmbedAPI:
             db_path=memory_db,
             embedding_api_key="test-key",
             embedding_model="text-embedding-3-small",
+            embedding_base_url="https://api.example.com/v1",
         )
 
         with patch("urllib.request.urlopen", side_effect=URLError("connection refused")):
@@ -321,6 +324,7 @@ class TestEmbedAPI:
             db_path=memory_db,
             embedding_api_key="test-key",
             embedding_model="text-embedding-3-small",
+            embedding_base_url="https://api.example.com/v1",
         )
 
         with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
@@ -337,6 +341,7 @@ class TestEmbedAPI:
             db_path=memory_db,
             embedding_api_key="",  # no key
             embedding_model="text-embedding-3-small",
+            embedding_base_url="https://api.example.com/v1",
         )
 
         with patch("urllib.request.urlopen"):
