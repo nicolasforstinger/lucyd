@@ -340,8 +340,9 @@ flowchart TD
 
     POLL --> PARSE --> DL --> Q
     SEND_CLI --> PIPE --> Q
-    CHAT --> AUTH --> RATE --> Q
-    NOTIFY --> AUTH --> RATE --> Q
+    CHAT --> AUTH
+    NOTIFY --> AUTH
+    AUTH --> RATE --> Q
 
     Q --> LOOP["_message_loop()<br/>lucyd.py:1361"]
     LOOP --> PROCESS["_process_message()<br/>lucyd.py:616"]
