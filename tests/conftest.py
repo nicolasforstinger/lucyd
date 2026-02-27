@@ -132,25 +132,11 @@ def minimal_toml_data():
 
 @pytest.fixture
 def cost_db(tmp_path):
-    """Initialized cost tracking DB."""
-    import sqlite3
+    """Initialized cost tracking DB (delegates to production _init_cost_db)."""
+    from agentic import _init_cost_db
 
     db_path = tmp_path / "cost.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS costs (
-            timestamp INTEGER,
-            session_id TEXT,
-            model TEXT,
-            input_tokens INTEGER,
-            output_tokens INTEGER,
-            cache_read_tokens INTEGER,
-            cache_write_tokens INTEGER,
-            cost_usd REAL
-        )
-    """)
-    conn.commit()
-    conn.close()
+    _init_cost_db(str(db_path))
     return db_path
 
 

@@ -350,7 +350,7 @@ For each edge in the dependency chain data flow matrix, ask: "What happens when 
 
 ## P-015: Implementation parity across parallel modules
 
-**Origin:** Production hardening 2026-02-22 — `anthropic_compat.py:222` used bare `json.loads(block.input)` without try/except. `openai_compat.py:164-168` had the correct pattern with `_safe_parse_args()` fallback. Same interface, inconsistent error handling. No audit stage compared the two providers' implementations.
+**Origin:** Production hardening 2026-02-22 — `anthropic_compat.py` used bare `json.loads(block.input)` without try/except. `openai_compat.py` had the correct pattern with `_safe_parse_args()` fallback. Same interface, inconsistent error handling. No audit stage compared the two providers' implementations. **(FIXED:** `anthropic_compat.py` now uses `_safe_parse_args()`.)
 
 **Class:** Modules that implement the same protocol or interface (providers, channels) but handle edge cases, errors, or malformed data differently. The inconsistency is invisible when testing each module in isolation — both "work" — but one is fragile where the other is robust.
 
@@ -428,7 +428,7 @@ For each state persistence flow in the dependency chain, verify the order: criti
 
 ## P-018: Unbounded runtime data structures
 
-**Origin:** Production hardening 2026-02-22 — `self._last_inbound_ts` in `lucyd.py:294` was a plain `dict[str, int]` with one entry per unique sender, never pruned. In a Telegram group scenario with thousands of unique senders, this grows without bound for the daemon's entire lifetime.
+**Origin:** Production hardening 2026-02-22 — `self._last_inbound_ts` in `lucyd.py` was a plain `dict[str, int]` with one entry per unique sender, never pruned. In a Telegram group scenario with thousands of unique senders, this grows without bound for the daemon's entire lifetime. **(FIXED:** now an `OrderedDict` bounded at 1000 entries.)
 
 **Class:** Any `dict`, `list`, or `set` assigned to `self.*` (instance state) that grows proportional to input volume without eviction or pruning. These are memory leaks that only manifest under sustained production load — tests with 3-5 senders never trigger them.
 
@@ -525,9 +525,11 @@ Verify that `lucyd.toml.example` and `providers.d/*.toml.example` make the provi
 
 **Check (Stage 1):**
 ```bash
-grep -rn "telegram\|whatsapp\|signal\|discord" lucyd/ \
+grep -rn "telegram\|whatsapp\|signal\|discord" . \
   --exclude-dir=channels --exclude-dir=providers \
   --exclude-dir=providers.d --exclude-dir=tests \
+  --exclude-dir=.venv --exclude-dir=mutants \
+  --exclude-dir=.git --exclude-dir=audit \
   --include="*.py"
 ```
 Expected: zero matches. Channel names belong in `channels/` modules and config files, never in framework logic (`lucyd.py`, `session.py`, `context.py`, `agentic.py`, `tools/`, etc.).

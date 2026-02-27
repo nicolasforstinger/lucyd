@@ -5,10 +5,11 @@ Returns current session stats for context-aware agents.
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+
+from agentic import cost_db_query
 
 # Set at daemon startup
 _session_manager: Any = None
@@ -57,23 +58,17 @@ def tool_session_status() -> str:
         lines.append(f"Daemon uptime: {hours}h {minutes}m")
 
     # Today's cost
-    if _cost_db_path and Path(_cost_db_path).exists():
-        conn = sqlite3.connect(_cost_db_path)
-        try:
-            from config import today_start_ts
-            today_start = today_start_ts()
-            row = conn.execute(
-                "SELECT SUM(cost_usd), SUM(input_tokens), SUM(output_tokens) "
-                "FROM costs WHERE timestamp >= ?",
-                (today_start,)
-            ).fetchone()
-            if row and row[0]:
-                lines.append(f"Today's cost: ${row[0]:.4f}")
-                lines.append(f"Today's tokens: {row[1]:,} in / {row[2]:,} out")
-        except Exception:  # noqa: S110 — cost DB query for status display; graceful degradation
-            pass
-        finally:
-            conn.close()
+    if _cost_db_path:
+        from config import today_start_ts
+        rows = cost_db_query(
+            _cost_db_path,
+            "SELECT SUM(cost_usd), SUM(input_tokens), SUM(output_tokens) "
+            "FROM costs WHERE timestamp >= ?",
+            (today_start_ts(),),
+        )
+        if rows and rows[0][0]:
+            lines.append(f"Today's cost: ${rows[0][0]:.4f}")
+            lines.append(f"Today's tokens: {rows[0][1]:,} in / {rows[0][2]:,} out")
 
     if not lines:
         lines.append("No status data available.")

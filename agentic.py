@@ -26,12 +26,30 @@ from tools import ToolRegistry
 log = logging.getLogger(__name__)
 
 
+def cost_db_query(path: str, sql: str, params: tuple = ()) -> list:
+    """Run a read query against the cost DB, returning all rows.
+
+    Handles connect/close lifecycle.  Returns [] on any error or
+    if the DB file does not exist.
+    """
+    if not path or not Path(path).exists():
+        return []
+    conn = sqlite3.connect(path, timeout=30)
+    try:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(sql, params).fetchall()
+    except Exception:  # noqa: S110 — cost DB query; graceful degradation
+        return []
+    finally:
+        conn.close()
+
+
 def _init_cost_db(path: str) -> None:
     """Create cost tracking table if it doesn't exist."""
     if not path:
         return
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA wal_autocheckpoint=1000")
@@ -80,7 +98,7 @@ def _record_cost(
         + usage.cache_read_tokens * cache_rate / 1_000_000
     )
 
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
     try:
         conn.execute(
             "INSERT INTO costs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

@@ -530,7 +530,7 @@ def build_session_info(
     Returns dict with: session_id, context_tokens, context_pct, cost_usd,
     message_count, compaction_count, log_files, log_bytes.
     """
-    import sqlite3
+    from agentic import cost_db_query
 
     info: dict[str, Any] = {"session_id": session_id}
 
@@ -573,17 +573,14 @@ def build_session_info(
 
     # Per-session cost
     cost_usd = 0.0
-    if cost_db_path and Path(cost_db_path).exists():
-        try:
-            conn = sqlite3.connect(cost_db_path)
-            row = conn.execute(
-                "SELECT SUM(cost_usd) FROM costs WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            conn.close()
-            cost_usd = row[0] or 0.0 if row else 0.0
-        except Exception:  # noqa: S110 — cost DB query for session info; graceful degradation to 0.0
-            pass
+    if cost_db_path:
+        rows = cost_db_query(
+            cost_db_path,
+            "SELECT SUM(cost_usd) FROM costs WHERE session_id = ?",
+            (session_id,),
+        )
+        if rows and rows[0][0]:
+            cost_usd = rows[0][0]
     info["cost_usd"] = round(cost_usd, 6)
 
     # Log file metadata

@@ -126,6 +126,9 @@ At minimum, trace these (expand as codebase grows):
 | `memory.py` structured recall → `resolve_entity()` | `memory/main.sqlite` (`entity_aliases` table) | `consolidation.py` `extract_facts()` — auto-populated via LLM extraction on every consolidation run (see P-012). **Ordering invariant:** aliases are stored BEFORE facts in `extract_facts()`. If reversed, new entities in the same extraction batch won't resolve through aliases. Verify ordering on any refactor of the extraction pipeline. |
 | `consolidation.py` skip check | `memory/main.sqlite` (`consolidation_state` table) | `consolidation.py` `update_consolidation_state()` |
 | `consolidation.py` hash check | `memory/main.sqlite` (`consolidation_file_hashes` table) | `consolidation.py` `extract_from_file()` |
+| `evolution.py` pre-check | `workspace/memory/YYYY-MM-DD.md` (daily logs) | Lucy via `write` tool (conversational) |
+| `evolution.py` state tracking | `memory/main.sqlite` (`evolution_state` table) | `evolution.py` `get_evolution_state()` via daemon agentic loop |
+| Evolution output | `workspace/MEMORY.md`, `workspace/USER.md` | Daemon agentic loop (triggered by `lucyd-evolve` cron) |
 
 **Note on non-deterministic producers:** Some data sources (daily memory logs, MEMORY.md) are written by Lucy as a conscious choice during conversations — there is no cron job or automatic process. Their freshness depends on conversation activity. Flag these separately from deterministic pipelines (cron, daemon auto-writes).
 
@@ -156,11 +159,11 @@ Build this table from documentation and config:
 | Process | Type | Schedule | Output | Status |
 |---------|------|----------|--------|--------|
 | `lucyd.service` | systemd | continuous | daemon | |
+| Workspace auto-commit | cron | `5 * * * *` | git commits | |
 | Memory indexer (`lucyd-index`) | cron | `10 * * * *` | `memory/main.sqlite` | |
 | Memory consolidation (`lucyd-consolidate`) | cron | `15 * * * *` | `memory/main.sqlite` (facts, episodes, commitments, aliases) | |
-| Memory maintenance (`lucyd-consolidate --maintain`) | cron | `0 4 * * *` | dedup, decay, cleanup in `memory/main.sqlite` | |
-| Workspace auto-commit | cron | `0 * * * *` | git commits | |
-| Code auto-commit | cron | `5 * * * *` | git commits | |
+| Memory maintenance (`lucyd-consolidate --maintain`) | cron | `5 4 * * *` | dedup, decay, cleanup in `memory/main.sqlite` | |
+| Memory evolution (`lucyd-evolve`) | cron | `20 4 * * *` | `evolution_state` table + MEMORY.md/USER.md | |
 | Heartbeat | cron | (check if enabled/disabled) | system message | |
 
 ### Verification

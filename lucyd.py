@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import random
 
-from agentic import _init_cost_db, is_transient_error, run_agentic_loop
+from agentic import _init_cost_db, cost_db_query, is_transient_error, run_agentic_loop
 from channels import Attachment, InboundMessage, create_channel
 from config import Config, ConfigError, load_config
 from context import ContextBuilder
@@ -837,7 +837,7 @@ class LucydDaemon:
             extra_dynamic=recall_text,
             silent_tokens=self.config.silent_tokens,
             max_turns=self.config.max_turns,
-            max_cost=float(self.config.raw("behavior", "max_cost_per_message", default=0.0)),
+            max_cost=self.config.max_cost_per_message,
             compaction_threshold=self.config.compaction_threshold,
             has_images=bool(image_blocks),
             has_voice=has_voice,
@@ -924,7 +924,7 @@ class LucydDaemon:
         try:
             for msg_attempt in range(1 + message_retries):
                 try:
-                    max_cost = self.config.raw("behavior", "max_cost_per_message", default=0.0)
+                    max_cost = self.config.max_cost_per_message
                     response = await run_agentic_loop(
                         provider=provider,
                         system=fmt_system,
@@ -1327,65 +1327,54 @@ class LucydDaemon:
 
     def _build_cost(self, period: str) -> dict:
         """Build cost breakdown for HTTP /cost."""
-        import sqlite3
-
         from config import today_start_ts
 
         cost_path = str(self.config.cost_db)
         empty = {"period": period, "total_cost": 0.0, "models": []}
 
-        if not Path(cost_path).exists():
+        if period == "today":
+            ts_filter = today_start_ts()
+        elif period == "week":
+            ts_filter = int(time.time()) - 7 * 86400
+        else:  # "all"
+            ts_filter = 0
+
+        rows = cost_db_query(
+            cost_path,
+            """SELECT model,
+                      SUM(input_tokens) AS input_tokens,
+                      SUM(output_tokens) AS output_tokens,
+                      SUM(cache_read_tokens) AS cache_read_tokens,
+                      SUM(cache_write_tokens) AS cache_write_tokens,
+                      SUM(cost_usd) AS cost_usd
+               FROM costs
+               WHERE timestamp >= ?
+               GROUP BY model""",
+            (ts_filter,),
+        )
+
+        if not rows:
             return empty
 
-        try:
-            conn = sqlite3.connect(cost_path)
-            try:
-                conn.row_factory = sqlite3.Row
+        models = []
+        total = 0.0
+        for r in rows:
+            cost = r["cost_usd"] or 0.0
+            total += cost
+            models.append({
+                "model": r["model"],
+                "input_tokens": r["input_tokens"] or 0,
+                "output_tokens": r["output_tokens"] or 0,
+                "cache_read_tokens": r["cache_read_tokens"] or 0,
+                "cache_write_tokens": r["cache_write_tokens"] or 0,
+                "cost_usd": round(cost, 6),
+            })
 
-                if period == "today":
-                    ts_filter = today_start_ts()
-                elif period == "week":
-                    ts_filter = int(time.time()) - 7 * 86400
-                else:  # "all"
-                    ts_filter = 0
-
-                rows = conn.execute(
-                    """SELECT model,
-                              SUM(input_tokens) AS input_tokens,
-                              SUM(output_tokens) AS output_tokens,
-                              SUM(cache_read_tokens) AS cache_read_tokens,
-                              SUM(cache_write_tokens) AS cache_write_tokens,
-                              SUM(cost_usd) AS cost_usd
-                       FROM costs
-                       WHERE timestamp >= ?
-                       GROUP BY model""",
-                    (ts_filter,),
-                ).fetchall()
-            finally:
-                conn.close()
-
-            models = []
-            total = 0.0
-            for r in rows:
-                cost = r["cost_usd"] or 0.0
-                total += cost
-                models.append({
-                    "model": r["model"],
-                    "input_tokens": r["input_tokens"] or 0,
-                    "output_tokens": r["output_tokens"] or 0,
-                    "cache_read_tokens": r["cache_read_tokens"] or 0,
-                    "cache_write_tokens": r["cache_write_tokens"] or 0,
-                    "cost_usd": round(cost, 6),
-                })
-
-            return {
-                "period": period,
-                "total_cost": round(total, 4),
-                "models": models,
-            }
-        except Exception:
-            log.exception("Failed to query cost DB")
-            return empty
+        return {
+            "period": period,
+            "total_cost": round(total, 4),
+            "models": models,
+        }
 
     def _build_monitor(self) -> dict:
         """Build monitor data for HTTP /monitor."""
@@ -1409,24 +1398,16 @@ class LucydDaemon:
 
     def _build_status(self) -> dict:
         """Build status dict for HTTP /status and SIGUSR2."""
-        import sqlite3
+        from config import today_start_ts
+
         today_cost = 0.0
-        try:
-            cost_path = str(self.config.cost_db)
-            if Path(cost_path).exists():
-                conn = sqlite3.connect(cost_path)
-                try:
-                    from config import today_start_ts
-                    today_start = today_start_ts()
-                    row = conn.execute(
-                        "SELECT SUM(cost_usd) FROM costs WHERE timestamp >= ?",
-                        (today_start,),
-                    ).fetchone()
-                    today_cost = row[0] or 0.0 if row else 0.0
-                finally:
-                    conn.close()
-        except Exception:  # noqa: S110 — cost DB query for status; graceful degradation
-            pass
+        rows = cost_db_query(
+            str(self.config.cost_db),
+            "SELECT SUM(cost_usd) FROM costs WHERE timestamp >= ?",
+            (today_start_ts(),),
+        )
+        if rows and rows[0][0]:
+            today_cost = rows[0][0]
 
         active_sessions = 0
         if self.session_mgr:

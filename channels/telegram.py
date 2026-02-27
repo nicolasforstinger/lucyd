@@ -175,7 +175,6 @@ class TelegramChannel:
         """Parse a Telegram message dict into InboundMessage, or None to skip."""
         from_user = message.get("from", {})
         user_id = from_user.get("id", 0)
-        chat_id = message.get("chat", {}).get("id", 0)
         message_id = message.get("message_id", 0)
 
         # Skip messages from the bot itself

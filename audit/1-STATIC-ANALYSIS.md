@@ -128,9 +128,11 @@ For each result: is this a provider-specific value used as a framework default? 
 
 ### P-022: Channel/transport identifiers in framework code
 ```bash
-grep -rn "telegram\|whatsapp\|signal\|discord" lucyd/ \
+grep -rn "telegram\|whatsapp\|signal\|discord" . \
   --exclude-dir=channels --exclude-dir=providers \
   --exclude-dir=providers.d --exclude-dir=tests \
+  --exclude-dir=.venv --exclude-dir=mutants \
+  --exclude-dir=.git --exclude-dir=audit \
   --include="*.py"
 ```
 Expected: zero matches. Channel names belong in `channels/` modules and config, never in framework logic. Also enforced by `tests/test_audit_agnostic.py:TestChannelAgnosticism`.

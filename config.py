@@ -731,6 +731,10 @@ class Config:
         return _deep_get(self._data, "behavior", "max_turns_per_message", default=50)
 
     @property
+    def max_cost_per_message(self) -> float:
+        return float(_deep_get(self._data, "behavior", "max_cost_per_message", default=0.0))
+
+    @property
     def compaction_threshold(self) -> int:
         return _deep_get(self._data, "behavior", "compaction", "threshold_tokens", default=150000)
 

@@ -252,7 +252,7 @@ Slow tests often indicate:
 - Sleep calls in test code
 - Inefficient fixtures that recreate expensive objects
 
-**Threshold:** Individual tests should complete in under 1 second. Test files should complete in under 5 seconds. The full suite should complete in under 30 seconds for ~800 tests. Anything dramatically slower indicates a problem.
+**Threshold:** Individual tests should complete in under 1 second. Test files should complete in under 5 seconds. The full suite should complete in under 60 seconds for ~1500 tests. Anything dramatically slower indicates a problem.
 
 ### 3e: Fixture Health
 

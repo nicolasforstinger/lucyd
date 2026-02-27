@@ -340,7 +340,12 @@ These are the highest-risk paths. Verify each one explicitly:
 - Transitive deps: pydantic, httpcore, certifi, idna, multidict, yarl, frozenlist, async-timeout, aiosignal, sniffio, distro, tqdm, typing-extensions
 - Versions are minimum-pinned (`>=`), not locked — check if any known CVEs exist for current installed versions
 - `pip audit` or `pip install pip-audit && pip-audit` can check for known vulnerabilities
+- **Automated:** `bin/audit-deps` wraps `pip-audit --strict` against the project venv — run it as the first step
 ```bash
+# Automated supply chain check (preferred)
+bin/audit-deps
+
+# Manual alternative
 pip list --format=json | python -c "import json,sys; [print(f'{p[\"name\"]}=={p[\"version\"]}') for p in json.load(sys.stdin)]"
 # Then check: pip-audit (if available) or manually check advisories
 ```

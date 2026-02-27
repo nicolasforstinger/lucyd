@@ -1,31 +1,3 @@
-[tool.ruff]
-target-version = "py314"
-line-length = 120
-
-[tool.ruff.lint]
-select = [
-    "S",      # flake8-bandit: security anti-patterns
-    "E",      # pycodestyle errors
-    "F",      # pyflakes: unused imports, undefined names, dead code
-    "W",      # pycodestyle warnings
-    "B",      # flake8-bugbear: common bug patterns
-    "UP",     # pyupgrade: outdated Python syntax
-    "SIM",    # flake8-simplify: unnecessary complexity
-    "RET",    # flake8-return: return statement issues
-    "PTH",    # flake8-use-pathlib: os.path → pathlib
-    "I",      # isort: import ordering
-    "TID",    # flake8-tidy-imports: import restrictions
-]
-
-ignore = [
-    "S603",   # subprocess call - check manually, don't auto-flag
-    "S607",   # partial executable path - check manually
-    "E501",   # line too long
-]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "S104", "S105", "S106", "S108"]
-
 [tool.mutmut]
 paths_to_mutate = ["tools/"]
 tests_dir = [
@@ -47,10 +19,15 @@ pythonpath = ["."]
 debug = false
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 strict = false
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+filterwarnings = [
+    # AsyncMock GC artifact in Python 3.13 — coroutine never awaited during mock teardown.
+    # Not a real issue: the mock's internal coroutine is created but never consumed.
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
+]

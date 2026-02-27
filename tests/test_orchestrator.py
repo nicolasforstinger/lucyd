@@ -1435,10 +1435,13 @@ class TestConsecutiveUserMessageMerge:
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             with patch("tools.status.set_current_session"):
-                # Should not crash on empty session
                 await daemon._process_message(
                     text="hello", sender="user", source="telegram",
                 )
+
+        # Verify message was added to session
+        session.add_user_message.assert_called_once()
+        assert len(session.messages) >= 1
 
     @pytest.mark.asyncio
     async def test_merge_handles_content_block_format(self, tmp_path):

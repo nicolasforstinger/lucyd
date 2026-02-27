@@ -308,7 +308,7 @@ For each test:
 After writing each test:
 ```bash
 # Run it
-python -m pytest tests/test_lucyd.py::TestClass::test_name -x -v
+python -m pytest tests/test_orchestrator.py::TestClass::test_name -x -v
 
 # Verify it's not trivially true — does it fail when it should?
 # Break the condition being tested, re-run, confirm failure
@@ -336,7 +336,7 @@ For each extracted function, run mutmut:
 ```bash
 # Configure for lucyd.py directory
 # paths_to_mutate = ["./"]  # or wherever extracted functions live
-# tests_dir = ["tests/test_lucyd.py"]
+# tests_dir = ["tests/test_orchestrator.py", "tests/test_daemon_helpers.py", "tests/test_daemon_integration.py"]
 # pythonpath = ["."]
 
 rm -rf mutants/ .mutmut-cache/

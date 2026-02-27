@@ -20,7 +20,6 @@ import json
 import mimetypes
 import os
 import re
-import sqlite3
 import sys
 import time
 import tomllib
@@ -60,37 +59,25 @@ def send_to_fifo(fifo_path: Path, message: dict) -> None:
 
 def query_cost(cost_db: Path, period: str) -> None:
     """Query cost from SQLite DB."""
+    from agentic import cost_db_query
+
     if not cost_db.exists():
         print("No cost data found.", file=sys.stderr)
         sys.exit(1)
 
-    conn = sqlite3.connect(str(cost_db))
+    sql = ("SELECT model, SUM(input_tokens), SUM(output_tokens), "
+           "SUM(cache_read_tokens), SUM(cost_usd) "
+           "FROM costs WHERE timestamp >= ? GROUP BY model")
 
     if period == "today":
         from config import today_start_ts
-        today_start = today_start_ts()
-        rows = conn.execute(
-            "SELECT model, SUM(input_tokens), SUM(output_tokens), "
-            "SUM(cache_read_tokens), SUM(cost_usd) "
-            "FROM costs WHERE timestamp >= ? GROUP BY model",
-            (today_start,)
-        ).fetchall()
+        ts_filter = today_start_ts()
     elif period == "week":
-        week_start = int(time.time()) - 7 * 86400
-        rows = conn.execute(
-            "SELECT model, SUM(input_tokens), SUM(output_tokens), "
-            "SUM(cache_read_tokens), SUM(cost_usd) "
-            "FROM costs WHERE timestamp >= ? GROUP BY model",
-            (week_start,)
-        ).fetchall()
+        ts_filter = int(time.time()) - 7 * 86400
     else:
-        rows = conn.execute(
-            "SELECT model, SUM(input_tokens), SUM(output_tokens), "
-            "SUM(cache_read_tokens), SUM(cost_usd) "
-            "FROM costs GROUP BY model"
-        ).fetchall()
+        ts_filter = 0
 
-    conn.close()
+    rows = cost_db_query(str(cost_db), sql, (ts_filter,))
 
     if not rows:
         print("No cost data for this period.")
@@ -218,18 +205,16 @@ def _format_size(nbytes: int) -> str:
 
 def _session_cost(cost_db: Path, session_id: str) -> float:
     """Query total cost for a session from cost.db."""
-    if not cost_db.exists():
-        return 0.0
-    try:
-        conn = sqlite3.connect(str(cost_db))
-        row = conn.execute(
-            "SELECT SUM(cost_usd) FROM costs WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        conn.close()
-        return row[0] or 0.0 if row else 0.0
-    except Exception:
-        return 0.0
+    from agentic import cost_db_query
+
+    rows = cost_db_query(
+        str(cost_db),
+        "SELECT SUM(cost_usd) FROM costs WHERE session_id = ?",
+        (session_id,),
+    )
+    if rows and rows[0][0]:
+        return rows[0][0]
+    return 0.0
 
 
 def show_monitor(state_dir: Path, agent_name: str = "Lucy") -> None:

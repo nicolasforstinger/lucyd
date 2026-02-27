@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 
+from consolidation import _normalize_entity as _normalize
+
 log = logging.getLogger(__name__)
 
 _conn: sqlite3.Connection | None = None
@@ -17,11 +19,6 @@ _conn: sqlite3.Connection | None = None
 def configure(conn: sqlite3.Connection) -> None:
     global _conn
     _conn = conn
-
-
-def _normalize(name: str) -> str:
-    """Normalize a name: lowercase, strip, underscores for spaces."""
-    return name.lower().strip().replace(" ", "_")
 
 
 def _resolve_entity(entity: str) -> str:
