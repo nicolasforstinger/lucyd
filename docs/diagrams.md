@@ -18,7 +18,7 @@ flowchart TD
 
     Q["asyncio.Queue<br/>lucyd.py:296"]
 
-    subgraph Loop["Message Loop — lucyd.py:1462"]
+    subgraph Loop["Message Loop — lucyd.py:1450"]
         DEB["Debounce<br/>500ms window"]
         ROUTE["Route Model<br/>config.route_model(source)"]
         MEDIA["Process Attachments<br/>image / voice / document"]
@@ -31,7 +31,7 @@ flowchart TD
         PERSIST["Persist Messages<br/>session.py:167"]
         SILENT{"Silent Token?"}
         DELIVER["Channel Delivery<br/>channel.send()"]
-        WEBHOOK["Webhook Callback<br/>lucyd.py:1219"]
+        WEBHOOK["Webhook Callback<br/>lucyd.py:1227"]
         COMPACT{"Compaction<br/>Needed?"}
         DO_COMPACT["Compact Session<br/>session.py:450"]
     end
@@ -348,7 +348,7 @@ flowchart TD
     NOTIFY --> AUTH
     AUTH --> RATE --> Q
 
-    Q --> LOOP["_message_loop()<br/>lucyd.py:1462"]
+    Q --> LOOP["_message_loop()<br/>lucyd.py:1450"]
     LOOP --> PROCESS["_process_message()<br/>lucyd.py:626"]
 
     PROCESS -->|telegram| SEND_TG
