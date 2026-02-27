@@ -102,6 +102,7 @@ def _make_daemon(tmp_path):
     daemon.session_mgr = MagicMock()
     daemon.session_mgr.get_or_create = MagicMock(return_value=session)
     daemon.session_mgr.build_recall = MagicMock(return_value="")
+    daemon.session_mgr.close_session = AsyncMock(return_value=True)
 
     daemon.context_builder = MagicMock()
     daemon.context_builder.build = MagicMock(return_value=[])
@@ -2156,3 +2157,100 @@ class TestMessageLevelRetry:
         user_msgs = [m for m in session.messages if m.get("role") == "user"]
         if user_msgs:
             assert isinstance(user_msgs[-1]["content"], str)
+
+
+# ─── Auto-close system sessions ─────────────────────────────────
+
+
+class TestAutoCloseSystemSessions:
+    """System-sourced sessions are one-shot — auto-closed after processing."""
+
+    @pytest.mark.asyncio
+    async def test_system_source_triggers_close(self, tmp_path):
+        """source='system' → close_session called after processing."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+        response = _make_response(text="done")
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="evolve", sender="evolution", source="system",
+                )
+
+        daemon.session_mgr.close_session.assert_called_once_with("evolution")
+
+    @pytest.mark.asyncio
+    async def test_telegram_source_not_closed(self, tmp_path):
+        """source='telegram' → close_session NOT called."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+        response = _make_response(text="hello")
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="hi", sender="Nicolas", source="telegram",
+                )
+
+        daemon.session_mgr.close_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_http_source_not_closed(self, tmp_path):
+        """source='http' → close_session NOT called (HTTP has follow-ups)."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+        response = _make_response(text="ok")
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="check", sender="http-n8n", source="http",
+                )
+
+        daemon.session_mgr.close_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cli_source_not_closed(self, tmp_path):
+        """source='cli' → close_session NOT called."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+        response = _make_response(text="ok")
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="hello", sender="Claudio", source="cli",
+                )
+
+        daemon.session_mgr.close_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_system_error_does_not_close(self, tmp_path):
+        """Agentic loop error → early return, no auto-close."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+
+        async def fake_loop(**kwargs):
+            raise RuntimeError("API down")
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+            with patch("tools.status.set_current_session"):
+                await daemon._process_message(
+                    text="evolve", sender="evolution", source="system",
+                )
+
+        # Error path returns early — close_session should NOT be called
+        daemon.session_mgr.close_session.assert_not_called()

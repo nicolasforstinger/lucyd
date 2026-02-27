@@ -508,6 +508,7 @@ class TestChannelDeliverySuppression:
 
         daemon.session_mgr = MagicMock()
         daemon.session_mgr.get_or_create = MagicMock(return_value=session)
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
 
         daemon.context_builder = MagicMock()
         daemon.context_builder.build = MagicMock(return_value=[])
@@ -692,6 +693,7 @@ class TestContextBuilderSourcePassthrough:
 
         daemon.session_mgr = MagicMock()
         daemon.session_mgr.get_or_create = MagicMock(return_value=session)
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
 
         daemon.context_builder = MagicMock()
         daemon.context_builder.build = MagicMock(return_value=[])

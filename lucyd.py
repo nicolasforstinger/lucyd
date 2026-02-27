@@ -1110,6 +1110,13 @@ class LucydDaemon:
                     session, compaction_provider, prompt,
                 )
 
+        # Auto-close one-shot system sessions (evolution, heartbeat, /notify).
+        # System-sourced messages are fire-and-forget — no operator on the
+        # other end, so the session would linger in the index indefinitely.
+        if source == "system":
+            await self.session_mgr.close_session(sender)
+            log.info("Auto-closed system session for %s", sender)
+
     async def _consolidate_on_close(self, session) -> None:
         """Consolidation callback fired before session archival."""
         try:
