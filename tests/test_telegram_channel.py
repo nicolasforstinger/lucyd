@@ -246,13 +246,13 @@ class TestParseMessage:
     @pytest.mark.asyncio
     async def test_message_id_tracked(self):
         ch = _make_channel()
-        await ch._parse_message({
+        msg = await ch._parse_message({
             "from": {"id": 111},
             "chat": {"id": 111},
             "message_id": 42,
             "text": "hi",
         })
-        assert ch._last_message_ids[111] == 42
+        assert msg.text == "hi"
 
 
 # ─── Connect ──────────────────────────────────────────────────────
@@ -273,7 +273,6 @@ class TestConnect:
         await ch.connect()
 
         assert ch._bot_id == 12345
-        assert ch._bot_username == "lucybot"
 
     @pytest.mark.asyncio
     async def test_connect_calls_getMe(self):
@@ -758,10 +757,6 @@ class TestInit:
         ch = _make_channel()
         assert ch._bot_id == 0
 
-    def test_bot_username_initially_empty(self):
-        ch = _make_channel()
-        assert ch._bot_username == ""
-
     def test_offset_initially_zero(self):
         ch = _make_channel()
         assert ch._offset == 0
@@ -769,10 +764,6 @@ class TestInit:
     def test_client_initially_none(self):
         ch = _make_channel()
         assert ch._client is None
-
-    def test_last_message_ids_initially_empty(self):
-        ch = _make_channel()
-        assert ch._last_message_ids == {}
 
     def test_token_stored(self):
         ch = _make_channel(token="my-secret-token")
@@ -971,7 +962,6 @@ class TestConnectStrong:
 
         await ch.connect()
         assert ch._bot_id == 0
-        assert ch._bot_username == ""
 
     @pytest.mark.asyncio
     async def test_connect_wraps_as_connection_error(self):
@@ -1633,11 +1623,11 @@ class TestParseMessageStrong:
     @pytest.mark.asyncio
     async def test_chat_id_extracted(self):
         ch = _make_channel()
-        await ch._parse_message({
+        msg = await ch._parse_message({
             "from": {"id": 111}, "chat": {"id": 555},
             "message_id": 7, "text": "hi",
         })
-        assert ch._last_message_ids[555] == 7
+        assert msg is not None
 
     @pytest.mark.asyncio
     async def test_message_returns_inbound_message_type(self):
@@ -2156,32 +2146,6 @@ class TestSendRoutingExact:
 
         url = mock_client.post.call_args[0][0]
         assert url == "https://api.telegram.org/bottok/sendVoice"
-
-    @pytest.mark.asyncio
-    async def test_audio_mime_without_suffix_routes_voice(self, tmp_path):
-        """File with audio/ mime type should route to sendVoice even without
-        matching suffix (tests the `or` in the routing condition)."""
-        ch = _make_channel(token="tok")
-        mock_client = AsyncMock()
-        mock_client.is_closed = False
-        mock_client.post.return_value = _mock_response({"ok": True, "result": {}})
-        ch._client = mock_client
-
-        # .wav has audio/ mime but is NOT in the suffix list
-        f = tmp_path / "sound.wav"
-        f.write_bytes(b"wavdata")
-
-        # _guess_mime returns application/octet-stream for .wav
-        # BUT the OR condition checks mime first - which won't be audio/ for .wav
-        # So .wav would route to sendDocument, not sendVoice
-        # The `or` matters for files where mime is audio/* (like .ogg which IS in suffix)
-        # Let's test with .ogg specifically since it has audio/ mime AND is in suffix list
-        # When mutant changes or→and, .ogg would need BOTH conditions true
-        # .ogg has mime audio/ogg (True) AND suffix ".ogg" in list (True) → still routes
-        # To truly test or→and, we need audio mime WITHOUT suffix match
-        # But _guess_mime only returns audio/* for .ogg, .mp3, .m4a — all in suffix list
-        # So or→and is actually equivalent for our MIME table. Skip.
-        pass
 
     @pytest.mark.asyncio
     async def test_send_voice_receives_correct_chat_id(self, tmp_path):

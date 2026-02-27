@@ -58,7 +58,7 @@ Lucyd is an agentic daemon — it connects to a messaging channel, receives mess
 - **Message reactions** — React to messages via Telegram reaction API
 - **Scheduled messages** — Queue messages for future delivery
 - **Live monitoring** — Real-time agentic loop state via `lucyd-send --monitor`
-- **Memory evolution** — Daily rewriting of workspace understanding files, anchored against a static identity file. Self-driven mode (agent evolves through its own agentic loop with full persona) or external mode (direct LLM call)
+- **Memory evolution** — Daily rewriting of workspace understanding files, anchored against a static identity file. Self-driven via agent's agentic loop with full persona context
 - **Modular providers** — Swap LLM providers by editing a load list, no model config changes
 
 ## Project Structure
@@ -108,7 +108,7 @@ Lucyd connects to the Telegram Bot API directly via httpx long polling. No exter
 
 ## Testing
 
-**1494 tests**, all passing. Five testing strategies:
+**1467 tests**, all passing. Five testing strategies:
 
 ```bash
 # Run the full suite

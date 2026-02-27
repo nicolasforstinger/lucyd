@@ -264,7 +264,7 @@ max_facts = 50                       # Max structured facts in evolution context
 max_episodes = 20                    # Max recent episodes in evolution context (default: 20)
 ```
 
-Runs via `bin/lucyd-consolidate --evolve` (cron daily at `04:20`, after maintenance). Also available via `POST /api/v1/evolve`. Files are evolved in order — later files can read freshly-evolved earlier files as context.
+Triggered via `bin/lucyd-evolve` (cron daily at `04:20`, after maintenance) or `POST /api/v1/evolve`. Both paths queue a self-driven evolution message to the daemon. Files are evolved in order — the evolution skill instructs the agent to rewrite earlier files first.
 
 ### [memory.recall]
 

@@ -437,16 +437,6 @@ class SessionManager:
 
         return "Session recall (last conversation):\n\n" + "\n\n".join(lines)
 
-    def create_subagent_session(self, parent_id: str, model: str = "") -> Session:
-        """Create a one-off sub-agent session."""
-        session_id = f"sub-{uuid.uuid4()}"
-        session = Session(session_id, self.dir, model=model)
-        session.append_event({
-            "type": "session", "id": session_id, "model": model,
-            "parent_session": parent_id,
-        })
-        return session
-
     async def compact_session(
         self,
         session: Session,

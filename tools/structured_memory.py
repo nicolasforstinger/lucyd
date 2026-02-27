@@ -20,19 +20,16 @@ def configure(conn: sqlite3.Connection) -> None:
 
 
 def _normalize(name: str) -> str:
+    """Normalize a name: lowercase, strip, underscores for spaces."""
     return name.lower().strip().replace(" ", "_")
 
 
 def _resolve_entity(entity: str) -> str:
     """Resolve through alias table."""
-    normalized = _normalize(entity)
+    from memory import resolve_entity
     if _conn is None:
-        return normalized
-    row = _conn.execute(
-        "SELECT canonical FROM entity_aliases WHERE alias = ?",
-        (normalized,),
-    ).fetchone()
-    return row[0] if row else normalized
+        return entity.lower().strip().replace(" ", "_")
+    return resolve_entity(entity, _conn)
 
 
 async def handle_memory_write(entity: str, attribute: str, value: str) -> str:

@@ -5,7 +5,6 @@ Usage:
     lucyd-consolidate                           # Cron mode: process workspace files
     lucyd-consolidate --backfill                # Backfill from archived sessions
     lucyd-consolidate --maintain                # Maintenance: stale facts, expired commitments
-    lucyd-consolidate --evolve                  # Evolve workspace understanding files
     lucyd-consolidate --config ~/lucyd/lucyd.toml
 """
 
@@ -41,8 +40,6 @@ def parse_args():
                         help="Backfill from archived sessions")
     parser.add_argument("--maintain", action="store_true",
                         help="Run maintenance (stale facts, expired commitments)")
-    parser.add_argument("--evolve", action="store_true",
-                        help="Evolve workspace understanding files (MEMORY.md, USER.md)")
     return parser.parse_args()
 
 
@@ -221,10 +218,6 @@ async def main():
             await run_backfill(config, conn)
         elif args.maintain:
             run_maintenance(config, conn)
-        elif args.evolve:
-            from evolution import run_evolution
-            result = await run_evolution(config, conn)
-            log.info("Evolution complete: %s", result)
         else:
             await run_cron(config, conn)
     finally:

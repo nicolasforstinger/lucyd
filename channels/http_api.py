@@ -164,7 +164,7 @@ class HTTPApi:
 
         # No token configured = service misconfigured, deny all protected endpoints
         if not self.auth_token:
-            return web.json_response(
+            return self._json_response(
                 {"error": "No auth token configured"}, status=503,
             )
 
@@ -173,7 +173,7 @@ class HTTPApi:
         if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:], self.auth_token):
             log.warning("HTTP API: auth failed from %s %s",
                         request.remote, request.path)
-            return web.json_response(
+            return self._json_response(
                 {"error": "unauthorized"}, status=401,
             )
         return await handler(request)
@@ -191,7 +191,7 @@ class HTTPApi:
         else:
             limiter = self._rate_limiter
         if not limiter.check(client_ip):
-            return web.json_response(
+            return self._json_response(
                 {"error": "rate limit exceeded"}, status=429,
             )
         return await handler(request)
@@ -241,14 +241,14 @@ class HTTPApi:
             body = await request.json()
         except web.HTTPException:
             raise
-        except (json.JSONDecodeError, Exception):
-            return web.json_response(
+        except (json.JSONDecodeError, ValueError):
+            return self._json_response(
                 {"error": "invalid JSON body"}, status=400,
             )
 
         message = body.get("message", "").strip()
         if not message:
-            return web.json_response(
+            return self._json_response(
                 {"error": "\"message\" field is required"}, status=400,
             )
 
@@ -289,7 +289,7 @@ class HTTPApi:
             return self._json_response(result, status=200)
         except TimeoutError:
             log.error("HTTP /chat timeout for sender=%s", sender)
-            return web.json_response(
+            return self._json_response(
                 {"error": "processing timeout"}, status=408,
             )
 
@@ -303,14 +303,14 @@ class HTTPApi:
             body = await request.json()
         except web.HTTPException:
             raise
-        except (json.JSONDecodeError, Exception):
-            return web.json_response(
+        except (json.JSONDecodeError, ValueError):
+            return self._json_response(
                 {"error": "invalid JSON body"}, status=400,
             )
 
         message = body.get("message", "").strip()
         if not message:
-            return web.json_response(
+            return self._json_response(
                 {"error": "\"message\" field is required"}, status=400,
             )
 
@@ -385,7 +385,7 @@ class HTTPApi:
         """GET /api/v1/cost — query cost by period."""
         period = request.query.get("period", "today")
         if period not in ("today", "week", "all"):
-            return web.json_response(
+            return self._json_response(
                 {"error": "period must be 'today', 'week', or 'all'"}, status=400,
             )
 
@@ -411,14 +411,14 @@ class HTTPApi:
             body = await request.json()
         except web.HTTPException:
             raise
-        except (json.JSONDecodeError, Exception):
-            return web.json_response(
+        except (json.JSONDecodeError, ValueError):
+            return self._json_response(
                 {"error": "invalid JSON body"}, status=400,
             )
 
         target = body.get("target", "all")
         if not target or not isinstance(target, str):
-            return web.json_response(
+            return self._json_response(
                 {"error": "\"target\" must be a non-empty string"}, status=400,
             )
 

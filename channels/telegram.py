@@ -7,7 +7,6 @@ Outbound: Bot API HTTP calls (httpx async).
 from __future__ import annotations
 
 import asyncio
-import collections
 import logging
 import random
 import time
@@ -72,10 +71,7 @@ class TelegramChannel:
                 log.debug("Contact: %s -> %d", name, user_id)
 
         self._bot_id: int = 0
-        self._bot_username: str = ""
         self._offset: int = 0  # getUpdates offset
-        # Last message_id per chat for reaction support (bounded to prevent unbounded growth)
-        self._last_message_ids: collections.OrderedDict[int, int] = collections.OrderedDict()
 
         self._client: httpx.AsyncClient | None = None
 
@@ -130,8 +126,7 @@ class TelegramChannel:
         try:
             me = await self._api("getMe")
             self._bot_id = me.get("id", 0)
-            self._bot_username = me.get("username", "")
-            log.info("Telegram bot connected: @%s (id=%d)", self._bot_username, self._bot_id)
+            log.info("Telegram bot connected: @%s (id=%d)", me.get("username", ""), self._bot_id)
         except Exception as e:
             log.error("Cannot connect to Telegram Bot API: %s", e)
             raise ConnectionError(f"Telegram Bot API unreachable: {e}") from e
@@ -196,11 +191,6 @@ class TelegramChannel:
         sender = self._id_to_name.get(user_id, "")
         if not sender:
             sender = from_user.get("username") or from_user.get("first_name") or str(user_id)
-
-        # Track message_id for reactions (cap at 1000 entries)
-        self._last_message_ids[chat_id] = message_id
-        if len(self._last_message_ids) > 1000:
-            self._last_message_ids.popitem(last=False)
 
         # Extract text
         text = message.get("text", "") or message.get("caption", "") or ""
@@ -342,7 +332,7 @@ class TelegramChannel:
             # Determine local filename
             if not filename:
                 filename = Path(file_path).name
-            local_path = self.download_dir / f"{int(time.time())}_{Path(filename).name}"
+            local_path = self.download_dir / f"{int(time.time() * 1000)}_{Path(filename).name}"
 
             local_path.write_bytes(resp.content)
             actual_size = size or len(resp.content)

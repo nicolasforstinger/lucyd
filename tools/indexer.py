@@ -58,8 +58,8 @@ def compute_chunk_id(path: str, text: str) -> str:
 
 def chunk_file(
     lines: list[str],
-    chunk_size: int = CHUNK_SIZE_CHARS,
-    overlap: int = CHUNK_OVERLAP_CHARS,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list[dict]:
     """Split lines into overlapping chunks by character count.
 
@@ -67,6 +67,11 @@ def chunk_file(
     Lines are 1-indexed, end_line inclusive. Splits on line boundaries
     only. Character count includes joining newlines.
     """
+    if chunk_size is None:
+        chunk_size = CHUNK_SIZE_CHARS
+    if overlap is None:
+        overlap = CHUNK_OVERLAP_CHARS
+
     if not lines:
         return []
 

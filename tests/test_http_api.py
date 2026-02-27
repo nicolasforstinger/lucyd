@@ -2115,8 +2115,8 @@ class TestAgentIdentity:
             assert "X-Lucyd-Agent" not in resp.headers
 
     @pytest.mark.asyncio
-    async def test_error_responses_no_agent(self, api_with_name, auth_headers):
-        """400/error responses don't include agent identity."""
+    async def test_error_responses_include_agent(self, api_with_name, auth_headers):
+        """Error responses include agent identity for consistency."""
         app = _make_app(api_with_name)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(
@@ -2125,7 +2125,7 @@ class TestAgentIdentity:
             )
             data = await resp.json()
             assert resp.status == 400
-            assert "agent" not in data
+            assert data["agent"] == "Lucy"
 
 
 # ─── Monitor Endpoint Tests ──────────────────────────────────────

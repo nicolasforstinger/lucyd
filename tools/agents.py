@@ -16,8 +16,6 @@ log = logging.getLogger(__name__)
 _config: Any = None
 _providers: dict = {}
 _tool_registry: Any = None
-_session_manager: Any = None
-
 # Tools that sub-agents should not have access to by default
 _DEFAULT_SUBAGENT_DENY = frozenset({"sessions_spawn", "tts", "react", "schedule_message"})
 
@@ -31,13 +29,12 @@ _default_timeout: float = 600.0
 
 
 def configure(config: Any, providers: dict, tool_registry: Any,
-              session_manager: Any) -> None:
-    global _config, _providers, _tool_registry, _session_manager, _subagent_deny
+              session_manager: Any = None) -> None:
+    global _config, _providers, _tool_registry, _subagent_deny
     global _default_model, _default_max_turns, _default_timeout
     _config = config
     _providers = providers
     _tool_registry = tool_registry
-    _session_manager = session_manager
     # Apply configurable deny-list
     custom_deny = getattr(config, "subagent_deny", None)
     if custom_deny is not None:
@@ -56,8 +53,7 @@ def _build_subagent_preamble(
     max_turns: int,
 ) -> str:
     """Build explicit preamble so sub-agents know their environment."""
-    import time as _time
-    now = _time.strftime("%a, %d. %b %Y - %H:%M %Z")
+    now = time.strftime("%a, %d. %b %Y - %H:%M %Z")
     parts = [
         "You are a sub-agent spawned to complete a specific task. "
         "Complete the task and return a clear, concise text summary of what you did.",

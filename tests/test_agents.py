@@ -58,18 +58,17 @@ def mock_config():
 def setup_agents(mock_registry, mock_provider, mock_config):
     """Configure agents module with mock dependencies."""
     import tools.agents as mod
-    original = (mod._config, mod._providers, mod._tool_registry, mod._session_manager,
+    original = (mod._config, mod._providers, mod._tool_registry,
                 mod._subagent_deny, mod._default_model, mod._default_max_turns, mod._default_timeout)
     mod._config = mock_config
     mod._providers = {"primary": mock_provider, "subagent": mock_provider}
     mod._tool_registry = mock_registry
-    mod._session_manager = MagicMock()
     mod._subagent_deny = set(mod._DEFAULT_SUBAGENT_DENY)
     mod._default_model = "primary"
     mod._default_max_turns = 50
     mod._default_timeout = 600.0
     yield
-    (mod._config, mod._providers, mod._tool_registry, mod._session_manager,
+    (mod._config, mod._providers, mod._tool_registry,
      mod._subagent_deny, mod._default_model, mod._default_max_turns, mod._default_timeout) = original
 
 

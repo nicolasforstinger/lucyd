@@ -167,12 +167,8 @@ def _normalize_entity(name: str) -> str:
 
 def _resolve_entity(name: str, conn: sqlite3.Connection) -> str:
     """Resolve an entity name through the alias table."""
-    normalized = _normalize_entity(name)
-    row = conn.execute(
-        "SELECT canonical FROM entity_aliases WHERE alias = ?",
-        (normalized,)
-    ).fetchone()
-    return row[0] if row else normalized
+    from memory import resolve_entity
+    return resolve_entity(name, conn)
 
 
 def _strip_json_fences(text: str) -> str:

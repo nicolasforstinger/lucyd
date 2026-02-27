@@ -23,7 +23,6 @@ def today_start_ts() -> int:
 
 class ConfigError(Exception):
     """Raised when configuration is invalid or missing."""
-    pass
 
 
 # Environment variable overrides for secrets

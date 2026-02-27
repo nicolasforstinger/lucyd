@@ -28,13 +28,16 @@ class OpenAICompatProvider:
         api_key: str,
         model: str,
         max_tokens: int = 4096,
-        base_url: str = "https://api.openai.com/v1",
+        base_url: str = "",
     ):
         if openai is None:
             raise RuntimeError(
                 "OpenAI-compatible provider requires: pip install openai"
             )
-        self.client = openai.OpenAI(api_key=api_key or "not-needed", base_url=base_url)
+        kwargs: dict = {"api_key": api_key or "not-needed"}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self.client = openai.OpenAI(**kwargs)
         self.model = model
         self.max_tokens = max_tokens
 

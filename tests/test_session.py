@@ -688,13 +688,6 @@ class TestSessionManagerLifecycle:
         result = await mgr.close_session_by_id("nonexistent-uuid")
         assert result is False
 
-    def test_create_subagent_session(self, tmp_sessions):
-        mgr = SessionManager(tmp_sessions)
-        sub = mgr.create_subagent_session("parent-123", model="haiku")
-        assert sub.id.startswith("sub-")
-        assert sub.model == "haiku"
-
-
 class TestSessionAddMessages:
     """add_user_message and add_assistant_message."""
 

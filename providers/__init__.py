@@ -7,11 +7,8 @@ implementations, not in the interface.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-
-log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -110,6 +107,6 @@ def create_provider(model_config: dict, api_key: str = "") -> LLMProvider:
             api_key=api_key,
             model=model_config["model"],
             max_tokens=model_config.get("max_tokens", 4096),
-            base_url=model_config.get("base_url", "https://api.openai.com/v1"),
+            base_url=model_config.get("base_url", ""),
         )
     raise ValueError(f"Unknown provider type: {provider_type!r}")

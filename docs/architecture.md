@@ -16,7 +16,7 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `memory_schema.py` | Schema management for all memory tables (11 tables: 4 unstructured + 4 structured + 2 infrastructure + 1 evolution). Safe to call on every startup — all `IF NOT EXISTS`. |
 | `consolidation.py` | Structured data extraction from sessions and workspace files via LLM. Extracts facts, episodes, commitments, and entity aliases. |
 | `synthesis.py` | Memory recall synthesis. Transforms raw recall blocks into prose (narrative/factual) before context injection. Optional — defaults to passthrough ("structured"). |
-| `evolution.py` | Memory evolution. Daily rewriting of workspace understanding files (e.g., MEMORY.md, USER.md) using daily logs, structured memory, and an identity anchor (IDENTITY.md). Two modes: self-driven (agent loads evolution skill via `lucyd-evolve`) or external LLM call (`lucyd-consolidate --evolve`). Also triggered via HTTP API (`POST /api/v1/evolve`). |
+| `evolution.py` | Memory evolution. Daily rewriting of workspace understanding files (e.g., MEMORY.md, USER.md) using daily logs, structured memory, and an identity anchor (IDENTITY.md). Self-driven: agent loads evolution skill via `lucyd-evolve` or `POST /api/v1/evolve`, rewrites files through full agentic loop with persona context. |
 | `channels/__init__.py` | Channel protocol definition (`connect`, `receive`, `send`, `send_typing`, `send_reaction`) and factory. |
 | `channels/telegram.py` | Telegram transport. Long polling via Bot API (httpx), sends via Bot API HTTP methods. |
 | `channels/cli.py` | stdin/stdout transport for testing. |
@@ -39,7 +39,7 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `tools/indexer.py` | Memory indexer. Scans workspace, chunks files, embeds via configurable provider, writes to SQLite FTS5 + vector DB. Used by `bin/lucyd-index`. Provider-agnostic — embedding model, base URL, and provider are set via `configure()`. |
 | `bin/lucyd-send` | CLI script. Writes JSON to the control FIFO. Queries cost DB and monitor state directly. |
 | `bin/lucyd-index` | Memory indexer CLI. Scans workspace, chunks, embeds, writes to SQLite FTS5 + vector DB. Cron at `:10`. |
-| `bin/lucyd-consolidate` | Memory consolidation CLI. Extracts structured facts/episodes/commitments from sessions (cron at `:15`). Also runs maintenance (`--maintain`, daily at `4:05`) and external evolution (`--evolve`). |
+| `bin/lucyd-consolidate` | Memory consolidation CLI. Extracts structured facts/episodes/commitments from sessions (cron at `:15`). Also runs maintenance (`--maintain`, daily at `4:05`). |
 | `bin/lucyd-evolve` | Self-driven evolution trigger. Pre-checks for new daily logs, sends FIFO message to daemon with `model: primary` override. Agent loads evolution skill and rewrites memory files through full agentic loop. Default evolution mode (cron at `4:20`). |
 | `providers.d/*.toml` | Provider config files. Each defines connection type, API key env var, and `[models.*]` sections. Loaded via `[providers] load` in `lucyd.toml`. |
 
@@ -230,17 +230,13 @@ Schema management is in `memory_schema.py` — all tables use `IF NOT EXISTS`. S
 
 The evolution system rewrites workspace understanding files daily using accumulated knowledge. Two modes:
 
-**Self-driven (default):** `bin/lucyd-evolve` pre-checks for new daily logs via `check_new_logs_exist()`, then sends a FIFO message to the running daemon with `"model": "primary"` override. The agent loads the `evolution` skill from workspace, reads its daily logs and current files using tools (read, write, edit), and rewrites MEMORY.md/USER.md through the full agentic loop with complete persona context. The model override in the FIFO message ensures the primary model is used (not the subagent model that system messages normally route to).
-
-**External (fallback):** `lucyd-consolidate --evolve` calls the LLM directly with no persona, no tools. Reads daily memory logs, structured facts/episodes/commitments, and an identity anchor file (IDENTITY.md), then asks the LLM to produce a fresh interpretation of each configured file. Still available for deployments without a running daemon or for non-persona agents.
+`bin/lucyd-evolve` pre-checks for new daily logs via `check_new_logs_exist()`, then sends a FIFO message to the running daemon with `"model": "primary"` override. The agent loads the `evolution` skill from workspace, reads its daily logs and current files using tools (read, write, edit), and rewrites MEMORY.md/USER.md through the full agentic loop with complete persona context. The model override in the FIFO message ensures the primary model is used (not the subagent model that system messages normally route to).
 
 **Pipeline:** `:05` git auto-commit → `:10` index → `:15` consolidate → `4:05` maintain → `4:20` evolve (via `lucyd-evolve`)
 
-**Validation gates (external mode):** Rejects empty output, output shorter than 50% of original, or output longer than 200% of original. Writes atomically via temp file + `os.replace()`. Self-driven mode delegates validation to the agent's own judgment via the evolution skill.
+**Files are evolved in order** — the evolution skill instructs the agent to rewrite MEMORY.md first, then USER.md. The identity anchor (IDENTITY.md) is read but never modified.
 
-**Files are evolved in order** — later files receive the freshly-evolved content of earlier files as extra context (e.g., USER.md sees the new MEMORY.md). The identity anchor (IDENTITY.md) is read but never modified.
-
-**Triggers:** `lucyd-evolve` (self-driven, cron default), `lucyd-consolidate --evolve` (external fallback), or `POST /api/v1/evolve` (HTTP API, bearer-token protected).
+**Triggers:** `lucyd-evolve` (cron) or `POST /api/v1/evolve` (HTTP API, bearer-token protected).
 
 ## Provider Abstraction
 

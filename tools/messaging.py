@@ -60,7 +60,7 @@ async def tool_message(target: str, text: str = "", attachments: list[str] | Non
             parts.append(f"{len(attachments)} attachment(s)")
         return f"Sent {' + '.join(parts)} to {target}"
     except Exception as e:
-        return f"Error: Message delivery failed: {type(e).__name__}"
+        return f"Error: Message delivery failed: {e}"
 
 
 async def tool_react(target: str, emoji: str, sender: str = "") -> str:

@@ -18,7 +18,7 @@ flowchart TD
 
     Q["asyncio.Queue<br/>lucyd.py:296"]
 
-    subgraph Loop["Message Loop — lucyd.py:1445"]
+    subgraph Loop["Message Loop — lucyd.py:1462"]
         DEB["Debounce<br/>500ms window"]
         ROUTE["Route Model<br/>config.route_model(source)"]
         MEDIA["Process Attachments<br/>image / voice / document"]
@@ -249,7 +249,7 @@ flowchart TD
         THRESHOLD{"Token usage<br/>vs threshold?"}
         NORMAL((" "))
         WARN["Inject warning<br/>pending_system_warning"]
-        COMPACT["compact_session()<br/>session.py:450<br/>replace 2/3 messages<br/>with summary"]
+        COMPACT["compact_session()<br/>session.py:440<br/>replace 2/3 messages<br/>with summary"]
     end
 
     CLOSE["close_session()<br/>session.py:323"]
@@ -348,7 +348,7 @@ flowchart TD
     NOTIFY --> AUTH
     AUTH --> RATE --> Q
 
-    Q --> LOOP["_message_loop()<br/>lucyd.py:1445"]
+    Q --> LOOP["_message_loop()<br/>lucyd.py:1462"]
     LOOP --> PROCESS["_process_message()<br/>lucyd.py:626"]
 
     PROCESS -->|telegram| SEND_TG
