@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""lucyd-evolve — trigger self-driven memory evolution via the daemon.
+
+Pre-checks whether new daily logs exist since the last evolution.
+If so, sends a system message to the daemon FIFO instructing the agent
+to load the evolution skill and rewrite its own memory files.
+
+Usage:
+    lucyd-evolve                              # Default config
+    lucyd-evolve --config ~/lucyd/lucyd.toml  # Explicit config
+"""
+
+import argparse
+import errno
+import json
+import logging
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+log = logging.getLogger("lucyd-evolve")
+
+
+def setup_logging():
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=logging.INFO,
+    )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Trigger self-driven memory evolution")
+    parser.add_argument(
+        "-c", "--config",
+        default=os.environ.get("LUCYD_CONFIG", "lucyd.toml"),
+        help="Path to lucyd.toml",
+    )
+    return parser.parse_args()
+
+
+def send_to_fifo(fifo_path: Path, message: dict) -> bool:
+    """Write JSON message to FIFO (non-blocking).  Returns True on success."""
+    try:
+        fd = os.open(str(fifo_path), os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as e:
+        if e.errno == errno.ENXIO:
+            log.error("Daemon is not running (no reader on FIFO)")
+            return False
+        raise
+
+    try:
+        data = json.dumps(message) + "\n"
+    except Exception:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "w") as f:
+        f.write(data)
+    return True
+
+
+def main():
+    setup_logging()
+    args = parse_args()
+
+    from config import load_config
+    from evolution import check_new_logs_exist
+    from memory_schema import ensure_schema
+
+    config = load_config(args.config)
+
+    # Open memory DB for state check
+    conn = sqlite3.connect(config.memory_db, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+
+    try:
+        has_new, since_date = check_new_logs_exist(config.workspace, conn)
+    finally:
+        conn.close()
+
+    if not has_new:
+        log.info("No new daily logs since %s, skipping evolution", since_date or "ever")
+        return
+
+    log.info("New daily logs found since %s, triggering self-driven evolution", since_date or "ever")
+
+    # Check FIFO exists
+    fifo_path = config.state_dir / "control.pipe"
+    if not fifo_path.exists():
+        log.error("FIFO not found at %s — is the daemon running?", fifo_path)
+        sys.exit(1)
+
+    # Send system message to daemon — Lucy will load the evolution skill
+    # model=primary overrides system→subagent routing so Lucy uses Sonnet, not Haiku
+    msg = {
+        "type": "system",
+        "sender": "evolution",
+        "tier": "full",
+        "model": "primary",
+        "text": (
+            "[AUTOMATED SYSTEM MESSAGE] "
+            "Load the evolution skill and evolve your memory files. "
+            "New daily logs are available."
+        ),
+    }
+
+    if send_to_fifo(fifo_path, msg):
+        log.info("Evolution trigger sent to daemon")
+    else:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

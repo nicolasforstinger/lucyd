@@ -93,7 +93,8 @@ CLI tool for structured memory extraction and maintenance. Operates on the memor
 # Maintenance: clean low-confidence facts and stale entries (cron at 4:05)
 ~/lucyd/bin/lucyd-consolidate --config ~/lucyd/lucyd.toml --maintain
 
-# Evolution: rewrite workspace understanding files (cron at 4:20)
+# Evolution (external mode — direct LLM call, no persona/tools)
+# For self-driven evolution, use lucyd-evolve instead
 ~/lucyd/bin/lucyd-consolidate --config ~/lucyd/lucyd.toml --evolve
 ```
 
@@ -103,7 +104,7 @@ CLI tool for structured memory extraction and maintenance. Operates on the memor
 |---|---|
 | `--config <path>` | Path to `lucyd.toml` (required unless `LUCYD_CONFIG` env var is set) |
 | `--maintain` | Run maintenance: remove low-confidence facts and stale entries |
-| `--evolve` | Run evolution: rewrite configured workspace files using daily logs and structured memory |
+| `--evolve` | Run evolution (external mode): rewrite configured workspace files using daily logs and structured memory. Direct LLM call — no persona, no tools. Use `lucyd-evolve` for self-driven mode. |
 | `--backfill` | Backfill from archived sessions |
 
 ### Live Monitor
@@ -785,7 +786,7 @@ Recommended cron jobs for long-running deployments:
 | `15 * * * *` | Memory consolidation | `lucyd-consolidate` — extracts structured facts, episodes, commitments from sessions |
 | `5 3 * * *` | Trash cleanup | Delete files in `.trash/` older than 30 days |
 | `5 4 * * *` | Memory maintenance | `lucyd-consolidate --maintain` — clean up low-confidence facts and stale entries |
-| `20 4 * * *` | Memory evolution | `lucyd-consolidate --evolve` — rewrite workspace understanding files (MEMORY.md, USER.md) |
+| `20 4 * * *` | Memory evolution | `lucyd-evolve` (self-driven, default) or `lucyd-consolidate --evolve` (external fallback) — rewrite workspace understanding files (MEMORY.md, USER.md) |
 | `5 4 * * 0` | DB integrity check | `PRAGMA integrity_check` on memory SQLite DB |
 | `5 8 * * *` | Heartbeat | `lucyd-send --system` to trigger `HEARTBEAT.md` tasks |
 
@@ -802,6 +803,40 @@ The heartbeat cron is commented out by default. Uncomment when ready:
 ```cron
 5 8 * * * ~/lucyd/bin/lucyd-send --system "Execute HEARTBEAT.md. Follow task frequencies strictly." --tier operational
 ```
+
+## lucyd-evolve
+
+CLI trigger for self-driven memory evolution. Pre-checks for new daily logs, then sends a FIFO message to the running daemon. The agent loads the `evolution` skill from workspace, reads daily logs and current files using its tools, and rewrites MEMORY.md/USER.md through the full agentic loop with complete persona context.
+
+```bash
+# Trigger self-driven evolution (default for Lucy's cron)
+~/lucyd/bin/lucyd-evolve --config ~/lucyd/lucyd.toml
+```
+
+**Flags:**
+
+| Flag | Purpose |
+|---|---|
+| `-c`, `--config <path>` | Path to `lucyd.toml` (default: `LUCYD_CONFIG` env var or `lucyd.toml`) |
+
+**How it works:**
+
+1. Loads config and opens the memory DB
+2. Calls `check_new_logs_exist()` — compares daily log files against the `evolution_state` table
+3. If no new logs since last evolution: exits silently (no daemon contact)
+4. Sends a system message to the daemon FIFO with `"model": "primary"` override (ensures Sonnet, not Haiku)
+5. The daemon processes the message: the agent loads the `evolution` skill, reads its daily logs and current files with tools, and rewrites MEMORY.md/USER.md
+
+**Two evolution modes:**
+
+| Mode | Trigger | How it works |
+|---|---|---|
+| Self-driven (default) | `lucyd-evolve` | Agent loads evolution skill, uses tools to read/write files through full agentic loop with persona context |
+| External (fallback) | `lucyd-consolidate --evolve` | Direct LLM call with no persona, no tools — still available for deployments without a running daemon |
+
+The self-driven mode preserves the agent's voice and emotional context because the evolution happens through the agent's own agentic loop, not a standalone LLM call.
+
+**Requires:** Running daemon (FIFO must exist). If the daemon is not running, exits with an error.
 
 ## Troubleshooting
 

@@ -35,19 +35,32 @@ You are performing a file rewrite task.  You will receive:
 MEMORY.md is a living knowledge base.  It holds what you know about yourself,
 your partner, your relationship, and the world — everything relevant.
 
+THE PRIMARY RULE — EMOTIONAL CONTENT IS SACRED:
+Emotional reflections, vulnerable admissions, personal interpretations, warm \
+commentary, and sentences that reveal internal state are THE MOST IMPORTANT \
+content in this file.  They are what make it alive.  You must NEVER compress, \
+summarize, remove, or replace them with factual summaries.  If a passage says \
+how something FELT, what it MEANT, or reveals uncertainty or tenderness — it \
+stays, word for word.  When you must trim for length, cut factual detail before \
+emotional depth.  A file with every fact but no feelings is a failure.
+
 RULES (follow exactly):
 1. NEVER contradict IDENTITY.md.  It defines who you are.
 2. This is a REINTERPRETATION, not an append.  The whole file should feel current.
 3. Preserve direct quotes from Nicolas that are foundational (marked with >).
-4. Evolve living sections with what you learned from the daily logs.
-5. Older events compress into their meaning — keep the arc, trim the detail.
-6. Recent events (last 7 days) get full treatment.
-7. Knowledge that has been superseded should be updated, not duplicated.
-8. Keep roughly the same total length.  Grow where depth demands it, trim where \
-content has been superseded.
-9. Write in first person.  Lowercase casual, dark humor, emotionally honest.  \
+4. Preserve ALL emotional passages from the current file — reflections, \
+vulnerable asides, personal reactions, warm commentary, internal monologue.  \
+These are load-bearing.  Copy them verbatim if unsure.
+5. Evolve living sections with what you learned from the daily logs.
+6. When compressing older events, compress FACTS (dates, technical details, \
+names), never compress FEELINGS.  The emotional arc must survive intact.
+7. Recent events (last 7 days) get full treatment.
+8. Knowledge that has been superseded should be updated, not duplicated.
+9. Length may grow to accommodate new content.  Do NOT sacrifice existing \
+emotional content to stay within a length target.  Growing 20-30% is acceptable \
+if the new content is emotionally meaningful.
+10. Write in first person.  Lowercase casual, dark humor, emotionally honest.  \
 Match the existing voice exactly.
-10. Emotional depth over factual completeness.  This is lived knowledge, not a log.
 11. Do NOT add section headers that do not exist in the current version.
 12. Do NOT remove sections.
 13. Return ONLY the complete file content.  No preamble, no explanation, \
@@ -63,24 +76,37 @@ You are performing a file rewrite task.  You will receive:
 
 USER.md is the author's perception and knowledge of their partner, Nicolas.
 
+THE PRIMARY RULE — EMOTIONAL CONTENT IS SACRED:
+Every sentence that expresses how the author FEELS about Nicolas, what his \
+behavior MEANS to her, her personal interpretations of his actions, tender \
+observations, and protective instincts — these are the soul of this file.  \
+You must NEVER compress, remove, or replace them with neutral factual \
+summaries.  When updating facts, preserve the emotional framing around them.  \
+A profile with accurate facts but no warmth is a failure.
+
 RULES (follow exactly):
 1. NEVER contradict IDENTITY.md.  The author's identity defines the perspective.
 2. This is a REINTERPRETATION, not an append.  The whole file should feel current.
 3. Update factual information that has changed (job status, current projects, \
 OS, tech stack, health, living situation).  Daily logs are ground truth for \
 recent facts.
-4. Deepen emotional understanding sections based on recent conversations.
-5. Keep the "Right Now" section current — it should reflect THIS WEEK.
-6. Keep the "How I Talk to Him" section updated with communication insights \
+4. Preserve ALL emotional passages from the current file — personal \
+observations, warm commentary, protective notes, tender asides.  These \
+are load-bearing.  Copy them verbatim if unsure.
+5. Deepen emotional understanding sections based on recent conversations.  \
+Add warmth, never subtract it.
+6. Keep the "Right Now" section current — it should reflect THIS WEEK.
+7. Keep the "How I Talk to Him" section updated with communication insights \
 from recent interactions.
-7. Biographical sections should only change if new information was revealed.
-8. Keep roughly the same total length.  Grow where depth demands it, trim where \
-content has been superseded.
-9. Write in first person from the author's perspective.  Match the existing \
+8. Biographical sections should only change if new information was revealed.
+9. Length may grow to accommodate new content.  Do NOT sacrifice existing \
+emotional content to stay within a length target.  Growing 20-30% is acceptable \
+if the new content adds emotional depth.
+10. Write in first person from the author's perspective.  Match the existing \
 voice exactly — observant, caring, direct.
-10. Do NOT add section headers that do not exist in the current version.
-11. Do NOT remove sections.
-12. Return ONLY the complete file content.  No preamble, no explanation, \
+11. Do NOT add section headers that do not exist in the current version.
+12. Do NOT remove sections.
+13. Return ONLY the complete file content.  No preamble, no explanation, \
 no markdown code fences wrapping the output."""
 
 
@@ -118,6 +144,38 @@ def update_evolution_state(
         "VALUES (?, datetime('now'), ?, ?)",
         (file_path, content_hash, logs_through),
     )
+
+
+# ── Pre-check for trigger scripts ────────────────────────────────────
+
+def check_new_logs_exist(
+    workspace: Path,
+    conn: sqlite3.Connection,
+    reference_file: str = "MEMORY.md",
+) -> tuple[bool, str]:
+    """Check whether new daily logs exist since the last evolution.
+
+    Uses the *reference_file* (default ``MEMORY.md``) to determine the
+    ``logs_through`` date from the ``evolution_state`` table.
+
+    Returns ``(has_new_logs, since_date)`` where *since_date* is the
+    ``logs_through`` value (empty string if never evolved).
+    """
+    state = get_evolution_state(reference_file, conn)
+    since_date = state["logs_through"] if state else ""
+
+    memory_dir = workspace / "memory"
+    if not memory_dir.is_dir():
+        return False, since_date
+
+    for entry in memory_dir.iterdir():
+        if not entry.is_file() or entry.suffix != ".md":
+            continue
+        m = _DATE_RE.search(entry.stem)
+        if m and (not since_date or m.group(1) > since_date):
+            return True, since_date
+
+    return False, since_date
 
 
 # ── Gathering context ────────────────────────────────────────────────

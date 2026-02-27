@@ -9,6 +9,7 @@ import pytest
 
 from evolution import (
     build_evolution_prompt,
+    check_new_logs_exist,
     evolve_file,
     gather_daily_logs,
     gather_structured_context,
@@ -134,6 +135,51 @@ class TestEvolutionState:
             ("MEMORY.md",),
         ).fetchall()
         assert len(rows) == 1
+
+
+# ── TestCheckNewLogsExist ───────────────────────────────────────
+
+
+class TestCheckNewLogsExist:
+    def test_returns_true_when_no_prior_state(self, workspace, mem_conn):
+        """First run — no state, all logs are 'new'."""
+        has_new, since = check_new_logs_exist(workspace, mem_conn)
+        assert has_new is True
+        assert since == ""
+
+    def test_returns_false_when_no_new_logs(self, workspace, mem_conn):
+        """All logs are older than logs_through — skip."""
+        update_evolution_state("MEMORY.md", "abc", "2026-02-22", mem_conn)
+        mem_conn.commit()
+        has_new, since = check_new_logs_exist(workspace, mem_conn)
+        assert has_new is False
+        assert since == "2026-02-22"
+
+    def test_returns_true_when_new_logs_exist(self, workspace, mem_conn):
+        """New logs after logs_through — trigger."""
+        update_evolution_state("MEMORY.md", "abc", "2026-02-20", mem_conn)
+        mem_conn.commit()
+        has_new, since = check_new_logs_exist(workspace, mem_conn)
+        assert has_new is True
+        assert since == "2026-02-20"
+
+    def test_returns_false_when_no_memory_dir(self, tmp_path, mem_conn):
+        """No memory directory at all — nothing to evolve."""
+        ws = tmp_path / "empty-workspace"
+        ws.mkdir()
+        has_new, since = check_new_logs_exist(ws, mem_conn)
+        assert has_new is False
+
+    def test_uses_reference_file_for_state(self, workspace, mem_conn):
+        """Custom reference file is used for state lookup."""
+        update_evolution_state("USER.md", "abc", "2026-02-22", mem_conn)
+        mem_conn.commit()
+        # Default ref is MEMORY.md — no state for it, so has_new=True
+        has_new, _ = check_new_logs_exist(workspace, mem_conn)
+        assert has_new is True
+        # With USER.md as ref — state exists, all logs ≤ 2026-02-22
+        has_new, _ = check_new_logs_exist(workspace, mem_conn, reference_file="USER.md")
+        assert has_new is False
 
 
 # ── TestGatherDailyLogs ─────────────────────────────────────────

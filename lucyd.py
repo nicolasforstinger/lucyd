@@ -632,6 +632,7 @@ class LucydDaemon:
         attachments: list | None = None,
         response_future: asyncio.Future | None = None,
         notify_meta: dict | None = None,
+        model_override: str | None = None,
     ) -> None:
         """Process a single message through the agentic loop."""
 
@@ -640,8 +641,8 @@ class LucydDaemon:
             if response_future is not None and not response_future.done():
                 response_future.set_result(result)
 
-        # Route to model
-        model_name = self.config.route_model(source)
+        # Route to model (FIFO messages can override via "model" field)
+        model_name = model_override or self.config.route_model(source)
 
         # Route to vision model if message has image attachments
         has_images = attachments and any(
@@ -1478,10 +1479,12 @@ class LucydDaemon:
             source = msgs[0].get("source", "")
             tier = msgs[0].get("tier", "full")
             n_meta = msgs[0].get("notify_meta")
+            model_override = msgs[0].get("model")
             await self._process_message(
                 combined_text, sender, source, tier,
                 attachments=combined_attachments or None,
                 notify_meta=n_meta,
+                model_override=model_override,
             )
 
         async def process_http_immediate(item: dict) -> None:
@@ -1522,6 +1525,7 @@ class LucydDaemon:
                 tier = "full"
                 attachments = item.attachments
                 notify_meta = None
+                model_override = None
                 # Store last inbound timestamp for reaction tool (ms int)
                 self._last_inbound_ts[sender] = int(item.timestamp * 1000)
                 self._last_inbound_ts.move_to_end(sender)
@@ -1555,6 +1559,7 @@ class LucydDaemon:
                 tier = item.get("tier", "full" if source == "user" else "operational")
                 attachments = item.get("attachments")
                 notify_meta = item.get("notify_meta")
+                model_override = item.get("model")
             else:
                 continue
 
@@ -1565,7 +1570,8 @@ class LucydDaemon:
             if sender not in pending:
                 pending[sender] = []
             pending[sender].append({"text": text, "source": source, "tier": tier,
-                                    "attachments": attachments, "notify_meta": notify_meta})
+                                    "attachments": attachments, "notify_meta": notify_meta,
+                                    "model": model_override})
 
             # Wait for more messages
             await asyncio.sleep(debounce_s)
