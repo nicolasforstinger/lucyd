@@ -2343,12 +2343,12 @@ class TestHistoryEndpoint:
 
 
 class TestEvolveEndpoint:
-    """POST /api/v1/evolve — trigger memory evolution."""
+    """POST /api/v1/evolve — queue self-driven evolution."""
 
     @pytest.fixture
     def api_with_evolve(self, queue):
         async def mock_evolve():
-            return {"evolved": ["MEMORY.md", "USER.md"], "skipped": [], "error": None}
+            return {"status": "queued", "session": "evolution"}
         return HTTPApi(
             queue=queue,
             host="127.0.0.1",
@@ -2363,10 +2363,9 @@ class TestEvolveEndpoint:
         app = _make_app(api_with_evolve)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post("/api/v1/evolve", headers=auth_headers)
-            assert resp.status == 200
+            assert resp.status == 202
             data = await resp.json()
-            assert data["evolved"] == ["MEMORY.md", "USER.md"]
-            assert data["error"] is None
+            assert data["status"] == "queued"
 
     @pytest.mark.asyncio
     async def test_evolve_no_callback(self, api, auth_headers):

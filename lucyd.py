@@ -1444,21 +1444,20 @@ class LucydDaemon:
         }
 
     async def _handle_evolve(self) -> dict:
-        """Handle evolution request from HTTP API."""
-        import sqlite3
-
-        from evolution import run_evolution
-        from memory_schema import ensure_schema
-
-        conn = sqlite3.connect(str(self.config.memory_db), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-        ensure_schema(conn)
-        try:
-            result = await run_evolution(self.config, conn)
-        finally:
-            conn.close()
-        return result
+        """Handle evolution request — push to queue for self-driven evolution."""
+        msg = {
+            "type": "system",
+            "sender": "evolution",
+            "tier": "full",
+            "model": "primary",
+            "text": (
+                "[AUTOMATED SYSTEM MESSAGE] "
+                "Load the evolution skill and evolve your memory files. "
+                "New daily logs are available."
+            ),
+        }
+        await self.queue.put(msg)
+        return {"status": "queued", "session": "evolution"}
 
     async def _message_loop(self) -> None:
         """Main message processing loop — sequential."""

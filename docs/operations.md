@@ -600,36 +600,27 @@ Events are deduplicated by `timestamp` across active and archive log files, sort
 
 #### `POST /api/v1/evolve`
 
-Trigger memory evolution — rewrites configured workspace files (e.g., MEMORY.md, USER.md) using daily logs, structured memory, and the identity anchor. Synchronous — waits for evolution to complete.
-
-Requires `[memory.evolution] enabled = true` in config.
+Queue self-driven memory evolution. The agent loads the `evolution` skill and rewrites MEMORY.md/USER.md through the full agentic loop with complete persona context. Fire-and-forget — returns 202 immediately.
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8100/api/v1/evolve
 ```
 
-**Response (200 — success):**
+**Response (202 — queued):**
 
 ```json
 {
-  "evolved": ["MEMORY.md", "USER.md"],
-  "skipped": [],
-  "error": null
+  "status": "queued",
+  "session": "evolution"
 }
 ```
-
-| Field | Type | Description |
-|---|---|---|
-| `evolved` | string[] | Files that were rewritten |
-| `skipped` | string[] | Files skipped (no new logs, validation failure) |
-| `error` | string\|null | Error message, or null on success |
 
 **Error responses:**
 
 | Status | Body | Condition |
 |---|---|---|
-| 503 | `{"evolved": [], "skipped": [], "error": "evolution not available"}` | Evolution not configured or disabled |
-| 500 | `{"evolved": [], "skipped": [], "error": "internal error"}` | Exception during evolution |
+| 503 | `{"error": "evolution not available"}` | Evolution callback not configured |
+| 500 | `{"error": "internal error"}` | Exception queuing the message |
 
 **Rate limit group:** Standard
 

@@ -442,11 +442,10 @@ class HTTPApi:
         return self._json_response(history_data, status=200)
 
     async def _handle_evolve(self, request: web.Request) -> web.Response:
-        """POST /api/v1/evolve — trigger memory evolution."""
+        """POST /api/v1/evolve — queue self-driven evolution."""
         if not self._handle_evolve_cb:
             return self._json_response(
-                {"evolved": [], "skipped": [], "error": "evolution not available"},
-                status=503,
+                {"error": "evolution not available"}, status=503,
             )
 
         try:
@@ -454,8 +453,7 @@ class HTTPApi:
         except Exception:
             log.exception("Evolution endpoint failed")
             return self._json_response(
-                {"evolved": [], "skipped": [], "error": "internal error"},
-                status=500,
+                {"error": "internal error"}, status=500,
             )
 
-        return self._json_response(result, status=200)
+        return self._json_response(result, status=202)
