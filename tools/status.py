@@ -6,7 +6,6 @@ Returns current session stats for context-aware agents.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import Any
 
 from agentic import cost_db_query

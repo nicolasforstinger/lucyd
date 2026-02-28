@@ -592,15 +592,41 @@ Verify the default is either a constant (safe) or resolved via `None` sentinel (
 
 ---
 
+## P-026: SDK mid-stream SSE errors misclassified by exception type
+
+**Origin:** Production incident 2026-02-27 — Anthropic API returned `overloaded_error` during a streaming response. The two-tier retry system (P-014) did not fire. Root cause: the Anthropic SDK's `Stream.__stream__()` catches SSE `"error"` events and calls `_make_status_error(response=self.response)`, but `self.response` is the original HTTP 200 — not the error. So `overloaded_error` (equivalent to HTTP 529) arrives as `APIStatusError(status_code=200)`. The retry classifier saw `200 < 429` and classified it as non-transient. SDK's own `max_retries` also doesn't apply — it only covers the HTTP handshake, not stream iteration.
+
+**Class:** An SDK or client library that wraps errors from one layer (SSE events, WebSocket frames, gRPC status codes) using metadata from a different layer (HTTP status). The resulting exception has correct content (error body) but wrong classification metadata (status code, exception class). Generic retry/error-handling logic that dispatches on the metadata misses the error.
+
+**Fix:** Provider-level workaround in `anthropic_compat.py` — catches `APIStatusError` with `status_code < 429` in the streaming path, inspects body for `overloaded_error` / `api_error`, re-raises as correct exception class (`OverloadedError` / `InternalServerError`) with a synthesized `httpx.Response` carrying the correct status code (529/500). This ensures the re-raised exception is indistinguishable from what the SDK should have produced — no other module needs to know the workaround exists. Tagged `HOTFIX(2026-02-27)`. Canary test `test_sdk_bug_still_exists` in `test_providers.py` will fail when the SDK is fixed — that's the signal to delete the hotfix and the `TestAnthropicMidstreamSSEReRaise` test class. SDK: `anthropics/anthropic-sdk-python` (issue #688).
+
+**Check (Stage 5):**
+For each provider's `complete()` method, trace the error path for streaming vs non-streaming calls:
+1. What exceptions can the SDK raise during stream iteration (not just connection)?
+2. Do those exceptions carry the correct status code and class for the retry classifier?
+3. If the SDK wraps transport-layer errors using HTTP-layer metadata, is the provider compensating?
+
+```bash
+# Find streaming call sites in providers
+grep -rn "\.stream(\|\.aiter\|async for" providers/*.py | grep -v test | grep -v __pycache__
+```
+
+For each streaming call: verify that errors during iteration (not just connection) are handled or re-raised with correct classification.
+
+**Check (Stage 3):**
+Mutation-test the provider's error re-raise logic. Key mutants: removing the body inspection, changing the `status_code < 429` threshold, or removing individual `etype` checks. All should be killed by the `TestAnthropicMidstreamSSEReRaise` tests.
+
+---
+
 ## Pattern Index by Stage
 
 | Stage | Applicable Patterns |
 |-------|-------------------|
-| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021, P-022, P-025 |
+| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021, P-022, P-025, P-026 (hotfix tag grep) |
 | 2. Test Suite | P-005 (verify count), P-006 (fixture check), P-013, P-016 (ResourceWarning trigger) |
-| 3. Mutation Testing | P-004, P-013, P-015 (parity check) |
+| 3. Mutation Testing | P-004, P-013, P-015 (parity check), P-026 (re-raise logic) |
 | 4. Orchestrator Testing | P-017, P-023 |
-| 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order) |
+| 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order), P-026 (streaming error path) |
 | 6. Security Audit | P-003, P-009, P-012, P-018 (resource exhaustion) |
 | 7. Documentation Audit | P-007, P-008, P-011, P-020 (config-to-default parity), P-021 (provider split), P-024 |
 | Aggregate Report | P-019 (gap verification) |
@@ -639,3 +665,4 @@ Verify the default is either a constant (safe) or resolved via `None` sentinel (
 | 2026-02-26 | P-023 | Added from Cycle 9 interface parity review (CLI/HTTP API return different data schemas) |
 | 2026-02-26 | P-024 | Added from Cycle 9 post-audit review (HTTP endpoints missing response schemas, error codes, rate limits) |
 | 2026-02-26 | P-025 | Added from Cycle 10 Stage 5 (indexer.py default parameter binding captures stale module global). FIXED same cycle. |
+| 2026-02-27 | P-026 | Added from production incident (Anthropic SDK mid-stream SSE overloaded_error bypassed retry system). HOTFIXED in anthropic_compat.py. |

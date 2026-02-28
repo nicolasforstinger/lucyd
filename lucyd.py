@@ -1509,6 +1509,10 @@ class LucydDaemon:
                 sender = item.sender
                 source = item.source
                 text = item.text
+                # Inject quote context so the LLM sees what the user replied to
+                if item.quote:
+                    q = item.quote if len(item.quote) <= 200 else item.quote[:200] + "…"
+                    text = f"[replying to: {q}]\n{text}"
                 tier = "full"
                 attachments = item.attachments
                 notify_meta = None

@@ -52,6 +52,13 @@ grep -rn "=None\|= None" tests/test_*.py | grep -v "__pycache__"
 ```
 For each, ask: "Does this `None` cause an entire code branch to be skipped in the function under test?" If the source has `if param is not None: <significant logic>` and the test passes `None`, that logic has zero coverage. Flag for mock coverage in Stage 3 (Mutation Testing).
 
+### P-016: ResourceWarning as pattern trigger
+During Phase 3 (Health Checks), if any `ResourceWarning` appears in test output, treat it as a trigger — not just a one-off. Grep for ALL similar resource creations in production code:
+```bash
+grep -rn "<resource_type>" --include='*.py' | grep -v test | grep -v __pycache__
+```
+A `ResourceWarning` for one connection means others may be unclosed too. Check all resource creation sites, not just the one that warned.
+
 ---
 
 ## Phase 1: Discovery — Inventory the Test Suite

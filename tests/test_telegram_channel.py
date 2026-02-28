@@ -254,6 +254,117 @@ class TestParseMessage:
         })
         assert msg.text == "hi"
 
+    # ─── Quote / Reply extraction ─────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_reply_to_text_message_extracts_quote(self):
+        ch = _make_channel()
+        msg = await ch._parse_message({
+            "from": {"id": 111}, "chat": {"id": 111},
+            "message_id": 50, "text": "totally agree",
+            "reply_to_message": {
+                "message_id": 49, "from": {"id": 999, "is_bot": True},
+                "text": "here is my take on the situation",
+            },
+        })
+        assert msg is not None
+        assert msg.text == "totally agree"
+        assert msg.quote == "here is my take on the situation"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_caption_message(self):
+        ch = _make_channel()
+        msg = await ch._parse_message({
+            "from": {"id": 111}, "chat": {"id": 111},
+            "message_id": 50, "text": "nice",
+            "reply_to_message": {
+                "message_id": 49, "caption": "sunset photo",
+            },
+        })
+        assert msg is not None
+        assert msg.quote == "sunset photo"
+
+    @pytest.mark.asyncio
+    async def test_telegram_quote_selection_preferred(self):
+        """Telegram's partial text selection (quote object) takes priority."""
+        ch = _make_channel()
+        msg = await ch._parse_message({
+            "from": {"id": 111}, "chat": {"id": 111},
+            "message_id": 50, "text": "exactly this",
+            "reply_to_message": {
+                "message_id": 49, "text": "long message with many sentences in it",
+            },
+            "quote": {"text": "many sentences"},
+        })
+        assert msg is not None
+        assert msg.quote == "many sentences"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_voice_message(self):
+        ch = _make_channel()
+        msg = await ch._parse_message({
+            "from": {"id": 111}, "chat": {"id": 111},
+            "message_id": 50, "text": "haha yeah",
+            "reply_to_message": {
+                "message_id": 49,
+                "voice": {"file_id": "v1", "duration": 5},
+            },
+        })
+        assert msg is not None
+        assert msg.quote == "[voice message]"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_photo(self):
+        ch = _make_channel()
+        msg = await ch._parse_message({
+            "from": {"id": 111}, "chat": {"id": 111},
+            "message_id": 50, "text": "wow",
+            "reply_to_message": {
+                "message_id": 49,
+                "photo": [{"file_id": "p1", "file_size": 100}],
+            },
+        })
+        assert msg is not None
+        assert msg.quote == "[photo]"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_sticker_with_emoji(self):
+        ch = _make_channel()
+        msg = await ch._parse_message({
+            "from": {"id": 111}, "chat": {"id": 111},
+            "message_id": 50, "text": "lol",
+            "reply_to_message": {
+                "message_id": 49,
+                "sticker": {"file_id": "s1", "emoji": "😂"},
+            },
+        })
+        assert msg is not None
+        assert msg.quote == "[sticker 😂]"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_document(self):
+        ch = _make_channel()
+        msg = await ch._parse_message({
+            "from": {"id": 111}, "chat": {"id": 111},
+            "message_id": 50, "text": "got it",
+            "reply_to_message": {
+                "message_id": 49,
+                "document": {"file_id": "d1", "file_name": "report.pdf"},
+            },
+        })
+        assert msg is not None
+        assert msg.quote == "[document: report.pdf]"
+
+    @pytest.mark.asyncio
+    async def test_no_reply_no_quote(self):
+        ch = _make_channel()
+        msg = await ch._parse_message({
+            "from": {"id": 111}, "chat": {"id": 111},
+            "message_id": 50, "text": "just a message",
+        })
+        assert msg is not None
+        assert msg.quote is None
+
 
 # ─── Connect ──────────────────────────────────────────────────────
 

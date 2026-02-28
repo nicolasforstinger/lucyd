@@ -706,6 +706,141 @@ class TestAnthropicComplete:
         assert result.stop_reason == "max_tokens"
 
 
+class TestAnthropicMidstreamSSEReRaise:
+    """HOTFIX(2026-02-27) — SDK bug workaround: mid-stream SSE errors arrive
+    as APIStatusError(200). Provider re-raises as correct exception class.
+
+    SDK bug: anthropics/anthropic-sdk-python, _streaming.py Stream.__stream__()
+    passes response=self.response (HTTP 200) to _make_status_error() for SSE
+    error events. Tested on SDK v0.81.0.
+
+    DELETE THIS CLASS + the try/except in anthropic_compat.py when
+    test_sdk_bug_still_exists starts failing (= SDK fixed the bug).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self):
+        pytest.importorskip("anthropic")
+
+    def _make_provider(self, **kwargs):
+        from providers.anthropic_compat import AnthropicCompatProvider
+        defaults = dict(
+            api_key="test-key", model="test-model",
+            thinking_enabled=True, thinking_mode="adaptive",
+        )
+        defaults.update(kwargs)
+        return AnthropicCompatProvider(**defaults)
+
+    def _make_sse_error(self, error_type, message="error"):
+        """Build an APIStatusError that mimics mid-stream SSE error behavior."""
+        import anthropic
+        import httpx
+        # The SDK uses the original HTTP 200 response for mid-stream errors.
+        # httpx.Response needs a request to avoid RuntimeError on .request access.
+        fake_request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        fake_response = httpx.Response(status_code=200, request=fake_request)
+        body = {"type": "error", "error": {"type": error_type, "message": message}}
+        return anthropic.APIStatusError(
+            str(body), response=fake_response, body=body,
+        )
+
+    def test_sdk_bug_still_exists(self):
+        """Canary: detects when Anthropic fixes the mid-stream SSE bug.
+
+        The bug is that _make_status_error() uses response.status_code (200)
+        instead of the SSE error type to pick the exception class. When this
+        test FAILS, the SDK has been fixed — delete this entire test class
+        and the HOTFIX block in anthropic_compat.py.
+        """
+        import anthropic
+        import httpx
+        fake_request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        fake_response = httpx.Response(status_code=200, request=fake_request)
+        body = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+        exc = anthropic._client.Anthropic._make_status_error(
+            None, err_msg=str(body), body=body, response=fake_response,
+        )
+        # Bug: SDK returns APIStatusError(200) instead of OverloadedError(529)
+        assert type(exc).__name__ == "APIStatusError"
+        assert exc.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_overloaded_error_reraise(self):
+        """overloaded_error SSE event re-raised as OverloadedError."""
+        from anthropic._exceptions import OverloadedError
+        from unittest.mock import patch
+        p = self._make_provider()
+        exc = self._make_sse_error("overloaded_error", "Overloaded")
+
+        with patch("asyncio.to_thread", side_effect=exc):
+            with pytest.raises(OverloadedError):
+                await p.complete(system=[], messages=[{"role": "user", "content": "hi"}], tools=[])
+
+    @pytest.mark.asyncio
+    async def test_overloaded_reraise_classified_transient(self):
+        """Full round-trip: re-raised OverloadedError must be retryable.
+
+        The re-raised exception carries status_code=200 (from the original
+        HTTP response). The classifier must still return True — class name
+        is the signal, not the poisoned status code.
+        """
+        from agentic import is_transient_error
+        from unittest.mock import patch
+        p = self._make_provider()
+        exc = self._make_sse_error("overloaded_error", "Overloaded")
+
+        with patch("asyncio.to_thread", side_effect=exc):
+            try:
+                await p.complete(system=[], messages=[{"role": "user", "content": "hi"}], tools=[])
+            except Exception as caught:
+                assert is_transient_error(caught) is True, (
+                    f"Re-raised {type(caught).__name__}(status={getattr(caught, 'status_code', '?')}) "
+                    f"not classified as transient — retry system won't fire"
+                )
+
+    @pytest.mark.asyncio
+    async def test_api_error_reraise(self):
+        """api_error SSE event re-raised as InternalServerError."""
+        import anthropic
+        from unittest.mock import patch
+        p = self._make_provider()
+        exc = self._make_sse_error("api_error", "Internal error")
+
+        with patch("asyncio.to_thread", side_effect=exc):
+            with pytest.raises(anthropic.InternalServerError):
+                await p.complete(system=[], messages=[{"role": "user", "content": "hi"}], tools=[])
+
+    @pytest.mark.asyncio
+    async def test_invalid_request_not_reraise(self):
+        """Non-transient SSE errors pass through unchanged."""
+        import anthropic
+        from unittest.mock import patch
+        p = self._make_provider()
+        exc = self._make_sse_error("invalid_request_error", "bad input")
+
+        with patch("asyncio.to_thread", side_effect=exc):
+            with pytest.raises(anthropic.APIStatusError) as exc_info:
+                await p.complete(system=[], messages=[{"role": "user", "content": "hi"}], tools=[])
+            # Should be the original APIStatusError, NOT re-raised as something else
+            assert type(exc_info.value) is anthropic.APIStatusError
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_path_unaffected(self):
+        """Non-thinking (non-streaming) path doesn't apply the workaround."""
+        import anthropic
+        from unittest.mock import patch
+        # No thinking — uses create() not stream()
+        p = self._make_provider(thinking_enabled=False, thinking_mode="disabled")
+        exc = self._make_sse_error("overloaded_error", "Overloaded")
+
+        with patch("asyncio.to_thread", side_effect=exc):
+            # Should raise original APIStatusError — the re-raise is only
+            # in the streaming path
+            with pytest.raises(anthropic.APIStatusError) as exc_info:
+                await p.complete(system=[], messages=[{"role": "user", "content": "hi"}], tools=[])
+            assert type(exc_info.value) is anthropic.APIStatusError
+
+
 class TestOpenAIComplete:
     """Unit tests for OpenAICompatProvider.complete() with mocked SDK."""
 

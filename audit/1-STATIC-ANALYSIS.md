@@ -126,6 +126,53 @@ grep -rn 'elevenlabs\|eleven_' --include='*.py' | grep -v test | grep -v __pycac
 ```
 For each result: is this a provider-specific value used as a framework default? Allowed in provider files and runtime dispatch branches. NOT allowed as config.py property defaults, function parameter defaults, or module constants in framework code.
 
+### P-014: Unhandled errors at system boundaries
+```bash
+# Find external API call sites (provider, httpx, requests, urllib)
+grep -rn "\.complete(\|\.post(\|\.get(\|\.put(\|\.delete(\|\.request(" --include='*.py' | grep -v test | grep -v __pycache__
+# Find database execute calls
+grep -rn "\.execute(\|\.executemany(\|\.executescript(" --include='*.py' | grep -v test | grep -v __pycache__
+```
+For each call site: is it wrapped in try/except for transient errors? If it's a critical path (message processing, session persistence), the absence of error handling is a finding. Internal helper calls within already-handled blocks are exempt.
+
+### P-015: Implementation parity across parallel modules
+```bash
+# List all implementations of the same interface
+ls providers/*.py | grep -v __init__
+ls channels/*.py | grep -v __init__
+```
+For each group of parallel implementations: compare error handling patterns. Do all providers handle malformed tool input the same way? Do all channels handle send failures the same way? Do all channels implement the full protocol?
+
+### P-016: Resource lifecycle completeness (open without close)
+```bash
+# Database connections
+grep -rn "sqlite3\.connect\|\.connect(" --include='*.py' | grep -v test | grep -v __pycache__
+# HTTP clients
+grep -rn "httpx\.\|requests\.Session\|aiohttp\.ClientSession" --include='*.py' | grep -v test | grep -v __pycache__
+# File opens without context manager
+grep -rn "open(" --include='*.py' | grep -v "with " | grep -v test | grep -v __pycache__
+```
+For each resource creation assigned to `self.*`: trace to its cleanup. The class must have a close/cleanup method called during shutdown. No cleanup = finding.
+
+### P-018: Unbounded runtime data structures
+```bash
+# Find dict/set/list assignments on self in production code
+grep -rn "self\._.*= {}\|self\._.*= \[\]\|self\._.*= set()\|self\._.*= dict()\|self\._.*= OrderedDict(" --include='*.py' | grep -v test | grep -v __pycache__
+```
+For each: does the collection grow with input? Is there a cap, eviction, or periodic cleanup? Fixed-size or config-derived collections are exempt. Collections growing with unique senders, sessions, or external IDs need bounds.
+
+### P-025: Python default parameter binding with module globals
+```bash
+grep -nP "def \w+\(.*:\s*\w+\s*=\s*[A-Z_]{2,}" *.py tools/*.py
+```
+For each function where a default value references a module-level `ALL_CAPS` variable: verify the default is either a true constant (safe) or resolved via `None` sentinel at call time (safe). Mutable globals captured at definition time are bugs.
+
+### P-026: SDK mid-stream SSE errors (hotfix tag grep)
+```bash
+grep -rn "HOTFIX" --include='*.py' | grep -v test | grep -v __pycache__
+```
+For each hotfix tag: verify the hotfix is still needed (check canary test status). If the upstream fix has been applied, the hotfix and its tests should be removed. Cross-reference with the canary test named in the hotfix comment.
+
 ### P-022: Channel/transport identifiers in framework code
 ```bash
 grep -rn "telegram\|whatsapp\|signal\|discord" . \

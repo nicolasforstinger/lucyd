@@ -40,6 +40,15 @@ After executing any step:
 
 **Before starting Phase 1, check `audit/PATTERN.md` for any patterns indexed to Stage 4.** Currently indexed patterns: P-017 (compaction state persistence order), P-023 (CLI/API data parity). Run those checks and report results.
 
+### P-017: Crash-unsafe state mutation sequences
+For each state-mutating operation in the orchestrator (compaction, session creation, cost tracking):
+1. WHERE is in-memory state modified?
+2. WHERE is it persisted (`_save_state`, db write, file write)?
+3. WHAT happens between those two points?
+4. If the process crashes between 1 and 2, is the state recoverable?
+
+If non-trivial work (network calls, other I/O, event logging) happens between the state mutation and the persist, the persist should be moved earlier. Verify the order: critical state change → persist → supplementary operations.
+
 ### P-023: CLI/API Interface Parity
 Verify that `build_session_info()` (shared function) is used by both CLI and HTTP API, and that cost queries return `cache_read_tokens`/`cache_write_tokens` on both interfaces. Enforced by `tests/test_audit_agnostic.py:TestInterfaceParity`.
 
@@ -292,6 +301,17 @@ Write tests for each behavioral contract. Each test:
 - Pre-compaction consolidation called before compaction truncates session (and failure doesn't block compaction)
 - Session close callback fires consolidation for the closing session
 - All Memory v2 paths are try/except isolated — failure in any structured memory operation does not crash `_process_message`
+
+**Category 11: System session auto-close**
+- System-sourced sessions are one-shot — auto-closed after processing
+- Session close callback fires for auto-closed sessions
+- Agentic loop error → no auto-close (session stays for retry)
+
+**Category 12: Quote reply context injection**
+- Telegram quote replies inject `[quoting: "..."]` into user text
+- Quote text from `reply_to_message` and `quote` fields is extracted
+- Long quotes are truncated
+- Non-text quotes are handled gracefully
 
 ### Writing Contract Tests
 

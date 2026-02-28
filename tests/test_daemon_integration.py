@@ -1748,6 +1748,79 @@ class TestMessageLoopDebounce:
         assert passed_atts[0].filename == "a.png"
 
     @pytest.mark.asyncio
+    async def test_quote_injected_into_text(self, loop_daemon):
+        """InboundMessage.quote is prepended to text before processing."""
+        daemon, session = loop_daemon
+        from channels import InboundMessage
+
+        msg = InboundMessage(
+            text="totally agree",
+            sender="user1",
+            timestamp=time.time(),
+            source="telegram",
+            quote="here is my take on things",
+        )
+        await daemon.queue.put(msg)
+        await daemon.queue.put(None)
+
+        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
+            await daemon._message_loop()
+
+        mock_pm.assert_called_once()
+        passed_text = mock_pm.call_args[0][0]  # first positional arg = text
+        assert "[replying to: here is my take on things]" in passed_text
+        assert "totally agree" in passed_text
+
+    @pytest.mark.asyncio
+    async def test_quote_none_not_injected(self, loop_daemon):
+        """No quote prefix when InboundMessage.quote is None."""
+        daemon, session = loop_daemon
+        from channels import InboundMessage
+
+        msg = InboundMessage(
+            text="just a normal message",
+            sender="user1",
+            timestamp=time.time(),
+            source="telegram",
+        )
+        await daemon.queue.put(msg)
+        await daemon.queue.put(None)
+
+        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
+            await daemon._message_loop()
+
+        mock_pm.assert_called_once()
+        passed_text = mock_pm.call_args[0][0]
+        assert "[replying to:" not in passed_text
+        assert "just a normal message" in passed_text
+
+    @pytest.mark.asyncio
+    async def test_long_quote_truncated(self, loop_daemon):
+        """Quotes longer than 200 chars are truncated with ellipsis."""
+        daemon, session = loop_daemon
+        from channels import InboundMessage
+
+        long_quote = "a" * 300
+        msg = InboundMessage(
+            text="yes",
+            sender="user1",
+            timestamp=time.time(),
+            source="telegram",
+            quote=long_quote,
+        )
+        await daemon.queue.put(msg)
+        await daemon.queue.put(None)
+
+        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
+            await daemon._message_loop()
+
+        mock_pm.assert_called_once()
+        passed_text = mock_pm.call_args[0][0]
+        # Should be truncated at 200 chars + ellipsis
+        assert "a" * 200 + "…" in passed_text
+        assert "a" * 201 not in passed_text
+
+    @pytest.mark.asyncio
     async def test_inbound_message_timestamp_stored(self, loop_daemon):
         """InboundMessage timestamp stored in _last_inbound_ts as ms int."""
         daemon, session = loop_daemon

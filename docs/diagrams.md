@@ -24,7 +24,7 @@ flowchart TD
         MEDIA["Process Attachments<br/>image / voice / document"]
         SESSION["Get/Create Session<br/>session.py:285"]
         CTX["Build System Prompt<br/>context.py:31"]
-        AGENTIC["Agentic Loop<br/>agentic.py:107"]
+        AGENTIC["Agentic Loop<br/>agentic.py:125"]
     end
 
     subgraph Post["Post-Processing"]
@@ -33,7 +33,7 @@ flowchart TD
         DELIVER["Channel Delivery<br/>channel.send()"]
         WEBHOOK["Webhook Callback<br/>lucyd.py:1227"]
         COMPACT{"Compaction<br/>Needed?"}
-        DO_COMPACT["Compact Session<br/>session.py:450"]
+        DO_COMPACT["Compact Session<br/>session.py:440"]
     end
 
     TG --> Q
@@ -57,17 +57,17 @@ The core thinking-acting cycle that processes each message.
 
 ```mermaid
 flowchart TD
-    START["run_agentic_loop()<br/>agentic.py:107"]
+    START["run_agentic_loop()<br/>agentic.py:125"]
     FORMAT["Format messages + tools<br/>provider.format_*()"]
-    API["provider.complete()<br/>agentic.py:162"]
-    COST["Record cost<br/>agentic.py:61"]
+    API["provider.complete()<br/>agentic.py:179"]
+    COST["Record cost<br/>agentic.py:79"]
 
     COST_CHECK{"Cost limit<br/>exceeded?"}
     APPEND["Append response<br/>to session.messages"]
     CALLBACK_R["on_response<br/>callback"]
 
     STOP_CHECK{"stop_reason?"}
-    TOOL_EXEC["Execute tools<br/>asyncio.gather()<br/>agentic.py:235"]
+    TOOL_EXEC["Execute tools<br/>asyncio.gather()<br/>agentic.py:253"]
     TOOL_RESULTS["Append tool_results<br/>to messages"]
     TURN_CHECK{"Turns<br/>remaining?"}
     WARN["Inject warning:<br/>final tool-use turn"]
@@ -116,7 +116,7 @@ flowchart LR
 
     BUILD["ContextBuilder.build()<br/>context.py:31"]
     BLOCKS["list of dict<br/>tier-tagged blocks"]
-    FORMAT["provider.format_system()<br/>anthropic_compat.py:79"]
+    FORMAT["provider.format_system()<br/>anthropic_compat.py:83"]
     CACHED["cache_control: ephemeral<br/>on stable + semi_stable"]
 
     Stable --> BUILD
@@ -273,7 +273,7 @@ Registration at startup, dispatch at runtime.
 flowchart TD
     subgraph Startup["Registration — lucyd.py:377"]
         CONFIG["lucyd.toml<br/>[tools] enabled list"]
-        BUILTIN["11 Built-in Modules<br/>19 tools"]
+        BUILTIN["12 Built-in Modules<br/>19 tools"]
         PLUGINS["plugins.d/*.py<br/>Custom tools"]
         CONFIG --> FILTER{"tool.name<br/>in enabled?"}
         BUILTIN --> FILTER
@@ -290,7 +290,7 @@ flowchart TD
         MSG_CFG["messaging:<br/>channel, contacts"]
     end
 
-    subgraph Runtime["Dispatch — agentic.py:231"]
+    subgraph Runtime["Dispatch — agentic.py:249"]
         CALL["Tool call from LLM<br/>name + arguments"]
         LOOKUP{"name in<br/>registry?"}
         EXEC["execute()<br/>tools/__init__.py:54"]

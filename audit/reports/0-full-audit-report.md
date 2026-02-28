@@ -1,43 +1,71 @@
 # Full Audit Report
 
-**Date:** 2026-02-26
-**Audit Cycle:** 10
-**Triggered by:** Feature completion — Memory Evolution System (MEMORY.md/USER.md daily rewriting)
+**Date:** 2026-02-28
+**Audit Cycle:** 11
+**Triggered by:** PLAN.md punishment assignment — post-session-reset comprehensive audit
 
 ## Pre-Audit Retrospective
 
-Changes since last audit: memory evolution system implementation. New module `evolution.py` (454 lines), config properties, schema table, HTTP endpoint, CLI flag, cron entry. No production incident fixes. One new pattern discovered during audit (P-025).
+Changes since last audit (Cycle 10, 2026-02-26):
+
+1. **Quote reply extraction** — `channels/telegram.py` extracts quoted text from Telegram `reply_to_message` and `quote` fields, with media-type fallbacks. `lucyd.py` injects `[replying to: "..."]` into user text, truncated at 200 chars. 11 tests added.
+2. **Auto-close system sessions** — `lucyd.py:1113-1118` auto-closes one-shot system sessions after successful processing. Prevents session index bloat from evolution/heartbeat/notify. 5 tests added.
+3. **SDK streaming error hotfix (P-026)** — `providers/anthropic_compat.py` catches `APIStatusError` with `status_code=200` during streaming, inspects body for `overloaded_error`/`api_error`, re-raises with synthesized `httpx.Response(529/500)`. 6 tests + 1 canary test.
+4. **Static analysis cleanup** — Removed unused `Path` import from `tools/status.py` (F401), fixed `import httpx` position in `anthropic_compat.py` (E402).
+5. **Audit suite health check** — 15 missing pattern check blocks propagated to 6 stage files. Quote injection added as security critical path #7. Auto-close added as orchestrator contract test category #11/#12.
+
+No new patterns created during retrospective — all changes were feature additions, not production fixes that bypassed the audit pipeline. P-026 was created during the pre-audit PLAN.md phase.
 
 ## Stage Results
 
 | Stage | Status | Report | Findings Summary |
 |-------|--------|--------|------------------|
-| 1. Static Analysis | PASS | [1-static-analysis-report.md](1-static-analysis-report.md) | 0 security findings. 2 fixes in evolution.py (F401 unused import, B007 unused loop var). 50 style deferred. |
-| 2. Test Suite | PASS | [2-test-suite-report.md](2-test-suite-report.md) | 1485/1485 pass in ~24s. Up from 1460 (Cycle 9). Ratio 2.4:1, assert density 1.7. |
-| 3. Mutation Testing | PASS | [3-mutation-testing-report.md](3-mutation-testing-report.md) | evolution.py: 1075 mutants, 830 killed (77.2%). All security functions unchanged/verified. |
-| 4. Orchestrator Testing | PASS | [4-orchestrator-testing-report.md](4-orchestrator-testing-report.md) | 293 orchestrator tests pass. +18 lines to lucyd.py (evolution wiring). |
-| 5. Dependency Chain | PARTIAL | [5-dependency-chain-report.md](5-dependency-chain-report.md) | 24 pipelines mapped (+2). 1 MEDIUM finding: embedding indexer broken for re-indexing (P-025). |
-| 6. Security Audit | PASS | [6-security-audit-report.md](6-security-audit-report.md) | 0 new vulnerabilities. Evolution module verified: config-driven paths, parameterized SQL, no external input. |
-| 7. Documentation Audit | PASS | [7-documentation-audit-report.md](7-documentation-audit-report.md) | 3 count mismatches fixed (source modules 30→31, source lines ~9,015→~9,930, test files 34→35). |
+| 1. Static Analysis | PASS | [1-static-analysis-report.md](1-static-analysis-report.md) | 0 security findings. 0 fixes (PLAN.md already applied F401, E402). 48 style deferred. |
+| 2. Test Suite | PASS | [2-test-suite-report.md](2-test-suite-report.md) | 1489/1489 pass in ~25s. Up from 1485 (Cycle 10). Ratio 2.4:1, assert density 1.6. |
+| 3. Mutation Testing | PASS | [3-mutation-testing-report.md](3-mutation-testing-report.md) | telegram.py: 1,009 mutants, 75.2% kill. anthropic_compat.py: 426 mutants, 64.8% kill. All security functions verified. |
+| 4. Orchestrator Testing | PASS | [4-orchestrator-testing-report.md](4-orchestrator-testing-report.md) | 301 orchestrator tests pass. +8 from Cycle 10. Both new categories covered. |
+| 5. Dependency Chain | PASS | [5-dependency-chain-report.md](5-dependency-chain-report.md) | 25 pipelines mapped (+1). Embedding pipeline fully recovered. Evolution exercised. |
+| 6. Security Audit | PASS | [6-security-audit-report.md](6-security-audit-report.md) | Quote injection verified safe. Auto-close verified. SDK hotfix verified. 2 pypdf CVEs (MEDIUM). |
+| 7. Documentation Audit | PASS | [7-documentation-audit-report.md](7-documentation-audit-report.md) | 13 discrepancies fixed (8 diagram line numbers, 4 test counts, 1 internal inconsistency). |
 
 ## Fixes Applied This Cycle
 
-### Stage 1: Static Analysis (2 fixes)
+### Pre-Audit (PLAN.md Phase 4)
 
 | Fix | File | Category | Issue |
 |-----|------|----------|-------|
-| Unused import | evolution.py | F401 | `from datetime import date` removed |
-| Unused loop variable | evolution.py | B007 | `date_str` → `_date_str` |
+| Remove unused `Path` import | tools/status.py | F401 | Dead code |
+| Fix `import httpx` position | providers/anthropic_compat.py | E402 | Import ordering |
+| Add 15 pattern check blocks | audit/1-7-STATIC.md through 6-SECURITY.md | Audit coverage | Missing pattern propagation |
+| Add Critical Path #7 | audit/6-SECURITY-AUDIT.md | Security methodology | Quote injection coverage |
+| Add Contract Categories #11, #12 | audit/4-ORCHESTRATOR-TESTING.md | Test methodology | Auto-close + quote injection |
+| Add P-019 label | audit/0-FULL-AUDIT.md | Traceability | Missing pattern reference |
+| Update stale evolution.py metrics | audit/reports/0,6-*.md | Documentation | 454→76 lines (3 refs) |
+| Update CLAUDE.md metrics | CLAUDE.md | Documentation | Tests 1472→1489, lines 9422→9601, files 35→37 |
+| Update README test count | README.md | Documentation | 1467→1489 |
+| Update diagrams tool module count | docs/diagrams.md | Documentation | 11→12 |
 
-### Stage 7: Documentation (3 fixes)
+### Stage 7 (Documentation)
 
 | Fix | File | Issue |
 |-----|------|-------|
-| Source module count | CLAUDE.md | 30 → 31 |
-| Source line count | CLAUDE.md | ~9,015 → ~9,930 |
-| Test files count | CLAUDE.md | 34 → 35 |
+| Internal test count inconsistency | CLAUDE.md:266 | Code Structure: ~1472 → ~1489 |
+| Per-module test counts (4x) | README.md:138 | telegram 177→190, http_api 109→137, orchestrator 231→278, cli 46→48 lines |
+| Diagram line number references (8x) | docs/diagrams.md | agentic.py, session.py, anthropic_compat.py line shifts |
 
 ## Patterns
+
+### Pre-audit retrospective
+
+No production fixes bypassed the audit pipeline since Cycle 10. P-026 (SDK streaming error hotfix) was created during the PLAN.md audit phase — it was a new feature fix, not a missed bug.
+
+### Patterns created during this cycle
+
+None. All existing patterns (P-001 through P-026) checked across applicable stages. No new bug classes discovered.
+
+### Pattern index changes
+
+None. P-026 (created during PLAN.md phase) was already indexed to Stages 1, 3, 5.
 
 All patterns from `audit/PATTERN.md` checked across applicable stages:
 
@@ -45,43 +73,41 @@ All patterns from `audit/PATTERN.md` checked across applicable stages:
 |---------|----------|--------|
 | P-001 (zip without strict) | 1 | CLEAN |
 | P-002 (BaseException vs Exception) | 1 | CLEAN |
-| P-003 (unchecked filesystem write) | 1, 6 | CLEAN — evolution writes config-driven |
+| P-003 (tool path params) | 1, 6 | CLEAN |
 | P-004 (iteration order) | 3 | CLEAN |
 | P-005 (shadowed test names) | 1, 2 | CLEAN |
-| P-006 (dead data pipeline) | 2, 5 | CLEAN — all 24 pipelines have producers |
+| P-006 (dead data pipeline) | 2, 5 | CLEAN — all 25 pipelines have producers |
 | P-007 (test count drift) | 7 | FIXED — counts updated |
-| P-008 (undocumented module) | 7 | CLEAN — evolution.py documented during implementation |
-| P-009 (stale capability table) | 6 | CLEAN — 19 tools, no changes |
-| P-010 (suppressed security findings) | 1 | CLEAN |
+| P-008 (undocumented module) | 7 | CLEAN — no new modules |
+| P-009 (stale capability table) | 6 | CLEAN — 19 tools, unchanged |
+| P-010 (suppressed security findings) | 1 | CLEAN — 30 suppressions verified |
 | P-011 (model label mismatch) | 7 | CLEAN |
-| P-012 (auto-populated misclassified) | 5, 6 | CLEAN — evolution reads auto-populated data safely |
+| P-012 (auto-populated misclassified) | 5, 6 | CLEAN |
 | P-013 (None-defaulted deps) | 2, 3 | CLEAN |
-| P-017 (crash-unsafe state) | 4 | 1 LOW (unchanged) |
-| P-018 (resource exhaustion) | 6 | 2 NOTED (unchanged) |
+| P-014 (unhandled errors at boundaries) | 5 | 1 LOW (auto-close unguarded) |
+| P-015 (implementation parity) | 3 | CLEAN — SSE hotfix is Anthropic-specific |
+| P-016 (resource lifecycle) | 2, 5 | CLEAN — 1 GC timing artifact (not a leak) |
+| P-017 (crash-unsafe state) | 4, 5 | 1 LOW (unchanged since Cycle 6) |
+| P-018 (resource exhaustion) | 6 | 2 NOTED (unchanged) + 1 NEW (pypdf CVEs) |
 | P-020 (magic numbers) | 1 | CLEAN |
 | P-021 (provider-specific defaults) | 1 | CLEAN |
 | P-022 (channel identifiers) | 1 | CLEAN |
 | P-023 (CLI/API parity) | 4 | PASS |
 | P-024 (HTTP endpoint docs) | 7 | PASS — all 9 endpoints documented |
-
-### New Patterns This Cycle
-
-**P-025: Python default parameter binding with module globals**
-- **Root cause:** `indexer.py` functions use `base_url: str = EMBEDDING_BASE_URL` where `EMBEDDING_BASE_URL` is initialized to `""` at module load, then set by `configure()`. Python captures the default at function definition time.
-- **Impact:** All file re-indexing fails with `unknown url type: '/embeddings'`. 48 cumulative failures in indexer log.
-- **Fix:** Use `None` sentinel, resolve at call time.
-- **Indexed to:** Stage 5 (Dependency Chain) — discovered via freshness checks.
+| P-025 (default parameter binding) | 5 | RESOLVED — all 3 functions fixed |
+| P-026 (SDK hotfix tag) | 1, 3, 5 | VERIFIED — hotfix in place, canary test active |
 
 ## Security Posture
 
 **0 CRITICAL or HIGH unmitigated vulnerabilities.**
+**1 MEDIUM: pypdf DoS CVEs (upgrade recommended).**
 
 | Boundary | Kill Rate | Status |
 |----------|-----------|--------|
 | `_check_path()` | 100% | VERIFIED |
 | `_safe_env()` | 100% | VERIFIED |
 | `_safe_parse_args()` | 100% | VERIFIED |
-| `_SUBAGENT_DENY` | 100% | VERIFIED |
+| `_subagent_deny` | 100% | VERIFIED |
 | `_auth_middleware` | 100% | VERIFIED |
 | `_rate_middleware` | 100% | VERIFIED |
 | `hmac.compare_digest` | 100% | VERIFIED |
@@ -89,25 +115,24 @@ All patterns from `audit/PATTERN.md` checked across applicable stages:
 | `_is_private_ip()` | Equivalent survivors only | VERIFIED |
 | `_SafeRedirectHandler` | Equivalent survivors only | VERIFIED |
 
-### New Security Verification (Cycle 10)
+### New Security Verification (Cycle 11)
 
 | Boundary | Path | Status |
 |----------|------|--------|
-| Evolution file access | Config → workspace files | VERIFIED — config-driven paths, not user input |
-| Evolution SQL queries | DB → LLM prompt | VERIFIED — parameterized, data used in prompts only |
-| Evolution content validation | LLM response → file write | VERIFIED — empty/length checks, atomic write |
-| `/api/v1/evolve` auth | HTTP → evolution | VERIFIED — bearer token, no request body, rate-limited |
+| Quote truncation (200 chars) | Telegram reply → LLM text | VERIFIED — 3 tests, cannot escape format, same risk class as user text |
+| Auto-close source guard | system → close_session | VERIFIED — 5 tests, only `"system"` triggers, error path skips |
+| SDK hotfix status_code guard | APIStatusError → re-raise | VERIFIED — 6 tests, canary test guards removal, all critical mutations killed |
 
 ## Test Suite Final State
 
 | Metric | Value |
 |--------|-------|
-| Test functions | 1489 (all passing) |
-| Test files | 35 |
-| Production modules | 31 (~9,930 lines) |
+| Test functions | 1,489 (all passing) |
+| Test files | 37 |
+| Production modules | 31 (~9,600 lines) |
 | Test-to-source ratio | 2.4:1 |
-| Assert density | 1.7 asserts/test |
-| Suite runtime | ~24s |
+| Assert density | 1.6 asserts/test |
+| Suite runtime | ~25s |
 
 ### Test Count Progression
 
@@ -117,74 +142,78 @@ All patterns from `audit/PATTERN.md` checked across applicable stages:
 | 7 | 1,299 |
 | 8 | 1,394 |
 | 9 | 1,460 |
-| 10 | 1,489 |
+| 10 | 1,485 |
+| 11 | 1,489 |
 
 ## Known Gaps
 
 | Gap | Severity | Stage | Status | Cycles Open |
 |-----|----------|-------|--------|-------------|
-| ~~Embedding pipeline broken for re-indexing~~ | ~~Medium~~ | 5 | **FIXED** | **1 (P-025)** |
-| `_message_loop` debounce/FIFO | Medium | 4 | Mitigated | 8 (since Cycle 3) |
-| `tool_exec` body (process interactions) | Medium | 3 | Carried forward | 5 |
-| `run_agentic_loop` internals | Medium | 3 | Accepted | 3 |
-| ~~Evolution pipeline not yet exercised~~ | ~~Low~~ | 5 | **Deferred** | 1 (awaiting first cron run) |
-| ~~Evolve endpoint missing HTTP contract test~~ | ~~Low~~ | 4 | **FIXED** | 1 |
-| `MemoryInterface.search()` end-to-end | Low | 5 | Carried forward | 7 |
-| Provider `complete()` no unit tests | Low | 3 | Accepted | 6 |
-| Prompt template text survivors | Low | 3 | Accepted | 5 |
-| `pending_system_warning` persist delay | Low | 4 | Mitigated | 6 |
-| `asyncio.Queue` unbounded | Low | 6 | Noted | 4 |
-| ~~Stage 5 methodology stale column names~~ | ~~Info~~ | 5 | **FIXED** | 4 |
-| ~~`docs/configuration.md` missing sections~~ | ~~Low~~ | 7 | **FIXED** | 4 |
+| pypdf DoS CVEs (6.7.2) | **Medium** | 6 | **Open (NEW)** | 1 |
+| Quote extraction mutation survivors | Medium | 3 | **Open (NEW)** | 1 |
+| Auto-close `close_session()` unguarded | Low | 5 | **Open (NEW)** | 1 |
+| `_message_loop` debounce/FIFO | Medium | 4 | Mitigated | 9 (since Cycle 3) |
+| `tool_exec` body (process interactions) | Medium | 3 | Carried forward | 6 |
+| `run_agentic_loop` internals | Medium | 3 | Accepted | 4 |
+| `MemoryInterface.search()` end-to-end | Low | 5 | Carried forward | 8 |
+| Provider `complete()` response parsing | Low | 3 | Partially resolved | 7 (tests now exist) |
+| Prompt template text survivors | Low | 3 | Accepted | 6 |
+| `pending_system_warning` persist delay | Low | 4 | Mitigated | 7 |
+| `asyncio.Queue` unbounded | Low | 6 | Noted | 5 |
+| Quote reply + auto-close undocumented | Low | 7 | Open (NEW) | 1 |
+| Stage 5 methodology stale column names | Info | 5 | Carried | 5 |
 
 ### Gaps Resolved This Cycle
 
 | Gap | Stage | Resolution |
 |-----|-------|------------|
-| Schema table count drift (10→11) | 5, 7 | RESOLVED — CLAUDE.md updated to "11 tables" during implementation |
-| Embedding API misconfigured (Cycle 9) | 5 | UPGRADED — root cause identified as P-025 (default parameter binding), not config |
-| **Embedding pipeline (P-025)** | 5 | **FIXED** — `None` sentinel defaults, resolved at call time. 3 functions patched in `tools/indexer.py`. |
-| Evolve HTTP contract test | 4 | **FIXED** — 4 tests added to `tests/test_http_api.py` (success, no-callback, auth, error). |
-| Stage 5 methodology stale columns | 5 | **FIXED** — `session_file`→`session_id`, `title`→`summary`, `description`→`what`, `consolidated_at`→`last_consolidated_at`, `valid`→`invalidated_at IS NULL`. |
-| `docs/configuration.md` evolution section | 7 | **FIXED** — `[memory.evolution]` section added with all 7 config keys. |
+| Embedding pipeline broken (P-025) | 5 | RESOLVED — all 136 chunks have embeddings, zero empty |
+| Evolution pipeline not yet exercised | 5 | RESOLVED — successfully exercised 2026-02-27 via HTTP API |
+| Evolve endpoint missing HTTP contract test | 4 | RESOLVED — 4 tests exist in test_http_api.py |
+| `docs/configuration.md` missing sections | 7 | RESOLVED — all 5 items from Cycle 10 now documented |
+| Provider `complete()` no unit tests | 3 | PARTIALLY RESOLVED — `TestAnthropicComplete` (3), `TestAnthropicMidstreamSSEReRaise` (6), `TestOpenAIComplete` (3) now exist |
 
 ### Gaps Escalated
 
 | Gap | Cycles | Action |
 |-----|--------|--------|
-| `_message_loop` debounce/FIFO | 8 | Accept as architectural complexity. 22+ tests cover primary paths. |
-| `MemoryInterface.search()` end-to-end | 7 | Low risk — FTS round-trip exists. Consider writing integration test. |
-| Provider `complete()` no unit tests | 6 | Accepted — API-dependent. Error handling well-tested. |
+| `_message_loop` debounce/FIFO | 9 | Accept as architectural complexity. 22+ tests cover primary paths. |
+| `MemoryInterface.search()` end-to-end | 8 | Low risk — FTS round-trip exists. Individual components tested. |
+| Provider `complete()` response parsing | 7 | Partially resolved — happy path + hotfix tested. Mock-boundary survivors remain. |
+| `pending_system_warning` persist delay | 7 | P-017. Benign — crash between set and persist means warning recomputes. |
 
 ## Remediation Plan
 
 | # | Gap | Priority | What | Where | Scope |
 |---|-----|----------|------|-------|-------|
-| ~~1~~ | ~~Embedding pipeline (P-025)~~ | ~~HIGH~~ | ~~Use `None` sentinel for default params~~ | ~~`tools/indexer.py`~~ | **DONE** |
-| 2 | Evolution pipeline verification | LOW | Awaiting first cron run at 4:20 AM | CLI | Deferred |
-| ~~3~~ | ~~Evolve HTTP contract test~~ | ~~LOW~~ | ~~Add contract test for evolve endpoint~~ | ~~`tests/test_http_api.py`~~ | **DONE** |
-| ~~4~~ | ~~Stage 5 methodology stale columns~~ | ~~LOW~~ | ~~Update freshness query column names~~ | ~~`audit/5-DEPENDENCY-CHAIN.md`~~ | **DONE** |
-| ~~5~~ | ~~`docs/configuration.md` gaps~~ | ~~LOW~~ | ~~Add evolution config section~~ | ~~`docs/configuration.md`~~ | **DONE** |
+| 1 | pypdf DoS CVEs | **HIGH** | Upgrade pypdf to >= 6.7.4 | requirements.txt, requirements.lock | 1-line |
+| 2 | Quote extraction tests | MEDIUM | Write mutation-killing tests for `_parse_message` quote extraction (31 survivors) | tests/test_telegram_channel.py | ~30 lines |
+| 3 | Auto-close `close_session()` unguarded | LOW | Wrap in try/except with log warning | lucyd.py:1117 | ~3 lines |
+| 4 | Quote reply + auto-close undocumented | LOW | Add to CLAUDE.md Sessions/Telegram sections | CLAUDE.md | ~10 lines |
+
+Sort by priority. #1 is a supply chain CVE with a 1-line fix. #2 is a behavioral test gap. #3 and #4 are minor.
 
 ## Deferred Items
 
-All remediation items fixed except #2 (evolution pipeline verification — awaiting first cron execution at 4:20 AM). P-025 embedding fix, evolve HTTP contract tests, Stage 5 methodology columns, and configuration docs all resolved. Final test count: 1,489.
+48 ruff STYLE findings deferred (PTH123 ×24, SIM105 ×11, SIM108 ×7, PTH108 ×2, SIM103 ×2, PTH101 ×1, SIM102 ×1). All cosmetic, no behavioral impact. Available for batch fix via `ruff check --fix --unsafe-fixes`.
 
 ## Overall Assessment
 
-**EXIT STATUS: PASS** (upgraded from PARTIAL after P-025 remediation)
+**EXIT STATUS: PASS**
 
-All security requirements met. All 1,485 tests pass. Embedding pipeline fix (P-025) applied during remediation. No blockers for deployment.
+All security requirements met. All 1,489 tests pass. All 25 data pipelines have active producers with fresh data. Embedding pipeline fully recovered from P-025 bug. Evolution pipeline exercised successfully. All 9 security boundaries mutation-verified. All documentation synced to source.
 
-Key changes over Cycle 9:
-- **New module:** `evolution.py` (454 lines) — daily workspace file rewriting via LLM
-- **Test count:** 1,460 → 1,485 (+25 evolution tests)
-- **Mutation scope expanded:** evolution.py baselined (1,075 mutants, 77.2% kill)
-- **Total mutation coverage:** 5,192 → 6,267 mutants (+1,075)
-- **HTTP API:** 8 → 9 endpoints (`/api/v1/evolve` added)
-- **Cron pipeline:** maintain → evolve added at 4:20 AM
-- **Schema:** 10 → 11 tables (`evolution_state`)
-- **New pattern:** P-025 (Python default parameter binding with module globals)
-- **Supply chain:** 0 runtime CVEs
+Key changes over Cycle 10:
+- **New features:** Quote reply extraction (11 tests), auto-close system sessions (5 tests), SDK streaming error hotfix (7 tests)
+- **Test count:** 1,485 → 1,489 (+4)
+- **Mutation scope:** telegram.py re-tested (1,009 mutants, 75.2%), anthropic_compat.py re-tested (426 mutants, 64.8%)
+- **Total mutation coverage:** 6,267 → ~7,042 mutants
+- **Pipelines:** 24 → 25 (quote injection)
+- **Round-trip tests:** 12 → 14 (quote injection + auto-close)
+- **Contract test categories:** 20 → 20 (added #11 auto-close + #12 quote injection, renumbered)
+- **Orchestrator tests:** 293 → 301
+- **Documentation fixes:** 13 discrepancies (8 diagram line numbers, 4 test counts, 1 internal inconsistency)
+- **Supply chain:** 2 NEW runtime CVEs (pypdf 6.7.2 → upgrade to 6.7.4)
+- **New pattern:** P-026 (SDK mid-stream SSE re-raise logic) — created during PLAN.md phase, verified across Stages 1, 3, 5
 
-Confidence: 97% overall. All critical boundaries verified. Evolution system well-tested and secure. P-025 embedding bug fixed during remediation. No blockers for deployment.
+Confidence: 96% overall. All critical boundaries verified. No blockers for deployment. pypdf upgrade recommended before next cycle.

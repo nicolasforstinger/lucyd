@@ -100,6 +100,12 @@ grep -rn "INSERT.*INTO.*<table_name>\|\.write.*<filename>" --include='*.py' | gr
 ```
 If an automated producer exists, the security assessment of that data path may be wrong — auto-populated data from LLM extraction has different trust properties than admin-managed data.
 
+### P-018: Unbounded runtime data structures (resource exhaustion)
+```bash
+grep -rn "self\._.*= {}\|self\._.*= \[\]\|self\._.*= set()\|self\._.*= dict()\|self\._.*= OrderedDict(" --include='*.py' | grep -v test | grep -v __pycache__
+```
+As a resource exhaustion / DoS vector: could an attacker (or organic growth) cause unbounded memory consumption by sending messages from many unique senders/sources? Any unbounded collection proportional to attacker-controlled input is a DoS vector. Fixed-size or config-bounded collections are exempt.
+
 ---
 
 ## Phase 1: Map Input Sources
@@ -312,30 +318,36 @@ These are the highest-risk paths. Verify each one explicitly:
 - What happens with no token?
 - Is there rate limiting?
 
-**7. Attachments → File system**
+**7. Quote reply context → LLM injection**
+- Telegram quote replies inject quoted text into the user message as `[quoting: "..."]`
+- Can crafted quoted text manipulate agent behavior? (Effectively a secondary input channel)
+- Is the quoted text length bounded?
+- Does quote injection interact with tool use or system prompt?
+
+**8. Attachments → File system**
 - Can a malicious attachment filename traverse paths? (`../../../etc/cron.d/exploit`)
 - Is the attachment download path validated?
 - Are file sizes limited?
 - Are file types restricted?
 
-**8. External text → Memory poisoning**
+**9. External text → Memory poisoning**
 - Can a message permanently alter Lucy's memory/context?
 - Can an attacker inject false information that persists across sessions?
 - Is memory content validated before storage?
 
-**9. Config/skill files → Behavior modification**
+**10. Config/skill files → Behavior modification**
 - Skills are text-only — injected into system prompt, never executed as code
 - BUT: can a crafted skill file inject system prompt content that manipulates tool use?
 - The custom frontmatter parser (skills.py) — does it handle malicious input safely? (No PyYAML, no eval)
 - Can a TOML config value cause code execution? (TOML is data-only, but check all config consumers)
 
-**10. Dispatch safety**
+**11. Dispatch safety**
 - ToolRegistry.execute() uses dict key lookup (`self._tools[name]["function"]`) — verify no user input becomes a function name or module path
 - Sub-agent model names — verified against `_providers` config dict?
 - Skill names — verified against SkillLoader dict?
 - Confirm: no `getattr()`, `__import__()`, `importlib`, `eval()`, or `exec()` in dispatch paths
 
-**11. Dependency supply chain**
+**12. Dependency supply chain**
 - Four runtime deps: anthropic, openai, httpx, aiohttp — all reputable
 - Transitive deps: pydantic, httpcore, certifi, idna, multidict, yarl, frozenlist, async-timeout, aiosignal, sniffio, distro, tqdm, typing-extensions
 - Versions are minimum-pinned (`>=`), not locked — check if any known CVEs exist for current installed versions

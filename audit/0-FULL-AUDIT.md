@@ -268,7 +268,7 @@ Review all bugs found and fixed during this audit cycle. The bug fix workflow (S
 4. Review the Pattern Index — are new patterns indexed to the right stages?
 ```
 
-### Post-Audit: Known Gaps Review
+### Post-Audit: Known Gaps Review (P-019)
 
 ```
 1. Collect all "Known Gaps" from all 7 stage reports.

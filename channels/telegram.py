@@ -200,6 +200,33 @@ class TelegramChannel:
         if not text and not attachments:
             return None
 
+        # Extract quoted/replied-to context
+        quote_text = None
+        reply_msg = message.get("reply_to_message")
+        if reply_msg:
+            # Prefer Telegram's quote selection (partial text highlight)
+            tg_quote = message.get("quote")
+            if tg_quote and tg_quote.get("text"):
+                quote_text = tg_quote["text"]
+            else:
+                quote_text = reply_msg.get("text", "") or reply_msg.get("caption", "")
+            # Media fallback for non-text messages (voice, photo, etc.)
+            if not quote_text:
+                if reply_msg.get("voice"):
+                    quote_text = "[voice message]"
+                elif reply_msg.get("photo"):
+                    quote_text = "[photo]"
+                elif reply_msg.get("video"):
+                    quote_text = "[video]"
+                elif reply_msg.get("sticker"):
+                    emoji = reply_msg["sticker"].get("emoji", "")
+                    quote_text = f"[sticker {emoji}]" if emoji else "[sticker]"
+                elif reply_msg.get("document"):
+                    name = reply_msg["document"].get("file_name", "")
+                    quote_text = f"[document: {name}]" if name else "[document]"
+                elif reply_msg.get("audio"):
+                    quote_text = "[audio]"
+
         # Store message_id as float in timestamp field.
         # Round-trip: daemon does int(ts * 1000) -> ts * 1000.
         # Channel recovers: message_id = ts // 1000.
@@ -210,6 +237,7 @@ class TelegramChannel:
             sender=sender,
             timestamp=timestamp,
             source="telegram",
+            quote=quote_text or None,
             attachments=attachments or None,
         )
 

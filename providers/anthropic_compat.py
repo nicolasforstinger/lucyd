@@ -12,14 +12,18 @@ import json
 import logging
 from typing import Any
 
+import httpx
+
 from . import LLMResponse, ToolCall, Usage
 
 log = logging.getLogger(__name__)
 
 try:
     import anthropic
+    from anthropic._exceptions import OverloadedError as _OverloadedError
 except ImportError:
     anthropic = None  # type: ignore[assignment]
+    _OverloadedError = None  # type: ignore[assignment,misc]
 
 
 def _safe_parse_args(raw: Any) -> dict:
@@ -214,7 +218,38 @@ class AnthropicCompatProvider:
                 with self.client.messages.stream(**params) as stream:
                     return stream.get_final_message()
 
-            response = await asyncio.to_thread(_stream_to_message)
+            try:
+                response = await asyncio.to_thread(_stream_to_message)
+            except anthropic.APIStatusError as e:
+                # HOTFIX(2026-02-27): Anthropic SDK mid-stream SSE error misclassification.
+                # SDK bug (v0.81.0, github.com/anthropics/anthropic-sdk-python#688):
+                # Stream.__stream__() catches SSE "error" events and calls
+                # _make_status_error(response=self.response) — but self.response is
+                # the original HTTP 200, not the error. So overloaded_error (529) arrives
+                # as APIStatusError(status_code=200). Our retry system sees 200 < 429
+                # and skips retry. Fix: inspect body, re-raise as correct exception class
+                # with synthesized response carrying the correct status code.
+                # Remove when test_sdk_bug_still_exists (test_providers.py) fails.
+                if e.status_code < 429:
+                    body = getattr(e, "body", None)
+                    if isinstance(body, dict):
+                        err = body.get("error", body)
+                        if isinstance(err, dict):
+                            etype = err.get("type", "")
+                            # Synthesize the correct HTTP response the SDK
+                            # should have used, so the re-raised exception
+                            # carries the right status_code end-to-end.
+                            if etype == "overloaded_error":
+                                resp529 = httpx.Response(529, request=e.response.request)
+                                raise _OverloadedError(
+                                    str(e), response=resp529, body=body,
+                                ) from e
+                            if etype == "api_error":
+                                resp500 = httpx.Response(500, request=e.response.request)
+                                raise anthropic.InternalServerError(
+                                    str(e), response=resp500, body=body,
+                                ) from e
+                raise
         else:
             response = await asyncio.to_thread(
                 self.client.messages.create, **params

@@ -178,6 +178,12 @@ grep -n "=None\|= None" tests/test_<module>.py
 
 If survivors cluster behind a dependency guard and tests pass `None` for that dependency, the test fixtures need a proper mock, not `None`. This caught ~50 hidden survivors in `recall()`'s vector search path.
 
+### P-015: Implementation parity across parallel modules
+When mutation-testing one provider or channel implementation, check if equivalent edge-case tests exist for the parallel implementation. If `anthropic_compat.py` has a test for malformed JSON input and `openai_compat.py` doesn't, that's a finding. Same error handling must be verified across all implementations of the same interface.
+
+### P-026: SDK mid-stream SSE re-raise logic
+Mutation-test the provider's error re-raise logic (currently in `anthropic_compat.py`). Key mutants to verify killed: removing the body inspection, changing the `status_code < 429` threshold, removing individual error type checks, or removing the synthesized response. All should be killed by `TestAnthropicMidstreamSSEReRaise` tests.
+
 ---
 
 ## Phase 1: Discovery — Scope the Modules

@@ -53,6 +53,24 @@ If any automated producer exists, the classification is wrong. This pattern caug
 
 Additionally, verify that extraction prompts contain anti-fragmentation directives (e.g., "use the shortest common name" for entities). If a prompt edit drops this, entity fragmentation silently returns — new facts scatter across `nicolas_forstinger`, `lucy_belladonna`, etc. instead of resolving to canonical short names. The prompt is a pipeline input; treat prompt regressions as pipeline breaks.
 
+### P-014: Failure behavior at dependency edges
+For each edge in the dependency chain data flow matrix, ask: "What happens when this edge fails?" If the answer is "unhandled exception propagates to the event loop," that's a finding. Every external edge should have defined failure behavior (retry, fallback, graceful error message, or documented intentional crash).
+
+### P-016: Resource lifecycle in shutdown path
+For each resource in the dependency chain that has a creation step, verify: does the shutdown/cleanup path close it? Trace both normal exit and error paths. Resources assigned to `self.*` in daemon or session objects must be closed in the `finally` block or disconnect method.
+
+### P-017: State persistence ordering
+For each state persistence flow in the dependency chain, verify the order: critical state change → persist → supplementary operations. Not: critical state change → supplementary operations → persist. A crash between mutation and persist loses the state.
+
+### P-026: Streaming error path tracing
+For each provider's `complete()` method, trace the error path for streaming vs non-streaming calls:
+1. What exceptions can the SDK raise during stream iteration (not just connection)?
+2. Do those exceptions carry the correct status code and class for the retry classifier?
+3. If the SDK wraps transport-layer errors using HTTP-layer metadata, is the provider compensating?
+```bash
+grep -rn "\.stream(\|\.aiter\|async for" providers/*.py | grep -v test | grep -v __pycache__
+```
+
 ---
 
 ## Phase 1: Data Flow Mapping
