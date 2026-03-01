@@ -37,7 +37,7 @@ class TestOperationalTier:
             tier_overrides={
                 "operational": {
                     "stable": ["SOUL.md", "AGENTS.md", "IDENTITY.md"],
-                    "semi_stable": ["HEARTBEAT.md"],
+                    "semi_stable": ["TOOLS.md"],
                 }
             },
         )
@@ -51,7 +51,7 @@ class TestOperationalTier:
 
         semi = blocks[1]
         assert semi["tier"] == "semi_stable"
-        assert "Automation tasks" in semi["text"]
+        assert "Available tools" in semi["text"]
         # MEMORY.md should NOT be in operational tier
         assert "Long-term memories" not in semi["text"]
 

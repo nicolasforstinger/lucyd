@@ -14,7 +14,7 @@ semi_stable = ["MEMORY.md"]
 
 [agent.context.tiers]
 operational.stable = ["SOUL.md", "AGENTS.md", "IDENTITY.md"]
-operational.semi_stable = ["HEARTBEAT.md"]
+operational.semi_stable = []
 
 [agent.skills]
 dir = "skills"
@@ -224,7 +224,7 @@ jpeg_quality_steps = [85, 60, 40]      # JPEG quality reduction steps for fittin
 # ─── Behavior ────────────────────────────────────────────────────
 
 [behavior]
-silent_tokens = ["HEARTBEAT_OK", "NO_REPLY"]
+silent_tokens = ["NO_REPLY"]
 typing_indicators = true
 error_message = "I'm having trouble connecting right now. Try again in a moment."
 agent_timeout_seconds = 600

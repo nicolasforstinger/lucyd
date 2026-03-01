@@ -691,7 +691,7 @@ class Config:
     @property
     def silent_tokens(self) -> list[str]:
         return _deep_get(self._data, "behavior", "silent_tokens",
-                         default=["HEARTBEAT_OK", "NO_REPLY"])
+                         default=["NO_REPLY"])
 
     @property
     def typing_indicators(self) -> bool:

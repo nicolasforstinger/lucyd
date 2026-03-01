@@ -4,8 +4,11 @@
 Usage:
     lucyd-send --message "Hello"                    # User message
     lucyd-send --message "Question" --from Claudio  # Message from named sender
-    lucyd-send --system "Execute HEARTBEAT.md."     # System event
+    lucyd-send --system "Run diagnostics"           # System event
     lucyd-send --system "Health check" --tier operational
+    lucyd-send --notify "Invoice ready" --source n8n --ref INV-42  # Fire-and-forget notification
+    lucyd-send --evolve                             # Trigger memory evolution (with pre-check)
+    lucyd-send --evolve --force                     # Force evolution (skip pre-check)
     lucyd-send --cost today                         # Query today's cost
     lucyd-send --sessions                           # List active sessions
     lucyd-send --reset                              # Reset ALL sessions
@@ -529,6 +532,12 @@ def main():
     parser = argparse.ArgumentParser(description="Send messages to Lucyd daemon")
     parser.add_argument("-m", "--message", help="User message to inject")
     parser.add_argument("-s", "--system", help="System event to inject")
+    parser.add_argument("-n", "--notify", help="Fire-and-forget notification (matches HTTP /notify)")
+    parser.add_argument("--source", help="Notification source label (with --notify)")
+    parser.add_argument("--ref", help="Notification reference (with --notify)")
+    parser.add_argument("--data", help="Notification metadata as JSON (with --notify, not in LLM text)")
+    parser.add_argument("--evolve", action="store_true", help="Trigger memory evolution")
+    parser.add_argument("--force", action="store_true", help="Skip pre-check (with --evolve)")
     parser.add_argument("--tier", default="", help="Context tier (full/operational/minimal)")
     parser.add_argument("--cost", nargs="?", const="today", help="Query cost (today/week/all)")
     parser.add_argument("--sessions", action="store_true", help="List active sessions")
@@ -537,7 +546,7 @@ def main():
     parser.add_argument("--reset", nargs="?", const="__all__", metavar="TARGET",
                         help="Reset session by sender name or UUID; no argument resets all")
     parser.add_argument("-a", "--attach", action="append", metavar="FILE",
-                        help="Attach a file (repeatable); requires --message or --system")
+                        help="Attach a file (repeatable); requires --message, --system, or --notify")
     parser.add_argument("--history", nargs="?", const="__default__", metavar="CONTACT_OR_ID",
                         help="Show session history for a contact or session ID")
     parser.add_argument("--full", action="store_true",
@@ -571,7 +580,51 @@ def main():
         show_history(state_dir, target, full=args.full)
         return
 
-    if not args.message and not args.system and not args.reset:
+    # ── Evolve (pre-check before FIFO needed) ──────────────────────
+    if args.evolve:
+        if not args.force:
+            from evolution import check_new_logs_exist
+            from memory_schema import ensure_schema
+
+            db_path = state_dir / "memory" / "main.sqlite"
+            workspace = state_dir / "workspace"
+            if not db_path.exists():
+                print("No memory database found, triggering evolution anyway.")
+            else:
+                import sqlite3 as _sqlite3
+                conn = _sqlite3.connect(str(db_path), timeout=30)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.row_factory = _sqlite3.Row
+                ensure_schema(conn)
+                try:
+                    has_new, since_date = check_new_logs_exist(workspace, conn)
+                finally:
+                    conn.close()
+                if not has_new:
+                    print(f"No new daily logs since {since_date or 'ever'}, skipping evolution.")
+                    return
+
+        fifo_path = state_dir / "control.pipe"
+        if not fifo_path.exists():
+            print(f"Error: FIFO not found at {fifo_path}. Is Lucyd running?", file=sys.stderr)
+            sys.exit(1)
+
+        msg = {
+            "type": "system",
+            "sender": "evolution",
+            "tier": "full",
+            "model": "primary",
+            "text": (
+                "[AUTOMATED SYSTEM MESSAGE] "
+                "Load the evolution skill and evolve your memory files. "
+                "New daily logs are available."
+            ),
+        }
+        send_to_fifo(fifo_path, msg)
+        print("Evolution trigger sent.")
+        return
+
+    if not args.message and not args.system and not args.notify and not args.reset:
         parser.print_help()
         sys.exit(1)
 
@@ -637,6 +690,41 @@ def main():
             msg["attachments"] = attach_list
         send_to_fifo(fifo_path, msg)
         print("System event sent.")
+    elif args.notify:
+        # Build text with bracket-prefixed source/ref (matches HTTP /notify)
+        text_parts = ["[AUTOMATED SYSTEM MESSAGE]"]
+        if args.source:
+            text_parts.append(f"[source: {args.source}]")
+        if args.ref:
+            text_parts.append(f"[ref: {args.ref}]")
+        text_parts.append(args.notify)
+
+        msg = {
+            "type": "system",
+            "text": " ".join(text_parts),
+            "sender": args.sender or "cli",
+            "tier": args.tier or "operational",
+        }
+
+        # Build notify_meta (passed through to webhook, not in LLM text)
+        notify_meta = {}
+        if args.source:
+            notify_meta["source"] = args.source
+        if args.ref:
+            notify_meta["ref"] = args.ref
+        if args.data:
+            try:
+                notify_meta["data"] = json.loads(args.data)
+            except json.JSONDecodeError:
+                print("Error: --data must be valid JSON", file=sys.stderr)
+                sys.exit(1)
+        if notify_meta:
+            msg["notify_meta"] = notify_meta
+
+        if attach_list:
+            msg["attachments"] = attach_list
+        send_to_fifo(fifo_path, msg)
+        print("Notification sent.")
 
 
 if __name__ == "__main__":

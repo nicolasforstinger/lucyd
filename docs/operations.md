@@ -43,10 +43,16 @@ CLI tool for injecting messages into the running daemon via its control FIFO (`~
 ~/lucyd/bin/lucyd-send --message "Quick question." --from Claudio
 
 # Send a system event (uses operational context tier by default)
-~/lucyd/bin/lucyd-send --system "Execute HEARTBEAT.md. Follow task frequencies strictly."
-
 # System event with explicit tier
 ~/lucyd/bin/lucyd-send --system "Health check" --tier operational
+
+# Fire-and-forget notification (matches HTTP /notify)
+~/lucyd/bin/lucyd-send --notify "Invoice ready" --source n8n --ref INV-42
+~/lucyd/bin/lucyd-send --notify "Task done" --data '{"status": "ok"}'
+
+# Trigger memory evolution (pre-checks for new logs)
+~/lucyd/bin/lucyd-send --evolve
+~/lucyd/bin/lucyd-send --evolve --force    # Skip pre-check
 
 # Query token costs
 ~/lucyd/bin/lucyd-send --cost today
@@ -69,8 +75,14 @@ CLI tool for injecting messages into the running daemon via its control FIFO (`~
 |---|---|
 | `-m`, `--message <text>` | User message to inject |
 | `-s`, `--system <text>` | System event to inject |
-| `--from <name>` | Sender name for `--message` (default: `cli`). Each unique sender gets its own session. |
-| `--tier <tier>` | Context tier: `full` (default for user) / `operational` (default for system) / `minimal` |
+| `-n`, `--notify <text>` | Fire-and-forget notification (matches HTTP `/notify`). Defaults to `operational` tier. |
+| `--source <label>` | Notification source label (with `--notify`). Bracket-prefixed in LLM text. |
+| `--ref <ref>` | Notification reference (with `--notify`). Bracket-prefixed in LLM text. |
+| `--data <json>` | Notification metadata as JSON (with `--notify`). Passed as `notify_meta`, not in LLM text. |
+| `--evolve` | Trigger memory evolution. Pre-checks for new daily logs; skips if none found. |
+| `--force` | Skip pre-check (with `--evolve`). Triggers evolution regardless of new logs. |
+| `--from <name>` | Sender name for `--message` / `--notify` (default: `cli`). Each unique sender gets its own session. |
+| `--tier <tier>` | Context tier: `full` (default for user) / `operational` (default for system/notify) / `minimal` |
 | `--cost [period]` | Query cost: `today` (default) / `week` / `all` |
 | `--sessions` | List active sessions with context %, cost, log size, date range. Filesystem-only — no daemon needed. |
 | `--monitor` | Show live API call monitor state. Filesystem-only — reads `~/.lucyd/monitor.json`. Use with `watch -n 1` for live updates. |
@@ -146,17 +158,11 @@ The file contains: `state`, `contact`, `session_id`, `model`, `turn`, `message_s
 System events (`--system`) differ from user messages (`--message`) in four ways:
 
 1. **Model**: Routed to the `subagent` model (Haiku), not `primary` (Sonnet)
-2. **Context tier**: Defaults to `operational` (reduced file set: SOUL.md, AGENTS.md, HEARTBEAT.md)
+2. **Context tier**: Defaults to `operational` (reduced file set: SOUL.md, AGENTS.md, IDENTITY.md)
 3. **Reply suppression**: The agentic loop runs (tools execute, cost recorded), but reply text is not delivered to any channel
 4. **Session framing**: The system prompt includes a "Session type: automated infrastructure" annotation so the LLM knows this is automation, not conversation
 
-Example: the daily heartbeat cron job:
-
-```
-0 8 * * * ~/lucyd/bin/lucyd-send --system "Execute HEARTBEAT.md." --tier operational
-```
-
-The agent processes the heartbeat (spawns sub-agents, writes memory, sends messages via tools), but the textual response stays internal.
+The agent processes system events (spawns sub-agents, writes memory, sends messages via tools), but the textual response stays internal.
 
 ## HTTP API
 
@@ -773,9 +779,8 @@ Recommended cron jobs for long-running deployments:
 | `15 * * * *` | Memory consolidation | `lucyd-consolidate` — extracts structured facts, episodes, commitments from sessions |
 | `5 3 * * *` | Trash cleanup | Delete files in `.trash/` older than 30 days |
 | `5 4 * * *` | Memory maintenance | `lucyd-consolidate --maintain` — clean up low-confidence facts and stale entries |
-| `20 4 * * *` | Memory evolution | `lucyd-evolve` — self-driven rewrite of workspace understanding files (MEMORY.md, USER.md) |
+| `20 4 * * *` | Memory evolution | `lucyd-send --evolve` — self-driven rewrite of workspace understanding files (MEMORY.md, USER.md) |
 | `5 4 * * 0` | DB integrity check | `PRAGMA integrity_check` on memory SQLite DB |
-| `5 8 * * *` | Heartbeat | `lucyd-send --system` to trigger `HEARTBEAT.md` tasks |
 
 ```bash
 # View crontab
@@ -785,32 +790,23 @@ crontab -l
 crontab -e
 ```
 
-The heartbeat cron is commented out by default. Uncomment when ready:
+## lucyd-send --evolve
 
-```cron
-5 8 * * * ~/lucyd/bin/lucyd-send --system "Execute HEARTBEAT.md. Follow task frequencies strictly." --tier operational
-```
-
-## lucyd-evolve
-
-CLI trigger for self-driven memory evolution. Pre-checks for new daily logs, then sends a FIFO message to the running daemon. The agent loads the `evolution` skill from workspace, reads daily logs and current files using its tools, and rewrites MEMORY.md/USER.md through the full agentic loop with complete persona context.
+Trigger self-driven memory evolution. Pre-checks for new daily logs, then sends a FIFO message to the running daemon. The agent loads the `evolution` skill from workspace, reads daily logs and current files using its tools, and rewrites MEMORY.md/USER.md through the full agentic loop with complete persona context.
 
 ```bash
 # Trigger self-driven evolution (default for Lucy's cron)
-~/lucyd/bin/lucyd-evolve --config ~/lucyd/lucyd.toml
+~/lucyd/bin/lucyd-send --evolve
+
+# Force evolution (skip pre-check)
+~/lucyd/bin/lucyd-send --evolve --force
 ```
-
-**Flags:**
-
-| Flag | Purpose |
-|---|---|
-| `-c`, `--config <path>` | Path to `lucyd.toml` (default: `LUCYD_CONFIG` env var or `lucyd.toml`) |
 
 **How it works:**
 
-1. Loads config and opens the memory DB
+1. Opens the memory DB at `state-dir/memory/main.sqlite`
 2. Calls `check_new_logs_exist()` — compares daily log files against the `evolution_state` table
-3. If no new logs since last evolution: exits silently (no daemon contact)
+3. If no new logs since last evolution: exits silently (no daemon contact). Use `--force` to skip this check.
 4. Sends a system message to the daemon FIFO with `"model": "primary"` override (ensures Sonnet, not Haiku)
 5. The daemon processes the message: the agent loads the `evolution` skill, reads its daily logs and current files with tools, and rewrites MEMORY.md/USER.md
 
@@ -838,7 +834,7 @@ rm ~/.lucyd/lucyd.pid              # only if dead
 
 ### Messages processed but replies are empty
 
-1. Check for silent tokens -- if the reply starts or ends with `HEARTBEAT_OK` or `NO_REPLY`, it is suppressed.
+1. Check for silent tokens -- if the reply starts or ends with `NO_REPLY`, it is suppressed.
 2. Check the agentic loop: `grep "Tool call" ~/.lucyd/lucyd.log | tail -20`
 3. Check for API errors: `grep "ERROR" ~/.lucyd/lucyd.log | tail -10`
 

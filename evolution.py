@@ -5,7 +5,7 @@ logs, structured facts/episodes from SQLite, and IDENTITY.md as an identity
 anchor.  Uses an LLM to produce complete rewrites that reflect current
 understanding while preserving voice and foundational content.
 
-Triggered by ``lucyd-evolve`` (cron/CLI) or ``POST /api/v1/evolve`` (HTTP API).
+Triggered by ``lucyd-send --evolve`` (cron/CLI) or ``POST /api/v1/evolve`` (HTTP API).
 Both paths queue a self-driven evolution message through the daemon's agentic loop.
 """
 

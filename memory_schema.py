@@ -16,7 +16,7 @@ Creates and migrates 11 tables:
     consolidation_state       — tracks per-session processing progress
     consolidation_file_hashes — tracks file content hashes to avoid reprocessing
 
-  Evolution — used by lucyd-evolve / POST /api/v1/evolve:
+  Evolution — used by lucyd-send --evolve / POST /api/v1/evolve:
     evolution_state    — tracks per-file evolution progress
 """
 
@@ -136,7 +136,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             last_processed_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
-        -- ── Evolution — used by lucyd-evolve / POST /api/v1/evolve ────
+        -- ── Evolution — used by lucyd-send --evolve / POST /api/v1/evolve ────
 
         -- Tracks per-file evolution progress
         CREATE TABLE IF NOT EXISTS evolution_state (

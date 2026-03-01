@@ -41,7 +41,7 @@ flowchart TD
     FIFO --> Q
     Q --> DEB --> ROUTE --> MEDIA --> SESSION --> CTX --> AGENTIC
     AGENTIC --> PERSIST --> SILENT
-    SILENT -->|"HEARTBEAT_OK / NO_REPLY"| WEBHOOK
+    SILENT -->|"NO_REPLY"| WEBHOOK
     SILENT -->|normal| DELIVER --> WEBHOOK
     WEBHOOK --> COMPACT
     COMPACT -->|"> threshold"| DO_COMPACT

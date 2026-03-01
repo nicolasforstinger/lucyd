@@ -668,3 +668,268 @@ class TestChannelAgnosticContacts:
                 contacts.update(section_val["contacts"])
 
         assert contacts == {"Alice": "+43123"}
+
+
+# ─── Notify Flag Tests ───────────────────────────────────────────
+
+
+class TestNotifyFlag:
+    """Tests for --notify / fire-and-forget notification messages."""
+
+    def _send_notify_via_fifo(self, tmp_path, extra_args=None):
+        """Helper: capture FIFO message from --notify invocation."""
+        fifo_path = tmp_path / "control.pipe"
+        os.mkfifo(str(fifo_path))
+
+        import threading
+
+        captured = []
+
+        def reader():
+            with open(str(fifo_path)) as f:
+                captured.append(f.read())
+
+        t = threading.Thread(target=reader)
+        t.start()
+        time.sleep(0.05)
+
+        argv = ["lucyd-send", "--notify", "Invoice ready",
+                "--state-dir", str(tmp_path)]
+        if extra_args:
+            argv.extend(extra_args)
+
+        with patch("sys.argv", argv):
+            main()
+
+        t.join(timeout=2)
+        assert len(captured) == 1
+        return json.loads(captured[0])
+
+    def test_basic_notify(self, tmp_path):
+        """--notify sends system message with correct format."""
+        msg = self._send_notify_via_fifo(tmp_path)
+        assert msg["type"] == "system"
+        assert "[AUTOMATED SYSTEM MESSAGE]" in msg["text"]
+        assert "Invoice ready" in msg["text"]
+        assert msg["sender"] == "cli"
+        assert msg["tier"] == "operational"
+
+    def test_notify_with_source_and_ref(self, tmp_path):
+        """--source and --ref bracket-prefixed in LLM text."""
+        msg = self._send_notify_via_fifo(
+            tmp_path, ["--source", "n8n", "--ref", "INV-42"])
+        assert "[source: n8n]" in msg["text"]
+        assert "[ref: INV-42]" in msg["text"]
+        assert msg["notify_meta"]["source"] == "n8n"
+        assert msg["notify_meta"]["ref"] == "INV-42"
+
+    def test_notify_with_data(self, tmp_path):
+        """--data passed as notify_meta, not in LLM text."""
+        msg = self._send_notify_via_fifo(
+            tmp_path, ["--data", '{"amount": 99.50}'])
+        assert msg["notify_meta"]["data"] == {"amount": 99.50}
+        # Data should NOT appear in the text
+        assert "99.50" not in msg["text"]
+
+    def test_notify_invalid_data_exits(self, tmp_path, monkeypatch):
+        """--data with invalid JSON exits with error."""
+        fifo = tmp_path / "control.pipe"
+        os.mkfifo(str(fifo))
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--notify", "test",
+            "--data", "not-json",
+            "--state-dir", str(tmp_path),
+        ])
+
+        import threading
+
+        def reader():
+            with open(str(fifo)) as f:
+                f.read()
+
+        t = threading.Thread(target=reader)
+        t.start()
+        time.sleep(0.05)
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+        t.join(timeout=2)
+
+    def test_notify_with_custom_sender(self, tmp_path):
+        """--from overrides the sender field."""
+        msg = self._send_notify_via_fifo(tmp_path, ["--from", "n8n-workflow"])
+        assert msg["sender"] == "n8n-workflow"
+
+    def test_notify_no_meta_when_no_options(self, tmp_path):
+        """No --source/--ref/--data means no notify_meta key."""
+        msg = self._send_notify_via_fifo(tmp_path)
+        assert "notify_meta" not in msg
+
+
+# ─── Evolve Flag Tests ───────────────────────────────────────────
+
+
+class TestEvolveFlag:
+    """Tests for --evolve / memory evolution trigger."""
+
+    def test_evolve_sends_correct_fifo_message(self, tmp_path):
+        """--evolve --force sends evolution FIFO message."""
+        fifo_path = tmp_path / "control.pipe"
+        os.mkfifo(str(fifo_path))
+
+        import threading
+
+        captured = []
+
+        def reader():
+            with open(str(fifo_path)) as f:
+                captured.append(f.read())
+
+        t = threading.Thread(target=reader)
+        t.start()
+        time.sleep(0.05)
+
+        with patch("sys.argv", [
+            "lucyd-send", "--evolve", "--force",
+            "--state-dir", str(tmp_path),
+        ]):
+            main()
+
+        t.join(timeout=2)
+        assert len(captured) == 1
+        msg = json.loads(captured[0])
+        assert msg["type"] == "system"
+        assert msg["sender"] == "evolution"
+        assert msg["tier"] == "full"
+        assert msg["model"] == "primary"
+        assert "evolution skill" in msg["text"]
+
+    def test_evolve_precheck_skips_when_no_new_logs(self, tmp_path, capsys):
+        """--evolve without --force skips when no new logs."""
+        # Create memory DB with evolution_state showing recent evolution
+        db_path = tmp_path / "memory" / "main.sqlite"
+        db_path.parent.mkdir(parents=True)
+
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        from memory_schema import ensure_schema
+        ensure_schema(conn)
+
+        # Mark evolution as done through today
+        today = time.strftime("%Y-%m-%d")
+        conn.execute(
+            "INSERT INTO evolution_state (file_path, last_evolved_at, content_hash, logs_through) "
+            "VALUES (?, ?, ?, ?)",
+            ("MEMORY.md", today, "abc123", today),
+        )
+        conn.commit()
+        conn.close()
+
+        # Create workspace/memory with only today's log (not newer)
+        mem_dir = tmp_path / "workspace" / "memory"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / f"{today}.md").write_text("# Today's log")
+
+        with patch("sys.argv", [
+            "lucyd-send", "--evolve",
+            "--state-dir", str(tmp_path),
+        ]):
+            main()
+
+        out = capsys.readouterr().out
+        assert "skipping" in out.lower()
+
+    def test_evolve_precheck_triggers_when_new_logs(self, tmp_path):
+        """--evolve without --force triggers when new logs exist."""
+        # Create memory DB with old evolution state
+        db_path = tmp_path / "memory" / "main.sqlite"
+        db_path.parent.mkdir(parents=True)
+
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        from memory_schema import ensure_schema
+        ensure_schema(conn)
+
+        conn.execute(
+            "INSERT INTO evolution_state (file_path, last_evolved_at, content_hash, logs_through) "
+            "VALUES (?, ?, ?, ?)",
+            ("MEMORY.md", "2026-02-01", "abc123", "2026-02-01"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Create workspace/memory with a newer log
+        mem_dir = tmp_path / "workspace" / "memory"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / "2026-02-15.md").write_text("# New log")
+
+        # Need a FIFO for the trigger
+        fifo_path = tmp_path / "control.pipe"
+        os.mkfifo(str(fifo_path))
+
+        import threading
+
+        captured = []
+
+        def reader():
+            with open(str(fifo_path)) as f:
+                captured.append(f.read())
+
+        t = threading.Thread(target=reader)
+        t.start()
+        time.sleep(0.05)
+
+        with patch("sys.argv", [
+            "lucyd-send", "--evolve",
+            "--state-dir", str(tmp_path),
+        ]):
+            main()
+
+        t.join(timeout=2)
+        assert len(captured) == 1
+        msg = json.loads(captured[0])
+        assert msg["sender"] == "evolution"
+        assert msg["model"] == "primary"
+
+    def test_evolve_no_db_triggers_anyway(self, tmp_path):
+        """--evolve with no memory DB still triggers (first run)."""
+        fifo_path = tmp_path / "control.pipe"
+        os.mkfifo(str(fifo_path))
+
+        import threading
+
+        captured = []
+
+        def reader():
+            with open(str(fifo_path)) as f:
+                captured.append(f.read())
+
+        t = threading.Thread(target=reader)
+        t.start()
+        time.sleep(0.05)
+
+        with patch("sys.argv", [
+            "lucyd-send", "--evolve",
+            "--state-dir", str(tmp_path),
+        ]):
+            main()
+
+        t.join(timeout=2)
+        assert len(captured) == 1
+        msg = json.loads(captured[0])
+        assert msg["sender"] == "evolution"
+
+    def test_evolve_no_fifo_exits(self, tmp_path, monkeypatch):
+        """--evolve --force with no FIFO exits with error."""
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--evolve", "--force",
+            "--state-dir", str(tmp_path),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1

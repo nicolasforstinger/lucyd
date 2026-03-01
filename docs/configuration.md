@@ -31,7 +31,7 @@ Override file lists for non-default context tiers. When `lucyd-send --tier opera
 ```toml
 [agent.context.tiers]
 operational.stable = ["SOUL.md", "AGENTS.md", "IDENTITY.md"]
-operational.semi_stable = ["HEARTBEAT.md"]
+operational.semi_stable = []
 ```
 
 Unspecified tiers fall through to empty file lists.
@@ -264,7 +264,7 @@ max_facts = 50                       # Max structured facts in evolution context
 max_episodes = 20                    # Max recent episodes in evolution context (default: 20)
 ```
 
-Triggered via `bin/lucyd-evolve` (cron daily at `04:20`, after maintenance) or `POST /api/v1/evolve`. Both paths queue a self-driven evolution message to the daemon. Files are evolved in order — the evolution skill instructs the agent to rewrite earlier files first.
+Triggered via `bin/lucyd-send --evolve` (cron daily at `04:20`, after maintenance) or `POST /api/v1/evolve`. Both paths queue a self-driven evolution message to the daemon. Files are evolved in order — the evolution skill instructs the agent to rewrite earlier files first.
 
 ### [memory.recall]
 
@@ -475,7 +475,7 @@ Runtime behavior tuning.
 
 ```toml
 [behavior]
-silent_tokens = ["HEARTBEAT_OK", "NO_REPLY"]                           # Replies starting/ending with these are not delivered
+silent_tokens = ["NO_REPLY"]                                           # Replies starting/ending with these are not delivered
 typing_indicators = true                                               # Send typing indicator before processing
 error_message = "I'm having trouble connecting right now. Try again in a moment."  # Sent when agentic loop fails
 agent_timeout_seconds = 600                                            # Timeout per API call in the agentic loop

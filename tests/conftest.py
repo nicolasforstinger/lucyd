@@ -51,7 +51,6 @@ def tmp_workspace(tmp_path):
     (ws / "IDENTITY.md").write_text("# Identity\nTestAgent.")
     (ws / "TOOLS.md").write_text("# Tools\nAvailable tools.")
     (ws / "MEMORY.md").write_text("# Memory\nLong-term memories.")
-    (ws / "HEARTBEAT.md").write_text("# Heartbeat\nAutomation tasks.")
     return ws
 
 
@@ -68,7 +67,7 @@ def minimal_toml_data():
                 "tiers": {
                     "operational": {
                         "stable": ["SOUL.md", "AGENTS.md", "IDENTITY.md"],
-                        "semi_stable": ["HEARTBEAT.md"],
+                        "semi_stable": [],
                     }
                 },
             },
