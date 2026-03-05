@@ -1,0 +1,249 @@
+# lucyd.toml.example — Template configuration for Lucyd daemon
+# Copy to lucyd.toml and customize for your setup.
+# API keys are loaded from .env via environment variables.
+
+# ─── Agent Identity ───────────────────────────────────────────────
+
+[agent]
+name = "YourAgent"
+workspace = "~/.lucyd/workspace"
+
+[agent.context]
+stable = ["SOUL.md", "AGENTS.md", "USER.md", "IDENTITY.md", "TOOLS.md"]
+semi_stable = ["MEMORY.md"]
+
+[agent.context.tiers]
+operational.stable = ["SOUL.md", "AGENTS.md", "IDENTITY.md", "USER.md"]
+operational.semi_stable = ["MEMORY.md"]
+
+[agent.skills]
+dir = "skills"
+always_on = []
+
+# ─── Channel ─────────────────────────────────────────────────────
+
+[channel]
+type = "telegram"        # "telegram" or "cli"
+debounce_ms = 500
+
+# Create a bot via @BotFather, get the token, set it in .env as LUCYD_TELEGRAM_TOKEN.
+# Get your numeric user ID via @userinfobot. Message the bot first (required by Telegram).
+
+[channel.telegram]
+token_env = "LUCYD_TELEGRAM_TOKEN"         # Env var containing the bot token
+allow_from = [123456789]                   # Your Telegram user ID (numeric)
+text_chunk_limit = 4000
+download_dir = "/tmp/lucyd-telegram"
+reconnect_initial = 1.0                    # Initial reconnect backoff (seconds)
+reconnect_max = 10.0                       # Max reconnect backoff (seconds)
+reconnect_factor = 2.0                     # Exponential backoff multiplier
+reconnect_jitter = 0.2                     # Random jitter fraction (0.0–1.0)
+
+[channel.telegram.contacts]
+YourContact = 123456789                    # Your Telegram user ID
+
+# ─── Providers ───────────────────────────────────────────────────
+# Models loaded from providers.d/{name}.toml files.
+# Each file defines type, api_key_env, base_url, and [models.*] sections.
+# Switch providers by changing the load list — one line, no model editing.
+
+[providers]
+load = ["anthropic", "openai"]
+# dir = "providers.d"  # default: providers.d/ relative to this file
+
+# ─── HTTP API ───────────────────────────────────────────────────
+# Optional REST API for external integrations (n8n, scripts, webhooks).
+# Auth token is loaded from LUCYD_HTTP_TOKEN env var (or .env file).
+
+[http]
+enabled = false
+host = "127.0.0.1"
+port = 8100
+# max_body_bytes = 10485760                         # Max request body size (default: 10 MB)
+# callback_url = "https://n8n.local/webhook/abc"  # POST after every message (default: "" = disabled)
+# callback_token_env = "MY_CALLBACK_TOKEN"         # Env var for webhook bearer token
+# download_dir = "/tmp/lucyd-http"                   # Temp dir for HTTP attachment downloads
+callback_timeout = 10                               # Webhook callback timeout (seconds)
+rate_limit = 30                                      # Max requests per rate_window per sender
+rate_window = 60                                     # Rate limit window (seconds)
+status_rate_limit = 60                               # Max /status requests per rate_window
+
+# ─── Routing ─────────────────────────────────────────────────────
+
+[routing]
+telegram = "primary"
+cli = "primary"
+system = "subagent"
+http = "primary"
+vision = "primary"       # Model for messages with image attachments (overrides source routing)
+
+# ─── Memory ──────────────────────────────────────────────────────
+
+[memory]
+db = "~/.lucyd/memory/main.sqlite"
+search_top_k = 10
+embedding_timeout = 15                             # Embedding API request timeout (seconds)
+
+[memory.consolidation]
+enabled = true
+fact_model = "subagent"
+
+min_messages = 4
+confidence_threshold = 0.6
+# max_extraction_chars = 50000                      # Truncation limit for session text fed to LLM
+
+# [memory.maintenance]
+# stale_threshold_days = 90
+
+# Evolution is driven entirely through the skill system (lucyd-send --evolve).
+# Evolution config lives in the workspace skill, not in lucyd.toml.
+
+[memory.recall]
+decay_rate = 0.03              # Exponential decay factor for fact relevance scoring (higher = faster decay)
+max_facts_in_context = 20      # Maximum number of recalled facts injected into context per message
+max_dynamic_tokens = 1500      # Token budget for dynamic recall blocks (0 = unlimited, all blocks included)
+max_episodes_at_start = 3
+
+# [memory.recall.personality]
+# priority_vector = 35
+# priority_episodes = 25
+# priority_facts = 15
+# priority_commitments = 40
+# fact_format = "natural"           # "natural" or "compact"
+# show_emotional_tone = true
+# episode_section_header = "Recent conversations"
+# synthesis_style = "structured"   # "structured" (raw), "narrative", or "factual"
+
+[memory.indexer]
+include_patterns = ["memory/*.md", "MEMORY.md"]
+exclude_dirs = []
+chunk_size_chars = 1600                    # Characters per text chunk
+chunk_overlap_chars = 320                  # Overlap between chunks (for context continuity)
+embed_batch_limit = 100                    # Max chunks per embedding API batch call
+
+# ─── Tools ───────────────────────────────────────────────────────
+
+[tools]
+enabled = [
+    "read", "write", "edit", "exec",
+    "web_search", "web_fetch",
+    "memory_search", "memory_get",
+    "memory_write", "memory_forget", "commitment_update",
+    "message", "react",
+    "schedule_message", "list_scheduled",
+    "session_status",
+    "sessions_spawn", "load_skill",
+    "tts",
+]
+output_truncation = 30000
+exec_timeout = 120
+exec_max_timeout = 600
+# subagent_deny = ["sessions_spawn", "tts", "react", "schedule_message"]  # Default deny-list if omitted
+# subagent_model = "primary"                        # Model for sub-agents (default: same as parent)
+# subagent_max_turns = 0                             # Max turns (0 = use max_turns_per_message)
+# subagent_timeout = 0                               # Timeout in seconds (0 = use agent_timeout_seconds)
+# plugins_dir = "plugins.d"                           # Directory for custom tool plugins
+
+[tools.filesystem]
+# allowed_paths = ["~/.lucyd/workspace", "/tmp/"]   # Defaults to workspace + /tmp/ if omitted
+default_read_limit = 2000                            # Max lines returned by the read tool
+
+[tools.web_search]
+provider = "brave"
+timeout = 15                                         # Web search request timeout (seconds)
+
+[tools.web_fetch]
+timeout = 15                                         # Web fetch request timeout (seconds)
+
+[tools.tts]
+provider = "elevenlabs"                              # TTS provider name (required if tts enabled)
+# api_key_env = "LUCYD_ELEVENLABS_KEY"               # Env var for TTS API key (default: looks up provider name in api_keys)
+default_voice_id = "your-elevenlabs-voice-id"
+default_model_id = "eleven_v3"                       # Provider-specific model ID (ElevenLabs default: eleven_v3)
+speed = 1.0
+stability = 0.5
+similarity_boost = 0.75
+timeout = 60                                         # TTS API request timeout (seconds)
+# api_url = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"  # TTS endpoint (provider-specific)
+
+[tools.scheduling]
+max_scheduled = 50                                   # Max concurrent scheduled messages
+max_delay = 86400                                    # Max delay in seconds (24 hours)
+
+# ─── Speech-to-Text ──────────────────────────────────────────────
+
+[stt]
+backend = "openai"                    # "openai" (cloud) or "local" (whisper.cpp server). Required if voice messages enabled.
+voice_label = "voice message"
+voice_fail_msg = "voice message — transcription failed"
+# audio_label = "audio transcription"            # Label for non-voice audio files
+# audio_fail_msg = "audio transcription — failed"  # Label when audio transcription fails
+
+[stt.openai]
+api_url = "https://api.openai.com/v1/audio/transcriptions"
+model = "whisper-1"
+timeout = 60
+
+# [stt.local]
+# endpoint = "http://whisper-server:8082/inference"
+# language = "auto"
+# ffmpeg_timeout = 30
+# request_timeout = 60
+
+# ─── Documents ───────────────────────────────────────────────────
+# Extract text from document attachments (PDF, text files, etc.)
+# so the agent sees content, not just "[attachment: file.pdf, application/pdf]".
+# PDF support requires pypdf (pip install pypdf). If not installed, PDFs
+# fall through to label-only.
+
+[documents]
+enabled = true
+max_chars = 30000                  # Truncation limit (matches output_truncation)
+max_file_bytes = 10485760          # 10 MB — skip huge files
+# text_extensions = [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
+#     ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
+#     ".ini", ".cfg", ".log", ".sql", ".css"]
+
+# ─── Vision ─────────────────────────────────────────────────────
+
+[vision]
+max_image_bytes = 5242880              # Max inbound image size (bytes)
+# max_dimension = 1568                # Max px on longest side
+# default_caption = "image"
+# too_large_msg = "image too large to display"
+jpeg_quality_steps = [85, 60, 40]      # JPEG quality reduction steps for fitting images
+
+# ─── Behavior ────────────────────────────────────────────────────
+
+[behavior]
+silent_tokens = ["NO_REPLY"]
+typing_indicators = true
+error_message = "I'm having trouble connecting right now. Try again in a moment."
+agent_timeout_seconds = 600
+max_turns_per_message = 50
+max_cost_per_message = 5.0             # USD limit per message (0.0 = disabled)
+api_retries = 2                        # API-level retries for transient errors (429, 5xx, connection)
+api_retry_base_delay = 2.0             # Initial backoff delay for API retries (seconds, exponential with jitter)
+message_retries = 2                    # Message-level retries on persistent failure
+message_retry_base_delay = 30          # Base delay between message retries (seconds)
+audit_truncation_limit = 500           # Max chars per message in audit log truncation
+
+[behavior.compaction]
+threshold_tokens = 150000
+model = "compaction"
+prompt = """Summarize this conversation preserving all factual details, decisions,
+action items, and emotional context. Write as a dense narrative, not bullet points."""
+
+# ─── Logging ────────────────────────────────────────────────────
+
+[logging]
+max_bytes = 10485760                   # Max log file size before rotation (10 MB)
+backup_count = 3                       # Number of rotated log backups to keep
+
+# ─── Paths ───────────────────────────────────────────────────────
+
+[paths]
+state_dir = "~/.lucyd"
+sessions_dir = "~/.lucyd/sessions"
+cost_db = "~/.lucyd/cost.db"
+log_file = "~/.lucyd/lucyd.log"

@@ -1,0 +1,16 @@
+# Vision provider — local Qwen3-VL-8B via llama-server
+# To enable: rename to vision.toml, add "vision" to [providers] load list,
+# and add vision = "vision" to [routing] in lucyd.toml.
+#
+# The local llama-server does not validate API keys.
+# api_key_env points to an existing key as a passthrough.
+
+type = "openai-compat"
+api_key_env = "LUCYD_OPENAI_KEY"
+base_url = "http://llama-server-vision:8081/v1"
+
+[models.vision]
+model = "qwen3-vl-8b"
+max_tokens = 2048
+supports_vision = true
+cost_per_mtok = [0.0, 0.0, 0.0]    # local inference — no API cost
