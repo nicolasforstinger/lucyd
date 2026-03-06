@@ -923,6 +923,80 @@ class MockCompactionProvider:
         )
 
 
+class TestCompactionAntiHallucination:
+    """Compaction input must include structural boundaries against fabrication."""
+
+    @pytest.mark.asyncio
+    async def test_compaction_includes_end_marker_and_anti_fabrication(self, tmp_sessions):
+        """The conversation text sent to the provider must include an end-of-input
+        marker and anti-fabrication instructions to prevent the model from
+        generating fake dialogue beyond the real transcript."""
+        session = Session("test-anti-hallucination", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"user msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        captured_messages = []
+        captured_system = []
+        provider = MockCompactionProvider(summary_text="Clean summary.")
+        original_complete = provider.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured_system.extend(system)
+            captured_messages.extend(messages)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider.complete = capturing_complete
+
+        mgr = SessionManager(tmp_sessions)
+        await mgr.compact_session(session, provider, "Summarize.", keep_recent_pct=0.33)
+
+        # Verify end-of-input marker in message content
+        sent_text = captured_messages[0]["content"]
+        assert "--- END OF CONVERSATION ---" in sent_text
+        assert "Do not continue, extend, or invent" in sent_text
+
+        # Verify anti-fabrication system prompt
+        system_text = captured_system[0]["text"]
+        assert "NEVER generate new dialogue" in system_text
+        assert "NEVER" in system_text
+
+    @pytest.mark.asyncio
+    async def test_compaction_end_marker_after_all_conversation_content(self, tmp_sessions):
+        """End marker must appear AFTER all conversation content, not before."""
+        session = Session("test-marker-position", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        captured = []
+        provider = MockCompactionProvider(summary_text="Summary.")
+        original_complete = provider.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured.extend(messages)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider.complete = capturing_complete
+
+        mgr = SessionManager(tmp_sessions)
+        await mgr.compact_session(session, provider, "Summarize.", keep_recent_pct=0.33)
+
+        sent_text = captured[0]["content"]
+        # Last real message should appear BEFORE the end marker
+        last_msg_pos = sent_text.rfind("reply 3")  # last message in old 2/3
+        end_marker_pos = sent_text.find("--- END OF CONVERSATION ---")
+        assert last_msg_pos < end_marker_pos, (
+            "End marker must come after all conversation content"
+        )
+
+
 class TestCompactionStatePersistenceOrder:
     """_save_state() must be called before append_event() in compaction."""
 
@@ -1235,3 +1309,182 @@ class TestReadHistoryEvents:
 
         assert result[0]["content"] == "earlier"
         assert result[1]["content"] == "later"
+
+
+# ─── Compaction Identity + Verification ──────────────────────────
+
+
+class TestCompactionIdentity:
+    """system_blocks parameter passes agent identity to compaction model."""
+
+    @pytest.mark.asyncio
+    async def test_system_blocks_used_when_provided(self, tmp_sessions):
+        """When system_blocks is provided, they replace the default summarizer prompt."""
+        session = Session("test-identity", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        captured_system = []
+        provider = MockCompactionProvider(summary_text="Identity-aware summary.")
+        original_complete = provider.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured_system.extend(system)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider.complete = capturing_complete
+
+        persona_blocks = [{"text": "I am Lucy, a goth AI familiar.", "tier": "stable"}]
+        mgr = SessionManager(tmp_sessions)
+        await mgr.compact_session(
+            session, provider, "Summarize.", keep_recent_pct=0.33,
+            system_blocks=persona_blocks,
+        )
+
+        assert len(captured_system) == 1
+        assert "Lucy" in captured_system[0]["text"]
+        assert "conversation summarizer" not in captured_system[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_fallback_without_system_blocks(self, tmp_sessions):
+        """When system_blocks is None, the default summarizer prompt is used."""
+        session = Session("test-fallback", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        captured_system = []
+        provider = MockCompactionProvider(summary_text="Default summary.")
+        original_complete = provider.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured_system.extend(system)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider.complete = capturing_complete
+
+        mgr = SessionManager(tmp_sessions)
+        await mgr.compact_session(
+            session, provider, "Summarize.", keep_recent_pct=0.33,
+        )
+
+        assert "conversation summarizer" in captured_system[0]["text"]
+
+
+class TestCompactionVerification:
+    """Verification integration in compact_session."""
+
+    @pytest.mark.asyncio
+    async def test_fabricated_summary_replaced(self, tmp_sessions):
+        """When verification fails, summary is replaced with deterministic fallback."""
+        session = Session("test-verify-fail", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        # Provider returns a fabricated summary with many turn labels
+        fabricated = (
+            "user: hello\nassistant: hi there\n"
+            "user: how are you\nassistant: fine\n"
+            "user: bye\nassistant: see you"
+        )
+        provider = MockCompactionProvider(summary_text=fabricated)
+        mgr = SessionManager(tmp_sessions)
+
+        await mgr.compact_session(
+            session, provider, "Summarize.", keep_recent_pct=0.33,
+            verify_enabled=True, verify_max_turn_labels=3,
+        )
+
+        # Summary should be the deterministic fallback
+        summary_content = session.messages[0]["content"]
+        assert "quality check failure" in summary_content
+        assert "memory_search" in summary_content
+
+    @pytest.mark.asyncio
+    async def test_clean_summary_passes_verification(self, tmp_sessions):
+        """A clean summary passes verification and is used as-is."""
+        session = Session("test-verify-pass", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        provider = MockCompactionProvider(summary_text="A clean narrative summary.")
+        mgr = SessionManager(tmp_sessions)
+
+        await mgr.compact_session(
+            session, provider, "Summarize.", keep_recent_pct=0.33,
+            verify_enabled=True,
+        )
+
+        assert "clean narrative summary" in session.messages[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_verification_disabled_skips_check(self, tmp_sessions):
+        """When verify_enabled=False, even fabricated summaries pass through."""
+        session = Session("test-verify-off", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        fabricated = (
+            "user: hello\nassistant: hi\n"
+            "user: bye\nassistant: see you\n"
+            "user: wait\nassistant: ok"
+        )
+        provider = MockCompactionProvider(summary_text=fabricated)
+        mgr = SessionManager(tmp_sessions)
+
+        await mgr.compact_session(
+            session, provider, "Summarize.", keep_recent_pct=0.33,
+            verify_enabled=False,
+        )
+
+        # Fabricated summary used as-is since verification is off
+        assert "user: hello" in session.messages[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_compaction_event_includes_verification_fields(self, tmp_sessions):
+        """Compaction JSONL event includes verified and verification_tier."""
+        session = Session("test-verify-event", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        provider = MockCompactionProvider(summary_text="a clean narrative summary of the messages.")
+        mgr = SessionManager(tmp_sessions)
+
+        await mgr.compact_session(
+            session, provider, "Summarize.", keep_recent_pct=0.33,
+            verify_enabled=True,
+        )
+
+        # Read the JSONL event
+        import glob
+        files = glob.glob(str(tmp_sessions / "test-verify-event.*.jsonl"))
+        assert files
+        import json
+        events = [json.loads(line) for line in open(files[0])]
+        compaction_event = [e for e in events if e.get("type") == "compaction"]
+        assert len(compaction_event) == 1
+        assert compaction_event[0]["verified"] is True
+        assert compaction_event[0]["verification_tier"] == ""

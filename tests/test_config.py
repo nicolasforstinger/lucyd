@@ -589,3 +589,38 @@ class TestChannelRawConfig:
     def test_channel_type(self, minimal_toml_data):
         cfg = Config(minimal_toml_data)
         assert cfg.channel_type == "telegram"
+
+
+class TestCompactionVerificationConfig:
+    """Compaction verification config properties."""
+
+    def test_verify_enabled_default(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.verify_enabled is True
+
+    def test_verify_enabled_override(self, minimal_toml_data):
+        minimal_toml_data.setdefault("behavior", {}).setdefault("compaction", {})["verify_enabled"] = False
+        cfg = Config(minimal_toml_data)
+        assert cfg.verify_enabled is False
+
+    def test_verify_max_turn_labels_default(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.verify_max_turn_labels == 3
+
+    def test_verify_max_turn_labels_override(self, minimal_toml_data):
+        minimal_toml_data.setdefault("behavior", {}).setdefault("compaction", {})["verify_max_turn_labels"] = 5
+        cfg = Config(minimal_toml_data)
+        assert cfg.verify_max_turn_labels == 5
+
+    def test_verify_grounding_threshold_default(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.verify_grounding_threshold == 0.5
+
+    def test_verify_grounding_threshold_override(self, minimal_toml_data):
+        minimal_toml_data.setdefault("behavior", {}).setdefault("compaction", {})["verify_grounding_threshold"] = 0.7
+        cfg = Config(minimal_toml_data)
+        assert cfg.verify_grounding_threshold == 0.7
+
+    def test_compaction_prompt_includes_agent_name_placeholder(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert "{agent_name}" in cfg.compaction_prompt

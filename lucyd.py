@@ -1211,6 +1211,10 @@ class LucydDaemon:
                     cost_rates=compaction_model_cfg.get("cost_per_mtok", []),
                     trace_id=trace_id,
                     keep_recent_pct=self.config.compaction_keep_pct,
+                    system_blocks=self.context_builder.build_stable(),
+                    verify_enabled=self.config.verify_enabled,
+                    verify_max_turn_labels=self.config.verify_max_turn_labels,
+                    verify_grounding_threshold=self.config.verify_grounding_threshold,
                 )
 
         # Auto-close one-shot system sessions (evolution, heartbeat, /notify).

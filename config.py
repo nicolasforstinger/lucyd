@@ -632,13 +632,20 @@ class Config:
     @property
     def compaction_prompt(self) -> str:
         return _deep_get(self._data, "behavior", "compaction", "prompt", default=(
-            "Summarize this conversation.\n"
+            "Summarize this conversation for {agent_name}.\n"
             "Rules:\n"
-            "1. Return ONLY the summary text. No preamble, no labels.\n"
-            "2. Preserve: decisions made, commitments (who/what/when), emotional context, new facts learned.\n"
-            "3. Write 200-500 words as a dense narrative.\n"
-            "4. Maintain the speaker's voice and perspective.\n"
-            "5. If the conversation is trivial (greetings only), write one sentence."
+            "1. Return ONLY the summary text — no preamble, no labels, no commentary.\n"
+            "2. Write as a dense narrative (200-600 words). Use {agent_name}'s voice.\n"
+            "3. NEVER reproduce individual message turns, timestamps, or \"user:\"/\"A:\" labels.\n"
+            "4. NEVER invent, fabricate, or extend content beyond what appears in the transcript.\n"
+            "5. If something was discussed, state WHAT was discussed and any conclusions reached.\n"
+            "Preserve with full fidelity:\n"
+            "- Emotional moments, relationship dynamics, things said with feeling\n"
+            "- Decisions made and reasoning behind them\n"
+            "- Commitments, promises, plans (who, what, when)\n"
+            "- New information learned about the user or others\n"
+            "- The agent's own reflections, opinions, and realizations\n"
+            "- Any tasks, reminders, or follow-ups mentioned"
         ))
 
     @property
@@ -660,6 +667,20 @@ class Config:
             "5. If the file already exists, overwrite it completely.\n"
             "6. Do NOT add any text response. ONLY use the write tool."
         ))
+
+    # --- Compaction Verification ---
+
+    @property
+    def verify_enabled(self) -> bool:
+        return _deep_get(self._data, "behavior", "compaction", "verify_enabled", default=True)
+
+    @property
+    def verify_max_turn_labels(self) -> int:
+        return _deep_get(self._data, "behavior", "compaction", "verify_max_turn_labels", default=3)
+
+    @property
+    def verify_grounding_threshold(self) -> float:
+        return float(_deep_get(self._data, "behavior", "compaction", "verify_grounding_threshold", default=0.5))
 
     # --- Paths ---
 

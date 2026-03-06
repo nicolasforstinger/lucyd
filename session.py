@@ -457,6 +457,10 @@ class SessionManager:
         trace_id: str = "",
         *,
         keep_recent_pct: float,
+        system_blocks: list[dict] | None = None,
+        verify_enabled: bool = False,
+        verify_max_turn_labels: int = 3,
+        verify_grounding_threshold: float = 0.5,
     ) -> None:
         """Compact old messages using a summarization model."""
         if len(session.messages) < 4:
@@ -490,9 +494,23 @@ class SessionManager:
             return
 
         summary_messages = [
-            {"role": "user", "content": f"{compaction_prompt}\n\n---\n\n{conversation_text}"}
+            {"role": "user", "content": (
+                f"{compaction_prompt}\n\n---\n\n"
+                f"{conversation_text}"
+                "--- END OF CONVERSATION ---\n\n"
+                "Write ONLY the summary. Do not continue, extend, or "
+                "invent conversation turns beyond what appears above."
+            )}
         ]
-        fmt_system = provider.format_system([{"text": "You are a conversation summarizer.", "tier": "stable"}])
+        if system_blocks:
+            fmt_system = provider.format_system(system_blocks)
+        else:
+            fmt_system = provider.format_system([{"text": (
+                "You are a conversation summarizer. You receive a conversation "
+                "transcript and produce a factual summary. NEVER generate new "
+                "dialogue, fake timestamps, or fabricated exchanges. ONLY "
+                "summarize content that explicitly appears in the input."
+            ), "tier": "stable"}])
         fmt_messages = provider.format_messages(summary_messages)
 
         try:
@@ -509,6 +527,25 @@ class SessionManager:
                 cost_db, session.id, model_name, response.usage, cost_rates,
                 call_type="compaction", trace_id=trace_id,
             )
+
+        # Verify summary quality (safety net against fabrication)
+        verified = True
+        verification_tier = ""
+        if summary and verify_enabled:
+            from verification import verify_compaction_summary, _build_deterministic_summary
+            vresult = verify_compaction_summary(
+                summary, conversation_text, response.usage.output_tokens,
+                max_turn_labels=verify_max_turn_labels,
+                grounding_threshold=verify_grounding_threshold,
+            )
+            if not vresult.passed:
+                log.warning(
+                    "Compaction verification failed (tier=%s): %s",
+                    vresult.tier_failed, vresult.details,
+                )
+                summary = _build_deterministic_summary(len(old_messages))
+                verified = False
+                verification_tier = vresult.tier_failed
 
         # Replace old messages with summary + compaction marker
         summary_msg = {
@@ -540,6 +577,8 @@ class SessionManager:
             "removed_messages": len(old_messages),
             "compaction_number": session.compaction_count,
             "summary": summary[:2000],
+            "verified": verified,
+            "verification_tier": verification_tier,
         })
         log.info("Compacted session %s: %d messages → summary + %d recent",
                  session.id, len(old_messages), len(recent_messages))
