@@ -1,91 +1,56 @@
 # Dependency Chain Audit Report
 
-**Date:** 2026-03-04
-**Audit Cycle:** 15
+**Date:** 2026-03-06
+**Audit Cycle:** 16
 **EXIT STATUS:** PASS
 
-## Changes Since Cycle 14
+## Changes Since Cycle 15
 
-1. **New cron job:** `lucyd-send --compact` at 3:50 AM (forced diary + compaction)
-2. **New HTTP endpoint:** `POST /api/v1/compact` → routes through `_handle_compact()`
-3. **New FIFO message type:** `"type": "compact"` → routes through message queue
+1. **New dependency:** `verification.py` called from `session.py:compact_session()` — no external dependencies, pure string matching
+2. **Single-provider refactoring** — `self.providers` dict removed, `self.provider` singular
 
 ## Pattern Checks
 
-| Pattern | Result | Details |
-|---------|--------|---------|
-| P-006 (dead pipeline) | CLEAN | New compact pipeline has producer (cron :50) and consumer (daemon `_handle_compact`). All existing pipelines unchanged. |
-| P-012 (auto-populated misclassified) | CLEAN | Alias ordering invariant still intact. |
-| P-014 (failure at dependency edges) | CLEAN | `_handle_compact` has try/except with logging and HTTP 500 return. |
-| P-016 (resource lifecycle) | CLEAN | No new resources requiring cleanup. |
-| P-017 (state persistence ordering) | CLEAN | Compact routes through `_process_message` — same persistence path. |
-| P-026 (streaming error path) | CLEAN | No provider changes. |
-| P-027 (cost DB completeness) | CLEAN | Compact uses `_process_message` which records cost via agentic loop. |
-
-## Data Flow Matrix
-
-| Consumer | Data Source | Producer | Producer Runs? | Status |
-|----------|-----------|----------|---------------|--------|
-| `memory.py` search/recall | `memory/main.sqlite` (chunks) | `lucyd-index` cron :10 | Yes | HEALTHY |
-| `memory.py` embedding_cache | `memory/main.sqlite` | `memory.py:_embed()` + `lucyd-index` | Yes | HEALTHY |
-| `session.py` load | `sessions/*.jsonl` + `.state.json` | `session.py` save (daemon) | Yes | HEALTHY |
-| `context.py` build | `workspace/*.md` | Lucy via tools / manual | N/A (conversational) | HEALTHY |
-| `config.py` load | `lucyd.toml`, `providers.d/*.toml` | Manual (static) | N/A | HEALTHY |
-| `skills.py` load | `workspace/skills/*.md` | Manual (static) | N/A | HEALTHY |
-| `agentic.py` cost query | `cost.db` (costs table) | `agentic.py:_record_cost()` | Yes | HEALTHY |
-| `lucyd.py` PID check | `lucyd.pid` | daemon startup | Yes | HEALTHY |
-| `lucyd.py` FIFO reader | `control.pipe` | `lucyd-send` + cron | Yes | HEALTHY |
-| `lucyd.py` monitor | `monitor.json` | `_process_message()` | Yes | HEALTHY |
-| `memory.py` → `lookup_facts()` | `facts` table | `consolidation.py` cron :15 + tool | Yes | HEALTHY |
-| `memory.py` → `search_episodes()` | `episodes` table | `consolidation.py` cron :15 | Yes | HEALTHY |
-| `memory.py` → `get_open_commitments()` | `commitments` table | `consolidation.py` + tool | Yes | HEALTHY |
-| `memory.py` → `resolve_entity()` | `entity_aliases` table | `consolidation.py:extract_facts()` | Yes | HEALTHY |
-| `consolidation.py` skip check | `consolidation_state` table | `consolidation.py` | Yes | HEALTHY |
-| `consolidation.py` hash check | `consolidation_file_hashes` table | `consolidation.py` | Yes | HEALTHY |
-| `evolution.py` pre-check | daily logs | Lucy via `write` tool | N/A (conversational) | HEALTHY |
-| `evolution.py` state | `evolution_state` table | `evolution.py` via daemon | Yes | HEALTHY |
-| **NEW:** `lucyd.py` `_handle_compact()` | primary session | daemon message processing | Yes | HEALTHY |
-
-## External Process Inventory
-
-| Process | Type | Schedule | Exists? | Enabled? | Status |
-|---------|------|----------|---------|----------|--------|
-| `lucyd.service` | systemd | continuous | Yes | Yes | HEALTHY (PID 660248) |
-| Workspace auto-commit | cron | `5 * * * *` | Yes | Yes | HEALTHY |
-| Memory indexer | cron | `10 * * * *` | Yes | Yes | HEALTHY |
-| Memory consolidation | cron | `15 * * * *` | Yes | Yes | HEALTHY |
-| Memory maintenance | cron | `5 4 * * *` | Yes | Yes | HEALTHY |
-| **NEW:** Forced compact | cron | `50 3 * * *` | Yes | Yes | HEALTHY (new) |
-| Memory evolution | cron | `20 4 * * *` | Yes | Yes | HEALTHY |
-| Trash cleanup | cron | `5 3 * * 0` | Yes | Yes | HEALTHY |
-| DB integrity check | cron | `5 4 * * 0` | Yes | Yes | HEALTHY |
+| Pattern | Result |
+|---------|--------|
+| P-006 (dead pipeline) | CLEAN — no new pipelines, all existing pipelines intact |
+| P-012 (auto-populated misclassified) | CLEAN |
+| P-014 (failure at dependency edges) | CLEAN |
+| P-016 (resource lifecycle) | CLEAN |
+| P-017 (state persistence ordering) | CLEAN |
+| P-026 (streaming error path) | CLEAN — no provider changes |
+| P-027 (cost DB completeness) | CLEAN |
 
 ## Freshness Checks
 
 | Data Source | Threshold | Last Write | Fresh? |
 |-------------|-----------|-----------|--------|
-| Memory SQLite (chunks) | 48h | 2026-03-04 | Yes |
-| Cost SQLite (costs) | 24h | 2026-03-04 | Yes |
-| Session JSONL | Matches conversation | 2026-03-04 22:44 | Yes |
-| Daily memory logs | 72h | 2026-03-04 18:50 | Yes |
-| PID file | Current process | PID 660248 running | Yes |
-| Structured facts | 2h | 2026-03-04 21:43 | Yes |
+| Session JSONL | Matches conversation | 2026-03-06 23:16 | Yes |
+| Cost SQLite (costs) | 24h | 2026-03-06 | Yes |
+| Structured facts | 2h | 2026-03-06 21:24 | Yes |
+| Memory daily logs | 72h | 2026-03-06 16:56 | Yes |
+| PID file | Current process | PID 1052709 running | Yes |
 
-## Dependency Hygiene
+## External Process Inventory
 
-### Outdated Packages
+| Process | Schedule | Status |
+|---------|----------|--------|
+| `lucyd.service` | continuous | ACTIVE (PID 1052709, 3h12m) |
+| Workspace auto-commit | `:05` | ACTIVE |
+| Memory indexer | `:10` | ACTIVE |
+| Memory consolidation | `:15` | ACTIVE |
+| Memory maintenance | `4:05` | ACTIVE |
+| Forced compact | `3:50` | ACTIVE |
+| Memory evolution | `4:20` | ACTIVE |
+| Trash cleanup | Weekly | ACTIVE |
+| DB integrity check | Weekly | ACTIVE |
 
-| Package | Installed | Latest | Severity |
-|---------|-----------|--------|----------|
-| `certifi` | 2025.1.31 | 2026.2.25 | **Medium** (CA certs — reverted from 2026.2.25?) |
-| Various others | — | — | Low (SDK patches, non-security) |
+## Outdated Packages
 
-## Findings
-
-| # | Phase | Severity | Description | Remediation |
-|---|-------|----------|-------------|-------------|
-| 1 | 4b | Medium | `certifi` at 2025.1.31, latest 2026.2.25 (CA cert bundle, >1 year old) | Update in Stage 8 |
+No security-critical updates. Minor/patch bumps only:
+- anthropic 0.81.0 → 0.84.0, openai 2.21.0 → 2.26.0 (SDK updates, non-breaking)
+- ruff, mutmut, rich (dev tools)
 
 ## Confidence
 
-Overall: 97% — 19 pipelines mapped (18 existing + 1 new compact), all producers active, all data fresh.
+97% — 19 pipelines healthy, all producers active, all data fresh, no new dependencies requiring verification.

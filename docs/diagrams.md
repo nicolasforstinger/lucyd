@@ -20,7 +20,6 @@ flowchart TD
 
     subgraph Loop["Message Loop — lucyd.py:1523"]
         DEB["Debounce<br/>500ms window"]
-        ROUTE["Route Model<br/>config.route_model(source)"]
         MEDIA["Process Attachments<br/>image / voice / document"]
         SESSION["Get/Create Session<br/>session.py:288"]
         CTX["Build System Prompt<br/>context.py:31"]
@@ -39,7 +38,7 @@ flowchart TD
     TG --> Q
     HTTP --> Q
     FIFO --> Q
-    Q --> DEB --> ROUTE --> MEDIA --> SESSION --> CTX --> AGENTIC
+    Q --> DEB --> MEDIA --> SESSION --> CTX --> AGENTIC
     AGENTIC --> PERSIST --> SILENT
     SILENT -->|"NO_REPLY"| WEBHOOK
     SILENT -->|normal| DELIVER --> WEBHOOK
@@ -108,7 +107,7 @@ flowchart LR
 
     subgraph Dynamic["Dynamic Tier — uncached"]
         TIME["Date / Time / Sender"]
-        SOURCE["Source + Tier Framing"]
+        SOURCE["Source Framing"]
         RECALL["Memory Recall Block"]
         LIMITS["Limits + Warnings"]
         VOICE["Voice / Image Hints"]

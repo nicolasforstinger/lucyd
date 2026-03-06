@@ -1,6 +1,6 @@
 """Context builder — assembles system prompt from workspace files.
 
-Organizes files into cache tiers for provider-level optimization.
+Organizes files into stable/semi-stable/dynamic blocks with cache hints.
 Generates tool usage section and skills index automatically.
 """
 
@@ -14,23 +14,20 @@ log = logging.getLogger(__name__)
 
 
 class ContextBuilder:
-    """Builds system prompt blocks with cache tier metadata."""
+    """Builds system prompt blocks with cache-hint metadata."""
 
     def __init__(
         self,
         workspace: Path,
         stable_files: list[str],
         semi_stable_files: list[str],
-        tier_overrides: dict | None = None,
     ):
         self.workspace = workspace
         self.stable_files = stable_files
         self.semi_stable_files = semi_stable_files
-        self.tier_overrides = tier_overrides or {}
 
     def build(
         self,
-        tier: str = "full",
         source: str = "",
         tool_descriptions: list[tuple[str, str]] | None = None,
         skill_index: str = "",
@@ -45,16 +42,16 @@ class ContextBuilder:
         has_voice: bool = False,
         sender: str = "",
     ) -> list[dict]:
-        """Build system prompt blocks for the given tier.
+        """Build system prompt blocks.
 
         Returns list of {"text": str, "tier": "stable"|"semi_stable"|"dynamic"}
         """
         blocks = []
 
-        # Determine file lists for this tier
-        stable, semi_stable = self._files_for_tier(tier)
-        log.debug("Context tier=%s: %d stable, %d semi-stable files",
-                  tier, len(stable), len(semi_stable))
+        stable = self.stable_files
+        semi_stable = self.semi_stable_files
+        log.debug("Context: %d stable, %d semi-stable files",
+                  len(stable), len(semi_stable))
 
         # Stable block: persona files + tool instructions
         stable_text = self._read_files(stable)
@@ -95,7 +92,7 @@ class ContextBuilder:
             and any(n == "tts" for n, _ in tool_descriptions)
         )
         dynamic = self._build_dynamic(
-            tier=tier, source=source, extra=extra_dynamic,
+            source=source, extra=extra_dynamic,
             silent_tokens=silent_tokens, max_turns=max_turns,
             max_cost=max_cost, compaction_threshold=compaction_threshold,
             has_images=has_images, voice_reply=voice_reply, sender=sender,
@@ -104,20 +101,6 @@ class ContextBuilder:
             blocks.append({"text": dynamic, "tier": "dynamic"})
 
         return blocks
-
-    def _files_for_tier(self, tier: str) -> tuple[list[str], list[str]]:
-        """Get file lists for a tier, with override support."""
-        if tier == "full":
-            return self.stable_files, self.semi_stable_files
-
-        override = self.tier_overrides.get(tier, {})
-        if isinstance(override, dict):
-            stable = override.get("stable", [])
-            semi = override.get("semi_stable", [])
-            return stable, semi
-
-        # Fallback: minimal
-        return [], []
 
     def _read_files(self, file_names: list[str]) -> str:
         """Read and concatenate workspace files with boundary markers."""
@@ -136,7 +119,6 @@ class ContextBuilder:
 
     def _build_dynamic(
         self,
-        tier: str = "full",
         source: str = "",
         extra: str = "",
         silent_tokens: list[str] | None = None,
@@ -150,21 +132,6 @@ class ContextBuilder:
         """Build dynamic context block (changes every turn)."""
         now = time.strftime("%a, %d. %b %Y - %H:%M %Z")
         parts = [f"Current date/time: {now}"]
-
-        # Tier announcement — tell agent what context it has
-        if tier == "full":
-            parts.append(
-                "Context tier: full. All workspace files, memory, and skills are loaded."
-            )
-        elif tier == "operational":
-            parts.append(
-                "Context tier: operational. Only essential workspace files are loaded. "
-                "Memory files and some personality files are not available in this session."
-            )
-        elif tier == "minimal":
-            parts.append(
-                "Context tier: minimal. No workspace files are loaded. You have tools only."
-            )
 
         # Source framing — tell agent where messages come from
         if source == "system":

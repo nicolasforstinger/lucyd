@@ -108,7 +108,7 @@ Lucyd connects to the Telegram Bot API directly via httpx long polling. No exter
 
 ## Testing
 
-**1622 tests**, all passing. Five testing strategies:
+**1684 tests**, all passing. Five testing strategies:
 
 ```bash
 # Run the full suite
@@ -135,7 +135,7 @@ mutmut run
 
 ### Coverage by Module
 
-Every source module except `channels/cli.py` (thin stdin/stdout wrapper, 48 lines, no branching logic) has a corresponding test file. Highest coverage: `channels/telegram.py` (223 tests, 79.5% mutation kill rate across 3 rounds), `channels/http_api.py` (145 tests), `lucyd.py` orchestrator (285 tests across `test_orchestrator.py`, `test_daemon_integration.py`, `test_daemon_helpers.py`, and `test_monitor.py`).
+Every source module except `channels/cli.py` (thin stdin/stdout wrapper, 48 lines, no branching logic) has a corresponding test file. Highest coverage: `channels/telegram.py` (223 tests, 79.5% mutation kill rate across 3 rounds), `channels/http_api.py` (145 tests), `lucyd.py` orchestrator (283 tests across `test_orchestrator.py`, `test_daemon_integration.py`, `test_daemon_helpers.py`, and `test_monitor.py`).
 
 ### Testing Manuals
 

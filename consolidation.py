@@ -448,7 +448,7 @@ async def consolidate_session(
     # Record consolidation costs (after commit — non-critical)
     if cost_db:
         from agentic import _record_cost
-        model_name = getattr(config, "consolidation_model", "subagent")
+        model_name = "primary"
         model_cfg = config.model_config(model_name) if hasattr(config, "model_config") else {}
         cost_rates = model_cfg.get("cost_per_mtok")
         display_name = model_cfg.get("model", model_name)

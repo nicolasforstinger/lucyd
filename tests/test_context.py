@@ -11,7 +11,7 @@ class TestFullTier:
             stable_files=["SOUL.md", "AGENTS.md", "USER.md", "IDENTITY.md", "TOOLS.md"],
             semi_stable_files=["MEMORY.md"],
         )
-        blocks = builder.build(tier="full")
+        blocks = builder.build()
 
         # Should have stable, semi-stable, and dynamic blocks
         assert len(blocks) >= 2
@@ -27,35 +27,6 @@ class TestFullTier:
         assert "Long-term memories" in semi["text"]
 
 
-class TestOperationalTier:
-    def test_loads_correct_subset(self, tmp_workspace):
-        """Operational tier uses tier override files, not full set."""
-        builder = ContextBuilder(
-            workspace=tmp_workspace,
-            stable_files=["SOUL.md", "AGENTS.md", "USER.md", "IDENTITY.md", "TOOLS.md"],
-            semi_stable_files=["MEMORY.md"],
-            tier_overrides={
-                "operational": {
-                    "stable": ["SOUL.md", "AGENTS.md", "IDENTITY.md"],
-                    "semi_stable": ["TOOLS.md"],
-                }
-            },
-        )
-        blocks = builder.build(tier="operational")
-
-        stable = blocks[0]
-        assert stable["tier"] == "stable"
-        assert "I am TestAgent" in stable["text"]
-        # USER.md should NOT be in operational tier
-        assert "TestUser." not in stable["text"]
-
-        semi = blocks[1]
-        assert semi["tier"] == "semi_stable"
-        assert "Available tools" in semi["text"]
-        # MEMORY.md should NOT be in operational tier
-        assert "Long-term memories" not in semi["text"]
-
-
 class TestMissingFile:
     def test_missing_file_doesnt_crash(self, tmp_workspace):
         """One missing file doesn't crash — skip it, load the rest."""
@@ -64,7 +35,7 @@ class TestMissingFile:
             stable_files=["SOUL.md", "NONEXISTENT.md", "AGENTS.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(tier="full")
+        blocks = builder.build()
         assert len(blocks) >= 1
         stable = blocks[0]
         assert "I am TestAgent" in stable["text"]
@@ -79,7 +50,7 @@ class TestSourceAwareDynamic:
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(tier="full", source="system")
+        blocks = builder.build(source="system")
         dynamic = blocks[-1]
         assert dynamic["tier"] == "dynamic"
         assert "automated infrastructure" in dynamic["text"]
@@ -91,7 +62,7 @@ class TestSourceAwareDynamic:
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(tier="full", source="http")
+        blocks = builder.build(source="http")
         dynamic = blocks[-1]
         assert dynamic["tier"] == "dynamic"
         assert "HTTP API" in dynamic["text"]
@@ -103,7 +74,7 @@ class TestSourceAwareDynamic:
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(tier="full", source="telegram")
+        blocks = builder.build(source="telegram")
         dynamic = blocks[-1]
         assert "automated infrastructure" not in dynamic["text"]
         assert "HTTP API" not in dynamic["text"]
@@ -115,7 +86,7 @@ class TestSourceAwareDynamic:
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(tier="full")
+        blocks = builder.build()
         dynamic = blocks[-1]
         assert "automated infrastructure" not in dynamic["text"]
         assert "HTTP API" not in dynamic["text"]
@@ -130,7 +101,7 @@ class TestSkillsAppended:
             semi_stable_files=["MEMORY.md"],
         )
         blocks = builder.build(
-            tier="full",
+
             always_on_skills=["compute-routing"],
             skill_bodies={"compute-routing": "Route compute to appropriate model."},
         )
@@ -155,9 +126,9 @@ class TestReload:
             stable_files=["SOUL.md"],
             semi_stable_files=["MEMORY.md"],
         )
-        before = builder.build(tier="full")
+        before = builder.build()
         builder.reload()
-        after = builder.build(tier="full")
+        after = builder.build()
         # Compare text content (dynamic block has timestamp so compare stable/semi only)
         assert before[0]["text"] == after[0]["text"]
         assert before[1]["text"] == after[1]["text"]
@@ -169,13 +140,13 @@ class TestReload:
             stable_files=["SOUL.md"],
             semi_stable_files=["MEMORY.md"],
         )
-        before = builder.build(tier="full")
+        before = builder.build()
         original_stable = before[0]["text"]
 
         # Modify SOUL.md on disk
         (tmp_workspace / "SOUL.md").write_text("# Soul\nI am UpdatedAgent.")
         builder.reload()
-        after = builder.build(tier="full")
+        after = builder.build()
 
         assert "UpdatedAgent" in after[0]["text"]
         assert after[0]["text"] != original_stable
@@ -187,9 +158,9 @@ class TestReload:
             stable_files=["SOUL.md"],
             semi_stable_files=["MEMORY.md"],
         )
-        before = builder.build(tier="full")
+        before = builder.build()
         builder.reload()
-        after = builder.build(tier="full")
+        after = builder.build()
 
         assert len(before) == len(after)
         for b, a in zip(before, after, strict=True):
@@ -213,7 +184,7 @@ class TestVoiceReplyInjection:
         """Voice message + tts tool → voice reply instruction injected."""
         builder = self._builder(tmp_workspace)
         blocks = builder.build(
-            tier="full",
+
             has_voice=True,
             tool_descriptions=[("message", "Send text"), ("tts", "Text to speech")],
         )
@@ -225,7 +196,7 @@ class TestVoiceReplyInjection:
         """Voice message but no tts tool → no injection."""
         builder = self._builder(tmp_workspace)
         blocks = builder.build(
-            tier="full",
+
             has_voice=True,
             tool_descriptions=[("message", "Send text")],
         )
@@ -236,7 +207,7 @@ class TestVoiceReplyInjection:
         """No voice message → no injection regardless of tools."""
         builder = self._builder(tmp_workspace)
         blocks = builder.build(
-            tier="full",
+
             has_voice=False,
             tool_descriptions=[("tts", "Text to speech")],
         )
@@ -247,7 +218,7 @@ class TestVoiceReplyInjection:
         """Both voice and images → both instructions present."""
         builder = self._builder(tmp_workspace)
         blocks = builder.build(
-            tier="full",
+
             has_voice=True,
             has_images=True,
             tool_descriptions=[("tts", "Text to speech")],

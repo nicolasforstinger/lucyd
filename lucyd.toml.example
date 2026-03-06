@@ -12,10 +12,6 @@ workspace = "~/.lucyd/workspace"
 stable = ["SOUL.md", "AGENTS.md", "USER.md", "IDENTITY.md", "TOOLS.md"]
 semi_stable = ["MEMORY.md"]
 
-[agent.context.tiers]
-operational.stable = ["SOUL.md", "AGENTS.md", "IDENTITY.md", "USER.md"]
-operational.semi_stable = ["MEMORY.md"]
-
 [agent.skills]
 dir = "skills"
 always_on = []
@@ -68,15 +64,6 @@ rate_limit = 30                                      # Max requests per rate_win
 rate_window = 60                                     # Rate limit window (seconds)
 status_rate_limit = 60                               # Max /status requests per rate_window
 
-# ─── Routing ─────────────────────────────────────────────────────
-
-[routing]
-telegram = "primary"
-cli = "primary"
-system = "subagent"
-http = "primary"
-vision = "primary"       # Model for messages with image attachments (overrides source routing)
-
 # ─── Memory ──────────────────────────────────────────────────────
 
 [memory]
@@ -86,7 +73,6 @@ embedding_timeout = 15                             # Embedding API request timeo
 
 [memory.consolidation]
 enabled = true
-fact_model = "subagent"
 
 min_messages = 4
 confidence_threshold = 0.6
@@ -139,7 +125,6 @@ output_truncation = 30000
 exec_timeout = 120
 exec_max_timeout = 600
 # subagent_deny = ["sessions_spawn", "tts", "react", "schedule_message"]  # Default deny-list if omitted
-# subagent_model = "primary"                        # Model for sub-agents (default: same as parent)
 # subagent_max_turns = 0                             # Max turns (0 = use max_turns_per_message)
 # subagent_timeout = 0                               # Timeout in seconds (0 = use agent_timeout_seconds)
 # plugins_dir = "plugins.d"                           # Directory for custom tool plugins
@@ -230,7 +215,7 @@ audit_truncation_limit = 500           # Max chars per message in audit log trun
 
 [behavior.compaction]
 threshold_tokens = 150000
-model = "compaction"
+max_tokens = 2048                                  # Max output tokens for compaction summary
 prompt = """Summarize this conversation preserving all factual details, decisions,
 action items, and emotional context. Write as a dense narrative, not bullet points."""
 

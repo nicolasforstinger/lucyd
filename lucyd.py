@@ -338,7 +338,7 @@ class LucydDaemon:
         self.start_time = time.time()
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._control_queue: asyncio.Queue = asyncio.Queue()
-        self.providers: dict[str, Any] = {}
+        self.provider: Any = None
         self.channel: Any = None
         self.session_mgr: SessionManager | None = None
         self.context_builder: ContextBuilder | None = None
@@ -379,26 +379,23 @@ class LucydDaemon:
         for name in self.config.logging_suppress:
             logging.getLogger(name).setLevel(logging.WARNING)
 
-    def _init_providers(self) -> None:
-        """Create provider instances from model configs."""
-        for name in self.config.all_model_names:
-            try:
-                model_cfg = self.config.model_config(name)
-                provider_type = model_cfg.get("provider", "")
+    def _init_provider(self) -> None:
+        """Create the primary provider instance."""
+        try:
+            model_cfg = self.config.model_config("primary")
+            provider_type = model_cfg.get("provider", "")
 
-                # Resolve API key from per-model api_key_env
-                api_key_env = model_cfg.get("api_key_env", "")
-                api_key = os.environ.get(api_key_env, "") if api_key_env else ""
+            api_key_env = model_cfg.get("api_key_env", "")
+            api_key = os.environ.get(api_key_env, "") if api_key_env else ""
 
-                if not api_key and api_key_env:
-                    log.warning("No API key for model '%s' (env var '%s' not set)", name, api_key_env)
-                    continue
+            if not api_key and api_key_env:
+                log.error("No API key for primary model (env var '%s' not set)", api_key_env)
+                return
 
-                self.providers[name] = create_provider(model_cfg, api_key)
-                log.info("Provider '%s': %s / %s", name, provider_type,
-                         model_cfg.get("model", ""))
-            except Exception as e:
-                log.error("Failed to create provider '%s': %s", name, e)
+            self.provider = create_provider(model_cfg, api_key)
+            log.info("Provider: %s / %s", provider_type, model_cfg.get("model", ""))
+        except Exception as e:
+            log.error("Failed to create provider: %s", e)
 
     def _init_channel(self) -> None:
         self.channel = create_channel(self.config)
@@ -489,7 +486,7 @@ class LucydDaemon:
             from tools.agents import configure as agent_configure
             agent_configure(
                 config=self.config,
-                providers=self.providers,
+                provider=self.provider,
                 tool_registry=self.tool_registry,
                 session_manager=self.session_mgr,
             )
@@ -577,7 +574,7 @@ class LucydDaemon:
             "config": self.config,
             "channel": self.channel,
             "session_mgr": self.session_mgr,
-            "providers": self.providers,
+            "provider": self.provider,
             "tool_registry": self.tool_registry,
         }
 
@@ -642,7 +639,6 @@ class LucydDaemon:
             workspace=self.config.workspace,
             stable_files=self.config.context_stable,
             semi_stable_files=self.config.context_semi_stable,
-            tier_overrides=self.config.context_tiers,
         )
 
     def _init_skills(self) -> None:
@@ -658,7 +654,7 @@ class LucydDaemon:
     def _check_context_budget(self) -> None:
         """Estimate system prompt size and warn if it consumes too much context.
 
-        Builds a representative full-tier system prompt (stable + semi-stable
+        Builds a representative system prompt (stable + semi-stable
         files, tool descriptions, skill index) and estimates token count.
         Warns at >40% of max_context_tokens.
         """
@@ -669,9 +665,8 @@ class LucydDaemon:
 
         # Build representative system blocks
         tool_descs = self.tool_registry.get_brief_descriptions()
-        skill_index = self.skill_loader.build_index() if hasattr(self, "skill_loader") else ""
+        skill_index = self.skill_loader.build_index() if self.skill_loader else ""
         blocks = self.context_builder.build(
-            tier="full",
             tool_descriptions=tool_descs,
             skill_index=skill_index,
         )
@@ -702,11 +697,9 @@ class LucydDaemon:
         text: str,
         sender: str,
         source: str,
-        tier: str = "full",
         attachments: list | None = None,
         response_future: asyncio.Future | None = None,
         notify_meta: dict | None = None,
-        model_override: str | None = None,
         trace_id: str = "",
         force_compact: bool = False,
     ) -> None:
@@ -719,33 +712,19 @@ class LucydDaemon:
             if response_future is not None and not response_future.done():
                 response_future.set_result(result)
 
-        # Route to model (FIFO messages can override via "model" field)
-        model_name = model_override or self.config.route_model(source)
-
-        # Route to vision model if message has image attachments
-        has_images = attachments and any(
-            a.content_type.startswith("image/") for a in attachments
-        )
-        if has_images:
-            vision_model = self.config.route_model("vision")
-            if vision_model in self.providers:
-                model_name = vision_model
-
         has_voice = attachments and any(
             a.content_type.startswith("audio/") and a.is_voice for a in attachments
         )
 
-        log.debug("[%s] Model routing: source=%s -> model=%s",
-                  trace_id[:8], source, model_name)
-
-        provider = self.providers.get(model_name)
+        provider = self.provider
         if provider is None:
-            log.error("[%s] No provider for model '%s' (source: %s)",
-                      trace_id[:8], model_name, source)
-            _resolve({"error": f"no provider for model '{model_name}'"})
+            log.error("[%s] No provider configured", trace_id[:8])
+            _resolve({"error": "no provider configured"})
             return
 
-        model_cfg = self.config.model_config(model_name)
+        model_cfg = self.config.model_config("primary")
+        model_name = model_cfg.get("model", "")
+        cost_rates = model_cfg.get("cost_per_mtok", [])
 
         # Process attachments into text descriptions + image blocks
         # Image blocks use neutral format: {"type": "image", "media_type": ..., "data": ...}
@@ -820,7 +799,7 @@ class LucydDaemon:
                         text = (text + "\n" if text else "") + f"[attachment: {att.filename or 'file'}, {att.content_type}]"
 
         # Get or create session
-        session = self.session_mgr.get_or_create(sender, model=model_name)
+        session = self.session_mgr.get_or_create(sender)
 
         # Expose current session to status tool
         from tools.status import set_current_session
@@ -888,7 +867,7 @@ class LucydDaemon:
                         )
 
         # Synthesis layer: transform raw recall blocks by style
-        # Uses the same provider routed for this message — no model mismatch.
+        # Uses the primary provider for synthesis.
         if recall_text and self.config.recall_synthesis_style != "structured":
             try:
                 from synthesis import synthesize_recall
@@ -902,9 +881,9 @@ class LucydDaemon:
                     from agentic import _record_cost
                     _record_cost(
                         str(self.config.cost_db), session.id,
-                        model_cfg.get("model", model_name),
+                        model_name,
                         synth_result.usage,
-                        model_cfg.get("cost_per_mtok", []),
+                        cost_rates,
                         call_type="synthesis",
                         trace_id=trace_id,
                     )
@@ -912,7 +891,6 @@ class LucydDaemon:
                 log.exception("recall synthesis failed, using raw recall")
 
         system_blocks = self.context_builder.build(
-            tier=tier,
             source=source,
             tool_descriptions=tool_descs,
             skill_index=skill_index,
@@ -936,21 +914,20 @@ class LucydDaemon:
             except Exception as e:
                 log.debug("Typing indicator failed: %s", e)
 
-        # Wire current provider for memory_search synthesis (matches routed model)
+        # Wire provider for memory_search inline synthesis
         if self.config.recall_synthesis_style != "structured":
             from tools.memory_tools import set_synthesis_provider
             set_synthesis_provider(provider)
 
         # Run agentic loop — it appends to session.messages in place
         tools = self.tool_registry.get_schemas()
-        cost_rates = model_cfg.get("cost_per_mtok", [])
 
         # Snapshot message count to track what the loop added
         msg_count_before = len(session.messages)
 
         # ── Monitor state callbacks ──────────────────────────────
         monitor_path = self.config.state_dir / "monitor.json"
-        monitor_model = model_cfg.get("model", model_name)
+        monitor_model = model_name
         turn_counter = [1]  # mutable closure
         turn_started_at = [time.time()]
         message_started_at = time.time()
@@ -1004,7 +981,6 @@ class LucydDaemon:
 
         message_retries = self.config.message_retries
         message_retry_delay = self.config.message_retry_base_delay
-        response = None
 
         try:
             for msg_attempt in range(1 + message_retries):
@@ -1020,7 +996,7 @@ class LucydDaemon:
                         timeout=self.config.agent_timeout,
                         cost_db=str(self.config.cost_db),
                         session_id=session.id,
-                        model_name=model_cfg.get("model", ""),
+                        model_name=model_name,
                         cost_rates=cost_rates,
                         max_cost=float(max_cost),
                         on_response=_on_response,
@@ -1156,8 +1132,8 @@ class LucydDaemon:
             needs_compaction=session.needs_compaction(self.config.compaction_threshold),
             already_warned=session.warned_about_compaction,
         ):
-            from tools.status import MAX_CONTEXT_TOKENS
-            pct = session.last_input_tokens * 100 // MAX_CONTEXT_TOKENS if MAX_CONTEXT_TOKENS > 0 else 0
+            max_ctx = model_cfg.get("max_context_tokens", 0)
+            pct = session.last_input_tokens * 100 // max_ctx if max_ctx > 0 else 0
             session.pending_system_warning = (
                 f"[system: context at {session.last_input_tokens:,} tokens "
                 f"({pct}% of capacity). compaction will summarize older messages "
@@ -1181,7 +1157,7 @@ class LucydDaemon:
                     messages=session.messages,
                     compaction_count=session.compaction_count,
                     config=self.config,
-                    provider=self.providers.get(self.config.consolidation_model),
+                    provider=self.provider,
                     context_builder=self.context_builder,
                     conn=conn,
                     cost_db=str(self.config.cost_db),
@@ -1197,25 +1173,22 @@ class LucydDaemon:
 
         # Check for compaction
         if _needs_compact:
-            compaction_model = self.config.compaction_model
-            compaction_provider = self.providers.get(compaction_model)
-            if compaction_provider:
-                prompt = self.config.compaction_prompt.replace(
-                    "{agent_name}", self.config.agent_name,
-                )
-                compaction_model_cfg = self.config.model_config(compaction_model)
-                await self.session_mgr.compact_session(
-                    session, compaction_provider, prompt,
-                    cost_db=str(self.config.cost_db),
-                    model_name=compaction_model_cfg.get("model", compaction_model),
-                    cost_rates=compaction_model_cfg.get("cost_per_mtok", []),
-                    trace_id=trace_id,
-                    keep_recent_pct=self.config.compaction_keep_pct,
-                    system_blocks=self.context_builder.build_stable(),
-                    verify_enabled=self.config.verify_enabled,
-                    verify_max_turn_labels=self.config.verify_max_turn_labels,
-                    verify_grounding_threshold=self.config.verify_grounding_threshold,
-                )
+            prompt = self.config.compaction_prompt.replace(
+                "{agent_name}", self.config.agent_name,
+            )
+            await self.session_mgr.compact_session(
+                session, provider, prompt,
+                cost_db=str(self.config.cost_db),
+                model_name=model_name,
+                cost_rates=cost_rates,
+                trace_id=trace_id,
+                keep_recent_pct=self.config.compaction_keep_pct,
+                max_tokens=self.config.compaction_max_tokens,
+                system_blocks=self.context_builder.build_stable(),
+                verify_enabled=self.config.verify_enabled,
+                verify_max_turn_labels=self.config.verify_max_turn_labels,
+                verify_grounding_threshold=self.config.verify_grounding_threshold,
+            )
 
         # Auto-close one-shot system sessions (evolution, heartbeat, /notify).
         # System-sourced messages are fire-and-forget — no operator on the
@@ -1243,7 +1216,7 @@ class LucydDaemon:
                     messages=session.messages,
                     compaction_count=session.compaction_count,
                     config=self.config,
-                    provider=self.providers.get(self.config.consolidation_model),
+                    provider=self.provider,
                     context_builder=self.context_builder,
                     conn=conn,
                     cost_db=str(self.config.cost_db),
@@ -1482,7 +1455,7 @@ class LucydDaemon:
             "pid": os.getpid(),
             "uptime_seconds": round(time.time() - self.start_time),
             "channel": self.config.channel_type,
-            "models": list(self.providers.keys()),
+            "model": self.config.model_config("primary").get("model", ""),
             "active_sessions": active_sessions,
             "today_cost": round(today_cost, 4),
             "queue_depth": self.queue.qsize(),
@@ -1515,8 +1488,6 @@ class LucydDaemon:
             text=diary_text,
             sender=sender,
             source="system",
-            tier="full",
-            model_override="primary",
             trace_id=tid,
             force_compact=True,
         )
@@ -1527,8 +1498,6 @@ class LucydDaemon:
         msg = {
             "type": "system",
             "sender": "evolution",
-            "tier": "full",
-            "model": "primary",
             "text": (
                 "[AUTOMATED SYSTEM MESSAGE] "
                 "Load the evolution skill and evolve your memory files. "
@@ -1555,17 +1524,14 @@ class LucydDaemon:
                 if m.get("attachments"):
                     combined_attachments.extend(m["attachments"])
             source = msgs[0].get("source", "")
-            tier = msgs[0].get("tier", "full")
             n_meta = msgs[0].get("notify_meta")
-            model_override = msgs[0].get("model")
             tid = str(uuid.uuid4())
             log.info("[%s] Processing message from %s (source=%s)",
                      tid[:8], sender, source)
             await self._process_message(
-                combined_text, sender, source, tier,
+                combined_text, sender, source,
                 attachments=combined_attachments or None,
                 notify_meta=n_meta,
-                model_override=model_override,
                 trace_id=tid,
             )
 
@@ -1582,7 +1548,6 @@ class LucydDaemon:
                 text=item.get("text", ""),
                 sender=item.get("sender", "http"),
                 source=item.get("type", "http"),
-                tier=item.get("tier", "full"),
                 attachments=item.get("attachments"),
                 response_future=item.get("response_future"),
                 notify_meta=item.get("notify_meta"),
@@ -1615,10 +1580,8 @@ class LucydDaemon:
                 if item.quote:
                     q = item.quote if len(item.quote) <= 200 else item.quote[:200] + "…"
                     text = f"[replying to: {q}]\n{text}"
-                tier = "full"
                 attachments = item.attachments
                 notify_meta = None
-                model_override = None
                 # Store last inbound timestamp for reaction tool (ms int)
                 self._last_inbound_ts[sender] = int(item.timestamp * 1000)
                 self._last_inbound_ts.move_to_end(sender)
@@ -1662,10 +1625,8 @@ class LucydDaemon:
                 sender = item.get("sender", "system")
                 source = item.get("type", "system")
                 text = item.get("text", "")
-                tier = item.get("tier", "full" if source == "user" else "operational")
                 attachments = item.get("attachments")
                 notify_meta = item.get("notify_meta")
-                model_override = item.get("model")
             else:
                 continue
 
@@ -1675,9 +1636,8 @@ class LucydDaemon:
             # Debounce: collect messages from same sender
             if sender not in pending:
                 pending[sender] = []
-            pending[sender].append({"text": text, "source": source, "tier": tier,
-                                    "attachments": attachments, "notify_meta": notify_meta,
-                                    "model": model_override})
+            pending[sender].append({"text": text, "source": source,
+                                    "attachments": attachments, "notify_meta": notify_meta})
 
             # Wait for more messages
             await asyncio.sleep(debounce_s)
@@ -1718,7 +1678,7 @@ class LucydDaemon:
                 "uptime_s": time.time() - self.start_time,
                 "tools": self.tool_registry.tool_names if self.tool_registry else [],
                 "channel": self.config.channel_type,
-                "models": list(self.providers.keys()),
+                "model": self.config.model_config("primary").get("model", ""),
             }
             status_path = self.config.state_dir / "status.json"
             status_path.write_text(json.dumps(status, indent=2))
@@ -1748,7 +1708,7 @@ class LucydDaemon:
         _write_pid_file(pid_path)
 
         try:
-            self._init_providers()
+            self._init_provider()
             self._init_channel()
             self._init_sessions()
             self._init_skills()

@@ -386,7 +386,7 @@ class TestNotify:
         item = queue.get_nowait()
         assert item["type"] == "system"
         assert "New email from alice@test.com" in item["text"]
-        assert item["tier"] == "operational"
+        assert item["type"] == "system"
 
     @pytest.mark.asyncio
     async def test_source_and_ref_in_text(self, api, queue, auth_headers):
@@ -521,21 +521,6 @@ class TestNotifyEdgeCases:
         assert item["sender"] == "http-default"
 
     @pytest.mark.asyncio
-    async def test_always_operational_tier(self, api, queue, auth_headers):
-        """All /notify messages use operational tier regardless of payload."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "test"},
-            )
-            assert resp.status == 202
-
-        item = queue.get_nowait()
-        assert item["tier"] == "operational"
-
-    @pytest.mark.asyncio
     async def test_response_has_queued_at_timestamp(self, api, auth_headers):
         """Notify response includes queued_at ISO timestamp."""
         app = _make_app(api)
@@ -632,21 +617,20 @@ class TestChat:
             assert body["session_id"] == "test-123"
 
     @pytest.mark.asyncio
-    async def test_custom_sender_and_tier(self, api, queue, auth_headers):
+    async def test_custom_sender(self, api, queue, auth_headers):
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             async def resolve():
                 await asyncio.sleep(0.1)
                 item = await queue.get()
                 assert item["sender"] == "http-n8n-calendar"
-                assert item["tier"] == "operational"
                 item["response_future"].set_result({"reply": "ok"})
 
             task = asyncio.create_task(resolve())
             await client.post(
                 "/api/v1/chat",
                 headers=auth_headers,
-                json={"message": "test", "sender": "n8n-calendar", "tier": "operational"},
+                json={"message": "test", "sender": "n8n-calendar"},
             )
             await task
 
@@ -777,25 +761,6 @@ class TestChatEdgeCases:
             )
             await task
             assert resp.status == 200
-
-    @pytest.mark.asyncio
-    async def test_default_tier_is_full(self, api, queue, auth_headers):
-        """Omitting tier defaults to 'full'."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            async def resolve():
-                await asyncio.sleep(0.05)
-                item = await queue.get()
-                assert item["tier"] == "full"
-                item["response_future"].set_result({"reply": "ok"})
-
-            task = asyncio.create_task(resolve())
-            await client.post(
-                "/api/v1/chat",
-                headers=auth_headers,
-                json={"message": "test"},
-            )
-            await task
 
     @pytest.mark.asyncio
     async def test_no_context_means_no_prefix(self, api, queue, auth_headers):
@@ -1337,17 +1302,6 @@ class TestHTTPConfig:
         })
         assert cfg.http_auth_token == "my-secret-token"
 
-    def test_http_routing(self):
-        """HTTP source routes to configured model."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-            "routing": {"http": "primary", "system": "subagent"},
-        })
-        assert cfg.route_model("http") == "primary"
-        assert cfg.route_model("system") == "subagent"
 
 
 # ─── TEST-6: Concurrent HTTP /chat — different senders ───────────

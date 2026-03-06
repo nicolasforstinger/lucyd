@@ -1,6 +1,6 @@
-# Vision provider — local Qwen3-VL-8B via llama-server
-# To enable: rename to vision.toml, add "vision" to [providers] load list,
-# and add vision = "vision" to [routing] in lucyd.toml.
+# Vision provider example — local Qwen3-VL-8B via llama-server
+# Note: The framework uses a single primary provider. This file is a reference
+# for configuring a vision-capable local model as the primary provider.
 #
 # The local llama-server does not validate API keys.
 # api_key_env points to an existing key as a passthrough.

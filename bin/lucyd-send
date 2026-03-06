@@ -5,7 +5,7 @@ Usage:
     lucyd-send --message "Hello"                    # User message
     lucyd-send --message "Question" --from Claudio  # Message from named sender
     lucyd-send --system "Run diagnostics"           # System event
-    lucyd-send --system "Health check" --tier operational
+    lucyd-send --system "Health check"
     lucyd-send --notify "Invoice ready" --source n8n --ref INV-42  # Fire-and-forget notification
     lucyd-send --evolve                             # Trigger memory evolution (with pre-check)
     lucyd-send --evolve --force                     # Force evolution (skip pre-check)
@@ -40,6 +40,15 @@ _UUID_RE = re.compile(
 
 def _is_uuid(s: str) -> bool:
     return bool(_UUID_RE.match(s))
+
+
+def _ensure_fifo(state_dir: Path) -> Path:
+    """Check that the control FIFO exists, exit with error if not."""
+    fifo_path = state_dir / "control.pipe"
+    if not fifo_path.exists():
+        print(f"Error: FIFO not found at {fifo_path}. Is Lucyd running?", file=sys.stderr)
+        sys.exit(1)
+    return fifo_path
 
 
 def send_to_fifo(fifo_path: Path, message: dict) -> None:
@@ -514,7 +523,6 @@ def main():
     parser.add_argument("--evolve", action="store_true", help="Trigger memory evolution")
     parser.add_argument("--force", action="store_true", help="Skip pre-check (with --evolve)")
     parser.add_argument("--compact", action="store_true", help="Force diary write + compaction on primary session")
-    parser.add_argument("--tier", default="", help="Context tier (full/operational/minimal)")
     parser.add_argument("--cost", nargs="?", const="today", help="Query cost (today/week/all)")
     parser.add_argument("--sessions", action="store_true", help="List active sessions")
     parser.add_argument("--monitor", action="store_true", help="Show live API call monitor state")
@@ -580,16 +588,11 @@ def main():
                     print(f"No new daily logs since {since_date or 'ever'}, skipping evolution.")
                     return
 
-        fifo_path = state_dir / "control.pipe"
-        if not fifo_path.exists():
-            print(f"Error: FIFO not found at {fifo_path}. Is Lucyd running?", file=sys.stderr)
-            sys.exit(1)
+        fifo_path = _ensure_fifo(state_dir)
 
         msg = {
             "type": "system",
             "sender": "evolution",
-            "tier": "full",
-            "model": "primary",
             "text": (
                 "[AUTOMATED SYSTEM MESSAGE] "
                 "Load the evolution skill and evolve your memory files. "
@@ -602,11 +605,7 @@ def main():
 
     # ── Compact (force diary + compaction) ────────────────────────
     if args.compact:
-        fifo_path = state_dir / "control.pipe"
-        if not fifo_path.exists():
-            print(f"Error: FIFO not found at {fifo_path}. Is Lucyd running?", file=sys.stderr)
-            sys.exit(1)
-
+        fifo_path = _ensure_fifo(state_dir)
         send_to_fifo(fifo_path, {"type": "compact"})
         print("Compact trigger sent.")
         return
@@ -615,10 +614,7 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    fifo_path = state_dir / "control.pipe"
-    if not fifo_path.exists():
-        print(f"Error: FIFO not found at {fifo_path}. Is Lucyd running?", file=sys.stderr)
-        sys.exit(1)
+    fifo_path = _ensure_fifo(state_dir)
 
     if args.reset is not None:
         target = args.reset
@@ -664,15 +660,12 @@ def main():
 
     if args.message:
         msg = {"type": "user", "text": args.message, "sender": args.sender or "cli"}
-        if args.tier:
-            msg["tier"] = args.tier
         if attach_list:
             msg["attachments"] = attach_list
         send_to_fifo(fifo_path, msg)
         print("Message sent.")
     elif args.system:
         msg = {"type": "system", "text": f"[AUTOMATED SYSTEM MESSAGE] {args.system}", "sender": "system"}
-        msg["tier"] = args.tier or "operational"
         if attach_list:
             msg["attachments"] = attach_list
         send_to_fifo(fifo_path, msg)
@@ -690,7 +683,6 @@ def main():
             "type": "system",
             "text": " ".join(text_parts),
             "sender": args.sender or "cli",
-            "tier": args.tier or "operational",
         }
 
         # Build notify_meta (passed through to webhook, not in LLM text)

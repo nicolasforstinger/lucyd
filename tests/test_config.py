@@ -19,14 +19,11 @@ model = "claude-haiku-4-5-20251001"
 
 
 class TestValidConfig:
-    def test_loads_all_model_sections(self, minimal_toml_data):
-        """All model sections (primary, subagent, compaction, embeddings) parse."""
+    def test_loads_primary_and_embeddings(self, minimal_toml_data):
+        """Primary and embeddings model sections parse."""
         cfg = Config(minimal_toml_data)
-        names = cfg.all_model_names
-        assert "primary" in names
-        assert "subagent" in names
-        assert "compaction" in names
-        assert "embeddings" in names
+        assert cfg.model_config("primary")["model"] == "claude-opus-4-6"
+        assert "embeddings" in cfg._data.get("models", {})
 
     def test_model_cost_per_mtok_is_three_elements(self, minimal_toml_data):
         """cost_per_mtok must be [input, output, cache_read]."""
@@ -105,23 +102,15 @@ class TestModelConfig:
             cfg.model_config("nonexistent")
 
 
-class TestRouteModel:
-    def test_route_default(self):
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-        })
-        assert cfg.route_model("unknown_source") == "primary"
+class TestCompactionMaxTokens:
+    def test_default(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.compaction_max_tokens == 2048
 
-    def test_route_configured(self):
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-            "routing": {"system": "subagent"},
-        })
-        assert cfg.route_model("system") == "subagent"
+    def test_override(self, minimal_toml_data):
+        minimal_toml_data.setdefault("behavior", {}).setdefault("compaction", {})["max_tokens"] = 4096
+        cfg = Config(minimal_toml_data)
+        assert cfg.compaction_max_tokens == 4096
 
 
 class TestFilesystemAllowedPaths:
@@ -267,15 +256,6 @@ class TestPluginConfig:
         minimal_toml_data["tools"]["subagent_deny"] = []
         cfg = Config(minimal_toml_data)
         assert cfg.subagent_deny == []
-
-    def test_subagent_model_default(self, minimal_toml_data):
-        cfg = Config(minimal_toml_data)
-        assert cfg.subagent_model == "primary"
-
-    def test_subagent_model_override(self, minimal_toml_data):
-        minimal_toml_data["tools"]["subagent_model"] = "subagent"
-        cfg = Config(minimal_toml_data)
-        assert cfg.subagent_model == "subagent"
 
     def test_subagent_max_turns_default(self, minimal_toml_data):
         """0 (default) resolves to parent's max_turns_per_message."""

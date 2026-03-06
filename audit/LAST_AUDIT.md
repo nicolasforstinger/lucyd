@@ -1,44 +1,41 @@
 # Last Audit Summary
 
-**Date:** 2026-03-04
+**Date:** 2026-03-06
 **Mode:** Full Audit
-**Cycle:** 15
+**Cycle:** 16
 **EXIT STATUS:** PASS
-**Test count:** 1633 passing
-**Source modules:** 33 (~10,053 lines)
+**Test count:** 1684 passing
+**Source modules:** 34 (~10,147 lines)
 
 ## Stage Results
 
 | Stage | Status | Key Metric |
 |-------|--------|------------|
-| 1. Static Analysis | PASS | 0 SECURITY/BUG, 3 DEAD CODE fixed |
-| 2. Test Suite | PASS | 1633 tests, 31.99s |
-| 3. Mutation Testing | PASS | Security functions 100% kill rate (carried) |
-| 4. Orchestrator Testing | PASS | 285 tests, new caption enrichment + compact classes |
-| 5. Dependency Chain | PASS | 19 pipelines mapped (+ compact), all producers active |
-| 6. Security Audit | PASS | CVE-2026-28804 fixed, compact endpoint behind auth |
+| 1. Static Analysis | PASS | 1 import order + 2 unused imports fixed |
+| 2. Test Suite | PASS | 1684 tests, 31.66s |
+| 3. Mutation Testing | PASS | verification.py 81.5% kill, all security mutants killed |
+| 4. Orchestrator Testing | PASS | 283 tests + 17 invariant tests |
+| 5. Dependency Chain | PASS | 19 pipelines healthy, all data fresh |
+| 6. Security Audit | PASS | pip-audit clean, no new attack surface |
 | 7. Documentation Audit | PASS | 6 discrepancies fixed |
-| 8. Remediation | PASS | 3 stale gaps resolved |
+| 8. Remediation | PASS | No carried gaps |
 
 ## Findings Fixed
 
 | # | Stage | File | Finding | Fix |
 |---|-------|------|---------|-----|
-| 1 | 1 | tests/test_audit_agnostic.py | F401 unused `json` import | Removed |
-| 2 | 1 | tests/test_consolidation.py | F401 unused `MagicMock` import | Removed |
-| 3 | 1 | tests/test_web_security.py | F401 unused `PropertyMock` import | Removed |
-| 4 | 6 | pypdf | CVE-2026-28804 (DoS via crafted PDF) | Updated 6.7.4 → 6.7.5 |
-| 5 | 7 | README.md | Test counts stale (1540 → 1633, plus per-module) | Updated |
-| 6 | 7 | CLAUDE.md | Test files 37 → 39, source lines 10111 → 10053 | Updated |
-| 7 | 7 | docs/operations.md | Missing `--compact` flag and `POST /api/v1/compact` | Added |
+| 1 | 1 | session.py:539 | I001 unsorted import | Reordered |
+| 2 | 1 | tests/test_verification.py | F401 unused `pytest` import | Removed |
+| 3 | 1 | tests/test_verification.py | F401 unused `VerificationResult` import | Removed |
+| 4 | 3 | verification.py | Dead `_check_entity_grounding()` — never called | Removed |
+| 5 | 3 | tests/test_verification.py | Missing grounding ratio boundary tests | 2 tests added |
+| 6 | 7 | README.md | Test counts stale (1622 → 1684, 285 → 283) | Updated |
+| 7 | 7 | CLAUDE.md | Source lines, test files, test functions counts | Updated |
+| 8 | 7 | docs/architecture.md | Missing `stt.py` and `verification.py` entries | Added |
 
-## Gaps Resolved This Cycle (Previously Stale)
+## Known Gaps Carried Forward
 
-| Gap | Cycles Carried | Resolution |
-|-----|----------------|------------|
-| Quote extraction mutants | 5 | FIXED — refactored to `_extract_quote()` with 8 direct unit tests |
-| Alias accumulation multi-session | 5 | ACCEPTED — `INSERT OR IGNORE` + unique constraint prevents by construction |
-| `_message_loop` debounce/FIFO | 6+ | ACCEPTED — orchestrator code (Rule 13), 15+ behavioral contract tests exist |
+None. All gaps resolved or permanently accepted.
 
 ## Accepted (Permanent)
 
@@ -48,18 +45,14 @@
 | Alias accumulation multi-session | `INSERT OR IGNORE` + unique constraint prevents duplicate accumulation by construction. No runtime code path can violate this. |
 | `_message_loop` debounce/FIFO | Orchestrator code (Rule 13 prohibits mutmut). 15+ behavioral contract tests cover all observable side effects. |
 
-## Known Gaps Carried Forward
-
-None. All gaps resolved.
-
 ## New This Cycle
 
-- **Media group batching** — Telegram album support with 0.5s collection window
-- **Forced compact** — `lucyd-send --compact` / `POST /api/v1/compact` with diary prompt
-- **Image caption enrichment** — `_enrich_image_caption()` preserves image context through compaction
-- **CVE-2026-28804** — pypdf DoS vulnerability found and fixed
-- **+40 tests** (1593 → 1633)
-- **19th pipeline** — compact added to dependency chain
+- **Single-provider refactoring** — `self.providers` dict → `self.provider` singular, routing removed
+- **Context tiers retired** — `build()` always uses all stable + semi-stable files
+- **verification.py** — Compaction hallucination detection (structural + grounding), 39 tests, 81.5% mutation kill rate
+- **stt.py** — STT boundary module (existed before, now documented in architecture)
+- **Dead code removal** — `_check_entity_grounding()` removed (inlined logic already existed)
+- **+51 tests** (1633 → 1684)
 
 ## Patterns Created This Cycle
 

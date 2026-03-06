@@ -101,7 +101,6 @@ class MemoryInterface:
 
         def _query():
             conn = sqlite3.connect(self.db_path, timeout=30)
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(
@@ -133,7 +132,6 @@ class MemoryInterface:
 
         def _search():
             conn = sqlite3.connect(self.db_path, timeout=30)
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(
@@ -204,7 +202,6 @@ class MemoryInterface:
 
         def _query():
             conn = sqlite3.connect(self.db_path, timeout=30)
-            conn.execute("PRAGMA journal_mode=WAL")
             try:
                 row = conn.execute(
                     "SELECT embedding FROM embedding_cache WHERE hash = ? AND model = ?",
@@ -226,7 +223,6 @@ class MemoryInterface:
 
         def _store():
             conn = sqlite3.connect(self.db_path, timeout=30)
-            conn.execute("PRAGMA journal_mode=WAL")
             try:
                 conn.execute(
                     """INSERT OR REPLACE INTO embedding_cache
@@ -248,7 +244,6 @@ class MemoryInterface:
         """Retrieve file content from chunks by path and line range."""
         def _query():
             conn = sqlite3.connect(self.db_path, timeout=30)
-            conn.execute("PRAGMA journal_mode=WAL")
             try:
                 # Overlap detection: find chunks that intersect the requested range
                 rows = conn.execute(
@@ -276,6 +271,21 @@ _DEFAULT_PRIORITIES = {
     "facts": 15,
     "commitments": 40,
 }
+
+
+def _recall_config(config) -> dict:
+    """Extract recall config values with defaults."""
+    def _g(attr, default):
+        return getattr(config, attr, default) if config else default
+    return {
+        "fact_fmt": _g("recall_fact_format", "natural"),
+        "show_tone": _g("recall_show_emotional_tone", True),
+        "episode_header": _g("recall_episode_section_header", "Recent conversations"),
+        "p_facts": _g("recall_priority_facts", _DEFAULT_PRIORITIES["facts"]),
+        "p_episodes": _g("recall_priority_episodes", _DEFAULT_PRIORITIES["episodes"]),
+        "p_vector": _g("recall_priority_vector", _DEFAULT_PRIORITIES["vector"]),
+        "p_commitments": _g("recall_priority_commitments", _DEFAULT_PRIORITIES["commitments"]),
+    }
 
 
 @dataclass
@@ -334,25 +344,10 @@ def extract_query_entities(query: str, conn: sqlite3.Connection) -> set[str]:
     Checks individual words, bigrams, and trigrams against both
     the facts table and the alias table.
     """
-    words = query.lower().replace("'s", "").split()
-    candidates = []
-
-    # Individual words
-    for w in words:
-        candidates.append(w.strip("?.,!\"'()"))
-
-    # Bigrams
-    for i in range(len(words) - 1):
-        w1 = words[i].strip("?.,!\"'()")
-        w2 = words[i + 1].strip("?.,!\"'()")
-        candidates.append(f"{w1}_{w2}")
-
-    # Trigrams
-    for i in range(len(words) - 2):
-        w1 = words[i].strip("?.,!\"'()")
-        w2 = words[i + 1].strip("?.,!\"'()")
-        w3 = words[i + 2].strip("?.,!\"'()")
-        candidates.append(f"{w1}_{w2}_{w3}")
+    words = [w.strip("?.,!\"'()") for w in query.lower().replace("'s", "").split()]
+    candidates = list(words)
+    candidates.extend(f"{words[i]}_{words[i+1]}" for i in range(len(words) - 1))
+    candidates.extend(f"{words[i]}_{words[i+1]}_{words[i+2]}" for i in range(len(words) - 2))
 
     entities = set()
     for candidate in candidates:
@@ -466,25 +461,19 @@ async def recall(
     Priorities and formatting are config-driven via [memory.recall.personality].
     """
     blocks: list[RecallBlock] = []
+    rc = _recall_config(config)
     max_facts = getattr(config, "recall_max_facts", 20)
     decay_rate = getattr(config, "recall_decay_rate", 0.03)
-    fact_fmt = getattr(config, "recall_fact_format", "natural")
-    show_tone = getattr(config, "recall_show_emotional_tone", True)
-    p_facts = getattr(config, "recall_priority_facts", _DEFAULT_PRIORITIES["facts"])
-    p_episodes = getattr(config, "recall_priority_episodes", _DEFAULT_PRIORITIES["episodes"])
-    p_vector = getattr(config, "recall_priority_vector", _DEFAULT_PRIORITIES["vector"])
-    p_commitments = getattr(config, "recall_priority_commitments", _DEFAULT_PRIORITIES["commitments"])
-    episode_header = getattr(config, "recall_episode_section_header", "Recent conversations")
 
     # Stage 1: Structured fact lookup
     entities = extract_query_entities(query, conn)
     if entities:
         facts = lookup_facts(entities, conn, max_results=max_facts)
         if facts:
-            lines = [_format_fact_row(f, fact_fmt) for f in facts]
+            lines = [_format_fact_row(f, rc["fact_fmt"]) for f in facts]
             text = "\n".join(lines)
             blocks.append(RecallBlock(
-                priority=p_facts,
+                priority=rc["p_facts"],
                 section="[Known facts]",
                 text=text,
                 est_tokens=len(text) // 4,
@@ -496,11 +485,11 @@ async def recall(
     if keywords:
         episodes = search_episodes(keywords, conn, max_results=max_ep)
         if episodes:
-            lines = [_format_episode(e, show_tone) for e in episodes]
+            lines = [_format_episode(e, rc["show_tone"]) for e in episodes]
             text = "\n".join(lines)
             blocks.append(RecallBlock(
-                priority=p_episodes,
-                section=f"[{episode_header}]",
+                priority=rc["p_episodes"],
+                section=f"[{rc['episode_header']}]",
                 text=text,
                 est_tokens=len(text) // 4,
             ))
@@ -520,7 +509,7 @@ async def recall(
         lines = [f"  {r['text'][:200]}" for r in vector_results[:top_k]]
         text = "\n".join(lines)
         blocks.append(RecallBlock(
-            priority=p_vector,
+            priority=rc["p_vector"],
             section="[Memory search]",
             text=text,
             est_tokens=len(text) // 4,
@@ -535,7 +524,7 @@ async def recall(
             lines.append(f"  #{c['id']} - {c['who']}: {c['what']}{deadline}")
         text = "\n".join(lines)
         blocks.append(RecallBlock(
-            priority=p_commitments,
+            priority=rc["p_commitments"],
             section="[Open commitments]",
             text=text,
             est_tokens=len(text) // 4,
@@ -613,12 +602,7 @@ def get_session_start_context(
     and priority values are config-driven via [memory.recall.personality].
     """
     # Read config or fall back to defaults
-    fact_fmt = getattr(config, "recall_fact_format", "natural") if config else "natural"
-    show_tone = getattr(config, "recall_show_emotional_tone", True) if config else True
-    episode_header = getattr(config, "recall_episode_section_header", "Recent conversations") if config else "Recent conversations"
-    p_facts = getattr(config, "recall_priority_facts", _DEFAULT_PRIORITIES["facts"]) if config else _DEFAULT_PRIORITIES["facts"]
-    p_episodes = getattr(config, "recall_priority_episodes", _DEFAULT_PRIORITIES["episodes"]) if config else _DEFAULT_PRIORITIES["episodes"]
-    p_commitments = getattr(config, "recall_priority_commitments", _DEFAULT_PRIORITIES["commitments"]) if config else _DEFAULT_PRIORITIES["commitments"]
+    rc = _recall_config(config)
 
     blocks: list[RecallBlock] = []
 
@@ -631,10 +615,10 @@ def get_session_start_context(
     """, (max_facts,)).fetchall()
 
     if facts:
-        lines = [_format_fact_tuple(f, fact_fmt) for f in facts]
+        lines = [_format_fact_tuple(f, rc["fact_fmt"]) for f in facts]
         text = "\n".join(lines)
         blocks.append(RecallBlock(
-            priority=p_facts,
+            priority=rc["p_facts"],
             section="[Known facts]",
             text=text,
             est_tokens=len(text) // 4,
@@ -648,11 +632,11 @@ def get_session_start_context(
     """, (max_episodes,)).fetchall()
 
     if episodes:
-        lines = [_format_episode(e, show_tone) for e in episodes]
+        lines = [_format_episode(e, rc["show_tone"]) for e in episodes]
         text = "\n".join(lines)
         blocks.append(RecallBlock(
-            priority=p_episodes,
-            section=f"[{episode_header}]",
+            priority=rc["p_episodes"],
+            section=f"[{rc['episode_header']}]",
             text=text,
             est_tokens=len(text) // 4,
         ))
@@ -665,7 +649,7 @@ def get_session_start_context(
             lines.append(f"  #{c['id']} - {c['who']}: {c['what']}{deadline}")
         text = "\n".join(lines)
         blocks.append(RecallBlock(
-            priority=p_commitments,
+            priority=rc["p_commitments"],
             section="[Open commitments]",
             text=text,
             est_tokens=len(text) // 4,

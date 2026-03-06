@@ -277,7 +277,7 @@ For each suppression: read the justification comment. Then read the surrounding 
 grep -r 'model\s*=' providers.d/*.toml | grep -v '#'
 grep -ri 'opus\|sonnet\|haiku' docs/ README.md
 ```
-For each model reference in documentation: trace to the actual model string in config. Verify the human-readable label matches. Also check cost rates, tier labels, and any other derived descriptions that could drift when config changes.
+For each model reference in documentation: trace to the actual model string in config. Verify the human-readable label matches. Also check cost rates and any other derived descriptions that could drift when config changes.
 
 ---
 
@@ -753,6 +753,29 @@ Checked by: P-029
 Every log call in the path from queue dequeue to channel delivery must include the per-message trace_id. Startup, shutdown, and background task logging are exempt.
 Checked by: P-030
 
+### AI-005: Single provider architecture
+One `[models.primary]` config, one `self.provider` instance, used for all LLM operations (messages, sub-agents, compaction, consolidation, synthesis). No model routing, no model selection based on message source, no tier-based context stripping. Embeddings (`[models.embeddings]`) are the sole exception — fundamentally different API type (vectors, not chat).
+
+**Origin:** Refactoring 2026-03-06 — retired multi-model routing (`route_model()`, `self.providers` dict, `[routing]` config) and context tier system (`full`/`operational`/`minimal`). Both added complexity without value — all routes pointed to the same model, all tiers should deliver the full persona.
+
+**Violations (grep checks for Stage 1):**
+```bash
+# Multi-provider re-introduction
+grep -rn 'self\.providers\b' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv
+
+# Model routing re-introduction
+grep -rn 'route_model\|model_override\|_default_model' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v tools/tts.py
+
+# Context tier re-introduction
+grep -rn 'context_tiers\|tier_overrides\|_files_for_tier' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv
+
+# Separate model configs for non-embedding operations
+grep -rn 'compaction_model\|consolidation_model\|subagent_model\|all_model_names' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv
+```
+Expected: zero matches on all four. Any match means the single-provider architecture is being violated.
+
+**Contract test (Stage 4):** `_process_message()` signature must not accept `tier` or `model_override` parameters. Sub-agent tool (`tool_sessions_spawn`) must not accept `model` parameter.
+
 The `AI-NNN` namespace separates invariants from bug patterns (`P-NNN`). Invariants are never retired — they're permanent rules. They can only be superseded if the architecture changes.
 
 ---
@@ -764,7 +787,7 @@ The `AI-NNN` namespace separates invariants from bug patterns (`P-NNN`). Invaria
 | 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021, P-022, P-025, P-026 (hotfix tag grep), P-027 (cost tracking grep), P-029 (truncation grep), P-030 (trace_id grep), P-032 (defaults grep) |
 | 2. Test Suite | P-005 (verify count), P-006 (fixture check), P-013, P-016 (ResourceWarning trigger), P-030 (trace_id integration test) |
 | 3. Mutation Testing | P-004, P-013, P-015 (parity check), P-026 (re-raise logic), P-029 (truncation logic) |
-| 4. Orchestrator Testing | P-017, P-023, P-028 (queue bypass), P-031 (context budget contract test), AI-001 through AI-004 (invariant contract tests) |
+| 4. Orchestrator Testing | P-017, P-023, P-028 (queue bypass), P-031 (context budget contract test), AI-001 through AI-005 (invariant contract tests) |
 | 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order), P-026 (streaming error path), P-027 (cost.db completeness) |
 | 6. Security Audit | P-003, P-009, P-012, P-018 (resource exhaustion), P-028 (control endpoint audit) |
 | 7. Documentation Audit | P-007, P-008, P-011, P-020 (config-to-default parity), P-021 (provider split), P-024, P-031 (context budget docs), P-032 (default documentation) |
@@ -813,3 +836,4 @@ The `AI-NNN` namespace separates invariants from bug patterns (`P-NNN`). Invaria
 | 2026-03-02 | P-032 | Added from architecture review (architectural defaults tuned for specific deployment without documentation) |
 | 2026-03-02 | AI-001–AI-004 | Added Architectural Invariants section — permanent rules for all code |
 | 2026-03-02 | — | Updated Retrospective Protocol — added question 5 (architectural invariant check) |
+| 2026-03-06 | AI-005 | Added single provider architecture invariant — guards against multi-model routing re-introduction |

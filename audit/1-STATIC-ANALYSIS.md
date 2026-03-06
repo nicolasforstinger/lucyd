@@ -215,7 +215,7 @@ grep -B2 -A2 'priority\|threshold\|budget\|limit\|timeout\|window' lucyd.toml.ex
 For each tunable behavior parameter: does it have a comment explaining what it controls, why the default was chosen, and when an operator should change it? Defaults without context are invisible tradeoffs.
 
 ### Architectural Invariant Checks
-Run all AI-NNN checks from `PATTERN.md`. These are structural rules, not bug patterns. A violation means new code was added that breaks a framework rule. Currently: AI-001 (cost tracking), AI-002 (queue serialization), AI-003 (truncation signaling), AI-004 (trace_id logging).
+Run all AI-NNN checks from `PATTERN.md`. These are structural rules, not bug patterns. A violation means new code was added that breaks a framework rule. Currently: AI-001 (cost tracking), AI-002 (queue serialization), AI-003 (truncation signaling), AI-004 (trace_id logging), AI-005 (single provider architecture).
 
 ### Framework Anti-Patterns
 ```bash

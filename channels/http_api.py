@@ -203,6 +203,13 @@ class HTTPApi:
 
     # ─── Attachment Decoding ─────────────────────────────────────
 
+    def _extract_attachments(self, body: dict) -> list[Attachment] | None:
+        """Extract and decode attachments from an HTTP request body."""
+        raw = body.get("attachments")
+        if raw and isinstance(raw, list):
+            return self._decode_attachments(raw) or None
+        return None
+
     def _decode_attachments(self, raw: list[dict]) -> list[Attachment]:
         """Decode base64 attachments from HTTP body, save to disk.
 
@@ -259,7 +266,6 @@ class HTTPApi:
 
         sender = f"http-{body.get('sender', 'default')}"
         context = body.get("context", "")
-        tier = body.get("tier", "full")
 
         # Prepend context label if provided
         text = f"[{context}] {message}" if context else message
@@ -268,17 +274,12 @@ class HTTPApi:
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
 
-        # Decode attachments if present
-        attachments = None
-        raw_attachments = body.get("attachments")
-        if raw_attachments and isinstance(raw_attachments, list):
-            attachments = self._decode_attachments(raw_attachments) or None
+        attachments = self._extract_attachments(body)
 
         queue_item = {
             "sender": sender,
             "type": "http",
             "text": text,
-            "tier": tier,
             "response_future": future,
         }
         if attachments:
@@ -302,7 +303,7 @@ class HTTPApi:
         """POST /api/v1/notify — fire-and-forget notification.
 
         Body: message (required), source/ref/data (optional metadata).
-        All /notify uses operational tier and system type.
+        All /notify uses system type.
         """
         try:
             body = await request.json()
@@ -342,17 +343,12 @@ class HTTPApi:
         if data is not None:
             notify_meta["data"] = data
 
-        # Decode attachments if present
-        attachments = None
-        raw_attachments = body.get("attachments")
-        if raw_attachments and isinstance(raw_attachments, list):
-            attachments = self._decode_attachments(raw_attachments) or None
+        attachments = self._extract_attachments(body)
 
         queue_item = {
             "sender": sender,
             "type": "system",
             "text": f"[AUTOMATED SYSTEM MESSAGE] {text}",
-            "tier": "operational",
             "notify_meta": notify_meta or None,
         }
         if attachments:

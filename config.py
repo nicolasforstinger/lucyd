@@ -136,10 +136,6 @@ class Config:
         return _deep_get(self._data, "agent", "context", "semi_stable", default=[])
 
     @property
-    def context_tiers(self) -> dict:
-        return _deep_get(self._data, "agent", "context", "tiers", default={})
-
-    @property
     def skills_dir(self) -> str:
         return _deep_get(self._data, "agent", "skills", "dir", default="skills")
 
@@ -225,15 +221,6 @@ class Config:
             raise ValueError(f"No model config for '{name}'")
         return cfg
 
-    @property
-    def all_model_names(self) -> list[str]:
-        return list(_deep_get(self._data, "models", default={}).keys())
-
-    # --- Routing ---
-
-    def route_model(self, source: str) -> str:
-        return _deep_get(self._data, "routing", source, default="primary")
-
     # --- Memory ---
 
     @property
@@ -249,10 +236,6 @@ class Config:
     @property
     def consolidation_enabled(self) -> bool:
         return _deep_get(self._data, "memory", "consolidation", "enabled", default=False)
-
-    @property
-    def consolidation_model(self) -> str:
-        return _deep_get(self._data, "memory", "consolidation", "model", default="subagent")
 
     @property
     def consolidation_min_messages(self) -> int:
@@ -353,26 +336,26 @@ class Config:
     @property
     def embedding_model(self) -> str:
         """Read from [models.embeddings] (provider file) or [memory] override. Empty = not configured."""
-        if "embeddings" in self.all_model_names:
+        if "embeddings" in self._data.get("models", {}):
             return self.model_config("embeddings").get("model", "")
         return _deep_get(self._data, "memory", "embedding_model", default="")
 
     @property
     def embedding_base_url(self) -> str:
-        if "embeddings" in self.all_model_names:
+        if "embeddings" in self._data.get("models", {}):
             return self.model_config("embeddings").get("base_url", "")
         return _deep_get(self._data, "memory", "embedding_base_url", default="")
 
     @property
     def embedding_provider(self) -> str:
-        if "embeddings" in self.all_model_names:
+        if "embeddings" in self._data.get("models", {}):
             return self.model_config("embeddings").get("provider", "")
         return _deep_get(self._data, "memory", "embedding_provider", default="")
 
     @property
     def embedding_api_key(self) -> str:
         """Resolve API key for the embeddings provider."""
-        if "embeddings" in self.all_model_names:
+        if "embeddings" in self._data.get("models", {}):
             key_env = self.model_config("embeddings").get("api_key_env", "")
             if key_env:
                 return os.environ.get(key_env, "")
@@ -397,11 +380,6 @@ class Config:
     def subagent_deny(self) -> list[str] | None:
         """Custom sub-agent deny list, or None to use hardcoded default."""
         return _deep_get(self._data, "tools", "subagent_deny", default=None)
-
-    @property
-    def subagent_model(self) -> str:
-        """Model name for sub-agents (default: 'primary')."""
-        return _deep_get(self._data, "tools", "subagent_model", default="primary")
 
     @property
     def subagent_max_turns(self) -> int:
@@ -626,8 +604,9 @@ class Config:
         return _deep_get(self._data, "behavior", "compaction", "threshold_tokens", default=150000)
 
     @property
-    def compaction_model(self) -> str:
-        return _deep_get(self._data, "behavior", "compaction", "model", default="compaction")
+    def compaction_max_tokens(self) -> int:
+        """Max output tokens for compaction summaries (default: 2048)."""
+        return _deep_get(self._data, "behavior", "compaction", "max_tokens", default=2048)
 
     @property
     def compaction_prompt(self) -> str:

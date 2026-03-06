@@ -127,7 +127,7 @@ class TestBuildStatus:
         """Status dict contains all expected fields."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {"primary": MagicMock()}
+        daemon.provider = MagicMock()
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {"user1": "s-1", "system": "s-2"}
 
@@ -137,7 +137,7 @@ class TestBuildStatus:
         assert status["pid"] == os.getpid()
         assert isinstance(status["uptime_seconds"], int)
         assert status["channel"] == "cli"
-        assert status["models"] == ["primary"]
+        assert status["model"] == "test-model"
         assert status["active_sessions"] == 2
         assert isinstance(status["today_cost"], float)
         assert isinstance(status["queue_depth"], int)
@@ -146,7 +146,7 @@ class TestBuildStatus:
         """Today's cost is calculated from cost.db."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {}
 
@@ -166,7 +166,7 @@ class TestBuildStatus:
         """Missing cost DB file returns 0.0 cost."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {}
 
@@ -178,7 +178,7 @@ class TestBuildStatus:
         """Empty cost DB returns 0.0 cost."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {}
 
@@ -190,7 +190,7 @@ class TestBuildStatus:
         """No session manager returns 0 active sessions."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
         daemon.session_mgr = None
 
         status = daemon._build_status()
@@ -200,7 +200,7 @@ class TestBuildStatus:
         """Queue depth matches actual items in the queue."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
         daemon.session_mgr = None
 
         # Put items on queue
@@ -215,25 +215,21 @@ class TestBuildStatus:
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
         daemon.start_time = time.time() - 120  # Started 2 min ago
-        daemon.providers = {}
+        daemon.provider = None
         daemon.session_mgr = None
 
         status = daemon._build_status()
         assert status["uptime_seconds"] >= 119  # Allow 1s tolerance
 
-    def test_multiple_providers_listed(self, tmp_path):
-        """All provider names appear in status."""
+    def test_provider_listed_in_status(self, tmp_path):
+        """Provider name appears in status."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {
-            "primary": MagicMock(),
-            "subagent": MagicMock(),
-            "compaction": MagicMock(),
-        }
+        daemon.provider = MagicMock()
         daemon.session_mgr = None
 
         status = daemon._build_status()
-        assert set(status["models"]) == {"primary", "subagent", "compaction"}
+        assert status["model"] == "test-model"
 
 
 # ─── _resolve pattern ────────────────────────────────────────────
@@ -251,7 +247,7 @@ class TestResolvePattern:
         """If provider is missing, future is resolved with error."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}  # No providers at all
+        daemon.provider = None  # No provider configured
         daemon.session_mgr = MagicMock()
 
         loop = asyncio.get_running_loop()
@@ -273,7 +269,7 @@ class TestResolvePattern:
         """_process_message with response_future=None doesn't crash."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}  # Will trigger early return (no provider)
+        daemon.provider = None  # Will trigger early return (no provider)
         daemon.session_mgr = MagicMock()
 
         # This should not raise
@@ -325,7 +321,7 @@ class TestResolveIntegration:
         provider.format_messages = MagicMock(return_value=[])
         provider.format_tools = MagicMock(return_value=[])
 
-        daemon.providers = {"primary": provider}
+        daemon.provider = provider
 
         # Mock session manager
         session = MagicMock()
@@ -391,7 +387,6 @@ class TestResolveIntegration:
         """Future is resolved with silent=True when reply matches a silent token."""
         daemon, provider, session = daemon_with_mock_provider
         daemon.config = MagicMock()
-        daemon.config.route_model = MagicMock(return_value="primary")
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [1.0, 5.0, 0.1],
         })
@@ -436,7 +431,6 @@ class TestResolveIntegration:
         """Future is resolved with reply on normal successful processing."""
         daemon, provider, session = daemon_with_mock_provider
         daemon.config = MagicMock()
-        daemon.config.route_model = MagicMock(return_value="primary")
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [1.0, 5.0, 0.1],
         })
@@ -491,7 +485,7 @@ class TestChannelDeliverySuppression:
 
         provider = MagicMock()
         provider.format_system = MagicMock(return_value=[])
-        daemon.providers = {"primary": provider}
+        daemon.provider = provider
 
         session = MagicMock()
         session.id = "test-session"
@@ -523,7 +517,6 @@ class TestChannelDeliverySuppression:
         daemon.channel = AsyncMock()
 
         daemon.config = MagicMock()
-        daemon.config.route_model = MagicMock(return_value="primary")
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [1.0, 5.0, 0.1],
         })
@@ -671,7 +664,7 @@ class TestContextBuilderSourcePassthrough:
 
         provider = MagicMock()
         provider.format_system = MagicMock(return_value=[])
-        daemon.providers = {"primary": provider}
+        daemon.provider = provider
 
         session = MagicMock()
         session.id = "ctx-test"
@@ -701,7 +694,6 @@ class TestContextBuilderSourcePassthrough:
         daemon.channel = AsyncMock()
 
         daemon.config = MagicMock()
-        daemon.config.route_model = MagicMock(return_value="primary")
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [],
         })
@@ -729,7 +721,7 @@ class TestContextBuilderSourcePassthrough:
 
         with patch("lucyd.run_agentic_loop", return_value=resp), patch("tools.status.set_current_session"):
             await daemon._process_message(
-                text="test", sender="system", source="system", tier="operational",
+                text="test", sender="system", source="system",
             )
 
         daemon.context_builder.build.assert_called_once()
@@ -787,7 +779,6 @@ class TestMessageLoopHTTPBypass:
             "sender": "http",
             "type": "http",
             "text": "test",
-            "tier": "full",
             "response_future": future,
         }
         # The bypass check in the message loop
@@ -800,7 +791,6 @@ class TestMessageLoopHTTPBypass:
             "sender": "system",
             "type": "system",
             "text": "heartbeat",
-            "tier": "operational",
         }
         assert item.get("response_future") is None
 
@@ -811,7 +801,6 @@ class TestMessageLoopHTTPBypass:
             "sender": "http",
             "type": "system",
             "text": "[AUTOMATED SYSTEM MESSAGE] test",
-            "tier": "operational",
         }
         assert item.get("response_future") is None
 
@@ -990,7 +979,7 @@ class TestProcessMessageIntegration:
         provider.format_system = MagicMock(return_value=[])
         provider.format_messages = MagicMock(return_value=[])
         provider.format_tools = MagicMock(return_value=[])
-        daemon.providers = {"primary": provider}
+        daemon.provider = provider
 
         # Mock session
         session = MagicMock()
@@ -1030,7 +1019,6 @@ class TestProcessMessageIntegration:
 
         # Override config as MagicMock for controlled attribute access
         daemon.config = MagicMock()
-        daemon.config.route_model = MagicMock(return_value="primary")
         daemon.config.model_config = MagicMock(return_value={
             "model": "test-model", "cost_per_mtok": [1.0, 5.0, 0.1],
             "supports_vision": True,
@@ -1041,7 +1029,7 @@ class TestProcessMessageIntegration:
         daemon.config.cost_db = Path(str(tmp_path / "cost.db"))
         daemon.config.silent_tokens = []
         daemon.config.compaction_threshold = 150000
-        daemon.config.compaction_model = "compaction"
+        daemon.config.compaction_max_tokens = 2048
         daemon.config.compaction_prompt = "Summarize"
         daemon.config.agent_name = "TestAgent"
         daemon.config.consolidation_enabled = False
@@ -1286,10 +1274,6 @@ class TestProcessMessageIntegration:
         """When session.needs_compaction returns True, compact_session is called."""
         daemon, provider, session = full_daemon
 
-        # Configure compaction provider
-        compaction_provider = MagicMock()
-        daemon.providers["compaction"] = compaction_provider
-
         # Session reports it needs compaction after the agentic loop
         session.needs_compaction = MagicMock(return_value=True)
         session.last_input_tokens = 160000  # Above threshold
@@ -1312,7 +1296,7 @@ class TestProcessMessageIntegration:
         daemon.session_mgr.compact_session.assert_called_once()
         args = daemon.session_mgr.compact_session.call_args[0]
         assert args[0] is session
-        assert args[1] is compaction_provider
+        assert args[1] is provider  # Uses the main provider
         assert isinstance(args[2], str) and len(args[2]) > 0
 
 
@@ -1331,7 +1315,7 @@ class TestMessageLoopDebounce:
         # Mock everything _process_message needs
         provider = MagicMock()
         provider.format_system = MagicMock(return_value=[])
-        daemon.providers = {"primary": provider}
+        daemon.provider = provider
 
         session = MagicMock()
         session.id = "loop-test-session"
@@ -1360,7 +1344,6 @@ class TestMessageLoopDebounce:
         daemon.channel = AsyncMock()
 
         daemon.config = MagicMock()
-        daemon.config.route_model = MagicMock(return_value="primary")
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [1.0, 5.0, 0.1],
         })
@@ -1370,7 +1353,7 @@ class TestMessageLoopDebounce:
         daemon.config.cost_db = Path(str(tmp_path / "cost.db"))
         daemon.config.silent_tokens = []
         daemon.config.compaction_threshold = 150000
-        daemon.config.compaction_model = "compaction"
+        daemon.config.compaction_max_tokens = 2048
         daemon.config.compaction_prompt = "Summarize"
         daemon.config.agent_name = "TestAgent"
         daemon.config.consolidation_enabled = False
@@ -1493,7 +1476,6 @@ class TestMessageLoopDebounce:
             "sender": "http-client",
             "type": "http",
             "text": "api question",
-            "tier": "full",
             "response_future": future,
         }
         await daemon.queue.put(http_item)
@@ -1598,7 +1580,6 @@ class TestMessageLoopDebounce:
             "sender": "system",
             "type": "system",
             "text": "FIFO message",
-            "tier": "operational",
         }
         await daemon.queue.put(fifo_item)
         await daemon.queue.put(None)
@@ -1654,37 +1635,6 @@ class TestMessageLoopDebounce:
         await daemon._message_loop()
 
         daemon.session_mgr.close_session.assert_called_once_with("nobody")
-
-    @pytest.mark.asyncio
-    async def test_dict_tier_defaults_operational_for_system(self, loop_daemon):
-        """FIFO dict with type='system' defaults tier to 'operational'."""
-        daemon, session = loop_daemon
-
-        await daemon.queue.put({"sender": "cron", "type": "system", "text": "heartbeat"})
-        await daemon.queue.put(None)
-
-        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
-            await daemon._message_loop()
-
-        mock_pm.assert_called_once()
-        _, kwargs = mock_pm.call_args
-        # Positional: text, sender, source, tier
-        args = mock_pm.call_args.args
-        assert args[3] == "operational"
-
-    @pytest.mark.asyncio
-    async def test_dict_tier_defaults_full_for_user_type(self, loop_daemon):
-        """FIFO dict with type='user' defaults tier to 'full'."""
-        daemon, session = loop_daemon
-
-        await daemon.queue.put({"sender": "cli", "type": "user", "text": "hello"})
-        await daemon.queue.put(None)
-
-        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
-            await daemon._message_loop()
-
-        args = mock_pm.call_args.args
-        assert args[3] == "full"
 
     @pytest.mark.asyncio
     async def test_notify_meta_propagates_through_drain(self, loop_daemon):
@@ -1926,7 +1876,7 @@ class TestBuildCost:
         """Today filter returns only today's costs grouped by model."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
 
         now_ts = int(time.time())
         _make_cost_db(tmp_path / "cost.db", [
@@ -1950,7 +1900,7 @@ class TestBuildCost:
         """Week filter includes entries from the last 7 days."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
 
         now_ts = int(time.time())
         _make_cost_db(tmp_path / "cost.db", [
@@ -1967,7 +1917,7 @@ class TestBuildCost:
         """All filter includes everything."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
 
         now_ts = int(time.time())
         _make_cost_db(tmp_path / "cost.db", [
@@ -1983,7 +1933,7 @@ class TestBuildCost:
         """Missing cost DB returns zero cost gracefully."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
         # Don't create cost.db
 
         result = daemon._build_cost("today")
@@ -1994,7 +1944,7 @@ class TestBuildCost:
         """Empty cost DB returns zero cost."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {}
+        daemon.provider = None
 
         _make_cost_db(tmp_path / "cost.db", [])
 
@@ -2441,7 +2391,7 @@ class TestBuildCostCacheTokens:
     def test_cost_includes_cache_tokens(self, tmp_path):
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {"primary": MagicMock()}
+        daemon.provider = MagicMock()
 
         now = int(time.time())
         _make_cost_db(tmp_path / "cost.db", [
@@ -2458,7 +2408,7 @@ class TestBuildCostCacheTokens:
         """Week window uses int(time.time()) - 7*86400, not today_start - 6*86400."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        daemon.providers = {"primary": MagicMock()}
+        daemon.provider = MagicMock()
 
         now = int(time.time())
         _make_cost_db(tmp_path / "cost.db", [
@@ -2540,7 +2490,6 @@ class TestCheckContextBudget:
             workspace=config.workspace,
             stable_files=config.context_stable,
             semi_stable_files=config.context_semi_stable,
-            tier_overrides=config.context_tiers,
         )
         daemon.tool_registry = ToolRegistry()
         daemon.skill_loader = SkillLoader(
@@ -2658,7 +2607,6 @@ class TestCheckContextBudget:
             workspace=config.workspace,
             stable_files=config.context_stable,
             semi_stable_files=config.context_semi_stable,
-            tier_overrides=config.context_tiers,
         )
         daemon.skill_loader = SkillLoader(
             workspace=config.workspace,

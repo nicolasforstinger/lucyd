@@ -48,7 +48,6 @@ def mock_config():
         "cost_per_mtok": [3.0, 15.0, 0.3],
     }
     cfg.cost_db = "/tmp/test-cost.db"
-    cfg.subagent_model = "primary"
     cfg.subagent_max_turns = 50
     cfg.subagent_timeout = 600.0
     return cfg
@@ -58,18 +57,17 @@ def mock_config():
 def setup_agents(mock_registry, mock_provider, mock_config):
     """Configure agents module with mock dependencies."""
     import tools.agents as mod
-    original = (mod._config, mod._providers, mod._tool_registry,
-                mod._subagent_deny, mod._default_model, mod._default_max_turns, mod._default_timeout)
+    original = (mod._config, mod._provider, mod._tool_registry,
+                mod._subagent_deny, mod._default_max_turns, mod._default_timeout)
     mod._config = mock_config
-    mod._providers = {"primary": mock_provider, "subagent": mock_provider}
+    mod._provider = mock_provider
     mod._tool_registry = mock_registry
     mod._subagent_deny = set(mod._DEFAULT_SUBAGENT_DENY)
-    mod._default_model = "primary"
     mod._default_max_turns = 50
     mod._default_timeout = 600.0
     yield
-    (mod._config, mod._providers, mod._tool_registry,
-     mod._subagent_deny, mod._default_model, mod._default_max_turns, mod._default_timeout) = original
+    (mod._config, mod._provider, mod._tool_registry,
+     mod._subagent_deny, mod._default_max_turns, mod._default_timeout) = original
 
 
 def _make_mock_response(text="test response"):
@@ -224,11 +222,17 @@ class TestSpawnReturnValue:
             mod._config = original
 
     @pytest.mark.asyncio
-    async def test_error_for_unknown_model(self):
-        """Unknown model returns error."""
-        result = await tool_sessions_spawn(prompt="test", model="nonexistent")
-        assert "Error" in result
-        assert "No provider" in result
+    async def test_error_for_no_provider(self):
+        """No provider configured returns error."""
+        import tools.agents as mod
+        original = mod._provider
+        mod._provider = None
+        try:
+            result = await tool_sessions_spawn(prompt="test")
+            assert "Error" in result
+            assert "No provider" in result
+        finally:
+            mod._provider = original
 
 
 # ─── Deny list contents ─────────────────────────────────────────
@@ -265,7 +269,7 @@ class TestConfigurableDenyList:
         mock_config.subagent_deny = ["read", "write"]
         mod.configure(
             config=mock_config,
-            providers={"subagent": mock_provider},
+            provider=mock_provider,
             tool_registry=mock_registry,
             session_manager=MagicMock(),
         )
@@ -277,7 +281,7 @@ class TestConfigurableDenyList:
         mock_config.subagent_deny = []
         mod.configure(
             config=mock_config,
-            providers={"subagent": mock_provider},
+            provider=mock_provider,
             tool_registry=mock_registry,
             session_manager=MagicMock(),
         )
@@ -289,7 +293,7 @@ class TestConfigurableDenyList:
         mock_config.subagent_deny = None
         mod.configure(
             config=mock_config,
-            providers={"subagent": mock_provider},
+            provider=mock_provider,
             tool_registry=mock_registry,
             session_manager=MagicMock(),
         )
@@ -331,23 +335,6 @@ class TestConfigDefaults:
     """Sub-agent defaults resolved from config at configure() time."""
 
     @pytest.mark.asyncio
-    async def test_default_model_is_primary(self):
-        """Default model resolves to primary (not subagent)."""
-        mock_loop = AsyncMock(return_value=_make_mock_response())
-        with patch("agentic.run_agentic_loop", mock_loop):
-            await tool_sessions_spawn(prompt="test")
-        # Should have used "primary" provider (resolved from _default_model)
-        mock_loop.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_explicit_model_overrides_default(self):
-        """Explicit model parameter overrides config default."""
-        mock_loop = AsyncMock(return_value=_make_mock_response())
-        with patch("agentic.run_agentic_loop", mock_loop):
-            await tool_sessions_spawn(prompt="test", model="subagent")
-        mock_loop.assert_awaited_once()
-
-    @pytest.mark.asyncio
     async def test_default_max_turns_from_config(self):
         """max_turns=0 resolves to config default (50)."""
         mock_loop = AsyncMock(return_value=_make_mock_response())
@@ -386,15 +373,13 @@ class TestConfigDefaults:
     def test_configure_resolves_defaults(self, mock_config, mock_provider, mock_registry):
         """configure() resolves sub-agent defaults from config."""
         import tools.agents as mod
-        mock_config.subagent_model = "primary"
         mock_config.subagent_max_turns = 50
         mock_config.subagent_timeout = 600.0
         mod.configure(
             config=mock_config,
-            providers={"primary": mock_provider},
+            provider=mock_provider,
             tool_registry=mock_registry,
             session_manager=MagicMock(),
         )
-        assert mod._default_model == "primary"
         assert mod._default_max_turns == 50
         assert mod._default_timeout == 600.0

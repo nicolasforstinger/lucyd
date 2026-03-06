@@ -94,7 +94,7 @@ def _make_daemon_for_monitor(tmp_path, monitor_dir):
     provider.format_system = MagicMock(return_value=[])
     provider.format_messages = MagicMock(return_value=[])
     provider.format_tools = MagicMock(return_value=[])
-    daemon.providers = {"primary": provider}
+    daemon.provider = provider
 
     session = MagicMock()
     session.id = "mon-test-session"
@@ -127,7 +127,6 @@ def _make_daemon_for_monitor(tmp_path, monitor_dir):
 
     daemon.config = MagicMock()
     daemon.config.state_dir = monitor_dir
-    daemon.config.route_model = MagicMock(return_value="primary")
     daemon.config.model_config = MagicMock(return_value={
         "model": "test-model", "cost_per_mtok": [1.0, 5.0, 0.1],
     })

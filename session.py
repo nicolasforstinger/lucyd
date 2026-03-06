@@ -457,6 +457,7 @@ class SessionManager:
         trace_id: str = "",
         *,
         keep_recent_pct: float,
+        max_tokens: int = 0,
         system_blocks: list[dict] | None = None,
         verify_enabled: bool = False,
         verify_max_turn_labels: int = 3,
@@ -514,7 +515,10 @@ class SessionManager:
         fmt_messages = provider.format_messages(summary_messages)
 
         try:
-            response = await provider.complete(fmt_system, fmt_messages, [])
+            kwargs = {}
+            if max_tokens > 0:
+                kwargs["max_tokens"] = max_tokens
+            response = await provider.complete(fmt_system, fmt_messages, [], **kwargs)
             summary = response.text or ""
         except Exception as e:
             log.error("Compaction failed: %s", e)
@@ -532,7 +536,7 @@ class SessionManager:
         verified = True
         verification_tier = ""
         if summary and verify_enabled:
-            from verification import verify_compaction_summary, _build_deterministic_summary
+            from verification import _build_deterministic_summary, verify_compaction_summary
             vresult = verify_compaction_summary(
                 summary, conversation_text, response.usage.output_tokens,
                 max_turn_labels=verify_max_turn_labels,

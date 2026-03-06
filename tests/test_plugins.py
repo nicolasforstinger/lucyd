@@ -58,7 +58,7 @@ def _make_daemon(tmp_path, enabled=None, plugins_dir="plugins.d"):
     daemon.tool_registry = ToolRegistry()
     daemon.channel = MagicMock()
     daemon.session_mgr = MagicMock()
-    daemon.providers = {"primary": MagicMock()}
+    daemon.provider = MagicMock()
     return daemon
 
 

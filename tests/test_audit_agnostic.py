@@ -1,9 +1,12 @@
-"""Audit tests: channel agnosticism (P-022) and interface parity (P-023).
+"""Audit tests: channel agnosticism (P-022), interface parity (P-023),
+single provider architecture (AI-005).
 
-These tests verify framework code stays agnostic to external sources
-and both interfaces (CLI + HTTP API) return equivalent data schemas.
+These tests verify framework code stays agnostic to external sources,
+both interfaces (CLI + HTTP API) return equivalent data schemas,
+and the single-provider architecture is not violated.
 """
 
+import inspect
 import re
 from pathlib import Path
 
@@ -206,7 +209,7 @@ class TestInterfaceParity:
         (tmp_path / "state").mkdir()
         config = Config(cfg_data)
         daemon = LucydDaemon(config)
-        daemon.providers = {"primary": None}
+        daemon.provider = None
 
         # Populate cost DB
         now = int(time.time())
@@ -344,4 +347,119 @@ class TestInterfaceParity:
         cli_source = inspect.getsource(mod.query_cost)
         assert "int(time.time()) - 7 * 86400" in cli_source, (
             "CLI query_cost week window should use int(time.time()) - 7 * 86400"
+        )
+
+
+# ─── AI-005: Single Provider Architecture ─────────────────────────
+
+
+# Retired concepts — grep these to catch re-introduction
+_MULTI_MODEL_PATTERNS = re.compile(
+    r"\bself\.providers\b"
+    r"|\broute_model\b"
+    r"|\bmodel_override\b"
+    r"|\b_default_model\b"
+    r"|\bcontext_tiers\b"
+    r"|\btier_overrides\b"
+    r"|\b_files_for_tier\b"
+    r"|\bcompaction_model\b"
+    r"|\bconsolidation_model\b"
+    r"|\bsubagent_model\b"
+    r"|\ball_model_names\b"
+)
+
+# tts.py has its own _default_model_id (TTS model, not LLM routing)
+_AI005_EXEMPT = {"tools/tts.py", "tts.py"}
+
+
+def _scan_for_multi_model(path: Path) -> list[tuple[int, str]]:
+    """Scan a .py file for multi-model routing patterns."""
+    hits = []
+    try:
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if _MULTI_MODEL_PATTERNS.search(line):
+                hits.append((i, line.rstrip()))
+    except (OSError, UnicodeDecodeError):
+        pass
+    return hits
+
+
+class TestSingleProviderArchitecture:
+    """AI-005: Single provider architecture — no multi-model routing."""
+
+    def test_no_multi_model_in_framework(self):
+        """Framework modules must not contain multi-model routing patterns."""
+        violations = []
+        for name in _FRAMEWORK_MODULES:
+            if name in _AI005_EXEMPT:
+                continue
+            path = _LUCYD_DIR / name
+            if path.exists():
+                for lineno, line in _scan_for_multi_model(path):
+                    violations.append(f"{name}:{lineno}: {line}")
+        assert not violations, (
+            "Multi-model routing patterns found in framework code (AI-005):\n"
+            + "\n".join(violations)
+        )
+
+    def test_no_multi_model_in_tools(self):
+        """tools/*.py must not contain multi-model routing patterns."""
+        if not _TOOLS_DIR.exists():
+            pytest.skip("tools/ directory not found")
+        violations = []
+        for py_file in sorted(_TOOLS_DIR.glob("*.py")):
+            rel = f"tools/{py_file.name}"
+            if rel in _AI005_EXEMPT:
+                continue
+            for lineno, line in _scan_for_multi_model(py_file):
+                violations.append(f"{rel}:{lineno}: {line}")
+        assert not violations, (
+            "Multi-model routing patterns found in tools (AI-005):\n"
+            + "\n".join(violations)
+        )
+
+    def test_daemon_uses_singular_provider(self):
+        """LucydDaemon must have self.provider (not self.providers)."""
+        source = (_LUCYD_DIR / "lucyd.py").read_text(encoding="utf-8")
+        assert "self.providers" not in source, (
+            "lucyd.py still uses self.providers dict (AI-005)"
+        )
+        assert "self.provider" in source, (
+            "lucyd.py missing self.provider attribute (AI-005)"
+        )
+
+    def test_process_message_no_tier_or_model_override(self):
+        """_process_message() must not accept tier or model_override params."""
+        from lucyd import LucydDaemon
+
+        sig = inspect.signature(LucydDaemon._process_message)
+        params = set(sig.parameters.keys())
+        assert "tier" not in params, (
+            "_process_message has 'tier' parameter (AI-005)"
+        )
+        assert "model_override" not in params, (
+            "_process_message has 'model_override' parameter (AI-005)"
+        )
+
+    def test_subagent_tool_no_model_param(self):
+        """tool_sessions_spawn must not accept a model parameter."""
+        from tools import agents as agents_mod
+
+        sig = inspect.signature(agents_mod.tool_sessions_spawn)
+        params = set(sig.parameters.keys())
+        assert "model" not in params, (
+            "tool_sessions_spawn has 'model' parameter (AI-005)"
+        )
+
+    def test_context_builder_no_tier_param(self):
+        """ContextBuilder.build() must not accept a tier parameter."""
+        from context import ContextBuilder
+
+        sig = inspect.signature(ContextBuilder.build)
+        params = set(sig.parameters.keys())
+        assert "tier" not in params, (
+            "ContextBuilder.build() has 'tier' parameter (AI-005)"
         )

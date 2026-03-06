@@ -1,9 +1,6 @@
 """Tests for verification.py — compaction summary verification."""
 
-import pytest
-
 from verification import (
-    VerificationResult,
     _build_deterministic_summary,
     _detect_turn_labels,
     _extract_distinctive_tokens,
@@ -136,6 +133,27 @@ class TestEntityGrounding:
         source = "Nicolas mentioned the 12345 number."
         # 2 grounded (nicolas, 12345), 1 ungrounded (vienna) = 66%
         summary = "Nicolas referenced 12345 from Vienna."
+        result = verify_compaction_summary(
+            summary, source, 100, grounding_threshold=0.5,
+        )
+        assert result.passed
+
+    def test_low_grounding_ratio_rejects(self):
+        """1 of 4 distinctive tokens grounded = 25% < 50% threshold."""
+        source = "Nicolas mentioned something."
+        # 4 tokens: Nicolas (grounded), Vienna, Constantinople, Bartholomew (ungrounded)
+        summary = "Nicolas traveled to Vienna, Constantinople, and met Bartholomew."
+        result = verify_compaction_summary(
+            summary, source, 100, grounding_threshold=0.5,
+        )
+        assert not result.passed
+        assert result.tier_failed == "grounding"
+
+    def test_exactly_at_grounding_threshold_passes(self):
+        """1 of 2 distinctive tokens grounded = 50% = threshold → passes."""
+        source = "Nicolas had a discussion."
+        # 2 tokens: Nicolas (grounded), Vienna (ungrounded)
+        summary = "Nicolas was in Vienna."
         result = verify_compaction_summary(
             summary, source, 100, grounding_threshold=0.5,
         )

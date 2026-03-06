@@ -71,6 +71,8 @@ For each AI-NNN invariant, verify a contract test exists that would catch a viol
 
 **P-031 contract test:** Construct a config with `max_context_tokens=4096` and workspace files totaling >3000 tokens, verify a warning is logged at startup.
 
+**AI-005 contract test:** Verify `_process_message()` signature has no `tier` or `model_override` parameters. Verify `tool_sessions_spawn` input schema has no `model` property. Verify daemon uses `self.provider` (singular attribute), not `self.providers` (dict). These are grep-verifiable but a structural test in `test_audit_agnostic.py` provides stronger enforcement.
+
 If `audit/PATTERN.md` does not exist (first audit cycle), skip this section.
 
 ---

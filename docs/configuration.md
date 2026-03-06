@@ -24,18 +24,6 @@ semi_stable = ["MEMORY.md"]
 
 All paths are relative to `workspace`.
 
-### [agent.context.tiers]
-
-Override file lists for non-default context tiers. When `lucyd-send --tier operational` is used, these files replace the defaults. See [architecture — cache tiers](architecture.md#cache-tiers) for the caching strategy.
-
-```toml
-[agent.context.tiers]
-operational.stable = ["SOUL.md", "AGENTS.md", "IDENTITY.md"]
-operational.semi_stable = []
-```
-
-Unspecified tiers fall through to empty file lists.
-
 ### [agent.skills]
 
 Skill loading configuration.
@@ -144,15 +132,6 @@ cache_control = true
 thinking_enabled = true
 thinking_mode = "adaptive"          # "adaptive" | "budgeted" | "disabled"
 
-[models.subagent]
-model = "claude-haiku-4-5-20251001"
-max_tokens = 4096
-cost_per_mtok = [1.0, 5.0, 0.1]
-
-[models.compaction]
-model = "claude-sonnet-4-6"
-max_tokens = 4096
-cost_per_mtok = [3.0, 15.0, 0.3]
 ```
 
 ```toml
@@ -169,7 +148,7 @@ The `type` and `api_key_env` from the provider file are inherited by each `[mode
 
 ## [models.*]
 
-Model names (`primary`, `subagent`, `compaction`, `embeddings`) are referenced by routing rules, behavior settings, and the `sessions_spawn` tool. No alias table -- model IDs resolve directly to API calls.
+Model names (`primary`, `embeddings`) are referenced by behavior settings and the tool system. No alias table — model IDs resolve directly to API calls. All chat operations use the `primary` model; `embeddings` is the only separate model (fundamentally different API type).
 
 **Common options (all providers):**
 
@@ -192,21 +171,6 @@ Model names (`primary`, `subagent`, `compaction`, `embeddings`) are referenced b
 | `thinking_effort` | anthropic-compat | Thinking effort level (empty = default) |
 | `base_url` | openai-compat | API base URL |
 
-## [routing]
-
-Maps message source to model name. The source is determined by the channel or message type.
-
-```toml
-[routing]
-telegram = "primary"   # Telegram messages use the primary model
-cli = "primary"        # CLI messages use the primary model
-system = "subagent"    # System events (lucyd-send --system) use the subagent model
-http = "primary"       # HTTP API messages use the primary model
-vision = "primary"     # Model for messages with image attachments (overrides source routing)
-```
-
-Unmapped sources default to `"primary"`. When a message contains image attachments, `vision` routing overrides the source-based routing. If the `vision` route points to a model that isn't loaded, the source-based model is used instead.
-
 ## [memory]
 
 Long-term memory configuration.
@@ -227,7 +191,6 @@ Structured data extraction from session transcripts and workspace files.
 ```toml
 [memory.consolidation]
 enabled = true                        # Enable structured memory extraction
-fact_model = "subagent"               # Model for fact extraction (cheaper, high volume)
 min_messages = 4                      # Minimum messages in session before extracting
 confidence_threshold = 0.6            # Minimum confidence for extracted facts
 max_extraction_chars = 50000          # Truncation limit for session text fed to extraction LLM
@@ -328,7 +291,6 @@ output_truncation = 30000    # Truncate tool output beyond this many characters
 exec_timeout = 120           # Default exec tool timeout (seconds)
 exec_max_timeout = 600       # Maximum allowed exec timeout (seconds)
 # subagent_deny = ["sessions_spawn", "tts", "react", "schedule_message"]  # Tools denied to sub-agents (default if omitted)
-subagent_model = "primary"   # Model for sub-agents (default: "primary" = same as parent)
 subagent_max_turns = 0       # Max turns for sub-agents (0 = use max_turns_per_message)
 subagent_timeout = 0         # Timeout for sub-agents in seconds (0 = use agent_timeout_seconds)
 ```
@@ -482,7 +444,7 @@ Session compaction (summarization of old messages to free context window).
 ```toml
 [behavior.compaction]
 threshold_tokens = 150000    # Trigger compaction when last input_tokens exceeds this
-model = "compaction"         # Model name from [models.*] to use for summarization
+max_tokens = 2048            # Max output tokens for compaction summary (caps the primary model's default)
 prompt = "Summarize this conversation preserving all factual details, decisions, action items, and emotional context."
 ```
 
@@ -541,7 +503,7 @@ TOOLS = [
 ]
 ```
 
-An optional `configure()` function receives dependencies by parameter name (e.g. `config`, `channel`, `session_mgr`, `providers`).
+An optional `configure()` function receives dependencies by parameter name (e.g. `config`, `channel`, `session_mgr`, `provider`).
 
 Plugin tools must be listed in `[tools] enabled` to activate. Unlisted plugin tools are ignored. A failing plugin does not block other plugins or built-in tools from loading.
 

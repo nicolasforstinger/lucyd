@@ -58,7 +58,7 @@ async def run_cron(config, conn):
     from tools.indexer import scan_workspace
 
     workspace = config.workspace
-    fact_model = config.consolidation_model
+    fact_model = "primary"
     provider = _create_provider(config, fact_model)
 
     # Cost tracking params
@@ -103,13 +103,12 @@ async def run_backfill(config, conn):
         log.info("No archive directory found")
         return
 
-    provider = _create_provider(config, config.consolidation_model)
+    provider = _create_provider(config, "primary")
 
     context_builder = ContextBuilder(
         workspace=config.workspace,
         stable_files=config.context_stable,
         semi_stable_files=config.context_semi_stable,
-        tier_overrides=config.context_tiers,
     )
 
     # Cost tracking

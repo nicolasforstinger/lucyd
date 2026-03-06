@@ -65,23 +65,6 @@ def _extract_distinctive_tokens(text: str) -> set[str]:
     return tokens
 
 
-def _check_entity_grounding(
-    summary: str, source: str,
-) -> tuple[bool, list[str]]:
-    """Tier 2: Check that distinctive tokens from summary exist in source.
-
-    Returns (passed, ungrounded_tokens).
-    """
-    summary_tokens = _extract_distinctive_tokens(summary)
-    if not summary_tokens:
-        return True, []  # nothing distinctive to check
-
-    source_lower = source.lower()
-    ungrounded = [t for t in summary_tokens if t not in source_lower]
-    grounded_count = len(summary_tokens) - len(ungrounded)
-    ratio = grounded_count / len(summary_tokens) if summary_tokens else 1.0
-    return ratio >= 0.5, ungrounded  # threshold applied by caller
-
 
 def _build_deterministic_summary(message_count: int) -> str:
     """Safe fallback when verification fails."""

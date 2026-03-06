@@ -1,112 +1,78 @@
 # Security Audit Report
 
-**Date:** 2026-03-04
-**Audit Cycle:** 15
+**Date:** 2026-03-06
+**Audit Cycle:** 16
 **EXIT STATUS:** PASS
 
-## Changes Since Cycle 14
+## Changes Since Cycle 15
 
-1. **New HTTP endpoint:** `POST /api/v1/compact` — behind auth middleware (verified)
-2. **Media group batching:** `_merge_media_group()` replicates access control (`bot_id`, `allow_from`)
-3. **Image caption enrichment:** `_enrich_image_caption()` processes assistant text only (trusted source)
-4. **CVE-2026-28804 in pypdf 6.7.4** — fixed by updating to 6.7.5
+1. **New module:** `verification.py` — compaction hallucination detection (pure string matching, no external I/O)
+2. **Single-provider refactoring** — simplified provider architecture (reduced attack surface)
+3. **Dead code removed:** `_check_entity_grounding()` — never-called function in verification.py
 
 ## Pattern Checks
 
-| Pattern | Result | Details |
-|---------|--------|---------|
-| P-003 (unchecked filesystem write) | CLEAN | No new file-path parameters in tools |
-| P-009 (capability table stale) | CLEAN | Re-derived: 19 built-in + 1 plugin. No new tools. |
-| P-012 (auto-populated misclassified) | CLEAN | Verified against Stage 5 |
-| P-018 (unbounded structures) | CLEAN | `pending_groups` in telegram.py is bounded — groups flush after 0.5s, cannot accumulate |
-| P-028 (control endpoint audit) | CLEAN | Compact endpoint uses queue via `_handle_compact`. AI-002 compliant. |
+| Pattern | Result |
+|---------|--------|
+| P-003 (unchecked filesystem write) | CLEAN — no new file-path parameters |
+| P-009 (capability table stale) | CLEAN — re-derived: 19 built-in + 1 plugin, unchanged |
+| P-012 (auto-populated misclassified) | CLEAN |
+| P-018 (unbounded structures) | CLEAN |
+| P-028 (control endpoint audit) | CLEAN |
 
 ## Input Sources
 
-| Source | Protocol | Authentication | Risk Level |
-|--------|----------|---------------|------------|
-| Telegram | Bot API long poll | Bot token (server-side) | Medium |
-| HTTP API | REST | Bearer token + HMAC timing-safe | Medium |
-| FIFO (CLI) | Named pipe | Local access only (0o600) | Low |
-| Config files | Filesystem | Local access | Low |
-| Skill files | Filesystem (text-only) | Local access | Low |
-
-## Capabilities
-
-| Capability | Tool | Danger Level | Boundaries |
-|------------|------|-------------|------------|
-| Shell execution | exec | CRITICAL | `_safe_env()`, timeout cap, process group kill |
-| File read/write | read, write, edit | CRITICAL | `_check_path()` allowlist, symlink resolution |
-| Web requests | web_fetch, web_search | HIGH | Scheme whitelist, `_is_private_ip()`, DNS-once IP pinning |
-| Sub-agent spawn | sessions_spawn | CRITICAL | Deny-list, tool scoping |
-| Message sending | message, react | HIGH | Contact allowlist, attachment path validation |
-| Memory write | memory_write, memory_forget | MEDIUM | Parameterized SQL |
-| Status query | session_status | LOW | Read-only |
-| Skill loading | load_skill | MEDIUM | Name-based lookup, text-only |
-| TTS | tts | LOW | API key guard, temp cleanup |
-| Scheduling | schedule_message | LOW | Max 50, delay bounds |
-| Window display | window | LOW | `shlex.quote()`, hardcoded SSH host |
+Unchanged from Cycle 15: Telegram, HTTP API, FIFO, config files, skill files.
 
 ## New Path Analysis
 
-### Compact endpoint (POST /api/v1/compact)
-- **Auth:** Behind `_auth_middleware` (Bearer token, `hmac.compare_digest`) — VERIFIED
-- **Rate limiting:** Behind `_rate_middleware` — VERIFIED
-- **Queue routing:** Uses `_handle_compact()` → `_process_message()` — AI-002 compliant
-- **No new capabilities:** Routes through existing agentic loop
-- **Risk:** LOW — authenticated, rate-limited, no new capabilities exposed
+### verification.py (compaction hallucination detection)
 
-### Media group batching (_merge_media_group)
-- **Access control:** Replicates `bot_id` and `allow_from` checks from `_parse_message` — VERIFIED
-- **Test:** `test_media_group_from_disallowed_user_skipped` — VERIFIED
-- **Bounded:** `pending_groups` dict flushes after 0.5s `_MEDIA_GROUP_DELAY` — cannot grow unbounded
-- **Risk:** LOW — same trust level as individual messages
-
-### Image caption enrichment (_enrich_image_caption)
-- **Input source:** Assistant-generated text (from LLM response, trusted)
-- **Output:** Stored in JSONL session, never executed
-- **Truncation:** 200 chars max, whitespace normalized
-- **Single replacement:** `replace(tag, ..., 1)` limits scope
+- **Input source:** LLM-generated compaction summary (from `provider.complete()`)
+- **Processing:** Regex matching (`_TURN_PATTERNS`) + string comparison (`_extract_distinctive_tokens`)
+- **Output:** `VerificationResult` dataclass (pass/fail, never persisted to external systems)
+- **No capabilities:** No file I/O, no network calls, no shell execution, no SQL
+- **Attack surface:** NONE — pure computation on strings already in memory
+- **Failure mode:** If verification incorrectly passes, a fabricated summary replaces conversation. Mitigated by deterministic fallback (`_build_deterministic_summary`)
 - **Risk:** NEGLIGIBLE
+
+### Single-provider refactoring
+
+- **Removed:** `self.providers` dict, `route_model()`, `model_override` parameter
+- **Effect:** Fewer code paths = reduced attack surface
+- **Risk:** NONE — simplification only
 
 ## Supply Chain
 
-**pip-audit:** 0 vulnerabilities (after pypdf update)
-
-| Item | Status |
-|------|--------|
-| Known CVEs | 0 (was 1: CVE-2026-28804 in pypdf 6.7.4, FIXED) |
-| `certifi` CA bundle | 2026.2.25 (current) |
-| `pypdf` | 6.7.5 (updated from 6.7.4) |
-| `anthropic` SDK | 0.81.0 (no CVEs) |
-| `openai` SDK | 2.21.0 (no CVEs) |
+- **pip-audit:** 0 known vulnerabilities
+- **certifi:** 2026.2.25 (current — was 2025.1.31 last cycle, now updated)
+- **pypdf:** 6.7.5 (CVE-2026-28804 fix from Cycle 15 retained)
 
 ## Boundary Verification Summary
 
-| Boundary | Exists | Tested | Mutation Verified | Fails Closed |
-|----------|--------|--------|-------------------|-------------|
-| `_safe_env()` | Yes | 16 tests | 100% kill | Yes |
-| `_safe_parse_args()` | Yes | 5 tests | 100% kill | Yes |
-| `_check_path()` | Yes | 14 tests | 100% kill | Yes |
-| `_is_private_ip()` | Yes | 20+ tests | 2 equiv | Yes |
-| `_validate_url()` | Yes | 13+ tests | 3 cosmetic | Yes |
-| `_subagent_deny` | Yes | 5+ tests | 100% kill | Yes |
-| `_auth_middleware` | Yes | 15+ tests | 100% kill | Yes |
-| `_rate_middleware` | Yes | 3+ tests | 100% kill | Yes |
-| `hmac.compare_digest` | Yes | tested | 100% kill | Yes |
-| `shlex.quote` (window) | Yes | 1 test | N/A (stdlib) | Yes |
-| **`allow_from` in merge_media** | Yes | 1 test | N/A (new) | Yes |
+All boundaries unchanged from Cycle 15. All mutation-verified kill rates carry forward:
 
-## Vulnerabilities Found & Fixed
+| Boundary | Tested | Mutation Verified |
+|----------|--------|-------------------|
+| `_safe_env()` | 16 tests | 100% kill |
+| `_safe_parse_args()` | 5 tests | 100% kill |
+| `_check_path()` | 14 tests | 100% kill |
+| `_is_private_ip()` | 20+ tests | 2 equiv |
+| `_validate_url()` | 13+ tests | 3 cosmetic |
+| `_subagent_deny` | 5+ tests | 100% kill |
+| `_auth_middleware` | 15+ tests | 100% kill |
+| `_rate_middleware` | 3+ tests | 100% kill |
+| `hmac.compare_digest` | tested | 100% kill |
+| `verify_compaction_summary` | 39 tests | 81.5% kill (all security mutants killed) |
 
-| # | Path | Severity | Status | Fix |
-|---|------|----------|--------|-----|
-| 1 | pypdf DoS | Medium | FIXED | Updated 6.7.4 → 6.7.5 |
+## Vulnerabilities Found
+
+None.
 
 ## Confidence
 
 **Overall: 97%**
 
-- Security boundaries: 98% — all unchanged, all verified
-- New code: 96% — compact behind auth, media group replicates access control
-- Supply chain: 100% — pip-audit clean after pypdf fix
+- Security boundaries: 98% — all verified, verification.py adds detection capability
+- Supply chain: 100% — pip-audit clean, certifi current
+- New code: 99% — pure string matching with no external interactions

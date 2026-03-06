@@ -17,6 +17,8 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `consolidation.py` | Structured data extraction from sessions and workspace files via LLM. Extracts facts, episodes, commitments, and entity aliases. |
 | `synthesis.py` | Memory recall synthesis. Transforms raw recall blocks into prose (narrative/factual) before context injection. Optional — defaults to passthrough ("structured"). |
 | `evolution.py` | Memory evolution. Daily rewriting of workspace understanding files (e.g., MEMORY.md, USER.md) using daily logs, structured memory, and an identity anchor (IDENTITY.md). Self-driven: agent loads evolution skill via `lucyd-send --evolve` or `POST /api/v1/evolve`, rewrites files through full agentic loop with persona context. |
+| `stt.py` | Speech-to-text boundary module. Dispatches to configured backend (cloud/local). |
+| `verification.py` | Compaction summary verification. Tier 1 structural detection (dialogue patterns) + Tier 2 entity grounding (distinctive token matching). Zero LLM cost. |
 | `channels/__init__.py` | Channel protocol definition (`connect`, `receive`, `send`, `send_typing`, `send_reaction`) and factory. |
 | `channels/telegram.py` | Telegram transport. Long polling via Bot API (httpx), sends via Bot API HTTP methods. |
 | `channels/cli.py` | stdin/stdout transport for testing. |
@@ -40,7 +42,7 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `bin/lucyd-send` | CLI script. Writes JSON to the control FIFO. Queries cost DB and monitor state directly. |
 | `bin/lucyd-index` | Memory indexer CLI. Scans workspace, chunks, embeds, writes to SQLite FTS5 + vector DB. Cron at `:10`. |
 | `bin/lucyd-consolidate` | Memory consolidation CLI. Extracts structured facts/episodes/commitments from sessions (cron at `:15`). Also runs maintenance (`--maintain`, daily at `4:05`). |
-| `bin/lucyd-send --evolve` | Self-driven evolution trigger. Pre-checks for new daily logs (skip with `--force`), sends FIFO message to daemon with `model: primary` override. Agent loads evolution skill and rewrites memory files through full agentic loop. Default evolution mode (cron at `4:20`). |
+| `bin/lucyd-send --evolve` | Self-driven evolution trigger. Pre-checks for new daily logs (skip with `--force`), sends FIFO message to daemon. Agent loads evolution skill and rewrites memory files through full agentic loop. Default evolution mode (cron at `4:20`). |
 | `providers.d/*.toml` | Provider config files. Each defines connection type, API key env var, and `[models.*]` sections. Loaded via `[providers] load` in `lucyd.toml`. |
 
 ## Message Flow
@@ -59,10 +61,9 @@ How an inbound message travels through the system:
    |
 5. _process_message()
    |
-   +-- Route to model (config.route_model(source) -> model name)
    +-- Get/create session (SessionManager.get_or_create(sender))
    +-- Add user message to session
-   +-- Build system prompt (ContextBuilder.build(tier, source))
+   +-- Build system prompt (ContextBuilder.build(source=source, ...))
    +-- Send typing indicator (if enabled, if not system source)
    |
 6. Agentic loop (run_agentic_loop)
@@ -117,16 +118,6 @@ The `ContextBuilder` assembles system prompt blocks with cache tier metadata. Pr
 | `semi_stable` | Memory file (MEMORY.md), always-on skill bodies, skill index | Changes occasionally. Cached with shorter TTL. |
 | `dynamic` | Current date/time, extra runtime metadata | Changes every turn. Never cached. |
 
-### Context Tier Overrides
-
-Different message types can use different file sets. The `[agent.context.tiers]` config maps tier names to file lists:
-
-- `full` (default): All stable + semi_stable files
-- `operational`: Reduced set for system events (e.g., SOUL.md + AGENTS.md + IDENTITY.md)
-- Undefined tiers fall back to empty file lists
-
-The tier is selected per-message: user messages default to `full`, system events default to `operational`, and `lucyd-send --tier` can override explicitly.
-
 ### Source-Aware Dynamic Context
 
 The context builder receives the message `source` (e.g., `"telegram"`, `"system"`, `"user"`)
@@ -140,7 +131,7 @@ session it's in:
 | `"telegram"` | (none — default conversational context) |
 | `"user"` | (none — default conversational context) |
 
-This completes the `source` chain: routing → tier → suppression → context awareness.
+This completes the `source` chain: suppression → context awareness.
 
 ### HTTP API
 
@@ -230,7 +221,7 @@ Schema management is in `memory_schema.py` — all tables use `IF NOT EXISTS`. S
 
 The evolution system rewrites workspace understanding files daily using accumulated knowledge. Two modes:
 
-`lucyd-send --evolve` pre-checks for new daily logs via `check_new_logs_exist()`, then sends a FIFO message to the running daemon with `"model": "primary"` override. The agent loads the `evolution` skill from workspace, reads its daily logs and current files using tools (read, write, edit), and rewrites MEMORY.md/USER.md through the full agentic loop with complete persona context. The model override in the FIFO message ensures the primary model is used (not the subagent model that system messages normally route to). Use `--force` to skip the pre-check.
+`lucyd-send --evolve` pre-checks for new daily logs via `check_new_logs_exist()`, then sends a FIFO message to the running daemon. The agent loads the `evolution` skill from workspace, reads its daily logs and current files using tools (read, write, edit), and rewrites MEMORY.md/USER.md through the full agentic loop with complete persona context. Use `--force` to skip the pre-check.
 
 **Pipeline:** `:05` git auto-commit → `:10` index → `:15` consolidate → `4:05` maintain → `4:20` evolve (via `lucyd-send --evolve`)
 

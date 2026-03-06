@@ -358,7 +358,7 @@ These are the highest-risk paths. Verify each one explicitly:
 
 **11. Dispatch safety**
 - ToolRegistry.execute() uses dict key lookup (`self._tools[name]["function"]`) — verify no user input becomes a function name or module path
-- Sub-agent model names — verified against `_providers` config dict?
+- Sub-agent uses single `_provider` — no model selection from user input?
 - Skill names — verified against SkillLoader dict?
 - Confirm: no `getattr()`, `__import__()`, `importlib`, `eval()`, or `exec()` in dispatch paths
 

@@ -86,7 +86,7 @@ def _make_daemon(tmp_path):
     provider.format_system = MagicMock(return_value=[])
     provider.format_messages = MagicMock(return_value=[])
     provider.format_tools = MagicMock(return_value=[])
-    daemon.providers = {"primary": provider}
+    daemon.provider = provider
 
     session = MagicMock()
     session.id = "test-session-001"
@@ -120,7 +120,6 @@ def _make_daemon(tmp_path):
 
     daemon.config = MagicMock()
     daemon.config.state_dir = state_dir
-    daemon.config.route_model = MagicMock(return_value="primary")
     daemon.config.model_config = MagicMock(return_value={
         "model": "test-model", "cost_per_mtok": [1.0, 5.0, 0.1],
         "supports_vision": True,
@@ -136,7 +135,7 @@ def _make_daemon(tmp_path):
     daemon.config.message_retries = 0
     daemon.config.message_retry_base_delay = 0.01
     daemon.config.raw = MagicMock(return_value=0.0)
-    daemon.config.compaction_model = "compaction"
+    daemon.config.compaction_max_tokens = 2048
     daemon.config.compaction_prompt = "Compact this."
     daemon.config.agent_name = "TestAgent"
     daemon.config.consolidation_enabled = False
@@ -336,7 +335,7 @@ class TestBasicMessageFlow:
             )
 
         daemon.session_mgr.get_or_create.assert_called_once_with(
-            "alice", model="primary"
+            "alice"
         )
 
     @pytest.mark.asyncio
@@ -411,11 +410,10 @@ class TestProviderErrorHandling:
         daemon.channel.send.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unknown_model_returns_early(self, tmp_path):
-        """No provider for routed model → early return, no agentic loop."""
+    async def test_no_provider_returns_early(self, tmp_path):
+        """No provider configured → early return, no agentic loop."""
         daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.route_model.return_value = "nonexistent"
-        daemon.providers = {}
+        daemon.provider = None
 
         with patch("lucyd.run_agentic_loop") as mock_loop, patch("tools.status.set_current_session"):
             await daemon._process_message(
@@ -772,8 +770,6 @@ class TestHardCompaction:
         session.needs_compaction = MagicMock(return_value=True)
         session.last_input_tokens = 160000
         session.warned_about_compaction = True
-        compaction_provider = MagicMock()
-        daemon.providers["compaction"] = compaction_provider
         daemon.session_mgr.compact_session = AsyncMock()
         response = _make_response()
 
@@ -788,7 +784,7 @@ class TestHardCompaction:
         daemon.session_mgr.compact_session.assert_called_once()
         args = daemon.session_mgr.compact_session.call_args[0]
         assert args[0] is session
-        assert args[1] is compaction_provider
+        assert args[1] is provider
         assert isinstance(args[2], str) and len(args[2]) > 0
 
     @pytest.mark.asyncio
@@ -1060,9 +1056,6 @@ class TestMemoryV2Wiring:
         session.last_input_tokens = 160000
         session.warned_about_compaction = True
         session.compaction_count = 0
-        compaction_provider = MagicMock()
-        daemon.providers["compaction"] = compaction_provider
-        daemon.providers["subagent"] = MagicMock()
         daemon.session_mgr.compact_session = AsyncMock()
         response = _make_response()
 
@@ -1092,8 +1085,6 @@ class TestMemoryV2Wiring:
         session.last_input_tokens = 160000
         session.warned_about_compaction = True
         session.compaction_count = 0
-        compaction_provider = MagicMock()
-        daemon.providers["compaction"] = compaction_provider
         daemon.session_mgr.compact_session = AsyncMock()
         response = _make_response()
 
@@ -1119,8 +1110,6 @@ class TestMemoryV2Wiring:
         session.needs_compaction = MagicMock(return_value=True)
         session.last_input_tokens = 160000
         session.warned_about_compaction = True
-        compaction_provider = MagicMock()
-        daemon.providers["compaction"] = compaction_provider
         daemon.session_mgr.compact_session = AsyncMock()
         response = _make_response()
 
@@ -2343,7 +2332,6 @@ class TestForcedCompact:
         call_kwargs = daemon._process_message.call_args.kwargs
         assert call_kwargs["force_compact"] is True
         assert call_kwargs["sender"] == "bob"
-        assert call_kwargs["model_override"] == "primary"
 
     @pytest.mark.asyncio
     async def test_force_compact_triggers_compaction_under_threshold(self, tmp_path):
@@ -2370,8 +2358,6 @@ class TestForcedCompact:
             compacted.append(True)
 
         daemon.session_mgr.compact_session = AsyncMock(side_effect=fake_compact)
-        daemon.providers["compaction"] = MagicMock()
-        daemon.config.compaction_model = "compaction"
         daemon.config.compaction_prompt = "Compact this for {agent_name}."
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop), \
@@ -2400,7 +2386,6 @@ class TestForcedCompact:
             session.messages.append(response.to_internal_message())
             return response
 
-        daemon.providers["compaction"] = MagicMock()
         daemon.session_mgr.compact_session = AsyncMock()
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop), \
@@ -2436,8 +2421,6 @@ class TestForcedCompact:
             session.messages.append(response.to_internal_message())
             return response
 
-        daemon.providers["compaction"] = MagicMock()
-        daemon.providers["subagent"] = MagicMock()
         daemon.session_mgr.compact_session = AsyncMock()
 
         consolidation_called = []

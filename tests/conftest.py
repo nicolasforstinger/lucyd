@@ -64,12 +64,6 @@ def minimal_toml_data():
             "context": {
                 "stable": ["SOUL.md", "AGENTS.md"],
                 "semi_stable": ["MEMORY.md"],
-                "tiers": {
-                    "operational": {
-                        "stable": ["SOUL.md", "AGENTS.md", "IDENTITY.md"],
-                        "semi_stable": [],
-                    }
-                },
             },
             "skills": {
                 "dir": "skills",
@@ -93,18 +87,6 @@ def minimal_toml_data():
                 "cache_control": True,
                 "thinking_enabled": True,
                 "thinking_budget": 10000,
-            },
-            "subagent": {
-                "provider": "anthropic-compat",
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 4096,
-                "cost_per_mtok": [1.0, 5.0, 0.1],
-            },
-            "compaction": {
-                "provider": "anthropic-compat",
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 4096,
-                "cost_per_mtok": [1.0, 5.0, 0.1],
             },
             "embeddings": {
                 "provider": "openai-compat",

@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 # Set at daemon startup
 _config: Any = None
-_providers: dict = {}
+_provider: Any = None
 _tool_registry: Any = None
 # Tools that sub-agents should not have access to by default
 _DEFAULT_SUBAGENT_DENY = frozenset({"sessions_spawn", "tts", "react", "schedule_message"})
@@ -23,23 +23,21 @@ _DEFAULT_SUBAGENT_DENY = frozenset({"sessions_spawn", "tts", "react", "schedule_
 _subagent_deny: set[str] = set(_DEFAULT_SUBAGENT_DENY)
 
 # Sub-agent defaults — resolved from config at configure() time
-_default_model: str = "primary"
 _default_max_turns: int = 50
 _default_timeout: float = 600.0
 
 
-def configure(config: Any, providers: dict, tool_registry: Any,
+def configure(config: Any, provider: Any, tool_registry: Any,
               session_manager: Any = None) -> None:
-    global _config, _providers, _tool_registry, _subagent_deny
-    global _default_model, _default_max_turns, _default_timeout
+    global _config, _provider, _tool_registry, _subagent_deny
+    global _default_max_turns, _default_timeout
     _config = config
-    _providers = providers
+    _provider = provider
     _tool_registry = tool_registry
     # Apply configurable deny-list
     custom_deny = getattr(config, "subagent_deny", None)
     _subagent_deny = set(custom_deny) if custom_deny is not None else set(_DEFAULT_SUBAGENT_DENY)
     # Resolve sub-agent defaults from config
-    _default_model = getattr(config, "subagent_model", "primary")
     _default_max_turns = getattr(config, "subagent_max_turns", 50)
     _default_timeout = getattr(config, "subagent_timeout", 600.0)
 
@@ -115,7 +113,6 @@ def _build_subagent_preamble(
 
 async def tool_sessions_spawn(
     prompt: str,
-    model: str = "",
     tools: list[str] | None = None,
     max_turns: int = 0,
     timeout: float = 0.0,
@@ -125,7 +122,6 @@ async def tool_sessions_spawn(
 
     Args:
         prompt: Task description / instructions for the sub-agent.
-        model: Model name from [models.*] config (default: primary).
         tools: Tool names to make available (default: all except denied).
         max_turns: Max agentic loop iterations (0 = use config default).
         timeout: Timeout per API call in seconds (0 = use config default).
@@ -135,13 +131,12 @@ async def tool_sessions_spawn(
         return "Error: Agent system not initialized"
 
     # Resolve defaults from config
-    model = model or _default_model
     max_turns = max_turns if max_turns > 0 else _default_max_turns
     timeout = timeout if timeout > 0 else _default_timeout
 
-    provider = _providers.get(model)
+    provider = _provider
     if provider is None:
-        return f"Error: No provider configured for model '{model}'"
+        return "Error: No provider configured"
 
     # Scope tools — always apply deny-list
     available = _tool_registry.get_schemas()
@@ -166,7 +161,7 @@ async def tool_sessions_spawn(
     start_time = time.time()
 
     # Extract cost tracking info for sub-agent
-    model_cfg = _config.model_config(model)
+    model_cfg = _config.model_config("primary")
     cost_db = str(_config.cost_db)
     model_name = model_cfg.get("model", "")
     cost_rates = model_cfg.get("cost_per_mtok", [])
@@ -213,7 +208,6 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "Task description / instructions for the sub-agent"},
-                "model": {"type": "string", "description": "Model name from config (default: primary)"},
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},

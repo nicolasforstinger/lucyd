@@ -343,7 +343,7 @@ def is_transient_error(exc: BaseException) -> bool:
     if cls_name in retryable:
         # APIStatusError: only retry 429 and 5xx
         status = getattr(exc, "status_code", None)
-        return not (status is not None and status < 429)
+        return status is None or status >= 429
 
     # Connection-level errors
     return isinstance(exc, (ConnectionError, OSError))

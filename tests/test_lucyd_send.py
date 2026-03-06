@@ -712,7 +712,6 @@ class TestNotifyFlag:
         assert "[AUTOMATED SYSTEM MESSAGE]" in msg["text"]
         assert "Invoice ready" in msg["text"]
         assert msg["sender"] == "cli"
-        assert msg["tier"] == "operational"
 
     def test_notify_with_source_and_ref(self, tmp_path):
         """--source and --ref bracket-prefixed in LLM text."""
@@ -801,8 +800,6 @@ class TestEvolveFlag:
         msg = json.loads(captured[0])
         assert msg["type"] == "system"
         assert msg["sender"] == "evolution"
-        assert msg["tier"] == "full"
-        assert msg["model"] == "primary"
         assert "evolution skill" in msg["text"]
 
     def test_evolve_precheck_skips_when_no_new_logs(self, tmp_path, capsys):
@@ -894,7 +891,6 @@ class TestEvolveFlag:
         assert len(captured) == 1
         msg = json.loads(captured[0])
         assert msg["sender"] == "evolution"
-        assert msg["model"] == "primary"
 
     def test_evolve_no_db_triggers_anyway(self, tmp_path):
         """--evolve with no memory DB still triggers (first run)."""
