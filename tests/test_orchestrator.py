@@ -2354,11 +2354,15 @@ class TestForcedCompact:
 
         compacted = []
 
+        captured_prompts = []
+
         async def fake_compact(sess, prov, prompt, **kwargs):
             compacted.append(True)
+            captured_prompts.append(prompt)
 
         daemon.session_mgr.compact_session = AsyncMock(side_effect=fake_compact)
-        daemon.config.compaction_prompt = "Compact this for {agent_name}."
+        daemon.config.compaction_prompt = "Compact for {agent_name}, limit {max_tokens}."
+        daemon.config.compaction_max_tokens = 2048
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop), \
              patch("tools.status.set_current_session"):
@@ -2368,6 +2372,8 @@ class TestForcedCompact:
             )
 
         assert len(compacted) == 1, "Compaction should fire despite under threshold"
+        assert "2048" in captured_prompts[0], "max_tokens placeholder should be resolved"
+        assert "{max_tokens}" not in captured_prompts[0], "placeholder should not remain raw"
 
     @pytest.mark.asyncio
     async def test_force_compact_does_not_auto_close(self, tmp_path):

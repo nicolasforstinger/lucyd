@@ -216,8 +216,10 @@ audit_truncation_limit = 500           # Max chars per message in audit log trun
 [behavior.compaction]
 threshold_tokens = 150000
 max_tokens = 2048                                  # Max output tokens for compaction summary
-prompt = """Summarize this conversation preserving all factual details, decisions,
-action items, and emotional context. Write as a dense narrative, not bullet points."""
+verify_enabled = true                              # Post-hoc verification (structural + grounding)
+verify_max_turn_labels = 3                         # Max dialogue turn patterns before rejection
+verify_grounding_threshold = 0.5                   # Min fraction of distinctive tokens grounded in source
+# prompt = "..."                                   # Custom compaction prompt (supports {agent_name}, {max_tokens})
 
 # ─── Logging ────────────────────────────────────────────────────
 

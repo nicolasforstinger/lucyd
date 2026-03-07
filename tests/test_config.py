@@ -604,3 +604,7 @@ class TestCompactionVerificationConfig:
     def test_compaction_prompt_includes_agent_name_placeholder(self, minimal_toml_data):
         cfg = Config(minimal_toml_data)
         assert "{agent_name}" in cfg.compaction_prompt
+
+    def test_compaction_prompt_includes_max_tokens_placeholder(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert "{max_tokens}" in cfg.compaction_prompt

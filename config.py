@@ -618,6 +618,7 @@ class Config:
             "3. NEVER reproduce individual message turns, timestamps, or \"user:\"/\"A:\" labels.\n"
             "4. NEVER invent, fabricate, or extend content beyond what appears in the transcript.\n"
             "5. If something was discussed, state WHAT was discussed and any conclusions reached.\n"
+            "6. Hard limit: {max_tokens} tokens. Your output WILL be cut off if you exceed this. Be concise.\n"
             "Preserve with full fidelity:\n"
             "- Emotional moments, relationship dynamics, things said with feeling\n"
             "- Decisions made and reasoning behind them\n"

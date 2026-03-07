@@ -1175,6 +1175,8 @@ class LucydDaemon:
         if _needs_compact:
             prompt = self.config.compaction_prompt.replace(
                 "{agent_name}", self.config.agent_name,
+            ).replace(
+                "{max_tokens}", str(self.config.compaction_max_tokens),
             )
             await self.session_mgr.compact_session(
                 session, provider, prompt,
