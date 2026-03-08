@@ -529,6 +529,60 @@ class TestCompactionEndToEnd:
         )
         assert len(session.messages) == 3  # summary + marker + 1 recent
 
+    @pytest.mark.asyncio
+    async def test_compact_skips_orphaned_tool_results(self, tmp_sessions):
+        """Compaction split must not leave tool_results without matching tool_use."""
+        session = Session("test-tool-boundary", tmp_sessions)
+        # Build: 8 user/assistant pairs + 1 tool exchange + 1 user/assistant
+        for i in range(8):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "tool_calls": [], "usage": {"input_tokens": 100, "output_tokens": 50},
+            })
+        # Tool exchange at positions 16-18
+        session.messages.append({
+            "role": "assistant", "text": "",
+            "tool_calls": [{"id": "tool_1", "name": "tts", "arguments": {"text": "hi"}}],
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
+        session.messages.append({
+            "role": "tool_results",
+            "results": [{"tool_call_id": "tool_1", "content": "sent"}],
+        })
+        session.messages.append({
+            "role": "assistant", "text": "done",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
+        # Final pair at 19-20
+        session.messages.append({"role": "user", "content": "last msg"})
+        session.messages.append({
+            "role": "assistant", "text": "last reply",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
+        # 21 messages total. keep_recent_pct=0.25 → split at int(21*0.75)=15
+        # Position 15 is an assistant (reply 7). No tool_results → split unchanged.
+        # But if we force split to land on tool_results (index 17):
+        # keep_recent_pct such that split = 17 → 17/21 = 0.81 → 1-pct = 0.19
+        # split_point = int(21 * 0.81) = 17 → message[17] is tool_results
+        mgr = SessionManager(tmp_sessions)
+        mock_provider = MockCompactionProvider(summary_text="Summary.")
+
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.", keep_recent_pct=0.19,
+        )
+        # Split should skip past tool_results at index 17 to index 18 (assistant)
+        # old=18, recent=3 → summary + marker + 3 = 5
+        # Verify no tool_results in first position of recent messages
+        assert session.messages[0]["content"].startswith("[Previous conversation summary]")
+        for msg in session.messages[2:]:
+            if msg.get("role") == "tool_results":
+                # Any remaining tool_results must have a preceding assistant with tool_use
+                idx = session.messages.index(msg)
+                prev = session.messages[idx - 1]
+                assert prev.get("role") == "assistant"
+                assert prev.get("tool_calls"), "tool_results without preceding tool_use"
+
 
 class TestCompactionRoundTrip:
     """End-to-end compaction: real Session, mock only the LLM provider."""

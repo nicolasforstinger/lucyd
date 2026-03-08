@@ -470,6 +470,15 @@ class SessionManager:
         # Summarize older messages, keep newest fraction verbatim
         keep_pct = max(0.05, min(0.9, keep_recent_pct))
         split_point = int(len(session.messages) * (1 - keep_pct))
+
+        # Ensure split doesn't orphan tool_results — each tool_result
+        # needs a matching tool_use in the preceding assistant message.
+        # After compaction, the preceding message is a user (marker), so
+        # any tool_results at the boundary would break the API contract.
+        while (split_point < len(session.messages) - 1
+               and session.messages[split_point].get("role") == "tool_results"):
+            split_point += 1
+
         old_messages = session.messages[:split_point]
         recent_messages = session.messages[split_point:]
 

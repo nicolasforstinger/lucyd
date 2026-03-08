@@ -5,10 +5,35 @@ Nothing touches ~/.lucyd/ or the running daemon.
 """
 
 import multiprocessing
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+
+# ─── Force-exit after session completes ──────────────────────────
+# pytest-asyncio leaves a non-daemon thread alive after all tests pass,
+# preventing the process from exiting.  os._exit() after pytest's own
+# exit hooks have run is the only reliable fix.
+
+_pytest_exit_code = 0
+
+
+def pytest_sessionfinish(session, exitstatus):
+    global _pytest_exit_code
+    _pytest_exit_code = exitstatus
+
+
+def pytest_unconfigure(config):
+    """Force-exit to avoid hanging on stale asyncio threads.
+
+    pytest_unconfigure is the last hook — all output (including the
+    summary line) has been written by this point.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_pytest_exit_code)
 
 # Add project root to path so imports work
 _root = Path(__file__).parent.parent
