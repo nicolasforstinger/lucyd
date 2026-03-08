@@ -32,6 +32,8 @@ _resolve_contact_name = lucyd_send._resolve_contact_name
 _is_uuid = lucyd_send._is_uuid
 _session_log_info = lucyd_send._session_log_info
 show_history = lucyd_send.show_history
+show_status = lucyd_send.show_status
+show_log = lucyd_send.show_log
 
 
 # ─── Fixtures ────────────────────────────────────────────────────
@@ -711,7 +713,7 @@ class TestNotifyFlag:
         assert msg["type"] == "system"
         assert "[AUTOMATED SYSTEM MESSAGE]" in msg["text"]
         assert "Invoice ready" in msg["text"]
-        assert msg["sender"] == "cli"
+        assert msg["sender"] == "system"
 
     def test_notify_with_source_and_ref(self, tmp_path):
         """--source and --ref bracket-prefixed in LLM text."""
@@ -971,3 +973,236 @@ class TestCompactFlag:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 1
+
+
+# ─── Validation Tests ────────────────────────────────────────────
+
+
+class TestValidation:
+    """Tests for modifier-flag-without-parent validation."""
+
+    def test_attach_without_message_type_exits(self, tmp_path, monkeypatch):
+        """--attach without --message/--system/--notify exits with error."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("data")
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--attach", str(test_file),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
+
+    def test_source_without_notify_exits(self, tmp_path, monkeypatch):
+        """--source without --notify exits with error."""
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--message", "hi", "--source", "n8n",
+            "--state-dir", str(tmp_path),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
+
+    def test_ref_without_notify_exits(self, tmp_path, monkeypatch):
+        """--ref without --notify exits with error."""
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--message", "hi", "--ref", "INV-1",
+            "--state-dir", str(tmp_path),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
+
+    def test_data_without_notify_exits(self, tmp_path, monkeypatch):
+        """--data without --notify exits with error."""
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--message", "hi", "--data", '{"k":1}',
+            "--state-dir", str(tmp_path),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
+
+    def test_force_without_evolve_exits(self, tmp_path, monkeypatch):
+        """--force without --evolve exits with error."""
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--message", "hi", "--force",
+            "--state-dir", str(tmp_path),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
+
+    def test_full_without_history_exits(self, tmp_path, monkeypatch):
+        """--full without --history exits with error."""
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--message", "hi", "--full",
+            "--state-dir", str(tmp_path),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
+
+    def test_notify_with_source_accepted(self, tmp_path, monkeypatch):
+        """--source with --notify is valid (no validation error)."""
+        fifo = tmp_path / "control.pipe"
+        os.mkfifo(str(fifo))
+
+        import threading
+
+        def reader():
+            with open(str(fifo)) as f:
+                f.read()
+
+        t = threading.Thread(target=reader)
+        t.start()
+        time.sleep(0.05)
+
+        monkeypatch.setattr("sys.argv", [
+            "lucyd-send", "--notify", "test", "--source", "n8n",
+            "--state-dir", str(tmp_path),
+        ])
+        main()  # Should not raise
+        t.join(timeout=2)
+
+
+# ─── System --from Tests ─────────────────────────────────────────
+
+
+class TestSystemFromFlag:
+    """Tests for --system with --from override."""
+
+    def _send_system_via_fifo(self, tmp_path, extra_args=None):
+        """Helper: capture FIFO message from --system invocation."""
+        fifo_path = tmp_path / "control.pipe"
+        os.mkfifo(str(fifo_path))
+
+        import threading
+
+        captured = []
+
+        def reader():
+            with open(str(fifo_path)) as f:
+                captured.append(f.read())
+
+        t = threading.Thread(target=reader)
+        t.start()
+        time.sleep(0.05)
+
+        argv = ["lucyd-send", "--system", "diagnostics",
+                "--state-dir", str(tmp_path)]
+        if extra_args:
+            argv.extend(extra_args)
+
+        with patch("sys.argv", argv):
+            main()
+
+        t.join(timeout=2)
+        assert len(captured) == 1
+        return json.loads(captured[0])
+
+    def test_system_default_sender(self, tmp_path):
+        """--system without --from uses sender 'system'."""
+        msg = self._send_system_via_fifo(tmp_path)
+        assert msg["sender"] == "system"
+
+    def test_system_with_from_overrides_sender(self, tmp_path):
+        """--system --from Claudio uses sender 'Claudio'."""
+        msg = self._send_system_via_fifo(tmp_path, ["--from", "Claudio"])
+        assert msg["sender"] == "Claudio"
+
+
+# ─── Status Tests ────────────────────────────────────────────────
+
+
+class TestStatusFlag:
+    """Tests for --status / show_status()."""
+
+    def test_status_not_running(self, tmp_path, capsys):
+        """No PID file shows 'not running'."""
+        with patch.object(lucyd_send, '_load_config', return_value={}):
+            show_status(tmp_path)
+        out = capsys.readouterr().out
+        assert "not running" in out
+
+    def test_status_stale_pid(self, tmp_path, capsys):
+        """Stale PID shows 'not running' with PID info."""
+        (tmp_path / "lucyd.pid").write_text("99999999")
+        with patch.object(lucyd_send, '_load_config', return_value={}):
+            show_status(tmp_path)
+        out = capsys.readouterr().out
+        assert "not running" in out
+        assert "99999999" in out
+
+    def test_status_running(self, tmp_path, capsys):
+        """Current PID shows running status with details."""
+        pid_path = tmp_path / "lucyd.pid"
+        pid_path.write_text(str(os.getpid()))
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        (sessions_dir / "sessions.json").write_text(
+            json.dumps({"a": {"session_id": "s1"}, "b": {"session_id": "s2"}})
+        )
+
+        with patch.object(lucyd_send, '_load_config', return_value={
+            "agent": {"name": "TestBot"},
+            "channel": {"type": "telegram"},
+            "models": {"primary": {"model": "test-model"}},
+        }):
+            show_status(tmp_path)
+
+        out = capsys.readouterr().out
+        assert "running" in out
+        assert str(os.getpid()) in out
+        assert "TestBot" in out
+        assert "telegram" in out
+        assert "test-model" in out
+
+
+# ─── Log Tests ───────────────────────────────────────────────────
+
+
+class TestLogFlag:
+    """Tests for --log / show_log()."""
+
+    def test_log_no_file_exits(self, tmp_path):
+        """--log with no log file exits with error."""
+        with pytest.raises(SystemExit) as exc_info:
+            show_log(tmp_path)
+        assert exc_info.value.code == 1
+
+    def test_log_empty_file(self, tmp_path, capsys):
+        """--log with empty file shows empty message."""
+        (tmp_path / "lucyd.log").write_text("")
+        show_log(tmp_path)
+        out = capsys.readouterr().out
+        assert "empty" in out.lower()
+
+    def test_log_default_20_lines(self, tmp_path, capsys):
+        """--log with no argument shows last 20 lines."""
+        lines = [f"2026-03-08 10:00:{i:02d} [INFO] test: line {i}" for i in range(50)]
+        (tmp_path / "lucyd.log").write_text("\n".join(lines) + "\n")
+        show_log(tmp_path, 20)
+        out = capsys.readouterr().out
+        output_lines = [ln for ln in out.strip().split("\n") if ln]
+        assert len(output_lines) == 20
+        assert "line 49" in output_lines[-1]
+        assert "line 30" in output_lines[0]
+
+    def test_log_custom_count(self, tmp_path, capsys):
+        """--log 5 shows exactly 5 lines."""
+        lines = [f"line {i}" for i in range(10)]
+        (tmp_path / "lucyd.log").write_text("\n".join(lines) + "\n")
+        show_log(tmp_path, 5)
+        out = capsys.readouterr().out
+        output_lines = [ln for ln in out.strip().split("\n") if ln]
+        assert len(output_lines) == 5
+        assert "line 9" in output_lines[-1]
+
+    def test_log_fewer_lines_than_requested(self, tmp_path, capsys):
+        """--log 100 with only 3 lines shows all 3."""
+        (tmp_path / "lucyd.log").write_text("a\nb\nc\n")
+        show_log(tmp_path, 100)
+        out = capsys.readouterr().out
+        output_lines = [ln for ln in out.strip().split("\n") if ln]
+        assert len(output_lines) == 3

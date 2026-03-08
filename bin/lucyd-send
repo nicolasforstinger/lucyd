@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-"""lucyd-send — inject messages into the running Lucyd daemon via FIFO.
+"""lucyd-send — Lucyd daemon CLI for injecting messages and querying state.
 
-Usage:
+Send:
     lucyd-send --message "Hello"                    # User message
     lucyd-send --message "Question" --from Claudio  # Message from named sender
     lucyd-send --system "Run diagnostics"           # System event
-    lucyd-send --system "Health check"
-    lucyd-send --notify "Invoice ready" --source n8n --ref INV-42  # Fire-and-forget notification
-    lucyd-send --evolve                             # Trigger memory evolution (with pre-check)
-    lucyd-send --evolve --force                     # Force evolution (skip pre-check)
-    lucyd-send --compact                            # Force diary write + compaction
-    lucyd-send --cost today                         # Query today's cost
-    lucyd-send --sessions                           # List active sessions
+    lucyd-send --notify "Invoice ready" --source n8n --ref INV-42
+    lucyd-send --evolve                             # Trigger memory evolution
+    lucyd-send --evolve --force                     # Skip pre-check
+    lucyd-send --compact                            # Force diary + compaction
+
+Query:
+    lucyd-send --status                             # Daemon status
+    lucyd-send --cost today                         # Cost report
+    lucyd-send --sessions                           # Active sessions
+    lucyd-send --monitor                            # Agentic loop state
+    lucyd-send --history Nicolas                    # Session transcript
+    lucyd-send --log 50                             # Last 50 log lines
+
+Reset:
     lucyd-send --reset                              # Reset ALL sessions
     lucyd-send --reset system                       # Reset system session
-    lucyd-send --reset user                         # Reset user session
-    lucyd-send --reset <session-uuid>               # Reset session by ID
+    lucyd-send --reset <session-uuid>               # Reset by ID
 """
 
 import argparse
@@ -27,6 +33,7 @@ import re
 import sys
 import time
 import tomllib
+from collections import deque
 from pathlib import Path
 
 # Add project root to path so we can import from the package (config, etc.)
@@ -305,6 +312,105 @@ def show_monitor(state_dir: Path, agent_name: str = "Lucy") -> None:
         print(stale_warning)
 
 
+def show_status(state_dir: Path) -> None:
+    """Show daemon status from state files (no daemon connection needed)."""
+    pid_path = state_dir / "lucyd.pid"
+
+    # PID + running check
+    pid = None
+    running = False
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text().strip())
+            os.kill(pid, 0)
+            running = True
+        except (ValueError, ProcessLookupError):
+            pass
+        except PermissionError:
+            running = True  # Process exists, different user
+
+    config = _load_config()
+    agent_name = config.get("agent", {}).get("name", "Lucyd")
+
+    if not running:
+        print(f"{agent_name} \u2014 not running")
+        if pid is not None:
+            print(f"  Stale PID: {pid}")
+        return
+
+    # Uptime from PID file mtime (written at daemon startup)
+    uptime_str = "unknown"
+    try:
+        create_time = pid_path.stat().st_mtime
+        uptime_secs = int(time.time() - create_time)
+        hours, remainder = divmod(uptime_secs, 3600)
+        minutes, _ = divmod(remainder, 60)
+        if hours > 0:
+            uptime_str = f"{hours}h {minutes}m"
+        else:
+            uptime_str = f"{minutes}m"
+    except OSError:
+        pass
+
+    channel = config.get("channel", {}).get("type", "unknown")
+    model = config.get("models", {}).get("primary", {}).get("model", "unknown")
+
+    # Active sessions
+    sessions_file = state_dir / "sessions" / "sessions.json"
+    active_sessions = 0
+    if sessions_file.exists():
+        try:
+            with open(sessions_file, encoding="utf-8") as f:
+                index = json.load(f)
+            active_sessions = len(index)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Today's cost
+    today_cost = 0.0
+    cost_db = state_dir / "cost.db"
+    if cost_db.exists():
+        try:
+            from agentic import cost_db_query
+            from config import today_start_ts
+
+            rows = cost_db_query(
+                str(cost_db),
+                "SELECT SUM(cost_usd) FROM costs WHERE timestamp >= ?",
+                (today_start_ts(),),
+            )
+            if rows and rows[0][0]:
+                today_cost = rows[0][0]
+        except Exception:
+            pass
+
+    print(f"{agent_name} \u2014 running (PID {pid})")
+    print("\u2500" * 40)
+    print(f"  Uptime:     {uptime_str}")
+    print(f"  Channel:    {channel}")
+    print(f"  Model:      {model}")
+    print(f"  Sessions:   {active_sessions}")
+    print(f"  Today cost: ${today_cost:.4f}")
+
+
+def show_log(state_dir: Path, lines: int = 20) -> None:
+    """Show last N lines of the daemon log file."""
+    log_path = state_dir / "lucyd.log"
+    if not log_path.exists():
+        print("No log file found.", file=sys.stderr)
+        sys.exit(1)
+
+    with open(log_path, encoding="utf-8", errors="replace") as f:
+        tail = deque(f, maxlen=lines)
+
+    if not tail:
+        print("Log file is empty.")
+        return
+
+    for line in tail:
+        print(line, end="")
+
+
 def list_sessions(state_dir: Path) -> None:
     """List all active sessions with context, cost, and log info."""
     sessions_dir = state_dir / "sessions"
@@ -513,34 +619,70 @@ def show_history(state_dir: Path, target: str, full: bool = False) -> None:
 # ─── Main ─────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Send messages to Lucyd daemon")
-    parser.add_argument("-m", "--message", help="User message to inject")
-    parser.add_argument("-s", "--system", help="System event to inject")
-    parser.add_argument("-n", "--notify", help="Fire-and-forget notification (matches HTTP /notify)")
-    parser.add_argument("--source", help="Notification source label (with --notify)")
-    parser.add_argument("--ref", help="Notification reference (with --notify)")
-    parser.add_argument("--data", help="Notification metadata as JSON (with --notify, not in LLM text)")
-    parser.add_argument("--evolve", action="store_true", help="Trigger memory evolution")
-    parser.add_argument("--force", action="store_true", help="Skip pre-check (with --evolve)")
-    parser.add_argument("--compact", action="store_true", help="Force diary write + compaction on primary session")
-    parser.add_argument("--cost", nargs="?", const="today", help="Query cost (today/week/all)")
-    parser.add_argument("--sessions", action="store_true", help="List active sessions")
-    parser.add_argument("--monitor", action="store_true", help="Show live API call monitor state")
-    parser.add_argument("--from", dest="sender", metavar="NAME", help="Sender name for --message (default: 'cli')")
-    parser.add_argument("--reset", nargs="?", const="__all__", metavar="TARGET",
-                        help="Reset session by sender name or UUID; no argument resets all")
-    parser.add_argument("-a", "--attach", action="append", metavar="FILE",
-                        help="Attach a file (repeatable); requires --message, --system, or --notify")
-    parser.add_argument("--history", nargs="?", const="__default__", metavar="CONTACT_OR_ID",
-                        help="Show session history for a contact or session ID")
-    parser.add_argument("--full", action="store_true",
-                        help="Include all events in --history (tool calls, metadata)")
-    parser.add_argument("--state-dir", default="~/.lucyd", help="Lucyd state directory")
+    parser = argparse.ArgumentParser(
+        prog="lucyd-send",
+        description="Lucyd daemon CLI \u2014 inject messages and query state",
+    )
+
+    send = parser.add_argument_group("Send", "Inject into daemon (requires running daemon)")
+    send.add_argument("-m", "--message", metavar="TEXT", help="User message to inject")
+    send.add_argument("-s", "--system", metavar="TEXT", help="System event to inject")
+    send.add_argument("-n", "--notify", metavar="TEXT",
+                      help="Fire-and-forget notification (matches HTTP /notify)")
+    send.add_argument("--evolve", action="store_true", help="Trigger memory evolution")
+    send.add_argument("--compact", action="store_true",
+                      help="Force diary write + compaction on primary session")
+    send.add_argument("--reset", nargs="?", const="__all__", metavar="TARGET",
+                      help="Reset session by name or UUID; no argument resets all")
+
+    query = parser.add_argument_group("Query", "Read-only (no daemon needed)")
+    query.add_argument("--status", action="store_true", help="Show daemon status")
+    query.add_argument("--cost", nargs="?", const="today", metavar="PERIOD",
+                       help="Query cost (today/week/all)")
+    query.add_argument("--sessions", action="store_true", help="List active sessions")
+    query.add_argument("--monitor", action="store_true", help="Show agentic loop state")
+    query.add_argument("--history", nargs="?", const="__default__", metavar="TARGET",
+                       help="Show session history for a contact or session ID")
+    query.add_argument("--log", nargs="?", const=20, type=int, metavar="N",
+                       help="Show last N lines of daemon log (default: 20)")
+
+    opts = parser.add_argument_group("Options")
+    opts.add_argument("--from", dest="sender", metavar="NAME",
+                      help="Sender name (default: 'cli' for --message, 'system' for --system/--notify)")
+    opts.add_argument("--source", metavar="SOURCE",
+                      help="Notification source label (requires --notify)")
+    opts.add_argument("--ref", metavar="REF",
+                      help="Notification reference (requires --notify)")
+    opts.add_argument("--data", metavar="JSON",
+                      help="Notification metadata as JSON (requires --notify, not in LLM text)")
+    opts.add_argument("--force", action="store_true",
+                      help="Skip pre-check (requires --evolve)")
+    opts.add_argument("--full", action="store_true",
+                      help="Include tool calls and system events (requires --history)")
+    opts.add_argument("-a", "--attach", action="append", metavar="FILE",
+                      help="Attach file(s) (repeatable; requires --message, --system, or --notify)")
+    opts.add_argument("--state-dir", default="~/.lucyd", metavar="PATH",
+                      help="Lucyd state directory")
+
     args = parser.parse_args()
 
     state_dir = Path(args.state_dir).expanduser()
 
-    # Filesystem-only commands (no daemon needed)
+    # ── Validate modifier flags ──────────────────────────────────
+    if args.attach and not (args.message or args.system or args.notify):
+        parser.error("--attach requires --message, --system, or --notify")
+    if (args.source or args.ref or args.data) and not args.notify:
+        parser.error("--source, --ref, and --data require --notify")
+    if args.force and not args.evolve:
+        parser.error("--force requires --evolve")
+    if args.full and args.history is None:
+        parser.error("--full requires --history")
+
+    # ── Query commands (no daemon needed) ────────────────────────
+    if args.status:
+        show_status(state_dir)
+        return
+
     if args.cost is not None:
         query_cost(state_dir / "cost.db", args.cost)
         return
@@ -553,6 +695,10 @@ def main():
         config = _load_config()
         agent_name = config.get("agent", {}).get("name", "Lucy")
         show_monitor(state_dir, agent_name=agent_name)
+        return
+
+    if args.log is not None:
+        show_log(state_dir, args.log)
         return
 
     if args.history is not None:
@@ -665,7 +811,7 @@ def main():
         send_to_fifo(fifo_path, msg)
         print("Message sent.")
     elif args.system:
-        msg = {"type": "system", "text": f"[AUTOMATED SYSTEM MESSAGE] {args.system}", "sender": "system"}
+        msg = {"type": "system", "text": f"[AUTOMATED SYSTEM MESSAGE] {args.system}", "sender": args.sender or "system"}
         if attach_list:
             msg["attachments"] = attach_list
         send_to_fifo(fifo_path, msg)
@@ -682,7 +828,7 @@ def main():
         msg = {
             "type": "system",
             "text": " ".join(text_parts),
-            "sender": args.sender or "cli",
+            "sender": args.sender or "system",
         }
 
         # Build notify_meta (passed through to webhook, not in LLM text)
