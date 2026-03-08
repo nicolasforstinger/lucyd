@@ -662,6 +662,15 @@ class Config:
     def verify_grounding_threshold(self) -> float:
         return float(_deep_get(self._data, "behavior", "compaction", "verify_grounding_threshold", default=0.5))
 
+    @property
+    def primary_sender(self) -> str:
+        """Primary session sender for notification routing.
+
+        When set, notifications route to this sender's session instead of
+        creating throwaway system sessions.  Empty = disabled (default).
+        """
+        return _deep_get(self._data, "behavior", "primary_sender", default="")
+
     # --- Paths ---
 
     @property

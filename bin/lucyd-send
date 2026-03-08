@@ -829,6 +829,7 @@ def main():
             "type": "system",
             "text": " ".join(text_parts),
             "sender": args.sender or "system",
+            "notify": True,
         }
 
         # Build notify_meta (passed through to webhook, not in LLM text)

@@ -424,6 +424,20 @@ class TestNotify:
         assert item["notify_meta"]["data"]["from"] == "bob@test.com"
 
     @pytest.mark.asyncio
+    async def test_notify_flag_on_queue_item(self, api, queue, auth_headers):
+        """Queue item from /notify includes notify=True for primary_sender routing."""
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            await client.post(
+                "/api/v1/notify",
+                headers=auth_headers,
+                json={"message": "tweet summary"},
+            )
+
+        item = queue.get_nowait()
+        assert item.get("notify") is True
+
+    @pytest.mark.asyncio
     async def test_no_source_no_ref(self, api, queue, auth_headers):
         """Message without source/ref has no brackets in text."""
         app = _make_app(api)

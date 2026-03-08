@@ -350,6 +350,7 @@ class HTTPApi:
             "type": "system",
             "text": f"[AUTOMATED SYSTEM MESSAGE] {text}",
             "notify_meta": notify_meta or None,
+            "notify": True,
         }
         if attachments:
             queue_item["attachments"] = attachments

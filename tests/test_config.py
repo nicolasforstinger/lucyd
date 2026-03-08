@@ -490,6 +490,19 @@ class TestBehaviorAuditTruncation:
         assert cfg.audit_truncation_limit == 1000
 
 
+class TestPrimarySender:
+    """Primary sender config for notification routing."""
+
+    def test_default_empty(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.primary_sender == ""
+
+    def test_from_config(self, minimal_toml_data):
+        minimal_toml_data.setdefault("behavior", {})["primary_sender"] = "Nicolas"
+        cfg = Config(minimal_toml_data)
+        assert cfg.primary_sender == "Nicolas"
+
+
 class TestWebTimeouts:
     """Web search/fetch timeout config."""
 

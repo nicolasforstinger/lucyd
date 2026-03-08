@@ -767,6 +767,11 @@ class TestNotifyFlag:
         msg = self._send_notify_via_fifo(tmp_path)
         assert "notify_meta" not in msg
 
+    def test_notify_flag_set(self, tmp_path):
+        """--notify sets notify=True for primary_sender routing."""
+        msg = self._send_notify_via_fifo(tmp_path)
+        assert msg.get("notify") is True
+
 
 # ─── Evolve Flag Tests ───────────────────────────────────────────
 
@@ -1109,6 +1114,11 @@ class TestSystemFromFlag:
         """--system --from Claudio uses sender 'Claudio'."""
         msg = self._send_system_via_fifo(tmp_path, ["--from", "Claudio"])
         assert msg["sender"] == "Claudio"
+
+    def test_system_no_notify_flag(self, tmp_path):
+        """--system does NOT set notify flag (only --notify does)."""
+        msg = self._send_system_via_fifo(tmp_path)
+        assert msg.get("notify") is not True
 
 
 # ─── Status Tests ────────────────────────────────────────────────

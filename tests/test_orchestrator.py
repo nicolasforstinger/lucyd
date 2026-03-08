@@ -104,6 +104,8 @@ def _make_daemon(tmp_path):
     daemon.session_mgr.get_or_create = MagicMock(return_value=session)
     daemon.session_mgr.build_recall = MagicMock(return_value="")
     daemon.session_mgr.close_session = AsyncMock(return_value=True)
+    daemon.session_mgr._sessions = {}
+    daemon.session_mgr._index = {}
 
     daemon.context_builder = MagicMock()
     daemon.context_builder.build = MagicMock(return_value=[])
@@ -139,6 +141,7 @@ def _make_daemon(tmp_path):
     daemon.config.compaction_prompt = "Compact this."
     daemon.config.agent_name = "TestAgent"
     daemon.config.consolidation_enabled = False
+    daemon.config.primary_sender = ""
 
     return daemon, provider, session
 
@@ -2198,6 +2201,110 @@ class TestAutoCloseSystemSessions:
         # System sessions must auto-close even on error — otherwise they
         # accumulate messages and blow past context limits on next trigger.
         daemon.session_mgr.close_session.assert_awaited_once_with("evolution")
+
+
+# ─── Primary Sender Routing ─────────────────────────────────────
+
+
+class TestPrimarySenderRouting:
+    """Notifications route to primary session when primary_sender is configured."""
+
+    @pytest.mark.asyncio
+    async def test_notify_to_preexisting_session_no_autoclose(self, tmp_path):
+        """Notification routed to pre-existing primary session must NOT auto-close."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        # Pre-existing session
+        daemon.session_mgr._sessions = {"Nicolas": session}
+        daemon.session_mgr._index = {"Nicolas": {"session_id": session.id}}
+        response = _make_response(text="processed")
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop), \
+             patch("tools.status.set_current_session"):
+            await daemon._process_message(
+                text="[AUTOMATED SYSTEM MESSAGE] New tweet",
+                sender="Nicolas", source="system",
+            )
+
+        daemon.session_mgr.close_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fresh_system_session_still_autoclosed(self, tmp_path):
+        """System events creating fresh sessions still auto-close."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        # No pre-existing sessions
+        daemon.session_mgr._sessions = {}
+        daemon.session_mgr._index = {}
+        response = _make_response(text="done")
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop), \
+             patch("tools.status.set_current_session"):
+            await daemon._process_message(
+                text="evolve", sender="evolution", source="system",
+            )
+
+        daemon.session_mgr.close_session.assert_called_once_with("evolution")
+
+    @pytest.mark.asyncio
+    async def test_error_path_no_autoclose_on_preexisting(self, tmp_path):
+        """Error path: pre-existing session NOT auto-closed."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.session_mgr._sessions = {"Nicolas": session}
+        daemon.session_mgr._index = {"Nicolas": {"session_id": session.id}}
+
+        async def fake_loop(**kwargs):
+            raise RuntimeError("API down")
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop), \
+             patch("tools.status.set_current_session"):
+            await daemon._process_message(
+                text="[AUTOMATED SYSTEM MESSAGE] notification",
+                sender="Nicolas", source="system",
+            )
+
+        daemon.session_mgr.close_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_error_path_fresh_session_still_autoclosed(self, tmp_path):
+        """Error path: fresh system session still auto-closed."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.session_mgr._sessions = {}
+        daemon.session_mgr._index = {}
+
+        async def fake_loop(**kwargs):
+            raise RuntimeError("API down")
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop), \
+             patch("tools.status.set_current_session"):
+            await daemon._process_message(
+                text="evolve", sender="evolution", source="system",
+            )
+
+        daemon.session_mgr.close_session.assert_awaited_once_with("evolution")
+
+    @pytest.mark.asyncio
+    async def test_telegram_source_unaffected(self, tmp_path):
+        """Telegram messages never auto-close regardless of pre-existence."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.session_mgr._sessions = {"Nicolas": session}
+        daemon.session_mgr._index = {"Nicolas": {"session_id": session.id}}
+        response = _make_response(text="hello")
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("lucyd.run_agentic_loop", side_effect=fake_loop), \
+             patch("tools.status.set_current_session"):
+            await daemon._process_message(
+                text="hi", sender="Nicolas", source="telegram",
+            )
+
+        daemon.session_mgr.close_session.assert_not_called()
 
 
 # ─── Image Caption Enrichment ────────────────────────────────────

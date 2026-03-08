@@ -798,6 +798,13 @@ class LucydDaemon:
                     else:
                         text = (text + "\n" if text else "") + f"[attachment: {att.filename or 'file'}, {att.content_type}]"
 
+        # Track whether session pre-existed (for auto-close decision).
+        # Notifications routed to the primary session must not close it.
+        session_preexisted = (
+            sender in self.session_mgr._sessions
+            or sender in self.session_mgr._index
+        )
+
         # Get or create session
         session = self.session_mgr.get_or_create(sender)
 
@@ -1049,8 +1056,9 @@ class LucydDaemon:
                 silent=False, tokens={"input": 0, "output": 0},
                 notify_meta=notify_meta, trace_id=trace_id,
             )
-            # Auto-close system sessions even on error
-            if source == "system":
+            # Auto-close system sessions even on error — but only if the
+            # session was created by this event (not a pre-existing session).
+            if source == "system" and not session_preexisted:
                 try:
                     await self.session_mgr.close_session(sender)
                     log.info("Auto-closed system session for %s", sender)
@@ -1192,11 +1200,12 @@ class LucydDaemon:
                 verify_grounding_threshold=self.config.verify_grounding_threshold,
             )
 
-        # Auto-close one-shot system sessions (evolution, heartbeat, /notify).
-        # System-sourced messages are fire-and-forget — no operator on the
-        # other end, so the session would linger in the index indefinitely.
-        # Skip auto-close on force_compact — the primary session stays open.
-        if source == "system" and not force_compact:
+        # Auto-close one-shot system sessions (evolution, heartbeat).
+        # System-sourced messages creating fresh sessions are fire-and-forget —
+        # no operator on the other end, so the session would linger indefinitely.
+        # Skip for pre-existing sessions (notifications routed to primary session)
+        # and for force_compact (primary session stays open).
+        if source == "system" and not force_compact and not session_preexisted:
             try:
                 await self.session_mgr.close_session(sender)
                 log.info("Auto-closed system session for %s", sender)
@@ -1629,6 +1638,10 @@ class LucydDaemon:
                 text = item.get("text", "")
                 attachments = item.get("attachments")
                 notify_meta = item.get("notify_meta")
+
+                # Route notifications to primary session when configured
+                if item.get("notify") and self.config.primary_sender:
+                    sender = self.config.primary_sender
             else:
                 continue
 
