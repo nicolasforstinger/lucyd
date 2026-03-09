@@ -81,8 +81,14 @@ confidence_threshold = 0.6
 # [memory.maintenance]
 # stale_threshold_days = 90
 
-# Evolution is driven entirely through the skill system (lucyd-send --evolve).
-# Evolution config lives in the workspace skill, not in lucyd.toml.
+[memory.evolution]
+enabled = true
+# model = "primary"                    # Model role (default: "primary")
+files = ["MEMORY.md", "USER.md"]       # Workspace files to evolve (order matters)
+anchor_file = "IDENTITY.md"            # Identity anchor — read but never modified
+# max_log_chars = 80000                # Max chars of daily logs fed to evolution
+# max_facts = 50                       # Max structured facts in context
+# max_episodes = 20                    # Max episodes in context
 
 [memory.recall]
 decay_rate = 0.03              # Exponential decay factor for fact relevance scoring (higher = faster decay)
@@ -212,6 +218,8 @@ api_retry_base_delay = 2.0             # Initial backoff delay for API retries (
 message_retries = 2                    # Message-level retries on persistent failure
 message_retry_base_delay = 30          # Base delay between message retries (seconds)
 audit_truncation_limit = 500           # Max chars per message in audit log truncation
+# primary_sender = "YourContact"       # Route all notifications to this sender's session (default: "" = disabled)
+# passive_notify_refs = []             # Notification refs buffered passively without LLM calls (default: [])
 
 [behavior.compaction]
 threshold_tokens = 150000

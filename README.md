@@ -47,11 +47,10 @@ Lucyd is an agentic daemon — it connects to a messaging channel, receives mess
 - **Persistent sessions** — JSONL audit trail + atomic state snapshots, survives restarts
 - **Long-term memory** — SQLite FTS5 + vector similarity search (OpenAI embeddings)
 - **Structured memory** — Entity-attribute-value facts, episodes, commitments with confidence scoring and automatic consolidation from sessions
-- **Context tiers** — Stable/semi-stable/dynamic cache tiers for prompt caching optimization
-- **Compaction** — Automatic conversation summarization when context fills up
+- **Compaction** — Automatic conversation summarization when context fills up, with post-hoc verification (structural + entity grounding) to reject fabricated summaries
 - **Skill system** — Markdown skill files with YAML frontmatter, loaded on demand
 - **Cost tracking** — Per-model token cost recording in SQLite
-- **Sub-agents** — Spawn focused sub-sessions with scoped tools and cheaper models
+- **Sub-agents** — Spawn focused sub-sessions with scoped tools and configurable deny-lists
 - **Text-to-speech** — ElevenLabs TTS with optional channel delivery
 - **HTTP REST API** — Optional REST endpoints for external integrations (n8n, scripts, webhooks)
 - **Voice transcription** — Automatic Whisper transcription of voice messages
@@ -59,11 +58,14 @@ Lucyd is an agentic daemon — it connects to a messaging channel, receives mess
 - **Scheduled messages** — Queue messages for future delivery
 - **Live monitoring** — Real-time agentic loop state via `lucyd-send --monitor`
 - **Memory evolution** — Daily rewriting of workspace understanding files, anchored against a static identity file. Self-driven via agent's agentic loop with full persona context
+- **Passive telemetry buffer** — High-frequency notifications buffered by `ref` key without triggering LLM calls. Latest value per ref injected as `[telemetry: ...]` context on the next real message. Priority bypass for urgent notifications
+- **Primary sender routing** — Route all notifications to a named sender's session instead of creating throwaway sessions per source
 - **Modular providers** — Swap LLM providers by editing a load list, no model config changes
+- **Plugin system** — Drop `.py` files in `plugins.d/` for custom tools. Signature-injected configuration, isolated failure
 
 ## Project Structure
 
-Top-level modules: `lucyd.py` (daemon entry point), `agentic.py` (tool-use loop), `config.py`, `context.py`, `session.py`, `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `synthesis.py`, `evolution.py` (memory evolution). Subdirectories: `channels/` (Telegram, CLI, HTTP API), `providers/` (Anthropic, OpenAI-compatible), `tools/` (19 agent tools), `bin/` (CLI utilities), `workspace.example/` (starter template). See [architecture](docs/architecture.md#module-map) for the full module map.
+Top-level modules: `lucyd.py` (daemon entry point), `agentic.py` (tool-use loop), `config.py`, `context.py`, `session.py`, `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `synthesis.py`, `evolution.py` (memory evolution), `stt.py` (speech-to-text), `verification.py` (compaction verification). Subdirectories: `channels/` (Telegram, CLI, HTTP API), `providers/` (Anthropic, OpenAI-compatible), `tools/` (19 agent tools), `plugins.d/` (custom tool plugins), `bin/` (CLI utilities), `providers.d/` (provider configs). See [architecture](docs/architecture.md#module-map) for the full module map.
 
 ## Configuration
 
@@ -108,7 +110,7 @@ Lucyd connects to the Telegram Bot API directly via httpx long polling. No exter
 
 ## Testing
 
-**1684 tests**, all passing. Five testing strategies:
+**~1725 tests**, all passing. Five testing strategies:
 
 ```bash
 # Run the full suite

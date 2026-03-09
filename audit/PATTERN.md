@@ -731,6 +731,70 @@ Does each parameter have a comment explaining what it controls, why the default 
 
 ---
 
+## P-033: Notification-to-LLM cost amplification
+
+**Origin:** Production incident 2026-03-09 — HR chest strap sent telemetry every 5 seconds via `/notify`. Each notification triggered a full agentic loop (~$0.05 per call × 17,280 calls/day = $54/day). No audit stage caught it because every individual LLM call was correctly tracked (P-027 passed), data structures were bounded (P-018 passed), and HTTP rate limiting protected against abuse (Stage 6 passed). The cost was legal per-message spending that added up to an expensive day because nobody asked "how often will this fire?"
+
+**Class:** Any notification pathway (`/notify`, `--notify`, FIFO system events) that can receive high-frequency external inputs (>1/minute) without cost bounding at the LLM invocation level. HTTP rate limiting protects against abuse — it doesn't protect against legitimate high-frequency sources (IoT sensors, monitoring systems, health probes, n8n polling workflows). The cost is `frequency × cost_per_call × uptime`. A 5-second interval at $0.05/call is $864/day.
+
+**Fix:** `passive_notify_refs` config — notification refs matching the list are buffered at latest-value-per-ref without triggering an LLM call. Buffered entries are injected as `[telemetry: ...]` context on the next real message. `data.priority = "active"` bypasses the buffer for urgent notifications.
+
+**Check (Stage 4):**
+Contract tests for the passive telemetry buffer:
+1. Passive ref → message buffered, NOT queued for LLM processing
+2. Active priority → bypasses buffer, processed normally
+3. Non-passive ref → not buffered, processed normally
+4. Stale entries (>30s) → drained and discarded
+5. Multiple refs → each buffered independently at latest value
+```bash
+# Verify passive telemetry tests exist and cover all paths
+grep -rn 'TestPassiveTelemetry\|TestDrainTelemetry\|passive_notify' tests/ --include='*.py'
+```
+
+**Check (Stage 5):**
+For each notification source in the dependency chain data flow matrix, annotate expected frequency:
+```
+| Source | Frequency | Buffered? | Daily cost at frequency |
+```
+Any source with frequency >1/minute that is NOT in `passive_notify_refs` is a cost risk. Calculate: `frequency × estimated_cost_per_call × 86400 / interval_seconds`. If daily cost exceeds $1, flag for review.
+
+**Check (Stage 7):**
+Verify `docs/configuration.md` and `docs/operations.md` document:
+1. `passive_notify_refs` — what it does, how to configure
+2. `primary_sender` — how notification routing works
+3. Cost implications of high-frequency notification sources (in `/notify` endpoint docs or a dedicated section)
+4. The `data.priority = "active"` bypass mechanism
+
+---
+
+## P-034: Passive telemetry buffer silent failure
+
+**Origin:** Same incident, prevention layer — the passive telemetry buffer (`passive_notify_refs` + `_drain_telemetry()`) is a critical cost-saving mechanism. If the buffer logic breaks silently (e.g., a refactor removes the `continue` in `_message_loop`, or the `ref` field extraction path changes), notifications fall through to the LLM at full frequency. No error, no warning — just a $54/day cost spike that looks like normal operation in the logs.
+
+**Class:** A cost optimization mechanism that, when it fails, produces no error signal — only a cost increase. The failure mode is indistinguishable from "the agent is busy today" until the operator checks the bill.
+
+**Check (Stage 3):**
+Mutation-test the passive telemetry interception in `lucyd.py`:
+```bash
+# Key mutation targets:
+# 1. The `continue` statement after buffering (removing it = fall through to LLM)
+# 2. The `ref in self._passive_refs` check (inverting it = all refs buffered or none)
+# 3. The priority bypass check (removing it = urgent messages also buffered)
+# 4. The `_drain_telemetry` max_age check (removing it = stale data injected)
+grep -n 'passive_refs\|_telemetry_buffer\|_drain_telemetry\|continue' lucyd.py
+```
+All four mutations must be killed by existing tests. If the `continue` removal survives, the cost optimization is unverified.
+
+**Check (Stage 4):**
+Structural invariant: the passive telemetry interception MUST happen before the message enters the processing queue (debounce → session → agentic loop). If it happens after, the LLM call has already been made.
+```bash
+# Verify the passive check is in _message_loop, not in _process_message
+grep -n 'passive_refs\|_telemetry_buffer' lucyd.py
+```
+Results should show the check in `_message_loop` (before `_process_message` is called). If it appears only in `_process_message`, the interception is too late.
+
+---
+
 ## Architectural Invariants
 
 Unlike bug patterns (which describe a class of defect found in existing code), architectural invariants describe rules that ALL code must follow. A violation isn't a recurring bug — it's a new piece of code that broke an existing rule.
@@ -776,6 +840,24 @@ Expected: zero matches on all four. Any match means the single-provider architec
 
 **Contract test (Stage 4):** `_process_message()` signature must not accept `tier` or `model_override` parameters. Sub-agent tool (`tool_sessions_spawn`) must not accept `model` parameter.
 
+### AI-006: High-frequency notifications must be cost-bounded
+Every notification pathway that can receive messages at frequencies above 1/minute from external sources must have cost bounding. Acceptable mechanisms: `passive_notify_refs` buffering (zero LLM cost), application-level rate limiting at the source, or explicit operator documentation of expected cost at the configured frequency. A notification source with no cost bounding that fires >1/minute is a finding, regardless of whether it's currently connected.
+
+**Origin:** Production incident 2026-03-09 — HR telemetry at 5-second intervals via `/notify` triggered $54/day in LLM costs. Every individual call was correctly tracked (AI-001 satisfied), correctly queued (AI-002 satisfied), and correctly logged (AI-004 satisfied). No existing invariant covered the amplification pattern because all rules operate at the per-call level, not at the aggregate cost level.
+
+**Violations (grep checks for Stage 1):**
+```bash
+# Find all notification entry points
+grep -rn 'notify\|system.*event\|FIFO\|control.pipe' --include='*.py' | grep -v test | grep -v __pycache__ | grep -v .venv | grep -v audit
+
+# Verify passive_notify_refs config property exists and is used
+grep -rn 'passive_notify_refs\|_passive_refs\|_telemetry_buffer' --include='*.py' | grep -v test | grep -v __pycache__
+```
+
+**Contract test (Stage 4):** Verify that a message with a passive ref and no active priority does NOT reach `_process_message()`. Verify that a message with active priority DOES reach `_process_message()`. These two tests together prove the buffer is both effective and bypassable.
+
+Checked by: P-033, P-034
+
 The `AI-NNN` namespace separates invariants from bug patterns (`P-NNN`). Invariants are never retired — they're permanent rules. They can only be superseded if the architecture changes.
 
 ---
@@ -784,13 +866,13 @@ The `AI-NNN` namespace separates invariants from bug patterns (`P-NNN`). Invaria
 
 | Stage | Applicable Patterns |
 |-------|-------------------|
-| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021, P-022, P-025, P-026 (hotfix tag grep), P-027 (cost tracking grep), P-029 (truncation grep), P-030 (trace_id grep), P-032 (defaults grep) |
+| 1. Static Analysis | P-001, P-002, P-003 (grep), P-005, P-010, P-014, P-015, P-016, P-018, P-020, P-021, P-022, P-025, P-026 (hotfix tag grep), P-027 (cost tracking grep), P-029 (truncation grep), P-030 (trace_id grep), P-032 (defaults grep), AI-006 (notification entry points grep) |
 | 2. Test Suite | P-005 (verify count), P-006 (fixture check), P-013, P-016 (ResourceWarning trigger), P-030 (trace_id integration test) |
-| 3. Mutation Testing | P-004, P-013, P-015 (parity check), P-026 (re-raise logic), P-029 (truncation logic) |
-| 4. Orchestrator Testing | P-017, P-023, P-028 (queue bypass), P-031 (context budget contract test), AI-001 through AI-005 (invariant contract tests) |
-| 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order), P-026 (streaming error path), P-027 (cost.db completeness) |
+| 3. Mutation Testing | P-004, P-013, P-015 (parity check), P-026 (re-raise logic), P-029 (truncation logic), P-034 (telemetry buffer mutations) |
+| 4. Orchestrator Testing | P-017, P-023, P-028 (queue bypass), P-031 (context budget contract test), P-033 (telemetry buffer contract tests), P-034 (buffer interception placement), AI-001 through AI-006 (invariant contract tests) |
+| 5. Dependency Chain | P-006, P-012, P-014 (failure behavior), P-016 (shutdown path), P-017 (persist order), P-026 (streaming error path), P-027 (cost.db completeness), P-033 (notification frequency annotation) |
 | 6. Security Audit | P-003, P-009, P-012, P-018 (resource exhaustion), P-028 (control endpoint audit) |
-| 7. Documentation Audit | P-007, P-008, P-011, P-020 (config-to-default parity), P-021 (provider split), P-024, P-031 (context budget docs), P-032 (default documentation) |
+| 7. Documentation Audit | P-007, P-008, P-011, P-020 (config-to-default parity), P-021 (provider split), P-024, P-031 (context budget docs), P-032 (default documentation), P-033 (notification cost docs) |
 | Aggregate Report | P-019 (gap verification) |
 
 ---
@@ -837,3 +919,6 @@ The `AI-NNN` namespace separates invariants from bug patterns (`P-NNN`). Invaria
 | 2026-03-02 | AI-001–AI-004 | Added Architectural Invariants section — permanent rules for all code |
 | 2026-03-02 | — | Updated Retrospective Protocol — added question 5 (architectural invariant check) |
 | 2026-03-06 | AI-005 | Added single provider architecture invariant — guards against multi-model routing re-introduction |
+| 2026-03-09 | P-033 | Added from production incident retrospective (HR telemetry $54/day — notification-to-LLM cost amplification) |
+| 2026-03-09 | P-034 | Added from production incident retrospective (passive telemetry buffer silent failure mode) |
+| 2026-03-09 | AI-006 | Added high-frequency notification cost bounding invariant — guards against unbounded notification amplification |

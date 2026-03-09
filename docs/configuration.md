@@ -209,11 +209,22 @@ stale_threshold_days = 90             # Remove unaccessed facts older than this 
 
 Runs via `bin/lucyd-consolidate --maintain` (cron daily at `04:05`).
 
-### Memory Evolution
+### [memory.evolution]
 
-Daily rewriting of workspace understanding files (e.g., `MEMORY.md`, `USER.md`) using accumulated daily logs, structured memory, and an identity anchor file. Evolution is driven entirely through the skill system — there are no `[memory.evolution]` config keys in `lucyd.toml`. All evolution parameters are defined in the workspace evolution skill.
+Daily rewriting of workspace understanding files using accumulated daily logs, structured memory, and an identity anchor file.
 
-Triggered via `bin/lucyd-send --evolve` (cron daily at `04:20`, after maintenance) or `POST /api/v1/evolve`. Both paths queue a self-driven evolution message to the daemon. Files are evolved in order — the evolution skill instructs the agent to rewrite earlier files first.
+```toml
+[memory.evolution]
+enabled = true                        # Enable memory evolution (default: true)
+model = "primary"                     # Model role to use (default: "primary")
+files = ["MEMORY.md", "USER.md"]      # Workspace files to evolve (order matters — earlier files rewritten first)
+anchor_file = "IDENTITY.md"           # Identity anchor — read but never modified
+max_log_chars = 80000                 # Max chars of daily logs fed to evolution (default: 80000)
+max_facts = 50                        # Max structured facts included in context (default: 50)
+max_episodes = 20                     # Max episodes included in context (default: 20)
+```
+
+Triggered via `bin/lucyd-send --evolve` (cron daily at `04:20`, after maintenance) or `POST /api/v1/evolve`. Both paths queue a self-driven evolution message to the daemon. The agent loads an `evolution` skill from workspace, reads daily logs and current files, and rewrites the configured files through the full agentic loop with persona context.
 
 ### [memory.recall]
 
@@ -433,7 +444,13 @@ api_retry_base_delay = 2.0                                             # Initial
 message_retries = 2                                                    # Message-level retries on persistent failure (default: 2)
 message_retry_base_delay = 30                                          # Base delay between message retries in seconds (default: 30)
 audit_truncation_limit = 500                                           # Max chars per message in session audit truncation (default: 500)
+primary_sender = "Nicolas"                                             # Route all notifications to this sender's session (default: "" = disabled)
+passive_notify_refs = ["sensor-data"]                                  # Notification refs buffered passively without LLM calls (default: [])
 ```
+
+**`primary_sender`:** When set, all notifications (`/notify`, `--notify`) route to the named sender's session instead of creating throwaway sessions per source. Keeps notification context in the agent's main conversation. Empty string disables (backward compatible).
+
+**`passive_notify_refs`:** List of notification `ref` values that are buffered at latest-value-per-ref without triggering an LLM call. Buffered entries are injected as `[telemetry: ...]` context on the next real message (max 30s age). Notifications with `data.priority = "active"` bypass the buffer. Use for high-frequency telemetry that would be prohibitively expensive to process individually (e.g., sensor readings every 5 seconds).
 
 **Two-tier retry architecture:** `api_retries` handles transient errors (429, 5xx, connection) within a single agentic loop call (fast, 1–8s backoff). `message_retries` retries the entire message processing when the agentic loop fails after exhausting API retries (slower, 30–60s backoff with jitter).
 
@@ -444,11 +461,20 @@ Session compaction (summarization of old messages to free context window).
 ```toml
 [behavior.compaction]
 threshold_tokens = 150000    # Trigger compaction when last input_tokens exceeds this
+keep_recent_pct = 0.33       # Keep newest fraction of messages verbatim (default: 0.33)
 max_tokens = 2048            # Max output tokens for compaction summary (caps the primary model's default)
-prompt = "Summarize this conversation preserving all factual details, decisions, action items, and emotional context."
+verify_enabled = true        # Post-hoc verification: structural + entity grounding (default: true)
+verify_max_turn_labels = 3   # Max dialogue turn patterns before rejection (default: 3)
+verify_grounding_threshold = 0.5  # Min fraction of distinctive tokens grounded in source (default: 0.5)
+# prompt = "..."             # Custom compaction prompt (supports {agent_name}, {max_tokens})
+# diary_prompt = "..."       # Custom diary prompt for forced compact (supports {date})
 ```
 
-Compaction takes the oldest 2/3 of messages, summarizes them, and replaces them with the summary. The JSONL audit trail retains the full history.
+Compaction takes the oldest messages (1 - `keep_recent_pct`), summarizes them, and replaces them with the summary. The JSONL audit trail retains the full history.
+
+**Verification (`verification.py`):** When `verify_enabled = true`, compaction summaries are checked post-hoc for fabrication. Tier 1 (structural) rejects summaries with more than `verify_max_turn_labels` dialogue turn patterns (e.g., "User:", "Assistant:"). Tier 2 (entity grounding) rejects summaries where less than `verify_grounding_threshold` fraction of distinctive tokens appear in the source transcript. Failed verification falls back to a deterministic summary. Zero LLM cost.
+
+**Forced compact:** `lucyd-send --compact` / `POST /api/v1/compact` sends a diary prompt to the primary session. The agent writes a daily memory log via the `write` tool, then compaction fires regardless of token threshold.
 
 ## [logging]
 

@@ -33,7 +33,7 @@ How the Lucyd codebase fits together. Read this when you need to fix something, 
 | `tools/web.py` | `web_search` (Brave), `web_fetch` tools. |
 | `tools/memory_tools.py` | `memory_search`, `memory_get` tools. Delegates to `memory.py`. |
 | `tools/structured_memory.py` | `memory_write`, `memory_forget`, `commitment_update` tools. Structured fact storage with parameterized SQL. |
-| `tools/agents.py` | `sessions_spawn` tool. Runs a sub-agent with scoped tools and a separate model. |
+| `tools/agents.py` | `sessions_spawn` tool. Runs a sub-agent with scoped tools. |
 | `tools/skills_tool.py` | `load_skill` tool. Returns a skill's full body on demand. |
 | `tools/status.py` | `session_status` tool. Returns uptime, today's cost, token counts. |
 | `tools/scheduling.py` | `schedule_message` and `list_scheduled` tools. Asyncio timer-based delayed message delivery. |
@@ -148,6 +148,7 @@ An optional HTTP server (`channels/http_api.py`) runs alongside the primary chan
 | `/api/v1/sessions/reset` | POST | Reset sessions by target (all, contact name, UUID) |
 | `/api/v1/sessions/{id}/history` | GET | Session event history (`?full=true` for tool calls) |
 | `/api/v1/evolve` | POST | Trigger memory evolution (rewrite configured workspace files) |
+| `/api/v1/compact` | POST | Force diary write + compaction on primary session |
 
 **Design**: HTTP is not a Channel implementation. It feeds messages directly into the daemon's `asyncio.Queue` alongside Telegram and FIFO. For `/chat`, an `asyncio.Future` is attached to the queue item; `_process_message` resolves it with the reply. For `/notify`, no Future — the event is queued and the caller gets 202 immediately.
 
@@ -167,6 +168,10 @@ Dual-format persistence in `~/.lucyd/sessions/`:
 ### Session Routing
 
 Sessions are keyed by sender (Telegram user ID or "cli"). The `sessions.json` index maps senders to session IDs. When a sender's session state is corrupted, it rebuilds from the JSONL trail.
+
+**Primary sender routing:** When `[behavior] primary_sender` is configured, all notifications (`/notify`, `--notify`) route to the named sender's session instead of creating throwaway sessions per source. The `notify: true` flag on queue items distinguishes notifications from other system events.
+
+**Passive telemetry buffer:** Notifications whose `ref` field matches a value in `[behavior] passive_notify_refs` are buffered at latest-value-per-ref without triggering an LLM call. On the next real message, `_drain_telemetry()` collects buffered entries (max 30s age) and injects them as `[telemetry: ...]` context appended to the user message. Notifications with `data.priority = "active"` bypass the buffer and are processed normally. This eliminates LLM cost for high-frequency telemetry (e.g., sensor readings every 5 seconds) while still making the data available to the agent.
 
 ### Compaction
 
@@ -306,7 +311,7 @@ The `ToolRegistry` dispatches tool calls from the agentic loop:
 - Catches all exceptions, returns error strings instead of crashing
 - Truncates output to `output_truncation` chars (default: 30,000)
 
-Sub-agents spawned via `sessions_spawn` have configurable `max_turns` (default: 50) and `timeout`. A deny-list prevents sub-agents from accessing `sessions_spawn`, `tts`, `react`, and `schedule_message` by default. Sub-agents CAN load skills.
+Sub-agents spawned via `sessions_spawn` have configurable `max_turns` (default: 50) and `timeout`. All sub-agents use the primary model (single provider). A deny-list prevents sub-agents from accessing `sessions_spawn`, `tts`, `react`, and `schedule_message` by default. Sub-agents CAN load skills.
 
 ## Cost Tracking
 

@@ -19,9 +19,13 @@ flowchart TD
     Q["asyncio.Queue<br/>lucyd.py:296"]
 
     subgraph Loop["Message Loop — lucyd.py:1523"]
+        PRIMARY["Primary Sender<br/>Routing"]
+        PASSIVE{"Passive<br/>telemetry ref?"}
+        BUFFER["Buffer latest value<br/>per ref key"]
         DEB["Debounce<br/>500ms window"]
         MEDIA["Process Attachments<br/>image / voice / document"]
         SESSION["Get/Create Session<br/>session.py:288"]
+        TELEM["Drain Telemetry<br/>→ [telemetry: ...] injection"]
         CTX["Build System Prompt<br/>context.py:31"]
         AGENTIC["Agentic Loop<br/>agentic.py:138"]
     end
@@ -38,7 +42,9 @@ flowchart TD
     TG --> Q
     HTTP --> Q
     FIFO --> Q
-    Q --> DEB --> MEDIA --> SESSION --> CTX --> AGENTIC
+    Q --> PRIMARY --> PASSIVE
+    PASSIVE -->|"yes (non-active)"| BUFFER
+    PASSIVE -->|no| DEB --> MEDIA --> SESSION --> TELEM --> CTX --> AGENTIC
     AGENTIC --> PERSIST --> SILENT
     SILENT -->|"NO_REPLY"| WEBHOOK
     SILENT -->|normal| DELIVER --> WEBHOOK
@@ -330,6 +336,7 @@ flowchart TD
         RESET_EP["/api/v1/sessions/reset<br/>POST → reset sessions"]
         HISTORY_EP["/api/v1/sessions/{id}/history<br/>GET → event history"]
         EVOLVE_EP["/api/v1/evolve<br/>POST → trigger evolution"]
+        COMPACT_EP["/api/v1/compact<br/>POST → diary + compact"]
         AUTH["Bearer Token Auth<br/>hmac.compare_digest()"]
         RATE["Rate Limiter<br/>per-sender window"]
     end

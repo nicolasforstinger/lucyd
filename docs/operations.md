@@ -42,9 +42,8 @@ CLI tool for injecting messages into the running daemon via its control FIFO (`~
 # Send a message from a named sender (gets its own session)
 ~/lucyd/bin/lucyd-send --message "Quick question." --from Claudio
 
-# Send a system event (uses operational context tier by default)
-# System event with explicit tier
-~/lucyd/bin/lucyd-send --system "Health check" --tier operational
+# Send a system event (reply suppressed, not delivered to channel)
+~/lucyd/bin/lucyd-send --system "Health check"
 
 # Fire-and-forget notification (matches HTTP /notify)
 ~/lucyd/bin/lucyd-send --notify "Invoice ready" --source n8n --ref INV-42
@@ -78,7 +77,7 @@ CLI tool for injecting messages into the running daemon via its control FIFO (`~
 |---|---|
 | `-m`, `--message <text>` | User message to inject |
 | `-s`, `--system <text>` | System event to inject |
-| `-n`, `--notify <text>` | Fire-and-forget notification (matches HTTP `/notify`). Defaults to `operational` tier. |
+| `-n`, `--notify <text>` | Fire-and-forget notification (matches HTTP `/notify`). Routes to primary sender session when configured. |
 | `--source <label>` | Notification source label (with `--notify`). Bracket-prefixed in LLM text. |
 | `--ref <ref>` | Notification reference (with `--notify`). Bracket-prefixed in LLM text. |
 | `--data <json>` | Notification metadata as JSON (with `--notify`). Passed as `notify_meta`, not in LLM text. |
@@ -86,7 +85,6 @@ CLI tool for injecting messages into the running daemon via its control FIFO (`~
 | `--evolve` | Trigger memory evolution. Pre-checks for new daily logs; skips if none found. |
 | `--force` | Skip pre-check (with `--evolve`). Triggers evolution regardless of new logs. |
 | `--from <name>` | Sender name for `--message` / `--notify` (default: `cli`). Each unique sender gets its own session. |
-| `--tier <tier>` | Context tier: `full` (default for user) / `operational` (default for system/notify) / `minimal` |
 | `--cost [period]` | Query cost: `today` (default) / `week` / `all` |
 | `--sessions` | List active sessions with context %, cost, log size, date range. Filesystem-only — no daemon needed. |
 | `--monitor` | Show live API call monitor state. Filesystem-only — reads `~/.lucyd/monitor.json`. Use with `watch -n 1` for live updates. |
@@ -159,14 +157,12 @@ The file contains: `state`, `contact`, `session_id`, `model`, `turn`, `message_s
 
 ### System Message Behavior
 
-System events (`--system`) differ from user messages (`--message`) in four ways:
+System events (`--system`) differ from user messages (`--message`) in two ways:
 
-1. **Model**: Routed to the `subagent` model, not `primary`
-2. **Context tier**: Defaults to `operational` (reduced file set: SOUL.md, AGENTS.md, IDENTITY.md)
-3. **Reply suppression**: The agentic loop runs (tools execute, cost recorded), but reply text is not delivered to any channel
-4. **Session framing**: The system prompt includes a "Session type: automated infrastructure" annotation so the LLM knows this is automation, not conversation
+1. **Reply suppression**: The agentic loop runs (tools execute, cost recorded), but reply text is not delivered to any channel
+2. **Session framing**: The system prompt includes a "Session type: automated infrastructure" annotation so the LLM knows this is automation, not conversation
 
-The agent processes system events (spawns sub-agents, writes memory, sends messages via tools), but the textual response stays internal.
+The agent processes system events (spawns sub-agents, writes memory, sends messages via tools), but the textual response stays internal. All messages use the primary model.
 
 ## HTTP API
 
