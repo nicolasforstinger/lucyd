@@ -503,6 +503,26 @@ class TestPrimarySender:
         assert cfg.primary_sender == "Nicolas"
 
 
+class TestPassiveNotifyRefs:
+    """Passive notification refs for telemetry buffering."""
+
+    def test_default_empty(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.passive_notify_refs == []
+
+    def test_from_config(self, minimal_toml_data):
+        minimal_toml_data.setdefault("behavior", {})["passive_notify_refs"] = ["hr-telemetry"]
+        cfg = Config(minimal_toml_data)
+        assert cfg.passive_notify_refs == ["hr-telemetry"]
+
+    def test_multiple_refs(self, minimal_toml_data):
+        minimal_toml_data.setdefault("behavior", {})["passive_notify_refs"] = [
+            "hr-telemetry", "temperature",
+        ]
+        cfg = Config(minimal_toml_data)
+        assert cfg.passive_notify_refs == ["hr-telemetry", "temperature"]
+
+
 class TestWebTimeouts:
     """Web search/fetch timeout config."""
 

@@ -348,6 +348,8 @@ class LucydDaemon:
         self._http_api: Any = None
         self._memory_conn: Any = None
         self._last_inbound_ts: collections.OrderedDict[str, int] = collections.OrderedDict()  # sender → ms timestamp
+        self._telemetry_buffer: dict[str, dict] = {}  # ref → latest passive notification
+        self._passive_refs: frozenset[str] = frozenset()
 
     def _setup_logging(self) -> None:
         """Configure logging to file + stderr."""
@@ -692,6 +694,24 @@ class LucydDaemon:
     # The agentic loop still runs — tools execute, cost is recorded, session persists.
     _NO_CHANNEL_DELIVERY = frozenset({"system", "http"})
 
+    def _drain_telemetry(self, max_age: float = 30.0) -> str:
+        """Read and clear passive telemetry buffer. Returns formatted string."""
+        if not self._telemetry_buffer:
+            return ""
+        now = time.time()
+        lines = []
+        to_remove = []
+        for ref, entry in self._telemetry_buffer.items():
+            age = now - entry["timestamp"]
+            if age > max_age:
+                to_remove.append(ref)
+                continue
+            lines.append(entry["text"])
+            to_remove.append(ref)
+        for ref in to_remove:
+            del self._telemetry_buffer[ref]
+        return " | ".join(lines)
+
     async def _process_message(
         self,
         text: str,
@@ -821,6 +841,11 @@ class LucydDaemon:
         # Inject timestamp so the agent always knows the current time
         timestamp = time.strftime("[%a, %d. %b %Y - %H:%M %Z]")
         text = f"{timestamp}\n{text}"
+
+        # Inject passive telemetry (latest HR, etc.) — zero-cost context
+        telemetry = self._drain_telemetry()
+        if telemetry:
+            text = f"{text}\n[telemetry: {telemetry}]"
 
         session.trace_id = trace_id
         session.add_user_message(text, sender=sender, source=source)
@@ -1642,6 +1667,19 @@ class LucydDaemon:
                 # Route notifications to primary session when configured
                 if item.get("notify") and self.config.primary_sender:
                     sender = self.config.primary_sender
+
+                # Passive telemetry — buffer and skip processing
+                ref = (notify_meta or {}).get("ref", "")
+                if ref and ref in self._passive_refs:
+                    priority = ((notify_meta or {}).get("data") or {}).get(
+                        "priority", "")
+                    if priority != "active":
+                        self._telemetry_buffer[ref] = {
+                            "text": text,
+                            "notify_meta": notify_meta,
+                            "timestamp": time.time(),
+                        }
+                        continue
             else:
                 continue
 
@@ -1731,6 +1769,9 @@ class LucydDaemon:
             self._init_cost_db()
             self._init_tools()
             self._init_plugins()
+
+            # Passive telemetry refs
+            self._passive_refs = frozenset(self.config.passive_notify_refs)
 
             # Context budget startup check
             self._check_context_budget()

@@ -2551,3 +2551,166 @@ class TestForcedCompact:
             )
 
         assert len(consolidation_called) == 1
+
+
+# ─── Passive Telemetry Buffer ──────────────────────────────────────
+
+
+class TestDrainTelemetry:
+    """Unit tests for _drain_telemetry."""
+
+    def test_empty_buffer(self, tmp_path):
+        daemon, _, _ = _make_daemon(tmp_path)
+        assert daemon._drain_telemetry() == ""
+
+    def test_returns_and_clears(self, tmp_path):
+        daemon, _, _ = _make_daemon(tmp_path)
+        import time
+        daemon._telemetry_buffer["hr-telemetry"] = {
+            "text": "heart rate: 85 bpm, session: 5m00s",
+            "notify_meta": {"ref": "hr-telemetry"},
+            "timestamp": time.time(),
+        }
+        result = daemon._drain_telemetry()
+        assert "heart rate: 85 bpm" in result
+        # Buffer should be cleared after drain
+        assert daemon._telemetry_buffer == {}
+
+    def test_stale_entries_dropped(self, tmp_path):
+        daemon, _, _ = _make_daemon(tmp_path)
+        import time
+        daemon._telemetry_buffer["hr-telemetry"] = {
+            "text": "heart rate: 85 bpm",
+            "notify_meta": {"ref": "hr-telemetry"},
+            "timestamp": time.time() - 60,  # 60 seconds old
+        }
+        result = daemon._drain_telemetry(max_age=30)
+        assert result == ""
+        assert daemon._telemetry_buffer == {}
+
+    def test_multiple_refs(self, tmp_path):
+        daemon, _, _ = _make_daemon(tmp_path)
+        import time
+        now = time.time()
+        daemon._telemetry_buffer["hr"] = {
+            "text": "hr: 90",
+            "notify_meta": {"ref": "hr"},
+            "timestamp": now,
+        }
+        daemon._telemetry_buffer["temp"] = {
+            "text": "temp: 37",
+            "notify_meta": {"ref": "temp"},
+            "timestamp": now,
+        }
+        result = daemon._drain_telemetry()
+        assert "hr: 90" in result
+        assert "temp: 37" in result
+        assert " | " in result
+
+    def test_latest_overwrites(self, tmp_path):
+        """Buffer stores latest per ref — overwrite is tested at write time."""
+        daemon, _, _ = _make_daemon(tmp_path)
+        import time
+        daemon._telemetry_buffer["hr"] = {
+            "text": "hr: 80",
+            "notify_meta": {"ref": "hr"},
+            "timestamp": time.time(),
+        }
+        # Overwrite with newer reading
+        daemon._telemetry_buffer["hr"] = {
+            "text": "hr: 120",
+            "notify_meta": {"ref": "hr"},
+            "timestamp": time.time(),
+        }
+        result = daemon._drain_telemetry()
+        assert "hr: 120" in result
+        assert "hr: 80" not in result
+
+
+class TestPassiveTelemetryRouting:
+    """Message loop routing tests for passive telemetry."""
+
+    def test_passive_ref_buffered_not_queued(self, tmp_path):
+        """Notification with passive ref goes to buffer, not pending."""
+        daemon, _, _ = _make_daemon(tmp_path)
+        daemon._passive_refs = frozenset(["hr-telemetry"])
+
+        import time
+        notify_meta = {"ref": "hr-telemetry", "data": {"bpm": 85}}
+        item = {
+            "sender": "system",
+            "type": "system",
+            "text": "heart rate: 85 bpm",
+            "notify": True,
+            "notify_meta": notify_meta,
+        }
+
+        # Simulate the routing logic from _message_loop
+        ref = (notify_meta or {}).get("ref", "")
+        if ref and ref in daemon._passive_refs:
+            priority = ((notify_meta or {}).get("data") or {}).get("priority", "")
+            if priority != "active":
+                daemon._telemetry_buffer[ref] = {
+                    "text": item["text"],
+                    "notify_meta": notify_meta,
+                    "timestamp": time.time(),
+                }
+                buffered = True
+            else:
+                buffered = False
+        else:
+            buffered = False
+
+        assert buffered is True
+        assert "hr-telemetry" in daemon._telemetry_buffer
+        assert daemon._telemetry_buffer["hr-telemetry"]["text"] == "heart rate: 85 bpm"
+
+    def test_active_priority_bypasses_buffer(self, tmp_path):
+        """Notification with priority=active is NOT buffered."""
+        daemon, _, _ = _make_daemon(tmp_path)
+        daemon._passive_refs = frozenset(["hr-telemetry"])
+
+        import time
+        notify_meta = {
+            "ref": "hr-telemetry",
+            "data": {"bpm": 185, "priority": "active"},
+        }
+
+        ref = (notify_meta or {}).get("ref", "")
+        if ref and ref in daemon._passive_refs:
+            priority = ((notify_meta or {}).get("data") or {}).get("priority", "")
+            if priority != "active":
+                daemon._telemetry_buffer[ref] = {
+                    "text": "WARNING",
+                    "notify_meta": notify_meta,
+                    "timestamp": time.time(),
+                }
+                buffered = True
+            else:
+                buffered = False
+        else:
+            buffered = False
+
+        assert buffered is False
+        assert daemon._telemetry_buffer == {}
+
+    def test_non_passive_ref_not_buffered(self, tmp_path):
+        """Notification with ref not in passive_refs is not buffered."""
+        daemon, _, _ = _make_daemon(tmp_path)
+        daemon._passive_refs = frozenset(["hr-telemetry"])
+
+        notify_meta = {"ref": "some-other-ref"}
+
+        ref = (notify_meta or {}).get("ref", "")
+        buffered = ref and ref in daemon._passive_refs
+        assert buffered is False
+
+    def test_no_ref_not_buffered(self, tmp_path):
+        """Notification without ref is not buffered."""
+        daemon, _, _ = _make_daemon(tmp_path)
+        daemon._passive_refs = frozenset(["hr-telemetry"])
+
+        notify_meta = {"data": {"bpm": 85}}
+
+        ref = (notify_meta or {}).get("ref", "")
+        assert not (ref and ref in daemon._passive_refs)

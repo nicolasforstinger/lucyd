@@ -663,6 +663,16 @@ class Config:
         return float(_deep_get(self._data, "behavior", "compaction", "verify_grounding_threshold", default=0.5))
 
     @property
+    def passive_notify_refs(self) -> list[str]:
+        """Notification refs that are buffered passively, not processed.
+
+        Notifications with matching ref are stored in a latest-value buffer
+        and injected as context into the next real message. No LLM call
+        triggered. Refs with priority=active in data bypass the buffer.
+        """
+        return _deep_get(self._data, "behavior", "passive_notify_refs", default=[])
+
+    @property
     def primary_sender(self) -> str:
         """Primary session sender for notification routing.
 
