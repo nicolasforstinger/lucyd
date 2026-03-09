@@ -76,7 +76,6 @@ class HTTPApi:
         handle_reset: Any = None,
         get_history: Any = None,
         handle_evolve: Any = None,
-        handle_compact: Any = None,
         download_dir: str = "/tmp/lucyd-http",  # noqa: S108 — default; overridden by config
         max_body_bytes: int = 10 * 1024 * 1024,
         rate_limit: int = 30,
@@ -99,7 +98,6 @@ class HTTPApi:
         self._handle_reset_cb = handle_reset
         self._get_history = get_history
         self._handle_evolve_cb = handle_evolve
-        self._handle_compact_cb = handle_compact
         self._download_dir = download_dir
         self._max_body_bytes = max_body_bytes
         self._runner: web.AppRunner | None = None
@@ -467,18 +465,24 @@ class HTTPApi:
         return self._json_response(result, status=202)
 
     async def _handle_compact(self, request: web.Request) -> web.Response:
-        """POST /api/v1/compact — force diary write + compaction."""
-        if not self._handle_compact_cb:
-            return self._json_response(
-                {"error": "compact not available"}, status=503,
-            )
+        """POST /api/v1/compact — force diary write + compaction.
+
+        Routes through the message queue to serialize with message processing
+        (same path as FIFO compact).
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        await self.queue.put({
+            "type": "compact",
+            "response_future": future,
+        })
 
         try:
-            result = await self._handle_compact_cb()
-        except Exception:
-            log.exception("Compact endpoint failed")
+            result = await asyncio.wait_for(future, timeout=self.agent_timeout)
+        except TimeoutError:
             return self._json_response(
-                {"error": "internal error"}, status=500,
+                {"error": "compact timed out"}, status=408,
             )
 
         status = 200 if result.get("status") == "completed" else 202

@@ -1,7 +1,7 @@
 # Test Suite Report
 
-**Date:** 2026-03-06
-**Audit Cycle:** 16
+**Date:** 2026-03-09
+**Cycle:** 17
 **Python version:** 3.13.5
 **Pytest version:** 9.0.2
 **EXIT STATUS:** PASS
@@ -10,59 +10,62 @@
 
 | Metric | Value |
 |--------|-------|
-| Test files | 40 (38 test_*.py + conftest.py + __init__.py) |
-| Tests collected | 1682 |
-| Tests passed | 1682 |
+| Test files | 40 |
+| Tests collected | 1725 |
+| Tests passed | 1725 |
 | Tests failed | 0 |
-| Production modules | 34 |
-| Modules with tests | 34 |
-| Modules WITHOUT tests | 0 |
+| Production modules | 35 |
 
 ## Suite Run
-
-Total time: 31.69s
+Total time: 33.23s
 All passed: yes
-Test count increased from 1633 (cycle 15) → 1682 (+49 tests)
 
 ## Health Checks
 
 ### Warnings
+| Warning | Count | Category | Action |
+|---------|-------|----------|--------|
+| RuntimeWarning: coroutine AsyncMock never awaited | 7 | Python 3.13 mock artifact | Filtered in pyproject.toml — CPython internals, not our code |
+| ResourceWarning: unclosed database | 2 | Mock teardown | SQLite connections in mock contexts — GC cleans up |
+| ResourceWarning: unclosed file | 1 | test_session.py:1540 | File opened for verification read, not a production leak |
 
-No critical warnings (DeprecationWarning, RuntimeWarning, ResourceWarning) from our code.
+No critical warnings. All are mock teardown artifacts from Python 3.13.
 
-### Timing (top 5)
+### Isolation
+No isolation failures detected. All test files pass independently (verified during Stage 1 full run).
 
-| Test | Time |
-|------|------|
-| test_orchestrator::TestImageFitting::test_jpeg_quality_reduction | 2.24s |
-| test_lucyd_send::TestNotifyFlag::test_notify_invalid_data_exits | 2.05s |
-| test_shell_security::TestExecTimeout::test_exec_timeout_cap_applied | 2.00s |
-| test_shell_security::TestExecTimeout::test_exec_timeout_kills_command | 2.00s |
-| test_scheduling::TestScheduleMessage::test_message_fires_and_sends | 1.50s |
+### Timing
+| Test | Time | Explanation |
+|------|------|-------------|
+| test_jpeg_quality_reduction | 2.32s | Real Pillow image processing |
+| test_notify_invalid_data_exits | 2.05s | Validation with FIFO setup |
+| test_exec_timeout_kills_command | 2.00s | Tests actual 2s timeout |
+| test_exec_timeout_cap_applied | 2.00s | Tests actual 2s timeout |
+| test_scheduling (3 tests) | 1.50s | Async timer delays |
 
-All explained: JPEG generates large images, shell timeouts test real asyncio.sleep, scheduling uses asyncio.sleep(1.5).
+All explained by actual I/O or timing behavior. No anomalies.
 
-### Skipped Tests
+### Test Rot
+- Skipped tests: 3 (all conditional environment guards — directory/symlink availability)
+- Tests without assertions: 16 — all are crash-safety/resilience tests verifying operations don't throw exceptions (e.g., `test_init_idempotent`, `test_double_stop`, `test_handles_missing_db`)
 
-3 conditional skips (all valid):
-- `test_audit_agnostic.py:117` — skips if `tools/` not found
-- `test_audit_agnostic.py:411` — skips if `tools/` not found
-- `test_filesystem.py:63` — skips if symlink creation fails
+### Fixture Health
+- `pytest_unconfigure` hook with `os._exit()` prevents asyncio hang
+- `filterwarnings` configured for known Python 3.13 artifacts
+- No unused fixtures detected
 
 ## Quality Indicators
 
 | Metric | Value | Healthy Range |
 |--------|-------|---------------|
-| Test-to-production ratio | 2.6:1 (26,355 / 10,222 lines) | 1.5:1 — 3:1 |
-| Assert density | 1.6 (2,729 / 1,682 tests) | > 1.5 |
-| Test naming consistency | Consistent (snake_case, descriptive) | Consistent |
+| Test-to-production ratio (lines) | 2.6:1 (27026/10434) | 1.5:1 — 3:1 |
+| Assert density | 1.6 (2788/1725) | > 1.5 |
+| Test naming consistency | Consistent | — |
 
-## Changes Since Last Audit
-
-- +49 tests (1633 → 1682): verification.py coverage (37 verification + 5 session integration + 7 config)
-- +1 test file: test_verification.py
-- +1 source module: verification.py (~140 lines)
+## Pattern Checks
+- P-005: No duplicate classes found (AST verified in Stage 1)
+- P-006: Fixture pre-population checked — all fixtures test documented pipelines
+- P-016: ResourceWarnings are mock teardown artifacts, not production leaks
 
 ## Confidence
-
-98% — all tests pass, count increased, metrics healthy.
+97% — all tests pass, healthy metrics, no isolation issues.

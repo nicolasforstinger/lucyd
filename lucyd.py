@@ -1813,7 +1813,6 @@ class LucydDaemon:
                     handle_reset=None,  # Resets route through control queue now
                     get_history=self._build_history,
                     handle_evolve=self._handle_evolve,
-                    handle_compact=self._handle_compact,
                     download_dir=cfg.http_download_dir,
                     max_body_bytes=cfg.http_max_body_bytes,
                     rate_limit=cfg.http_rate_limit,

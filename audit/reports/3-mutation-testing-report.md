@@ -1,14 +1,22 @@
 # Mutation Testing Audit Report
 
-**Date:** 2026-03-06
-**Audit Cycle:** 16
+**Date:** 2026-03-09
+**Audit Cycle:** 17
 **Tool:** mutmut 3.4.0
 **Python:** 3.13.5
 **EXIT STATUS:** PASS
 
 ## Scope
 
-New module `verification.py` — full mutmut run. All other security-critical functions unchanged since Cycle 12 (kill rates carry forward).
+- **verification.py** — full mutmut run (81 mutants). Only component module from Cycle 16 with active survivors.
+- **session.py** — manual mutation verification on new compaction boundary fix (9 new lines).
+- **config.py** — 2 new properties (`passive_notify_refs`, `primary_sender`). Simple `_deep_get` wrappers, not security-critical.
+- **channels/http_api.py** — 1 line change (`"notify": True`). Trivial.
+- All other security-critical functions unchanged since Cycle 12-16 — kill rates carry forward.
+
+## Infrastructure Fix
+
+`os._exit()` in `conftest.py:pytest_unconfigure` was killing the test process before mutmut could capture exit codes (all mutants "not checked"). Fixed by checking `MUTMUT_RUNNING` env var — skips `os._exit` during mutation testing while preserving the asyncio hang fix for normal runs.
 
 ## Security Verification
 
@@ -23,41 +31,22 @@ New module `verification.py` — full mutmut run. All other security-critical fu
 | `_auth_middleware` | http_api.py | **0** | CARRIED — 100% kill rate |
 | `_rate_middleware` | http_api.py | **0** | CARRIED — 100% kill rate |
 | `hmac.compare_digest` | http_api.py | **0** | CARRIED — 100% kill rate |
-| `verify_compaction_summary` | verification.py | 13 | **NEW** — 81.5% kill rate, all survivors cosmetic/equivalent |
-| `_detect_turn_labels` | verification.py | **0** | **NEW** — 100% kill rate |
-| `_extract_distinctive_tokens` | verification.py | **0** | **NEW** — 100% kill rate |
-| `_build_deterministic_summary` | verification.py | 3 | **NEW** — cosmetic (string case) |
+| `verify_compaction_summary` | verification.py | 15 | **VERIFIED** — 81.5% kill rate, all survivors cosmetic/equivalent |
+| `_detect_turn_labels` | verification.py | **0** | **VERIFIED** — 100% kill rate |
+| `_extract_distinctive_tokens` | verification.py | **0** | **VERIFIED** — 100% kill rate |
+| Compaction boundary fix | session.py | **0** | **VERIFIED** — manual mutation test passed |
 
-## New Module: verification.py
+## verification.py — Full Run
 
-### Initial Run
+81 mutants, 66 killed, 15 survived. Kill rate: **81.5%** (unchanged from Cycle 16).
 
-96 mutants (including 15 dead code in `_check_entity_grounding`). Kill rate: 66.7%.
+Survivors (all cosmetic/equivalent):
+- `_build_deterministic_summary`: 3 (string case in output)
+- `verify_compaction_summary`: 12 (log messages, warning-only threshold, `None` vs `False`)
 
-### Findings & Fixes
+## Manual Verification: session.py Compaction Boundary
 
-1. **Dead code removed:** `_check_entity_grounding()` (lines 68-83) was defined but never called — same logic inlined in `verify_compaction_summary`. Removed.
-2. **Security mutant killed (ratio calculation):** `grounded_count / len(summary_tokens)` → `grounded_count * len(summary_tokens)` survived. Added `test_low_grounding_ratio_rejects` (25% grounding).
-3. **Boundary mutant killed (`<` → `<=`):** At exactly 50% threshold. Added `test_exactly_at_grounding_threshold_passes`.
-
-### Final Run
-
-81 mutants, 66 killed, 15 survived. Kill rate: **81.5%**.
-
-### Survivor Categorization (15 total)
-
-| Category | Count | Details |
-|----------|-------|---------|
-| Cosmetic | 9 | String case changes, `XX`-wrapping in log messages and format strings |
-| Equivalent | 6 | `None` vs `False` (both falsy), default param ±1, `>` vs `>=` on warning-only check |
-| Security | **0** | All security-relevant mutants killed |
-
-## Stale Gap Resolution
-
-| Gap | Cycles | Resolution |
-|-----|--------|------------|
-| Alias accumulation multi-session | 5 → ACCEPTED (Cycle 15) | `INSERT OR IGNORE` + unique constraint |
-| `_message_loop` debounce/FIFO | 6 → ACCEPTED (Cycle 15) | Orchestrator code, 15+ contract tests |
+The `while` loop advancing `split_point` past `tool_results` (lines 478-480) was manually mutated (removed). Test `test_compact_skips_orphaned_tool_results` correctly failed with `AssertionError: assert 'user' == 'assistant'`.
 
 ## Known Gaps
 
@@ -67,4 +56,4 @@ New module `verification.py` — full mutmut run. All other security-critical fu
 
 ## Confidence
 
-96% — verification.py fully mutation-tested, 2 security mutants caught and killed, all survivors categorized as cosmetic/equivalent.
+96% — security-critical functions verified, verification.py fully re-tested, new code manually verified.

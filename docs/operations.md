@@ -92,6 +92,8 @@ CLI tool for injecting messages into the running daemon via its control FIFO (`~
 | `--history [contact\|id]` | Show session history. Resolves contact name to session ID. Use with `--full` for tool calls. |
 | `--full` | With `--history`: include tool calls and system events, not just messages. |
 | `-a`, `--attach <file>` | Attach file(s) to the message. Can be repeated for multiple files. |
+| `--status` | Daemon status: pid, uptime, model, sessions, cost. Reads from state files — no daemon response needed. |
+| `--log [N]` | Last N lines of daemon log (default: 20). Reads from `lucyd.log` in state directory. |
 | `--state-dir <path>` | Override state directory (default: `~/.lucyd`) |
 
 If the daemon is not running, `lucyd-send` exits with an error ("no reader on FIFO").
@@ -192,7 +194,7 @@ Token is loaded from the `LUCYD_HTTP_TOKEN` environment variable (set in `.env` 
 | Group | Limit | Endpoints |
 |---|---|---|
 | Read-only | `status_rate_limit` (default 60) per `rate_window` (default 60s) | `/status`, `/sessions`, `/cost`, `/monitor`, `/sessions/{id}/history` |
-| Standard | `rate_limit` (default 30) per `rate_window` (default 60s) | `/chat`, `/notify`, `/sessions/reset`, `/evolve` |
+| Standard | `rate_limit` (default 30) per `rate_window` (default 60s) | `/chat`, `/notify`, `/sessions/reset`, `/evolve`, `/compact` |
 
 Rate limit key is client IP.
 
@@ -254,7 +256,7 @@ Synchronous — sends a message and waits for the agent to respond.
 | `message` | yes | — | Message text |
 | `sender` | no | `"default"` | Session key (each unique sender gets its own session, prefixed with `http-`) |
 | `context` | no | — | Freeform label prepended as `[context]` (for debugging) |
-| `tier` | no | `"full"` | Context tier override |
+| `attachments` | no | — | List of base64-encoded file attachments |
 
 **Response (200 — success):**
 
@@ -843,7 +845,7 @@ Trigger self-driven memory evolution. Pre-checks for new daily logs, then sends 
 1. Opens the memory DB at `state-dir/memory/main.sqlite`
 2. Calls `check_new_logs_exist()` — compares daily log files against the `evolution_state` table
 3. If no new logs since last evolution: exits silently (no daemon contact). Use `--force` to skip this check.
-4. Sends a system message to the daemon FIFO with `"model": "primary"` override (ensures Sonnet, not Haiku)
+4. Sends a system message to the daemon FIFO
 5. The daemon processes the message: the agent loads the `evolution` skill, reads its daily logs and current files with tools, and rewrites MEMORY.md/USER.md
 
 Evolution is always self-driven — the agent loads the evolution skill, uses tools to read/write files through the full agentic loop with persona context. This preserves voice and emotional content because the agent rewrites its own files, not a standalone LLM call.

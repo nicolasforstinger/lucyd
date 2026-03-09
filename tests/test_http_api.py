@@ -2408,38 +2408,61 @@ class TestEvolveEndpoint:
 
 
 class TestCompactEndpoint:
-    """POST /api/v1/compact — force diary write + compaction."""
+    """POST /api/v1/compact — force diary write + compaction.
+
+    Compact routes through the message queue with a Future (same pattern as
+    reset). Tests use a background task to simulate the message loop draining
+    the queue and resolving the future.
+    """
 
     @pytest.fixture
     def api_with_compact(self, queue):
-        async def mock_compact():
-            return {"status": "completed", "session": "test-123"}
         return HTTPApi(
             queue=queue,
             host="127.0.0.1",
             port=0,
             auth_token="test-token-123",
             agent_timeout=5.0,
-            handle_compact=mock_compact,
         )
 
+    @staticmethod
+    async def _drain_compact_queue(queue, result):
+        """Simulate message loop: drain compact items and resolve futures."""
+        item = await asyncio.wait_for(queue.get(), timeout=5.0)
+        assert item["type"] == "compact"
+        future = item.get("response_future")
+        if future is not None and not future.done():
+            future.set_result(result)
+
     @pytest.mark.asyncio
-    async def test_compact_success(self, api_with_compact, auth_headers):
+    async def test_compact_success(self, api_with_compact, auth_headers, queue):
         app = _make_app(api_with_compact)
         async with TestClient(TestServer(app)) as client:
+            drain = asyncio.create_task(
+                self._drain_compact_queue(
+                    queue, {"status": "completed", "session": "test-123"},
+                )
+            )
             resp = await client.post("/api/v1/compact", headers=auth_headers)
+            await drain
             assert resp.status == 200
             data = await resp.json()
             assert data["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_compact_no_callback(self, api, auth_headers):
-        app = _make_app(api)
+    async def test_compact_skipped(self, api_with_compact, auth_headers, queue):
+        app = _make_app(api_with_compact)
         async with TestClient(TestServer(app)) as client:
+            drain = asyncio.create_task(
+                self._drain_compact_queue(
+                    queue, {"status": "skipped", "reason": "no active session"},
+                )
+            )
             resp = await client.post("/api/v1/compact", headers=auth_headers)
-            assert resp.status == 503
+            await drain
+            assert resp.status == 202
             data = await resp.json()
-            assert data["error"] == "compact not available"
+            assert data["status"] == "skipped"
 
     @pytest.mark.asyncio
     async def test_compact_requires_auth(self, api_with_compact):
@@ -2449,23 +2472,17 @@ class TestCompactEndpoint:
             assert resp.status == 401
 
     @pytest.mark.asyncio
-    async def test_compact_exception_returns_500(self, queue, auth_headers):
-        async def broken_compact():
-            raise RuntimeError("DB locked")
-        api = HTTPApi(
-            queue=queue,
-            host="127.0.0.1",
-            port=0,
-            auth_token="test-token-123",
-            agent_timeout=5.0,
-            handle_compact=broken_compact,
-        )
-        app = _make_app(api)
+    async def test_compact_queues_correct_item(self, api_with_compact, auth_headers, queue):
+        app = _make_app(api_with_compact)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.post("/api/v1/compact", headers=auth_headers)
-            assert resp.status == 500
-            data = await resp.json()
-            assert data["error"] == "internal error"
+            drain = asyncio.create_task(
+                self._drain_compact_queue(
+                    queue, {"status": "completed", "session": "test-123"},
+                )
+            )
+            await client.post("/api/v1/compact", headers=auth_headers)
+            await drain
+            # Queue drained successfully — _drain_compact_queue asserts type == "compact"
 
 
 # ─── AI-002: Queue Routing Invariant ─────────────────────────────
@@ -2489,7 +2506,6 @@ class TestQueueRoutingInvariant:
     # the developer to confirm the callback queues.
     _KNOWN_CALLBACK_DELEGATES = frozenset({
         "_handle_evolve_cb",   # daemon._handle_evolve → queue.put
-        "_handle_compact_cb",  # daemon._handle_compact → _process_message
     })
 
     @staticmethod

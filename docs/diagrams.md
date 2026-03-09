@@ -16,27 +16,27 @@ flowchart TD
         FIFO["Control FIFO<br/>lucyd.py:83"]
     end
 
-    Q["asyncio.Queue<br/>lucyd.py:296"]
+    Q["asyncio.Queue<br/>lucyd.py:339"]
 
-    subgraph Loop["Message Loop — lucyd.py:1523"]
+    subgraph Loop["Message Loop — lucyd.py:1546"]
         PRIMARY["Primary Sender<br/>Routing"]
         PASSIVE{"Passive<br/>telemetry ref?"}
         BUFFER["Buffer latest value<br/>per ref key"]
         DEB["Debounce<br/>500ms window"]
         MEDIA["Process Attachments<br/>image / voice / document"]
-        SESSION["Get/Create Session<br/>session.py:288"]
+        SESSION["Get/Create Session<br/>session.py:296"]
         TELEM["Drain Telemetry<br/>→ [telemetry: ...] injection"]
-        CTX["Build System Prompt<br/>context.py:31"]
+        CTX["Build System Prompt<br/>context.py:29"]
         AGENTIC["Agentic Loop<br/>agentic.py:138"]
     end
 
     subgraph Post["Post-Processing"]
-        PERSIST["Persist Messages<br/>session.py:167"]
+        PERSIST["Persist Messages<br/>session.py:168"]
         SILENT{"Silent Token?"}
         DELIVER["Channel Delivery<br/>channel.send()"]
         WEBHOOK["Webhook Callback<br/>lucyd.py:1297"]
         COMPACT{"Compaction<br/>Needed?"}
-        DO_COMPACT["Compact Session<br/>session.py:443"]
+        DO_COMPACT["Compact Session<br/>session.py:449"]
     end
 
     TG --> Q
@@ -119,7 +119,7 @@ flowchart LR
         VOICE["Voice / Image Hints"]
     end
 
-    BUILD["ContextBuilder.build()<br/>context.py:31"]
+    BUILD["ContextBuilder.build()<br/>context.py:29"]
     BLOCKS["list of dict<br/>tier-tagged blocks"]
     FORMAT["provider.format_system()<br/>anthropic_compat.py:83"]
     CACHED["cache_control: ephemeral<br/>on stable + semi_stable"]
@@ -142,22 +142,22 @@ flowchart TD
 
     subgraph Structured["Structured Memory (v2)"]
         ENTITIES["Extract Entities<br/>memory.py:331"]
-        FACTS["Lookup Facts<br/>memory.py:379"]
+        FACTS["Lookup Facts<br/>memory.py:374"]
         KEYWORDS["Extract Keywords"]
-        EPISODES["Search Episodes<br/>memory.py:414"]
-        COMMITMENTS["Open Commitments<br/>memory.py:446"]
+        EPISODES["Search Episodes<br/>memory.py:409"]
+        COMMITMENTS["Open Commitments<br/>memory.py:441"]
     end
 
     subgraph Unstructured["Unstructured Memory (v1)"]
         FTS["FTS5 Search<br/>memory.py:96"]
         FTS_CHECK{">=3 results?"}
-        EMBED["Embed Query<br/>_embed()<br/>memory.py:168"]
-        VECTOR["Vector Search<br/>memory.py:128"]
+        EMBED["Embed Query<br/>_embed()<br/>memory.py:166"]
+        VECTOR["Vector Search<br/>memory.py:127"]
         MERGE["Merge + Dedup"]
     end
 
     PRIORITY["Priority Sort<br/>commitments > vector ><br/>episodes > facts"]
-    BUDGET["Token Budget<br/>inject_recall()<br/>memory.py:548"]
+    BUDGET["Token Budget<br/>inject_recall()<br/>memory.py:537"]
 
     SYNTH_CHECK{"synthesis_style?"}
     RAW["Raw blocks<br/>→ system prompt"]
@@ -240,7 +240,7 @@ Dual storage model with compaction lifecycle.
 
 ```mermaid
 flowchart TD
-    CREATE["get_or_create()<br/>session.py:288"]
+    CREATE["get_or_create()<br/>session.py:296"]
 
     subgraph Active["Active Session"]
         USER_MSG["add_user_message()"]
@@ -254,10 +254,10 @@ flowchart TD
         THRESHOLD{"Token usage<br/>vs threshold?"}
         NORMAL((" "))
         WARN["Inject warning<br/>pending_system_warning"]
-        COMPACT["compact_session()<br/>session.py:443<br/>replace 2/3 messages<br/>with summary"]
+        COMPACT["compact_session()<br/>session.py:449<br/>replace 2/3 messages<br/>with summary"]
     end
 
-    CLOSE["close_session()<br/>session.py:326"]
+    CLOSE["close_session()<br/>session.py:334"]
     ARCHIVE["Move to .archive/"]
     DONE((" "))
 
@@ -276,7 +276,7 @@ Registration at startup, dispatch at runtime.
 
 ```mermaid
 flowchart TD
-    subgraph Startup["Registration — lucyd.py:378"]
+    subgraph Startup["Registration — lucyd.py:412"]
         CONFIG["lucyd.toml<br/>[tools] enabled list"]
         BUILTIN["11 Built-in Modules<br/>19 tools"]
         PLUGINS["plugins.d/*.py<br/>Custom tools"]
@@ -346,7 +346,7 @@ flowchart TD
         SEND_CLI["lucyd-send<br/>bin/lucyd-send"]
     end
 
-    Q["asyncio.Queue<br/>lucyd.py:296<br/>maxsize=1000"]
+    Q["asyncio.Queue<br/>lucyd.py:339<br/>maxsize=1000"]
 
     POLL --> PARSE --> DL --> Q
     SEND_CLI --> PIPE --> Q
@@ -354,8 +354,8 @@ flowchart TD
     NOTIFY --> AUTH
     AUTH --> RATE --> Q
 
-    Q --> LOOP["_message_loop()<br/>lucyd.py:1523"]
-    LOOP --> PROCESS["_process_message()<br/>lucyd.py:665"]
+    Q --> LOOP["_message_loop()<br/>lucyd.py:1546"]
+    LOOP --> PROCESS["_process_message()<br/>lucyd.py:715"]
 
     PROCESS -->|telegram| SEND_TG
     PROCESS -->|http| FUTURE["Resolve Future<br/>→ HTTP response"]

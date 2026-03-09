@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ─── Force-exit after session completes ──────────────────────────
 # pytest-asyncio leaves a non-daemon thread alive after all tests pass,
 # preventing the process from exiting.  os._exit() after pytest's own
@@ -30,7 +29,11 @@ def pytest_unconfigure(config):
 
     pytest_unconfigure is the last hook — all output (including the
     summary line) has been written by this point.
+    Disabled during mutmut runs (MUTMUT_RUNNING env var) so mutmut
+    can capture exit codes.
     """
+    if os.environ.get("MUTMUT_RUNNING"):
+        return
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(_pytest_exit_code)

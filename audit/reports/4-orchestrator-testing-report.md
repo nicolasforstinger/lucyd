@@ -1,32 +1,62 @@
 # Orchestrator Testing Report
 
-**Date:** 2026-03-06
-**Audit Cycle:** 16
-**Target:** lucyd.py, session.py (verification integration)
+**Date:** 2026-03-09
+**Cycle:** 17
+**Target:** lucyd.py (orchestrator)
 **EXIT STATUS:** PASS
-
-## Changes Since Cycle 15
-
-1. **Verification integration** — `session.py:compact_session()` calls `verify_compaction_summary()` + `_build_deterministic_summary()` for compaction hallucination detection.
-2. **Single-provider refactoring** — `self.providers` dict → `self.provider` singular, routing removed.
 
 ## Pattern Checks
 
 | Pattern | Result |
 |---------|--------|
-| P-017 (crash-unsafe state) | CLEAN — `_save_state()` in `finally` block |
-| P-023 (CLI/API parity) | PASS — enforced by `test_audit_agnostic.py` |
-| P-028 (HTTP mutation bypass) | CLEAN — all mutations route through queue |
+| P-017 (crash-unsafe state sequences) | CLEAN — persist-first ordering verified |
+| P-023 (CLI/API parity) | PASS — 17 invariant tests pass |
+| P-028 (mutation endpoint bypassing queue) | CLEAN — all state-mutating HTTP endpoints route through queue |
 
-## Contract Test Coverage
+## Extracted Functions
 
-283 orchestrator tests across 4 files, all passing (8.42s).
-17 architecture invariant tests, all passing.
+| Function | Purpose | Tests | Status |
+|----------|---------|-------|--------|
+| `_is_uuid` | UUID detection | 3 | CARRIED |
+| `_should_warn_context` | Compaction warning decision | 5 | PASS |
+| `_should_deliver` | Delivery suppression logic | 4 | PASS |
+| `_inject_warning` | System warning prepend | 4 | PASS |
+| `_is_silent` | Silent token matching | 4 | PASS |
+| `_enrich_image_caption` | Image caption enrichment | Tests in TestEnrichImageCaption | CARRIED |
 
-## Verification Integration
+20 extracted function tests, all passing.
 
-`session.py:compact_session()` integration test: `test_compaction_event_includes_verification_fields` — verifies JSONL events include `verified` and `verification_tier` fields.
+## Contract Test Categories
+
+| Category | Class | Tests | Status |
+|----------|-------|-------|--------|
+| Basic message flow | TestBasicMessageFlow | multi | PASS |
+| Error handling | TestProviderErrorHandling | multi | PASS |
+| Typing indicators | TestTypingIndicators | multi | PASS |
+| Silent token suppression | TestSilentTokenSuppression | multi | PASS |
+| Delivery suppression | TestDeliverySuppression | multi | PASS |
+| Warning injection | TestWarningInjection + TestCompactionWarning | multi | PASS |
+| Compaction | TestHardCompaction + TestForcedCompact | multi | PASS |
+| HTTP future resolution | TestHTTPFutureResolution | multi | PASS |
+| Message persistence | TestMessagePersistence | multi | PASS |
+| Memory v2 wiring | TestMemoryV2Wiring + TestConsolidateOnClose | multi | PASS |
+| System session auto-close | TestAutoCloseSystemSessions | multi | PASS |
+
+Additional contract test classes (new since Cycle 16):
+- TestPrimarySenderRouting (primary_sender notification routing)
+- TestPassiveTelemetryRouting (passive_notify_refs buffer)
+- TestDrainTelemetry (telemetry injection into next real message)
+
+## Test Counts
+
+| Type | Count |
+|------|-------|
+| test_daemon_helpers.py | 15 |
+| test_daemon_integration.py | 119 |
+| test_orchestrator.py | 130 |
+| test_monitor.py | 33 |
+| test_audit_agnostic.py (invariants) | 17 |
+| **Total orchestrator tests** | **314** |
 
 ## Confidence
-
-97% — all contract tests pass, architecture invariants enforced, verification integration covered.
+97% — all 12 contract categories covered, new features tested, invariant tests passing.
