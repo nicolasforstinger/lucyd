@@ -1263,7 +1263,7 @@ class TestProcessMessageIntegration:
 
         # add_user_message should have been called with text containing [image]
         call_text = session.add_user_message.call_args[0][0]
-        assert "[image]" in call_text
+        assert "[image, saved:" in call_text
         assert "What is in this picture?" in call_text
 
     @pytest.mark.asyncio

@@ -202,15 +202,18 @@ def _enrich_image_caption(
     msg_count_before: int,
     max_desc_len: int = 200,
 ) -> str:
-    """Replace bare [caption] with [caption: description] from first assistant response.
+    """Replace bare [caption...] with [caption: description] from first assistant response.
 
     After transient image injection is removed, the stored user message
-    only has a bare tag like ``[Image from user]``. This extracts a truncated
-    summary from the assistant's first reply (which describes the image) and
-    embeds it so image context survives compaction.
+    only has a tag like ``[Image from user, saved: /path]``. This extracts a
+    truncated summary from the assistant's first reply (which describes the
+    image) and embeds it so image context survives compaction.
     """
-    tag = f"[{caption}]"
-    if tag not in text:
+    import re
+    # Match [caption] or [caption, saved: /path] — capture full tag
+    pattern = re.compile(r"\[" + re.escape(caption) + r"(?:,\s*saved:\s*[^\]]+)?\]")
+    m = pattern.search(text)
+    if not m:
         return text
 
     # Find first assistant text from this turn
@@ -228,7 +231,7 @@ def _enrich_image_caption(
         desc = cut + "..." if cut else desc[:max_desc_len] + "..."
 
     desc = " ".join(desc.split())
-    return text.replace(tag, f"[{caption}: {desc}]", 1)
+    return text.replace(m.group(0), f"[{caption}: {desc}]", 1)
 
 
 # ─── Image Fitting ───────────────────────────────────────────────
@@ -781,7 +784,7 @@ class LucydDaemon:
                             "media_type": att.content_type,
                             "data": base64.b64encode(img_data).decode("ascii"),
                         })
-                        text = (f"[{caption}] " + text) if text else f"[{caption}]"
+                        text = (f"[{caption}, saved: {att.local_path}] " + text) if text else f"[{caption}, saved: {att.local_path}]"
                     except Exception as e:
                         log.error("Failed to read image %s: %s", att.local_path, e)
                         text = (text + "\n" if text else "") + f"[{too_large_msg} — could not read file]"
@@ -799,7 +802,7 @@ class LucydDaemon:
                             self.config.raw("stt", default={}),
                             att.local_path, att.content_type,
                         )
-                        text = (text + "\n" if text else "") + f"[{label}]: {transcription}"
+                        text = (text + "\n" if text else "") + f"[{label}, saved: {att.local_path}]: {transcription}"
                     except Exception as e:
                         log.error("STT transcription failed (%s): %s",
                                   self.config.stt_backend, e)
@@ -819,9 +822,9 @@ class LucydDaemon:
                             log.error("Document extraction failed for %s: %s", att.filename, e)
                     if doc_text:
                         label = att.filename or "document"
-                        text = (text + "\n" if text else "") + f"[document: {label}]\n{doc_text}"
+                        text = (text + "\n" if text else "") + f"[document: {label}, saved: {att.local_path}]\n{doc_text}"
                     else:
-                        text = (text + "\n" if text else "") + f"[attachment: {att.filename or 'file'}, {att.content_type}]"
+                        text = (text + "\n" if text else "") + f"[attachment: {att.filename or 'file'}, {att.content_type}, saved: {att.local_path}]"
 
         # Track whether session pre-existed (for auto-close decision).
         # Notifications routed to the primary session must not close it.

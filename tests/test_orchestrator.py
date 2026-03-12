@@ -1758,7 +1758,7 @@ class TestDocumentExtractionIntegration:
             )
 
         call_text = session.add_user_message.call_args[0][0]
-        assert "[document: notes.txt]" in call_text
+        assert "[document: notes.txt, saved:" in call_text
         assert "Meeting notes here" in call_text
 
     @pytest.mark.asyncio
@@ -1790,7 +1790,7 @@ class TestDocumentExtractionIntegration:
             )
 
         call_text = session.add_user_message.call_args[0][0]
-        assert "[attachment: design.psd, application/octet-stream]" in call_text
+        assert "[attachment: design.psd, application/octet-stream, saved:" in call_text
 
     @pytest.mark.asyncio
     async def test_documents_disabled_falls_to_label(self, tmp_path):
@@ -1818,7 +1818,7 @@ class TestDocumentExtractionIntegration:
             )
 
         call_text = session.add_user_message.call_args[0][0]
-        assert "[attachment: readme.txt, text/plain]" in call_text
+        assert "[attachment: readme.txt, text/plain, saved:" in call_text
         assert "This should not be extracted" not in call_text
 
     @pytest.mark.asyncio
@@ -1850,7 +1850,7 @@ class TestDocumentExtractionIntegration:
             )
 
         call_text = session.add_user_message.call_args[0][0]
-        assert "[attachment: big.txt, text/plain]" in call_text
+        assert "[attachment: big.txt, text/plain, saved:" in call_text
 
     @pytest.mark.asyncio
     async def test_extraction_error_falls_to_label(self, tmp_path):
@@ -1882,7 +1882,7 @@ class TestDocumentExtractionIntegration:
                 )
 
         call_text = session.add_user_message.call_args[0][0]
-        assert "[attachment: bad.txt, text/plain]" in call_text
+        assert "[attachment: bad.txt, text/plain, saved:" in call_text
 
 
 # ─── Image Dimension Check ───────────────────────────────────────
@@ -2033,7 +2033,7 @@ class TestImageFitting:
             )
 
         call_text = session.add_user_message.call_args[0][0]
-        assert "[image]" in call_text
+        assert "[image, saved:" in call_text
         assert "too large" not in call_text
 
 
@@ -2137,6 +2137,7 @@ class TestMessageLevelRetry:
         daemon.config.message_retry_base_delay = 0.01
         daemon.config.vision_max_image_bytes = 10 * 1024 * 1024
         daemon.config.vision_max_dimension = 1568
+        daemon.config.vision_default_caption = "image"
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
