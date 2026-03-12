@@ -21,9 +21,6 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_VECTOR_SEARCH_LIMIT = 10_000
-
-
 def cosine_sim(a: list[float], b: list[float]) -> float:
     """Pure-Python cosine similarity."""
     dot = sum(x * y for x, y in zip(a, b, strict=True))
@@ -42,8 +39,12 @@ class MemoryInterface:
         embedding_model: str = "",
         embedding_base_url: str = "",
         embedding_provider: str = "",
-        embedding_timeout: int = 15,
-        top_k: int = 10,
+        *,
+        embedding_timeout: int,
+        top_k: int,
+        vector_search_limit: int,
+        fts_min_results: int,
+        sqlite_timeout: int,
     ):
         self.db_path = db_path
         self.api_key = embedding_api_key
@@ -52,6 +53,9 @@ class MemoryInterface:
         self.provider = embedding_provider
         self.embedding_timeout = embedding_timeout
         self.top_k = top_k
+        self.vector_search_limit = vector_search_limit
+        self.fts_min_results = fts_min_results
+        self.sqlite_timeout = sqlite_timeout
 
         if not Path(db_path).exists():
             log.warning("Memory DB not found: %s", db_path)
@@ -63,7 +67,7 @@ class MemoryInterface:
         # Try FTS first
         fts_results = await self._fts_search(query, k)
         # Fall back to vector search if FTS returns fewer than 3 results
-        if len(fts_results) >= 3:
+        if len(fts_results) >= self.fts_min_results:
             return fts_results
 
         # Vector fallback
@@ -100,7 +104,7 @@ class MemoryInterface:
             return []
 
         def _query():
-            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(
@@ -131,16 +135,16 @@ class MemoryInterface:
             return []
 
         def _search():
-            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(
                     "SELECT id, path, source, text, embedding FROM chunks "
                     "WHERE embedding IS NOT NULL LIMIT ?",
-                    (_VECTOR_SEARCH_LIMIT,)
+                    (self.vector_search_limit,)
                 ).fetchall()
-                if len(rows) == _VECTOR_SEARCH_LIMIT:
-                    log.warning("Vector search hit %d row limit — results may be incomplete", _VECTOR_SEARCH_LIMIT)
+                if len(rows) == self.vector_search_limit:
+                    log.warning("Vector search hit %d row limit — results may be incomplete", self.vector_search_limit)
             finally:
                 conn.close()
 
@@ -201,7 +205,7 @@ class MemoryInterface:
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
         def _query():
-            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             try:
                 row = conn.execute(
                     "SELECT embedding FROM embedding_cache WHERE hash = ? AND model = ?",
@@ -222,7 +226,7 @@ class MemoryInterface:
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
         def _store():
-            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             try:
                 conn.execute(
                     """INSERT OR REPLACE INTO embedding_cache
@@ -243,7 +247,7 @@ class MemoryInterface:
                                start_line: int = 0, end_line: int = 50) -> str:
         """Retrieve file content from chunks by path and line range."""
         def _query():
-            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             try:
                 # Overlap detection: find chunks that intersect the requested range
                 rows = conn.execute(
@@ -594,7 +598,7 @@ def get_session_start_context(
     config=None,
     max_facts: int = 20,
     max_episodes: int = 3,
-    max_tokens: int = 1500,
+    max_tokens: int = 0,
 ) -> str:
     """Build structured context for the first message of a session.
 

@@ -18,7 +18,7 @@ flowchart TD
 
     Q["asyncio.Queue<br/>lucyd.py:339"]
 
-    subgraph Loop["Message Loop — lucyd.py:1546"]
+    subgraph Loop["Message Loop — lucyd.py:1565"]
         PRIMARY["Primary Sender<br/>Routing"]
         PASSIVE{"Passive<br/>telemetry ref?"}
         BUFFER["Buffer latest value<br/>per ref key"]
@@ -27,14 +27,14 @@ flowchart TD
         SESSION["Get/Create Session<br/>session.py:296"]
         TELEM["Drain Telemetry<br/>→ [telemetry: ...] injection"]
         CTX["Build System Prompt<br/>context.py:29"]
-        AGENTIC["Agentic Loop<br/>agentic.py:138"]
+        AGENTIC["Agentic Loop<br/>agentic.py:141"]
     end
 
     subgraph Post["Post-Processing"]
         PERSIST["Persist Messages<br/>session.py:168"]
         SILENT{"Silent Token?"}
         DELIVER["Channel Delivery<br/>channel.send()"]
-        WEBHOOK["Webhook Callback<br/>lucyd.py:1297"]
+        WEBHOOK["Webhook Callback<br/>lucyd.py:1280"]
         COMPACT{"Compaction<br/>Needed?"}
         DO_COMPACT["Compact Session<br/>session.py:449"]
     end
@@ -62,10 +62,10 @@ The core thinking-acting cycle that processes each message.
 
 ```mermaid
 flowchart TD
-    START["run_agentic_loop()<br/>agentic.py:138"]
+    START["run_agentic_loop()<br/>agentic.py:141"]
     FORMAT["Format messages + tools<br/>provider.format_*()"]
-    API["provider.complete()<br/>agentic.py:196"]
-    COST["Record cost<br/>agentic.py:88"]
+    API["provider.complete()<br/>agentic.py:200"]
+    COST["Record cost<br/>agentic.py:89"]
 
     COST_CHECK{"Cost limit<br/>exceeded?"}
     APPEND["Append response<br/>to session.messages"]
@@ -141,27 +141,27 @@ flowchart TD
     QUERY["Session Start<br/>Query: sender + recent text"]
 
     subgraph Structured["Structured Memory (v2)"]
-        ENTITIES["Extract Entities<br/>memory.py:331"]
-        FACTS["Lookup Facts<br/>memory.py:374"]
+        ENTITIES["Extract Entities<br/>memory.py:345"]
+        FACTS["Lookup Facts<br/>memory.py:378"]
         KEYWORDS["Extract Keywords"]
-        EPISODES["Search Episodes<br/>memory.py:409"]
-        COMMITMENTS["Open Commitments<br/>memory.py:441"]
+        EPISODES["Search Episodes<br/>memory.py:413"]
+        COMMITMENTS["Open Commitments<br/>memory.py:445"]
     end
 
     subgraph Unstructured["Unstructured Memory (v1)"]
-        FTS["FTS5 Search<br/>memory.py:96"]
+        FTS["FTS5 Search<br/>memory.py:100"]
         FTS_CHECK{">=3 results?"}
-        EMBED["Embed Query<br/>_embed()<br/>memory.py:166"]
-        VECTOR["Vector Search<br/>memory.py:127"]
+        EMBED["Embed Query<br/>_embed()<br/>memory.py:170"]
+        VECTOR["Vector Search<br/>memory.py:131"]
         MERGE["Merge + Dedup"]
     end
 
     PRIORITY["Priority Sort<br/>commitments > vector ><br/>episodes > facts"]
-    BUDGET["Token Budget<br/>inject_recall()<br/>memory.py:537"]
+    BUDGET["Token Budget<br/>inject_recall()<br/>memory.py:541"]
 
     SYNTH_CHECK{"synthesis_style?"}
     RAW["Raw blocks<br/>→ system prompt"]
-    LLM_SYNTH["Synthesize<br/>synthesis.py:88"]
+    LLM_SYNTH["Synthesize<br/>synthesis.py:26"]
     PROSE["Prose<br/>→ system prompt"]
 
     QUERY --> ENTITIES --> FACTS
@@ -295,7 +295,7 @@ flowchart TD
         MSG_CFG["messaging:<br/>channel, contacts"]
     end
 
-    subgraph Runtime["Dispatch — agentic.py:271"]
+    subgraph Runtime["Dispatch — agentic.py:272"]
         CALL["Tool call from LLM<br/>name + arguments"]
         LOOKUP{"name in<br/>registry?"}
         EXEC["execute()<br/>tools/__init__.py:126"]
@@ -354,8 +354,8 @@ flowchart TD
     NOTIFY --> AUTH
     AUTH --> RATE --> Q
 
-    Q --> LOOP["_message_loop()<br/>lucyd.py:1546"]
-    LOOP --> PROCESS["_process_message()<br/>lucyd.py:715"]
+    Q --> LOOP["_message_loop()<br/>lucyd.py:1565"]
+    LOOP --> PROCESS["_process_message()<br/>lucyd.py:720"]
 
     PROCESS -->|telegram| SEND_TG
     PROCESS -->|http| FUTURE["Resolve Future<br/>→ HTTP response"]

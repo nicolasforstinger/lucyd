@@ -57,7 +57,14 @@ async def tool_memory_search(query: str, top_k: int = 10) -> str:
             if style != "structured" and _synth_provider is not None:
                 try:
                     from synthesis import synthesize_recall
-                    synth_result = await synthesize_recall(result, style, _synth_provider)
+                    prompt_map = {
+                        "narrative": getattr(_config, "synthesis_prompt_narrative", ""),
+                        "factual": getattr(_config, "synthesis_prompt_factual", ""),
+                    }
+                    synth_result = await synthesize_recall(
+                        result, style, _synth_provider,
+                        prompt_override=prompt_map.get(style, ""),
+                    )
                     result = synth_result.text
                 except Exception:
                     log.warning("Tool recall synthesis failed, using raw", exc_info=True)

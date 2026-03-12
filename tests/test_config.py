@@ -114,12 +114,11 @@ class TestCompactionMaxTokens:
 
 
 class TestFilesystemAllowedPaths:
-    def test_default_includes_workspace_and_tmp(self, minimal_toml_data):
-        """When no explicit allowed_paths, defaults to workspace + /tmp/."""
+    def test_reads_allowed_paths_from_config(self, minimal_toml_data):
+        """allowed_paths are read from config and resolved."""
         cfg = Config(minimal_toml_data)
         paths = cfg.filesystem_allowed_paths
-        assert "/tmp/" in paths or any("/tmp" in p for p in paths)
-        assert any("test-workspace" in p for p in paths)
+        assert any("/tmp" in p for p in paths)
 
     def test_explicit_overrides_default(self, minimal_toml_data):
         """Explicit allowed_paths replaces the default."""
@@ -150,12 +149,9 @@ class TestWebSearchApiKey:
         })
         assert cfg.web_search_api_key == ""
 
-    def test_web_search_api_key_no_config(self):
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-        })
+    def test_web_search_api_key_empty_when_no_env_var(self, minimal_toml_data):
+        """Empty api_key_env returns empty string."""
+        cfg = Config(minimal_toml_data)
         assert cfg.web_search_api_key == ""
 
 
@@ -212,7 +208,7 @@ class TestTodayStartTs:
 class TestSTTConfig:
     """STT generic properties — backend-specific config read via raw()."""
 
-    def test_defaults_when_section_absent(self, minimal_toml_data):
+    def test_values_from_config(self, minimal_toml_data):
         cfg = Config(minimal_toml_data)
         assert cfg.stt_backend == ""
         assert cfg.stt_voice_label == "voice message"
@@ -243,9 +239,9 @@ class TestPluginConfig:
         cfg = Config(minimal_toml_data)
         assert cfg.plugins_dir == "my_plugins"
 
-    def test_subagent_deny_default_none(self, minimal_toml_data):
+    def test_subagent_deny_default_empty(self, minimal_toml_data):
         cfg = Config(minimal_toml_data)
-        assert cfg.subagent_deny is None
+        assert cfg.subagent_deny == []
 
     def test_subagent_deny_custom(self, minimal_toml_data):
         minimal_toml_data["tools"]["subagent_deny"] = ["sessions_spawn", "tts"]
@@ -291,9 +287,9 @@ class TestPluginConfig:
 class TestVisionConfig:
     """Vision section defaults and overrides."""
 
-    def test_defaults_when_section_absent(self, minimal_toml_data):
+    def test_values_from_config(self, minimal_toml_data):
         cfg = Config(minimal_toml_data)
-        assert cfg.vision_max_image_bytes == 5 * 1024 * 1024
+        assert cfg.vision_max_image_bytes == 5242880
         assert cfg.vision_max_dimension == 1568
         assert cfg.vision_default_caption == "image"
         assert cfg.vision_too_large_msg == "image too large to display"
@@ -381,18 +377,19 @@ class TestTtsApiKey:
         assert cfg.tts_provider == ""
 
     def test_tts_provider_from_config(self, minimal_toml_data):
-        minimal_toml_data.setdefault("tools", {})["tts"] = {"provider": "elevenlabs"}
+        minimal_toml_data["tools"]["tts"]["provider"] = "elevenlabs"
         cfg = Config(minimal_toml_data)
         assert cfg.tts_provider == "elevenlabs"
 
     def test_tts_api_key_from_explicit_env(self, minimal_toml_data, monkeypatch):
-        minimal_toml_data.setdefault("tools", {})["tts"] = {"api_key_env": "MY_TTS_KEY"}
+        minimal_toml_data["tools"]["tts"]["api_key_env"] = "MY_TTS_KEY"
         monkeypatch.setenv("MY_TTS_KEY", "sk-custom-tts")
         cfg = Config(minimal_toml_data)
         assert cfg.tts_api_key == "sk-custom-tts"
 
     def test_tts_api_key_empty_when_no_api_key_env(self, minimal_toml_data):
-        minimal_toml_data.setdefault("tools", {})["tts"] = {"provider": "elevenlabs"}
+        minimal_toml_data["tools"]["tts"]["provider"] = "elevenlabs"
+        minimal_toml_data["tools"]["tts"]["api_key_env"] = ""
         cfg = Config(minimal_toml_data)
         assert cfg.tts_api_key == ""
 

@@ -30,15 +30,17 @@ log = logging.getLogger(__name__)
 
 
 class _RateLimiter:
-    def __init__(self, max_requests: int = 30, window_seconds: int = 60):
+    def __init__(self, max_requests: int, window_seconds: int,
+                 cleanup_threshold: int):
         self.max_requests = max_requests
         self.window = window_seconds
+        self.cleanup_threshold = cleanup_threshold
         self._hits: dict[str, list[float]] = defaultdict(list)
 
     def check(self, key: str) -> bool:
         now = time.monotonic()
         # Periodic sweep: evict stale keys when dict grows large
-        if len(self._hits) > 1000:
+        if len(self._hits) > self.cleanup_threshold:
             stale = [k for k, v in self._hits.items()
                      if not v or now - v[-1] >= self.window]
             for k in stale:
@@ -76,11 +78,13 @@ class HTTPApi:
         handle_reset: Any = None,
         get_history: Any = None,
         handle_evolve: Any = None,
-        download_dir: str = "/tmp/lucyd-http",  # noqa: S108 — default; overridden by config
-        max_body_bytes: int = 10 * 1024 * 1024,
-        rate_limit: int = 30,
-        rate_window: int = 60,
-        status_rate_limit: int = 60,
+        *,
+        download_dir: str,
+        max_body_bytes: int,
+        rate_limit: int,
+        rate_window: int,
+        status_rate_limit: int,
+        rate_cleanup_threshold: int,
         agent_name: str = "",
         control_queue: asyncio.Queue | None = None,
     ):
@@ -101,8 +105,10 @@ class HTTPApi:
         self._download_dir = download_dir
         self._max_body_bytes = max_body_bytes
         self._runner: web.AppRunner | None = None
-        self._rate_limiter = _RateLimiter(max_requests=rate_limit, window_seconds=rate_window)
-        self._status_rate_limiter = _RateLimiter(max_requests=status_rate_limit, window_seconds=rate_window)
+        self._rate_limiter = _RateLimiter(max_requests=rate_limit, window_seconds=rate_window,
+                                          cleanup_threshold=rate_cleanup_threshold)
+        self._status_rate_limiter = _RateLimiter(max_requests=status_rate_limit, window_seconds=rate_window,
+                                                  cleanup_threshold=rate_cleanup_threshold)
 
     # ─── Response Helper ─────────────────────────────────────────
 

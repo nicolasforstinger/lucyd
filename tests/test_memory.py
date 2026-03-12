@@ -7,6 +7,15 @@ import pytest
 
 from memory import MemoryInterface, cosine_sim
 
+# Default keyword-only args for MemoryInterface in tests
+_MEM_DEFAULTS = dict(
+    embedding_timeout=15,
+    top_k=10,
+    vector_search_limit=10000,
+    fts_min_results=3,
+    sqlite_timeout=30,
+)
+
 
 @pytest.fixture
 def memory_db(tmp_path):
@@ -60,7 +69,7 @@ class TestCachTableInit:
     def test_handles_missing_db(self, tmp_path):
         db_path = str(tmp_path / "nonexistent.sqlite")
         # Should not raise
-        MemoryInterface(db_path=db_path)
+        MemoryInterface(db_path=db_path, **_MEM_DEFAULTS)
 
 
 class TestOverlapQuery:
@@ -69,7 +78,7 @@ class TestOverlapQuery:
     @pytest.mark.asyncio
     async def test_overlap_finds_partial(self, memory_db):
         """Chunk 45-60 should be found when requesting lines 0-50."""
-        mem = MemoryInterface(db_path=memory_db)
+        mem = MemoryInterface(db_path=memory_db, **_MEM_DEFAULTS)
         result = await mem.get_file_snippet("test.py", start_line=0, end_line=50)
         # chunk1 (1-10), chunk2 (11-20) fully inside, chunk3 (45-60) overlaps
         assert "hello" in result
@@ -79,14 +88,14 @@ class TestOverlapQuery:
     @pytest.mark.asyncio
     async def test_no_overlap(self, memory_db):
         """No chunks in range 100-200."""
-        mem = MemoryInterface(db_path=memory_db)
+        mem = MemoryInterface(db_path=memory_db, **_MEM_DEFAULTS)
         result = await mem.get_file_snippet("test.py", start_line=100, end_line=200)
         assert "No chunks found" in result
 
     @pytest.mark.asyncio
     async def test_exact_range(self, memory_db):
         """Exact match on chunk boundaries."""
-        mem = MemoryInterface(db_path=memory_db)
+        mem = MemoryInterface(db_path=memory_db, **_MEM_DEFAULTS)
         result = await mem.get_file_snippet("test.py", start_line=1, end_line=10)
         assert "hello" in result
 
@@ -115,7 +124,7 @@ class TestVectorSearchLimit:
     @pytest.mark.asyncio
     async def test_vector_query_has_limit(self, memory_db):
         """The SQL should include LIMIT 10000."""
-        mem = MemoryInterface(db_path=memory_db)
+        mem = MemoryInterface(db_path=memory_db, **_MEM_DEFAULTS)
         # Without an API key, vector search is skipped gracefully
         results = await mem._vector_search("test", top_k=5)
         assert isinstance(results, list)
@@ -153,15 +162,10 @@ class TestFTSSanitize:
 
 
 class TestVectorSearchLimitWarning:
-    """BUG-8: Vector search limit warning."""
+    """BUG-8: Vector search limit is configurable via constructor."""
 
-    def test_warning_logged_when_limit_hit(self, memory_db, caplog):
-        """Verify the warning is logged when limit is hit."""
-        import memory as mem_mod
-        # Set a small limit for testing
-        original_limit = mem_mod._VECTOR_SEARCH_LIMIT
-        mem_mod._VECTOR_SEARCH_LIMIT = 2
-
+    def test_vector_search_limit_applied(self, memory_db):
+        """Verify the vector_search_limit parameter controls the SQL LIMIT."""
         # Insert 3 rows with embeddings
         conn = sqlite3.connect(memory_db)
         for i in range(3):
@@ -174,19 +178,26 @@ class TestVectorSearchLimitWarning:
         conn.commit()
         conn.close()
 
-        # Run search — the internal _search function uses _VECTOR_SEARCH_LIMIT
-        # We just verify the DB has enough rows and the constant is configurable
+        # Create instance with small vector_search_limit
+        mem = MemoryInterface(
+            db_path=memory_db,
+            **{**_MEM_DEFAULTS, "vector_search_limit": 2},
+        )
+
+        # Verify the limit is stored on the instance
+        assert mem.vector_search_limit == 2
+
+        # Verify the DB query with that limit returns only 2 rows
         conn = sqlite3.connect(memory_db)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, path, source, text, embedding FROM chunks "
             "WHERE embedding IS NOT NULL LIMIT ?",
-            (mem_mod._VECTOR_SEARCH_LIMIT,)
+            (mem.vector_search_limit,)
         ).fetchall()
         conn.close()
 
         assert len(rows) == 2  # Limited to 2
-        mem_mod._VECTOR_SEARCH_LIMIT = original_limit
 
 
 # ─── TEST-8: Embedding API call (_embed) ─────────────────────────
@@ -215,6 +226,7 @@ class TestEmbedAPI:
             embedding_api_key="test-key-123",
             embedding_model="text-embedding-3-small",
             embedding_base_url="https://api.example.com/v1",
+            **_MEM_DEFAULTS,
         )
 
         with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
@@ -247,6 +259,7 @@ class TestEmbedAPI:
             embedding_api_key="test-key",
             embedding_model="text-embedding-3-small",
             embedding_base_url="https://api.example.com/v1",
+            **_MEM_DEFAULTS,
         )
 
         with patch("urllib.request.urlopen", return_value=mock_resp):
@@ -286,6 +299,7 @@ class TestEmbedAPI:
             embedding_api_key="test-key",
             embedding_model="text-embedding-3-small",
             embedding_base_url="https://api.example.com/v1",
+            **_MEM_DEFAULTS,
         )
 
         with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
@@ -308,6 +322,7 @@ class TestEmbedAPI:
             embedding_api_key="test-key",
             embedding_model="text-embedding-3-small",
             embedding_base_url="https://api.example.com/v1",
+            **_MEM_DEFAULTS,
         )
 
         with patch("urllib.request.urlopen", side_effect=URLError("connection refused")):
@@ -325,6 +340,7 @@ class TestEmbedAPI:
             embedding_api_key="test-key",
             embedding_model="text-embedding-3-small",
             embedding_base_url="https://api.example.com/v1",
+            **_MEM_DEFAULTS,
         )
 
         with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
@@ -342,6 +358,7 @@ class TestEmbedAPI:
             embedding_api_key="",  # no key
             embedding_model="text-embedding-3-small",
             embedding_base_url="https://api.example.com/v1",
+            **_MEM_DEFAULTS,
         )
 
         with patch("urllib.request.urlopen"):
@@ -359,7 +376,7 @@ class TestMemorySearchRoundTrip:
     @pytest.mark.asyncio
     async def test_fts_search_returns_matching_chunks(self, memory_db):
         """FTS-first path: query matches chunk text, returns results without embeddings."""
-        mi = MemoryInterface(db_path=memory_db)
+        mi = MemoryInterface(db_path=memory_db, **_MEM_DEFAULTS)
         results = await mi.search("hello")
         assert len(results) >= 1
         assert any("hello" in r["text"] for r in results)
@@ -367,7 +384,7 @@ class TestMemorySearchRoundTrip:
     @pytest.mark.asyncio
     async def test_search_no_match_returns_empty(self, memory_db):
         """Query with no FTS matches and no embed_fn returns empty."""
-        mi = MemoryInterface(db_path=memory_db)
+        mi = MemoryInterface(db_path=memory_db, **_MEM_DEFAULTS)
         results = await mi.search("zzz_nonexistent_term_zzz")
         assert results == []
 
@@ -385,7 +402,7 @@ class TestSearchAggregation:
         """When FTS returns >= 3 results, vector search is never called."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "a", "text": "alpha", "score": 0.9},
             {"id": "b", "text": "beta", "score": 0.8},
@@ -405,7 +422,7 @@ class TestSearchAggregation:
         """When FTS returns < 3, vector results are merged in."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "a", "text": "alpha", "score": 0.9},
         ]
@@ -429,7 +446,7 @@ class TestSearchAggregation:
         """Duplicate chunk IDs across FTS and vector are deduplicated."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         # Same chunk "a" appears in both FTS and vector results
         fts_results = [
             {"id": "a", "text": "alpha from fts", "score": 0.5},
@@ -456,7 +473,7 @@ class TestSearchAggregation:
         """After merging, results are sorted by score descending."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "low", "text": "low score", "score": 0.1},
             {"id": "mid", "text": "mid score", "score": 0.5},
@@ -480,7 +497,7 @@ class TestSearchAggregation:
         """Merged results are truncated to top_k."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "a", "text": "a", "score": 0.9},
             {"id": "b", "text": "b", "score": 0.8},
@@ -509,7 +526,7 @@ class TestSearchAggregation:
         """FTS returns results but vector returns empty — FTS results survive."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "a", "text": "alpha", "score": 0.5},
         ]
@@ -526,7 +543,7 @@ class TestSearchAggregation:
         """FTS returns empty, vector returns results — vector results survive."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         vector_results = [
             {"id": "v1", "text": "vector hit", "score": 0.8},
             {"id": "v2", "text": "another", "score": 0.6},
@@ -545,7 +562,7 @@ class TestSearchAggregation:
         """Without api_key, vector search is skipped even when FTS < 3."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "a", "text": "alpha", "score": 0.5},
         ]
@@ -563,7 +580,7 @@ class TestSearchAggregation:
         """Both FTS and vector return nothing — empty list."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
 
         with patch.object(mi, "_fts_search", new_callable=AsyncMock, return_value=[]), \
              patch.object(mi, "_vector_search", new_callable=AsyncMock, return_value=[]):
@@ -576,7 +593,7 @@ class TestSearchAggregation:
         """Boundary: exactly 3 FTS results means vector is NOT called."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "a", "text": "a", "score": 0.9},
             {"id": "b", "text": "b", "score": 0.8},
@@ -595,7 +612,7 @@ class TestSearchAggregation:
         """Boundary: exactly 2 FTS results triggers vector fallback."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "a", "text": "a", "score": 0.9},
             {"id": "b", "text": "b", "score": 0.8},
@@ -616,7 +633,7 @@ class TestSearchAggregation:
         """When vector returns only IDs already in FTS, no new results added."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "a", "text": "alpha", "score": 0.5},
             {"id": "b", "text": "bravo", "score": 0.4},
@@ -640,7 +657,7 @@ class TestSearchAggregation:
         """Results without 'score' key sort to the bottom."""
         from unittest.mock import AsyncMock, patch
 
-        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key")
+        mi = MemoryInterface(db_path=memory_db, embedding_api_key="key", **_MEM_DEFAULTS)
         fts_results = [
             {"id": "no-score", "text": "no score field"},  # no "score" key
         ]

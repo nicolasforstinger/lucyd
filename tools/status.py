@@ -15,16 +15,20 @@ _session_manager: Any = None
 _cost_db_path: str = ""
 _daemon_start_time: float = 0.0
 _current_session: Any = None  # Set by LucydDaemon before each _process_message
+_sqlite_timeout: int = 30
 
 MAX_CONTEXT_TOKENS = 0
 
 
 def configure(session_manager: Any = None, cost_db: str = "",
-              start_time: float = 0.0, max_context_tokens: int = 0) -> None:
+              start_time: float = 0.0, max_context_tokens: int = 0,
+              sqlite_timeout: int = 30) -> None:
     global _session_manager, _cost_db_path, _daemon_start_time, MAX_CONTEXT_TOKENS
+    global _sqlite_timeout
     _session_manager = session_manager
     _cost_db_path = cost_db
     _daemon_start_time = start_time
+    _sqlite_timeout = sqlite_timeout
     if max_context_tokens > 0:
         MAX_CONTEXT_TOKENS = max_context_tokens
 
@@ -64,6 +68,7 @@ def tool_session_status() -> str:
             "SELECT SUM(cost_usd), SUM(input_tokens), SUM(output_tokens) "
             "FROM costs WHERE timestamp >= ?",
             (today_start_ts(),),
+            sqlite_timeout=_sqlite_timeout,
         )
         if rows and rows[0][0]:
             lines.append(f"Today's cost: ${rows[0][0]:.4f}")

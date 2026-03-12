@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from synthesis import PROMPTS, VALID_STYLES, SynthesisResult, synthesize_recall
+from synthesis import VALID_STYLES, SynthesisResult, synthesize_recall
 
 
 @dataclass
@@ -46,6 +46,10 @@ SAMPLE_RECALL = (
     "[Memory loaded: Known facts, Recent conversations, Open commitments | 342/1500 tokens used]"
 )
 
+# Test prompt templates (these are normally provided by config)
+_NARRATIVE_PROMPT = "Rewrite as narrative.\n\nMEMORY BLOCKS:\n{recall_text}\n\nOUTPUT:"
+_FACTUAL_PROMPT = "Rewrite as factual summary.\n\nMEMORY BLOCKS:\n{recall_text}\n\nOUTPUT:"
+
 
 # ─── Passthrough ────────────────────────────────────────────────
 
@@ -85,14 +89,14 @@ class TestFallback:
     async def test_provider_failure_returns_raw(self):
         provider = _make_provider("")
         provider.complete.side_effect = Exception("API down")
-        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider)
+        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider, prompt_override=_NARRATIVE_PROMPT)
         assert result.text == SAMPLE_RECALL
         assert result.usage is None
 
     @pytest.mark.asyncio
     async def test_empty_response_returns_raw(self):
         provider = _make_provider("")
-        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider)
+        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider, prompt_override=_NARRATIVE_PROMPT)
         assert result.text == SAMPLE_RECALL
         # Usage is still returned even on empty response fallback
         assert result.usage is not None
@@ -100,7 +104,7 @@ class TestFallback:
     @pytest.mark.asyncio
     async def test_whitespace_response_returns_raw(self):
         provider = _make_provider("   \n  ")
-        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider)
+        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider, prompt_override=_NARRATIVE_PROMPT)
         assert result.text == SAMPLE_RECALL
 
     @pytest.mark.asyncio
@@ -118,13 +122,22 @@ class TestFallback:
         provider.format_system.return_value = "system"
         provider.format_messages.return_value = "messages"
         provider.complete.return_value = NoneResponse()
-        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider)
+        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider, prompt_override=_NARRATIVE_PROMPT)
         assert result.text == SAMPLE_RECALL
 
     @pytest.mark.asyncio
     async def test_unknown_style_returns_raw(self):
         provider = _make_provider("should not be called")
         result = await synthesize_recall(SAMPLE_RECALL, "banana", provider)
+        assert result.text == SAMPLE_RECALL
+        assert result.usage is None
+        provider.complete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_prompt_override_returns_raw(self):
+        """Without prompt_override, non-structured styles fall back to passthrough."""
+        provider = _make_provider("should not be called")
+        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider)
         assert result.text == SAMPLE_RECALL
         assert result.usage is None
         provider.complete.assert_not_called()
@@ -137,7 +150,7 @@ class TestSynthesis:
     @pytest.mark.asyncio
     async def test_narrative_calls_provider(self):
         provider = _make_provider("Nicolas went from zero to near-launch in under a month.")
-        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider)
+        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider, prompt_override=_NARRATIVE_PROMPT)
         assert result.text.startswith("Nicolas went from zero")
         assert result.usage is not None
         provider.complete.assert_awaited_once()
@@ -145,7 +158,7 @@ class TestSynthesis:
     @pytest.mark.asyncio
     async def test_factual_calls_provider(self):
         provider = _make_provider("Nicolas lives in Austria. Lucy serves as his companion.")
-        result = await synthesize_recall(SAMPLE_RECALL, "factual", provider)
+        result = await synthesize_recall(SAMPLE_RECALL, "factual", provider, prompt_override=_FACTUAL_PROMPT)
         assert "Austria" in result.text
         assert result.usage is not None
         provider.complete.assert_awaited_once()
@@ -153,7 +166,7 @@ class TestSynthesis:
     @pytest.mark.asyncio
     async def test_provider_receives_correct_format(self):
         provider = _make_provider("synthesized output")
-        await synthesize_recall(SAMPLE_RECALL, "narrative", provider)
+        await synthesize_recall(SAMPLE_RECALL, "narrative", provider, prompt_override=_NARRATIVE_PROMPT)
 
         provider.format_system.assert_called_once_with([])
         provider.format_messages.assert_called_once()
@@ -166,7 +179,7 @@ class TestSynthesis:
     @pytest.mark.asyncio
     async def test_prompt_contains_recall_text(self):
         provider = _make_provider("synthesized output")
-        await synthesize_recall(SAMPLE_RECALL, "narrative", provider)
+        await synthesize_recall(SAMPLE_RECALL, "narrative", provider, prompt_override=_NARRATIVE_PROMPT)
 
         call_args = provider.format_messages.call_args[0][0]
         prompt = call_args[0]["content"]
@@ -183,7 +196,7 @@ class TestFooterPreservation:
     @pytest.mark.asyncio
     async def test_memory_loaded_footer_preserved(self):
         provider = _make_provider("Synthesized paragraph here.")
-        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider)
+        result = await synthesize_recall(SAMPLE_RECALL, "narrative", provider, prompt_override=_NARRATIVE_PROMPT)
         assert "[Memory loaded:" in result.text
         assert "342/1500 tokens used" in result.text
 
@@ -195,7 +208,7 @@ class TestFooterPreservation:
             "[Dropped (over budget): Memory search — use memory_search to access]"
         )
         provider = _make_provider("Synthesized paragraph.")
-        result = await synthesize_recall(text_with_dropped, "factual", provider)
+        result = await synthesize_recall(text_with_dropped, "factual", provider, prompt_override=_FACTUAL_PROMPT)
         assert "[Memory loaded:" in result.text
         assert "[Dropped (over budget):" in result.text
 
@@ -203,7 +216,7 @@ class TestFooterPreservation:
     async def test_no_footer_when_absent(self):
         text_no_footer = "[Known facts]\n  nicolas — lives in: Austria"
         provider = _make_provider("Nicolas lives in Austria.")
-        result = await synthesize_recall(text_no_footer, "factual", provider)
+        result = await synthesize_recall(text_no_footer, "factual", provider, prompt_override=_FACTUAL_PROMPT)
         assert result.text == "Nicolas lives in Austria."
         assert "[Memory loaded:" not in result.text
 
@@ -211,20 +224,7 @@ class TestFooterPreservation:
 # ─── Prompt Registry ────────────────────────────────────────────
 
 
-class TestPromptRegistry:
-    def test_narrative_prompt_exists(self):
-        assert "narrative" in PROMPTS
-
-    def test_factual_prompt_exists(self):
-        assert "factual" in PROMPTS
-
-    def test_structured_not_in_prompts(self):
-        assert "structured" not in PROMPTS
-
-    def test_all_prompts_have_recall_placeholder(self):
-        for style, prompt in PROMPTS.items():
-            assert "{recall_text}" in prompt, f"{style} prompt missing placeholder"
-
+class TestValidStyles:
     def test_valid_styles_complete(self):
         assert {"structured", "narrative", "factual"} == VALID_STYLES
 
@@ -274,6 +274,7 @@ class TestToolPathSynthesis:
             "recall_priority_vector": 35,
             "recall_priority_commitments": 40,
             "recall_episode_section_header": "Recent conversations",
+            "synthesis_prompt_narrative": "Synthesize: {recall_text}",
         })()
 
         # Set up structured memory with a real DB

@@ -379,7 +379,9 @@ class TestCompactionEndToEnd:
 
         # Mock provider
         mock_provider = MockCompactionProvider(summary_text="Summary of old conversation.")
-        await mgr.compact_session(session, mock_provider, "Summarize this conversation.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock_provider, "Summarize this conversation.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         # split_point = 6 * 2 // 3 = 4, so 4 old, 2 recent
         # Result: 1 summary + 1 compaction marker + 2 recent = 4
@@ -403,14 +405,18 @@ class TestCompactionEndToEnd:
         assert session.compaction_count == 0
 
         mock_provider = MockCompactionProvider(summary_text="Summary.")
-        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         assert session.compaction_count == 1
 
         # Compact again (add messages to get back above threshold)
         for i in range(4):
             session.messages.append({"role": "user", "content": f"extra {i}"})
-        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
         assert session.compaction_count == 2
 
     @pytest.mark.asyncio
@@ -421,7 +427,9 @@ class TestCompactionEndToEnd:
         mgr = SessionManager(tmp_sessions)
 
         mock_provider = MockCompactionProvider(summary_text="JSONL summary test.")
-        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         # Find JSONL files and look for compaction event
         jsonl_files = list(tmp_sessions.glob("*.jsonl"))
@@ -445,7 +453,9 @@ class TestCompactionEndToEnd:
         mgr = SessionManager(tmp_sessions)
 
         mock_provider = MockCompactionProvider(summary_text="State save test.")
-        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         # State file should exist and reflect compacted state
         assert session.state_path.exists()
@@ -464,7 +474,9 @@ class TestCompactionEndToEnd:
         ]
         mgr = SessionManager(tmp_sessions)
         mock_provider = MockCompactionProvider(summary_text="Should not appear.")
-        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         # Messages unchanged
         assert len(session.messages) == 3
@@ -480,7 +492,9 @@ class TestCompactionEndToEnd:
         mgr = SessionManager(tmp_sessions)
 
         mock_provider = MockCompactionProvider(summary_text="Reset flag test.")
-        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock_provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         assert session.warned_about_compaction is False
 
@@ -503,6 +517,8 @@ class TestCompactionEndToEnd:
         # Result: 1 summary + 1 marker + 5 recent = 7
         await mgr.compact_session(
             session, mock_provider, "Summarize.", keep_recent_pct=0.25,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30,
         )
         assert len(session.messages) == 7
         assert "[Previous conversation summary]" in session.messages[0]["content"]
@@ -511,7 +527,11 @@ class TestCompactionEndToEnd:
 
     @pytest.mark.asyncio
     async def test_compact_keep_recent_pct_clamped(self, tmp_sessions):
-        """keep_recent_pct is clamped to [0.05, 0.9]."""
+        """keep_recent_pct clamping now happens in config.py, not session.py.
+
+        compact_session uses keep_recent_pct directly (no re-clamping).
+        With keep_recent_pct=0.0, all messages are old → summary + marker only.
+        """
         session = Session("test-clamp", tmp_sessions)
         for i in range(10):
             session.messages.append({"role": "user", "content": f"msg {i}"})
@@ -522,12 +542,14 @@ class TestCompactionEndToEnd:
         mgr = SessionManager(tmp_sessions)
         mock_provider = MockCompactionProvider(summary_text="Summary.")
 
-        # keep_recent_pct=0.0 → clamped to 0.05 → split_point = int(20 * 0.95) = 19
-        # 19 old → summary, 1 recent kept
+        # keep_recent_pct=0.0 → split_point = int(20 * 1.0) = 20
+        # All 20 old → summary + marker, 0 recent kept
         await mgr.compact_session(
             session, mock_provider, "Summarize.", keep_recent_pct=0.0,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30,
         )
-        assert len(session.messages) == 3  # summary + marker + 1 recent
+        assert len(session.messages) == 2  # summary + marker, no recent kept
 
     @pytest.mark.asyncio
     async def test_compact_skips_orphaned_tool_results(self, tmp_sessions):
@@ -570,6 +592,8 @@ class TestCompactionEndToEnd:
 
         await mgr.compact_session(
             session, mock_provider, "Summarize.", keep_recent_pct=0.19,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30,
         )
         # Split should skip past tool_results at index 17 to index 18 (assistant)
         # old=18, recent=3 → summary + marker + 3 = 5
@@ -613,7 +637,9 @@ class TestCompactionRoundTrip:
         provider.complete = capturing_complete
 
         mgr = SessionManager(tmp_sessions)
-        await mgr.compact_session(session, provider, "Summarize this conversation.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, provider, "Summarize this conversation.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         # split_point = 30 * 2 // 3 = 20 old, 10 recent
         # Result: 1 summary + 1 compaction marker + 10 recent = 12
@@ -663,7 +689,9 @@ class TestCompactionRoundTrip:
 
         mgr = SessionManager(tmp_sessions)
         provider_a = MockCompactionProvider(summary_text="Summary A.")
-        await mgr.compact_session(session, provider_a, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, provider_a, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
         assert session.compaction_count == 1
         assert "Summary A." in session.messages[0]["content"]
 
@@ -688,7 +716,9 @@ class TestCompactionRoundTrip:
 
         provider_b.complete = capturing_complete
 
-        await mgr.compact_session(session, provider_b, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, provider_b, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         assert session.compaction_count == 2
         # Current messages start with Summary B, not Summary A
@@ -742,7 +772,9 @@ class TestCompactionReplacesMessages:
             session.messages.append({"role": "user", "content": f"msg-{i}"})
         mgr = SessionManager(tmp_sessions)
         mock = MockCompactionProvider("Summary text.")
-        await mgr.compact_session(session, mock, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         # Old messages should be gone
         contents = [m.get("content", "") for m in session.messages]
@@ -766,7 +798,9 @@ class TestCompactionReplacesMessages:
             })
         mgr = SessionManager(tmp_sessions)
         mock = MockCompactionProvider("Summary.")
-        await mgr.compact_session(session, mock, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         # No surviving assistant message should carry usage
         for msg in session.messages:
@@ -946,7 +980,9 @@ class TestCompactionWithContentBlocks:
         ]
         mgr = SessionManager(tmp_sessions)
         mock = MockCompactionProvider("Summary of vision conversation.")
-        await mgr.compact_session(session, mock, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, mock, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         assert mock.call_count == 1
         assert len(session.messages) == 4  # 1 summary + 1 compaction marker + 2 recent
@@ -1006,7 +1042,9 @@ class TestCompactionAntiHallucination:
         provider.complete = capturing_complete
 
         mgr = SessionManager(tmp_sessions)
-        await mgr.compact_session(session, provider, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         # Verify end-of-input marker in message content
         sent_text = captured_messages[0]["content"]
@@ -1040,7 +1078,9 @@ class TestCompactionAntiHallucination:
         provider.complete = capturing_complete
 
         mgr = SessionManager(tmp_sessions)
-        await mgr.compact_session(session, provider, "Summarize.", keep_recent_pct=0.33)
+        await mgr.compact_session(session, provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         sent_text = captured[0]["content"]
         # Last real message should appear BEFORE the end marker
@@ -1087,7 +1127,9 @@ class TestCompactionStatePersistenceOrder:
 
         with patch.object(session, "_save_state", tracking_save), \
              patch.object(session, "append_event", tracking_append):
-            await mgr.compact_session(session, provider, "Summarize.", keep_recent_pct=0.33)
+            await mgr.compact_session(session, provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30)
 
         assert "save_state" in call_order
         assert "append_event" in call_order
@@ -1396,7 +1438,9 @@ class TestCompactionIdentity:
         mgr = SessionManager(tmp_sessions)
         await mgr.compact_session(
             session, provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
             system_blocks=persona_blocks,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30,
         )
 
         assert len(captured_system) == 1
@@ -1427,6 +1471,8 @@ class TestCompactionIdentity:
         mgr = SessionManager(tmp_sessions)
         await mgr.compact_session(
             session, provider, "Summarize.", keep_recent_pct=0.33,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30,
         )
 
         assert "conversation summarizer" in captured_system[0]["text"]
@@ -1457,7 +1503,8 @@ class TestCompactionVerification:
 
         await mgr.compact_session(
             session, provider, "Summarize.", keep_recent_pct=0.33,
-            verify_enabled=True, verify_max_turn_labels=3,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=True, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30,
         )
 
         # Summary should be the deterministic fallback
@@ -1481,7 +1528,8 @@ class TestCompactionVerification:
 
         await mgr.compact_session(
             session, provider, "Summarize.", keep_recent_pct=0.33,
-            verify_enabled=True,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=True, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30,
         )
 
         assert "clean narrative summary" in session.messages[0]["content"]
@@ -1507,7 +1555,8 @@ class TestCompactionVerification:
 
         await mgr.compact_session(
             session, provider, "Summarize.", keep_recent_pct=0.33,
-            verify_enabled=False,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=False, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30,
         )
 
         # Fabricated summary used as-is since verification is off
@@ -1529,7 +1578,8 @@ class TestCompactionVerification:
 
         await mgr.compact_session(
             session, provider, "Summarize.", keep_recent_pct=0.33,
-            verify_enabled=True,
+            min_messages=4, tool_result_max_chars=2000, max_tokens=2048,
+            verify_enabled=True, verify_max_turn_labels=3, verify_grounding_threshold=0.5, sqlite_timeout=30,
         )
 
         # Read the JSONL event

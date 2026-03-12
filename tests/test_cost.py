@@ -23,7 +23,7 @@ class TestCostCalculation:
             cache_read_tokens=500_000,
         )
         rates = [5.0, 25.0, 0.5]  # Opus rates
-        cost = _record_cost(str(cost_db), "sess-1", "opus", usage, rates)
+        cost = _record_cost(str(cost_db), "sess-1", "opus", usage, rates, sqlite_timeout=30)
         # 1M * 5.0/1M + 100k * 25.0/1M + 500k * 0.5/1M
         # = 5.0 + 2.5 + 0.25 = 7.75
         assert abs(cost - 7.75) < 0.001
@@ -32,20 +32,20 @@ class TestCostCalculation:
         """Cache reads at $0.50/Mtok, not $5.00/Mtok."""
         usage = MockUsage(cache_read_tokens=1_000_000)
         rates = [5.0, 25.0, 0.5]
-        cost = _record_cost(str(cost_db), "sess-1", "opus", usage, rates)
+        cost = _record_cost(str(cost_db), "sess-1", "opus", usage, rates, sqlite_timeout=30)
         assert abs(cost - 0.5) < 0.001
 
     def test_zero_tokens_no_crash(self, cost_db):
         usage = MockUsage()
         rates = [5.0, 25.0, 0.5]
-        cost = _record_cost(str(cost_db), "sess-1", "opus", usage, rates)
+        cost = _record_cost(str(cost_db), "sess-1", "opus", usage, rates, sqlite_timeout=30)
         assert cost == 0.0
 
     def test_haiku_rates(self, cost_db):
         """Haiku sub-agent rates: $1/$5/$0.1 per Mtok."""
         usage = MockUsage(input_tokens=100_000, output_tokens=10_000)
         rates = [1.0, 5.0, 0.1]
-        cost = _record_cost(str(cost_db), "sub-sess", "haiku", usage, rates)
+        cost = _record_cost(str(cost_db), "sub-sess", "haiku", usage, rates, sqlite_timeout=30)
         # 100k * 1.0/1M + 10k * 5.0/1M = 0.1 + 0.05 = 0.15
         assert abs(cost - 0.15) < 0.001
 
@@ -54,7 +54,7 @@ class TestCostDBRoundTrip:
     def test_write_then_query(self, cost_db):
         usage = MockUsage(input_tokens=50_000, output_tokens=10_000)
         rates = [5.0, 25.0, 0.5]
-        _record_cost(str(cost_db), "sess-rt", "opus", usage, rates)
+        _record_cost(str(cost_db), "sess-rt", "opus", usage, rates, sqlite_timeout=30)
 
         conn = sqlite3.connect(str(cost_db))
         row = conn.execute(
@@ -70,19 +70,19 @@ class TestCostDBRoundTrip:
 
     def test_no_path_returns_zero(self):
         usage = MockUsage(input_tokens=1000)
-        cost = _record_cost("", "sess", "model", usage, [5.0, 25.0, 0.5])
+        cost = _record_cost("", "sess", "model", usage, [5.0, 25.0, 0.5], sqlite_timeout=30)
         assert cost == 0.0
 
     def test_no_rates_returns_zero(self, cost_db):
         usage = MockUsage(input_tokens=1000)
-        cost = _record_cost(str(cost_db), "sess", "model", usage, [])
+        cost = _record_cost(str(cost_db), "sess", "model", usage, [], sqlite_timeout=30)
         assert cost == 0.0
 
     def test_sub_agent_cost_tracked(self, cost_db):
         """Sub-agent costs appear with sub-* session ID prefix."""
         usage = MockUsage(input_tokens=50_000, output_tokens=5_000)
         rates = [1.0, 5.0, 0.1]
-        cost = _record_cost(str(cost_db), "sub-main-session", "haiku", usage, rates)
+        cost = _record_cost(str(cost_db), "sub-main-session", "haiku", usage, rates, sqlite_timeout=30)
         assert cost > 0
 
         conn = sqlite3.connect(str(cost_db))
@@ -99,7 +99,7 @@ class TestCostDBRoundTrip:
         usage = MockUsage(input_tokens=1000, output_tokens=100)
         rates = [5.0, 25.0, 0.5]
         for i in range(10):
-            _record_cost(str(cost_db), f"sess-{i}", "opus", usage, rates)
+            _record_cost(str(cost_db), f"sess-{i}", "opus", usage, rates, sqlite_timeout=30)
 
         conn = sqlite3.connect(str(cost_db))
         count = conn.execute("SELECT COUNT(*) FROM costs").fetchone()[0]
@@ -110,7 +110,7 @@ class TestCostDBRoundTrip:
 class TestInitCostDB:
     def test_init_creates_table(self, tmp_path):
         db_path = tmp_path / "new_cost.db"
-        _init_cost_db(str(db_path))
+        _init_cost_db(str(db_path), sqlite_timeout=30)
 
         conn = sqlite3.connect(str(db_path))
         tables = conn.execute(
@@ -121,9 +121,9 @@ class TestInitCostDB:
 
     def test_init_idempotent(self, tmp_path):
         db_path = tmp_path / "new_cost.db"
-        _init_cost_db(str(db_path))
-        _init_cost_db(str(db_path))  # Should not fail
+        _init_cost_db(str(db_path), sqlite_timeout=30)
+        _init_cost_db(str(db_path), sqlite_timeout=30)  # Should not fail
 
     def test_init_empty_path(self):
         """Empty path is a no-op."""
-        _init_cost_db("")
+        _init_cost_db("", sqlite_timeout=30)

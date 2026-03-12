@@ -457,18 +457,21 @@ class SessionManager:
         trace_id: str = "",
         *,
         keep_recent_pct: float,
-        max_tokens: int = 0,
+        min_messages: int,
+        tool_result_max_chars: int,
+        max_tokens: int,
         system_blocks: list[dict] | None = None,
-        verify_enabled: bool = False,
-        verify_max_turn_labels: int = 3,
-        verify_grounding_threshold: float = 0.5,
+        verify_enabled: bool,
+        verify_max_turn_labels: int,
+        verify_grounding_threshold: float,
+        sqlite_timeout: int,
     ) -> None:
         """Compact old messages using a summarization model."""
-        if len(session.messages) < 4:
+        if len(session.messages) < min_messages:
             return
 
         # Summarize older messages, keep newest fraction verbatim
-        keep_pct = max(0.05, min(0.9, keep_recent_pct))
+        keep_pct = keep_recent_pct
         split_point = int(len(session.messages) * (1 - keep_pct))
 
         # Ensure split doesn't orphan tool_results — each tool_result
@@ -492,12 +495,12 @@ class SessionManager:
             # Include tool calls in compaction context
             for tc in msg.get("tool_calls", []):
                 tc_name = tc.get("name", "unknown")
-                tc_args = str(tc.get("arguments", {}))[:2000]
+                tc_args = str(tc.get("arguments", {}))[:tool_result_max_chars]
                 conversation_text += f"assistant [tool_call]: {tc_name}({tc_args})\n\n"
             # Include tool results in compaction context
             if role == "tool_results":
                 for r in msg.get("results", []):
-                    content = _text_from_content(r.get("content", ""))[:2000]
+                    content = _text_from_content(r.get("content", ""))[:tool_result_max_chars]
                     conversation_text += f"tool_result: {content}\n\n"
 
         if not conversation_text.strip():
@@ -539,6 +542,7 @@ class SessionManager:
             _record_cost(
                 cost_db, session.id, model_name, response.usage, cost_rates,
                 call_type="compaction", trace_id=trace_id,
+                sqlite_timeout=sqlite_timeout,
             )
 
         # Verify summary quality (safety net against fabrication)
@@ -606,6 +610,7 @@ def build_session_info(
     session: Session | None = None,
     cost_db_path: str = "",
     max_context_tokens: int = 0,
+    sqlite_timeout: int = 30,
 ) -> dict:
     """Build enriched session info dict. Used by both CLI and HTTP API.
 
@@ -663,6 +668,7 @@ def build_session_info(
             cost_db_path,
             "SELECT SUM(cost_usd) FROM costs WHERE session_id = ?",
             (session_id,),
+            sqlite_timeout=sqlite_timeout,
         )
         if rows and rows[0][0]:
             cost_usd = rows[0][0]

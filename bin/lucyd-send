@@ -97,7 +97,7 @@ def query_cost(cost_db: Path, period: str) -> None:
     else:
         ts_filter = 0
 
-    rows = cost_db_query(str(cost_db), sql, (ts_filter,))
+    rows = cost_db_query(str(cost_db), sql, (ts_filter,), sqlite_timeout=30)
 
     if not rows:
         print("No cost data for this period.")
@@ -378,6 +378,7 @@ def show_status(state_dir: Path) -> None:
                 str(cost_db),
                 "SELECT SUM(cost_usd) FROM costs WHERE timestamp >= ?",
                 (today_start_ts(),),
+                sqlite_timeout=30,
             )
             if rows and rows[0][0]:
                 today_cost = rows[0][0]

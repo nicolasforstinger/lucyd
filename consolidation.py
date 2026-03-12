@@ -452,17 +452,20 @@ async def consolidate_session(
         model_cfg = config.model_config(model_name) if hasattr(config, "model_config") else {}
         cost_rates = model_cfg.get("cost_per_mtok")
         display_name = model_cfg.get("model", model_name)
+        sqlite_to = getattr(config, "sqlite_timeout", 30)
         if facts_usage and cost_rates:
             _record_cost(
                 cost_db, session_id, display_name,
                 facts_usage, cost_rates,
                 call_type="consolidation", trace_id=trace_id,
+                sqlite_timeout=sqlite_to,
             )
         if episode_usage and cost_rates:
             _record_cost(
                 cost_db, session_id, display_name,
                 episode_usage, cost_rates,
                 call_type="consolidation", trace_id=trace_id,
+                sqlite_timeout=sqlite_to,
             )
 
     return {"facts_added": facts_added, "episode_id": episode_id}
@@ -525,6 +528,7 @@ async def extract_from_file(
         _record_cost(
             cost_db, f"file:{file_path}", model_name, usage, cost_rates,
             call_type="consolidation",
+            sqlite_timeout=30,
         )
 
     return count

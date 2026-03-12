@@ -11,6 +11,7 @@ Following LUCYD-ORCHESTRATOR-TESTING-MANUAL.md:
 """
 
 import asyncio
+import copy
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,27 +28,89 @@ from lucyd import (
 # ─── Helpers ──────────────────────────────────────────────────────
 
 
+def _deep_merge(base, overrides):
+    for key, val in overrides.items():
+        if key in base and isinstance(base[key], dict) and isinstance(val, dict):
+            _deep_merge(base[key], val)
+        else:
+            base[key] = val
+    return base
+
+
 def _make_config(tmp_path, **overrides):
-    """Build a minimal Config for testing daemon methods."""
+    """Build a complete Config for testing daemon methods."""
     from config import Config
 
     base = {
         "agent": {
             "name": "TestAgent",
             "workspace": str(tmp_path / "workspace"),
-            "context": {
-                "stable": ["SOUL.md"],
-                "semi_stable": [],
-            },
+            "context": {"stable": ["SOUL.md"], "semi_stable": []},
+            "skills": {"dir": "skills", "always_on": []},
         },
-        "channel": {"type": "cli"},
+        "channel": {"type": "cli", "debounce_ms": 500},
+        "http": {
+            "enabled": False, "host": "127.0.0.1", "port": 8100, "token_env": "",
+            "download_dir": "/tmp/lucyd-http", "max_body_bytes": 10485760,
+            "callback_url": "", "callback_token_env": "", "callback_timeout": 10,
+            "rate_limit": 30, "rate_window": 60, "status_rate_limit": 60,
+            "rate_limit_cleanup_threshold": 1000,
+        },
         "models": {
             "primary": {
-                "provider": "anthropic-compat",
-                "model": "test-model",
-                "max_tokens": 1024,
-                "cost_per_mtok": [1.0, 5.0, 0.1],
+                "provider": "anthropic-compat", "model": "test-model",
+                "max_tokens": 1024, "cost_per_mtok": [1.0, 5.0, 0.1],
                 "supports_vision": True,
+            },
+        },
+        "memory": {
+            "db": "", "search_top_k": 10, "vector_search_limit": 10000,
+            "fts_min_results": 3, "embedding_timeout": 15,
+            "consolidation": {"enabled": False, "min_messages": 4, "confidence_threshold": 0.6, "max_extraction_chars": 50000},
+            "recall": {
+                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3,
+                "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
+                               "fact_format": "natural", "show_emotional_tone": True, "episode_section_header": "Recent conversations",
+                               "synthesis_style": "structured",
+                               "synthesis_prompt_narrative": "", "synthesis_prompt_factual": ""},
+            },
+            "maintenance": {"stale_threshold_days": 90},
+            "indexer": {"include_patterns": ["memory/*.md"], "exclude_dirs": [], "chunk_size_chars": 1600, "chunk_overlap_chars": 320, "embed_batch_limit": 100},
+        },
+        "tools": {
+            "enabled": ["read", "write", "edit", "exec"],
+            "plugins_dir": "plugins.d", "output_truncation": 30000,
+            "subagent_deny": [], "subagent_max_turns": 0, "subagent_timeout": 0,
+            "exec_timeout": 120, "exec_max_timeout": 600,
+            "filesystem": {"allowed_paths": ["/tmp/"], "default_read_limit": 2000},
+            "web_search": {"provider": "", "api_key_env": "", "timeout": 15},
+            "web_fetch": {"timeout": 15},
+            "tts": {"provider": "", "api_key_env": "", "timeout": 60, "api_url": ""},
+            "scheduling": {"max_scheduled": 50, "max_delay": 86400},
+        },
+        "stt": {"backend": "", "voice_label": "voice message", "voice_fail_msg": "voice message — transcription failed",
+                "audio_label": "audio transcription", "audio_fail_msg": "audio transcription — failed"},
+        "documents": {"enabled": True, "max_chars": 30000, "max_file_bytes": 10485760,
+                      "text_extensions": [".txt", ".md"]},
+        "logging": {"max_bytes": 10485760, "backup_count": 3, "suppress": []},
+        "vision": {"max_image_bytes": 5242880, "max_dimension": 1568, "default_caption": "image",
+                   "too_large_msg": "image too large to display", "jpeg_quality_steps": [85, 60, 40],
+                   "caption_max_chars": 200},
+        "behavior": {
+            "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error",
+            "sqlite_timeout": 30,
+            "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
+            "audit_truncation_limit": 500, "agent_timeout_seconds": 600,
+            "max_turns_per_message": 50, "max_cost_per_message": 0.0,
+            "queue_capacity": 1000, "queue_poll_interval": 1.0, "quote_max_chars": 200,
+            "telemetry_max_age": 30.0, "passive_notify_refs": [], "primary_sender": "",
+            "compaction": {
+                "threshold_tokens": 150000, "max_tokens": 2048,
+                "prompt": "Summarize for {agent_name}.", "keep_recent_pct": 0.33,
+                "keep_recent_pct_min": 0.05, "keep_recent_pct_max": 0.9,
+                "min_messages": 4, "tool_result_max_chars": 2000, "warning_pct": 0.8,
+                "diary_prompt": "Write a log for {date}.",
+                "verify_enabled": True, "verify_max_turn_labels": 3, "verify_grounding_threshold": 0.5,
             },
         },
         "paths": {
@@ -56,11 +119,8 @@ def _make_config(tmp_path, **overrides):
             "cost_db": str(tmp_path / "cost.db"),
             "log_file": str(tmp_path / "lucyd.log"),
         },
-        "behavior": {
-            "compaction": {"threshold_tokens": 150000},
-        },
     }
-    base.update(overrides)
+    _deep_merge(base, overrides)
 
     (tmp_path / "workspace").mkdir(exist_ok=True)
     (tmp_path / "workspace" / "SOUL.md").write_text("# Test Soul")
@@ -115,7 +175,6 @@ def _make_daemon(tmp_path):
     daemon.skill_loader.get_bodies = MagicMock(return_value={})
 
     daemon.tool_registry = MagicMock()
-    daemon.tool_registry.get_brief_descriptions = MagicMock(return_value=[])
     daemon.tool_registry.get_schemas = MagicMock(return_value=[])
 
     daemon.channel = AsyncMock()
@@ -142,6 +201,17 @@ def _make_daemon(tmp_path):
     daemon.config.agent_name = "TestAgent"
     daemon.config.consolidation_enabled = False
     daemon.config.primary_sender = ""
+    daemon.config.queue_capacity = 1000
+    daemon.config.queue_poll_interval = 1.0
+    daemon.config.quote_max_chars = 200
+    daemon.config.telemetry_max_age = 30.0
+    daemon.config.sqlite_timeout = 30
+    daemon.config.vision_caption_max_chars = 200
+    daemon.config.compaction_warning_pct = 0.8
+    daemon.config.compaction_min_messages = 4
+    daemon.config.compaction_tool_result_max_chars = 2000
+    daemon.config.synthesis_prompt_narrative = ""
+    daemon.config.synthesis_prompt_factual = ""
 
     return daemon, provider, session
 
@@ -178,6 +248,7 @@ class TestShouldWarnContext:
             compaction_threshold=150000,
             needs_compaction=False,
             already_warned=False,
+            warning_pct=0.8,
         ) is True
 
     def test_no_warn_below_threshold(self):
@@ -187,6 +258,7 @@ class TestShouldWarnContext:
             compaction_threshold=150000,
             needs_compaction=False,
             already_warned=False,
+            warning_pct=0.8,
         ) is False
 
     def test_no_warn_at_exact_threshold(self):
@@ -196,6 +268,7 @@ class TestShouldWarnContext:
             compaction_threshold=150000,
             needs_compaction=False,
             already_warned=False,
+            warning_pct=0.8,
         ) is False
 
     def test_no_warn_if_needs_compaction(self):
@@ -205,6 +278,7 @@ class TestShouldWarnContext:
             compaction_threshold=150000,
             needs_compaction=True,
             already_warned=False,
+            warning_pct=0.8,
         ) is False
 
     def test_no_warn_if_already_warned(self):
@@ -214,6 +288,7 @@ class TestShouldWarnContext:
             compaction_threshold=150000,
             needs_compaction=False,
             already_warned=True,
+            warning_pct=0.8,
         ) is False
 
     def test_no_warn_zero_tokens(self):
@@ -223,6 +298,7 @@ class TestShouldWarnContext:
             compaction_threshold=150000,
             needs_compaction=False,
             already_warned=False,
+            warning_pct=0.8,
         ) is False
 
     def test_custom_warning_pct(self):
@@ -2320,6 +2396,7 @@ class TestEnrichImageCaption:
         ]
         result = _enrich_image_caption(
             "[Image from user] look at this", "Image from user", messages, 0,
+            max_desc_len=200,
         )
         assert result == "[Image from user: a sunset over mountains with orange sky] look at this"
 
@@ -2329,7 +2406,7 @@ class TestEnrichImageCaption:
         messages = [
             {"role": "assistant", "text": long_desc},
         ]
-        result = _enrich_image_caption("[img]", "img", messages, 0)
+        result = _enrich_image_caption("[img]", "img", messages, 0, max_desc_len=200)
         assert result.endswith("...]")
         # Extracted description should be ≤ 200 chars + "..."
         desc_part = result[len("[img: "):-len("]")]
@@ -2338,19 +2415,19 @@ class TestEnrichImageCaption:
     def test_no_tag_returns_unchanged(self):
         """Text without the caption tag is returned unchanged."""
         messages = [{"role": "assistant", "text": "hello"}]
-        result = _enrich_image_caption("just text", "Image from user", messages, 0)
+        result = _enrich_image_caption("just text", "Image from user", messages, 0, max_desc_len=200)
         assert result == "just text"
 
     def test_no_assistant_message(self):
         """No assistant response → tag preserved."""
         messages = [{"role": "user", "content": "[img] hi"}]
-        result = _enrich_image_caption("[img] hi", "img", messages, 0)
+        result = _enrich_image_caption("[img] hi", "img", messages, 0, max_desc_len=200)
         assert result == "[img] hi"
 
     def test_empty_assistant_text(self):
         """Assistant message with empty text → tag preserved."""
         messages = [{"role": "assistant", "text": ""}]
-        result = _enrich_image_caption("[img]", "img", messages, 0)
+        result = _enrich_image_caption("[img]", "img", messages, 0, max_desc_len=200)
         assert result == "[img]"
 
     def test_multiline_collapsed(self):
@@ -2358,7 +2435,7 @@ class TestEnrichImageCaption:
         messages = [
             {"role": "assistant", "text": "line one\nline two\nline three"},
         ]
-        result = _enrich_image_caption("[img]", "img", messages, 0)
+        result = _enrich_image_caption("[img]", "img", messages, 0, max_desc_len=200)
         assert "line one line two line three" in result
 
     def test_msg_count_before_offset(self):
@@ -2368,14 +2445,14 @@ class TestEnrichImageCaption:
             {"role": "user", "content": "[img]"},
             {"role": "assistant", "text": "new response"},  # after
         ]
-        result = _enrich_image_caption("[img]", "img", messages, 1)
+        result = _enrich_image_caption("[img]", "img", messages, 1, max_desc_len=200)
         assert "new response" in result
         assert "old response" not in result
 
     def test_only_first_tag_replaced(self):
         """Only the first [caption] tag is replaced."""
         messages = [{"role": "assistant", "text": "desc"}]
-        result = _enrich_image_caption("[img] and [img]", "img", messages, 0)
+        result = _enrich_image_caption("[img] and [img]", "img", messages, 0, max_desc_len=200)
         assert result == "[img: desc] and [img]"
 
 
@@ -2584,7 +2661,7 @@ class TestDrainTelemetry:
             "notify_meta": {"ref": "hr-telemetry"},
             "timestamp": time.time() - 60,  # 60 seconds old
         }
-        result = daemon._drain_telemetry(max_age=30)
+        result = daemon._drain_telemetry()
         assert result == ""
         assert daemon._telemetry_buffer == {}
 

@@ -16,11 +16,8 @@ log = logging.getLogger(__name__)
 _config: Any = None
 _provider: Any = None
 _tool_registry: Any = None
-# Tools that sub-agents should not have access to by default
-_DEFAULT_SUBAGENT_DENY = frozenset({"sessions_spawn", "tts", "react", "schedule_message"})
-
-# Active deny set — overridden by config if tools.subagent_deny is set
-_subagent_deny: set[str] = set(_DEFAULT_SUBAGENT_DENY)
+# Active deny set — set by config at configure() time
+_subagent_deny: set[str] = set()
 
 # Sub-agent defaults — resolved from config at configure() time
 _default_max_turns: int = 50
@@ -34,12 +31,12 @@ def configure(config: Any, provider: Any, tool_registry: Any,
     _config = config
     _provider = provider
     _tool_registry = tool_registry
-    # Apply configurable deny-list
-    custom_deny = getattr(config, "subagent_deny", None)
-    _subagent_deny = set(custom_deny) if custom_deny is not None else set(_DEFAULT_SUBAGENT_DENY)
+    # Apply deny-list from config
+    deny = config.subagent_deny
+    _subagent_deny = set(deny) if deny is not None else set()
     # Resolve sub-agent defaults from config
-    _default_max_turns = getattr(config, "subagent_max_turns", 50)
-    _default_timeout = getattr(config, "subagent_timeout", 600.0)
+    _default_max_turns = config.subagent_max_turns
+    _default_timeout = config.subagent_timeout
 
 
 def _build_subagent_preamble(
@@ -177,6 +174,9 @@ async def tool_sessions_spawn(
             tool_executor=_tool_registry,
             max_turns=max_turns,
             timeout=timeout,
+            api_retries=_config.api_retries,
+            api_retry_base_delay=_config.api_retry_base_delay,
+            sqlite_timeout=_config.sqlite_timeout,
             cost_db=cost_db,
             session_id=f"sub-{parent_session_id}" if parent_session_id else "",
             model_name=model_name,

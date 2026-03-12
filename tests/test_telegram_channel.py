@@ -28,6 +28,13 @@ def _make_channel(_token_value="fake-token", **overrides):
         "text_chunk_limit": 100,
         "contacts": {"Nicolas": 111, "Alice": 222},
         "download_dir": "/tmp/lucyd-telegram-test",
+        "reconnect_initial": 1.0,
+        "reconnect_max": 10.0,
+        "reconnect_factor": 2.0,
+        "reconnect_jitter": 0.2,
+        "media_group_delay": 0.5,
+        "http_timeout": 60.0,
+        "http_connect_timeout": 10.0,
     }
     defaults.update(overrides)
     return TelegramChannel(defaults)

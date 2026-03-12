@@ -218,7 +218,10 @@ async def main():
     from memory_schema import ensure_schema
 
     config = load_config(args.config)
-    _init_cost_db(str(config.cost_db) if hasattr(config, "cost_db") else "")
+    _init_cost_db(
+        str(config.cost_db) if hasattr(config, "cost_db") else "",
+        sqlite_timeout=getattr(config, "sqlite_timeout", 30),
+    )
 
     conn = sqlite3.connect(config.memory_db, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")

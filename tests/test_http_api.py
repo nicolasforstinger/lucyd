@@ -5,7 +5,9 @@ Covers: auth security, endpoint correctness, resilience, edge cases.
 
 import ast
 import asyncio
+import copy
 import inspect
+import os
 import textwrap
 from pathlib import Path
 
@@ -14,6 +16,105 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from channels.http_api import HTTPApi
+
+
+def _deep_merge(base, overrides):
+    for key, val in overrides.items():
+        if key in base and isinstance(base[key], dict) and isinstance(val, dict):
+            _deep_merge(base[key], val)
+        else:
+            base[key] = val
+    return base
+
+
+_FULL_CONFIG = {
+    "agent": {
+        "name": "Test", "workspace": "/tmp/test",
+        "context": {"stable": [], "semi_stable": []},
+        "skills": {"dir": "skills", "always_on": []},
+    },
+    "channel": {"type": "cli", "debounce_ms": 500},
+    "http": {
+        "enabled": False, "host": "127.0.0.1", "port": 8100, "token_env": "",
+        "download_dir": "/tmp/lucyd-http", "max_body_bytes": 10485760,
+        "callback_url": "", "callback_token_env": "", "callback_timeout": 10,
+        "rate_limit": 30, "rate_window": 60, "status_rate_limit": 60,
+        "rate_limit_cleanup_threshold": 1000,
+    },
+    "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+    "memory": {
+        "db": "", "search_top_k": 10, "vector_search_limit": 10000,
+        "fts_min_results": 3, "embedding_timeout": 15,
+        "consolidation": {"enabled": False, "min_messages": 4, "confidence_threshold": 0.6, "max_extraction_chars": 50000},
+        "recall": {
+            "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3,
+            "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
+                           "fact_format": "natural", "show_emotional_tone": True, "episode_section_header": "Recent conversations",
+                           "synthesis_style": "structured",
+                           "synthesis_prompt_narrative": "", "synthesis_prompt_factual": ""},
+        },
+        "maintenance": {"stale_threshold_days": 90},
+        "indexer": {"include_patterns": ["memory/*.md"], "exclude_dirs": [], "chunk_size_chars": 1600, "chunk_overlap_chars": 320, "embed_batch_limit": 100},
+    },
+    "tools": {
+        "enabled": ["read", "write", "edit", "exec"],
+        "plugins_dir": "plugins.d", "output_truncation": 30000,
+        "subagent_deny": [], "subagent_max_turns": 0, "subagent_timeout": 0,
+        "exec_timeout": 120, "exec_max_timeout": 600,
+        "filesystem": {"allowed_paths": ["/tmp/"], "default_read_limit": 2000},
+        "web_search": {"provider": "", "api_key_env": "", "timeout": 15},
+        "web_fetch": {"timeout": 15},
+        "tts": {"provider": "", "api_key_env": "", "timeout": 60, "api_url": ""},
+        "scheduling": {"max_scheduled": 50, "max_delay": 86400},
+    },
+    "stt": {"backend": "", "voice_label": "voice message", "voice_fail_msg": "voice message — transcription failed",
+            "audio_label": "audio transcription", "audio_fail_msg": "audio transcription — failed"},
+    "documents": {"enabled": True, "max_chars": 30000, "max_file_bytes": 10485760,
+                  "text_extensions": [".txt", ".md"]},
+    "logging": {"max_bytes": 10485760, "backup_count": 3, "suppress": []},
+    "vision": {"max_image_bytes": 5242880, "max_dimension": 1568, "default_caption": "image",
+               "too_large_msg": "image too large to display", "jpeg_quality_steps": [85, 60, 40],
+               "caption_max_chars": 200},
+    "behavior": {
+        "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error",
+        "sqlite_timeout": 30,
+        "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
+        "audit_truncation_limit": 500, "agent_timeout_seconds": 600,
+        "max_turns_per_message": 50, "max_cost_per_message": 0.0,
+        "queue_capacity": 1000, "queue_poll_interval": 1.0, "quote_max_chars": 200,
+        "telemetry_max_age": 30.0, "passive_notify_refs": [], "primary_sender": "",
+        "compaction": {
+            "threshold_tokens": 150000, "max_tokens": 2048,
+            "prompt": "Summarize for {agent_name}.", "keep_recent_pct": 0.33,
+            "keep_recent_pct_min": 0.05, "keep_recent_pct_max": 0.9,
+            "min_messages": 4, "tool_result_max_chars": 2000, "warning_pct": 0.8,
+            "diary_prompt": "Write a log for {date}.",
+            "verify_enabled": True, "verify_max_turn_labels": 3, "verify_grounding_threshold": 0.5,
+        },
+    },
+    "paths": {
+        "state_dir": "/tmp/test-state", "sessions_dir": "/tmp/test-sessions",
+        "cost_db": "/tmp/test-cost.db", "log_file": "/tmp/test.log",
+    },
+}
+
+
+def _make_http_config(**overrides):
+    """Build a complete Config with optional overrides for HTTP config tests."""
+    from config import Config
+    cfg = copy.deepcopy(_FULL_CONFIG)
+    _deep_merge(cfg, overrides)
+    return Config(cfg)
+
+# Default kwargs for HTTPApi required params (provided by config in production)
+_HTTP_DEFAULTS = dict(
+    download_dir="/tmp/lucyd-http-test",
+    max_body_bytes=10 * 1024 * 1024,
+    rate_limit=30,
+    rate_window=60,
+    status_rate_limit=60,
+    rate_cleanup_threshold=1000,
+)
 
 # ─── Fixtures ─────────────────────────────────────────────────────
 
@@ -38,6 +139,7 @@ def api(queue):
             "active_sessions": 1,
             "today_cost": 1.23,
         },
+        **_HTTP_DEFAULTS,
     )
 
 
@@ -50,6 +152,7 @@ def api_no_auth(queue):
         port=0,
         auth_token="",
         agent_timeout=5.0,
+        **_HTTP_DEFAULTS,
     )
 
 
@@ -329,6 +432,7 @@ class TestStatus:
             auth_token="test-token-123",
             agent_timeout=5.0,
             get_status=None,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -350,6 +454,7 @@ class TestStatus:
             auth_token="test-token-123",
             agent_timeout=5.0,
             get_status=broken_status,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -674,7 +779,8 @@ class TestChat:
             host="127.0.0.1",
             port=0,
             auth_token="test-token-123",
-            agent_timeout=0.2,  # Very short timeout for test
+            agent_timeout=0.2,  # Very short timeout for test,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -991,7 +1097,7 @@ class TestContentType:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
-            max_body_bytes=1_048_576,  # 1 MiB
+            **{**_HTTP_DEFAULTS, "max_body_bytes": 1_048_576},
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1018,6 +1124,7 @@ class TestLifecycle:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="", agent_timeout=5.0,
+            **_HTTP_DEFAULTS,
         )
         await api.stop()  # _runner is None — should not raise
 
@@ -1027,6 +1134,7 @@ class TestLifecycle:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="", agent_timeout=5.0,
+            **_HTTP_DEFAULTS,
         )
         # Start on a random port
         await api.start()
@@ -1045,7 +1153,7 @@ class TestLifecycle:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="", agent_timeout=5.0,
-            download_dir=str(dl_dir),
+            **{**_HTTP_DEFAULTS, "download_dir": str(dl_dir)},
         )
         assert len(list(dl_dir.iterdir())) == 2
         await api.stop()
@@ -1057,7 +1165,7 @@ class TestLifecycle:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="", agent_timeout=5.0,
-            download_dir=str(tmp_path / "nonexistent"),
+            **{**_HTTP_DEFAULTS, "download_dir": str(tmp_path / "nonexistent")},
         )
         await api.stop()  # Should not raise
 
@@ -1073,7 +1181,7 @@ class TestLifecycle:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="", agent_timeout=5.0,
-            download_dir=str(dl_dir),
+            **{**_HTTP_DEFAULTS, "download_dir": str(dl_dir)},
         )
         await api.stop()
         # File cleaned, subdir preserved
@@ -1150,10 +1258,11 @@ class TestRateLimiting:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="rate-test-token", agent_timeout=5.0,
+            **_HTTP_DEFAULTS,
         )
         # Override rate limiter with low threshold for testing
         from channels.http_api import _RateLimiter
-        api._rate_limiter = _RateLimiter(max_requests=3, window_seconds=60)
+        api._rate_limiter = _RateLimiter(max_requests=3, window_seconds=60, cleanup_threshold=1000)
         app = _make_app(api)
         headers = {"Authorization": "Bearer rate-test-token"}
         async with TestClient(TestServer(app)) as client:
@@ -1179,8 +1288,9 @@ class TestRateLimiting:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="rate-test-token", agent_timeout=5.0,
+            **_HTTP_DEFAULTS,
         )
-        api._rate_limiter = _RateLimiter(max_requests=2, window_seconds=0.1)
+        api._rate_limiter = _RateLimiter(max_requests=2, window_seconds=0.1, cleanup_threshold=1000)
         app = _make_app(api)
         headers = {"Authorization": "Bearer rate-test-token"}
         async with TestClient(TestServer(app)) as client:
@@ -1279,13 +1389,8 @@ class TestSenderPrefixing:
 
 class TestHTTPConfig:
     def test_http_defaults(self):
-        """HTTP config has sensible defaults when section is missing."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-        })
+        """HTTP config has sensible defaults."""
+        cfg = _make_http_config()
         assert cfg.http_enabled is False
         assert cfg.http_host == "127.0.0.1"
         assert cfg.http_port == 8100
@@ -1293,13 +1398,7 @@ class TestHTTPConfig:
 
     def test_http_configured(self):
         """HTTP config reads from [http] section."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-            "http": {"enabled": True, "host": "0.0.0.0", "port": 9000},
-        })
+        cfg = _make_http_config(http={"enabled": True, "host": "0.0.0.0", "port": 9000})
         assert cfg.http_enabled is True
         assert cfg.http_host == "0.0.0.0"
         assert cfg.http_port == 9000
@@ -1307,13 +1406,7 @@ class TestHTTPConfig:
     def test_http_token_from_env(self, monkeypatch):
         """HTTP token loaded via [http] token_env → env var."""
         monkeypatch.setenv("MY_HTTP_TOKEN", "my-secret-token")
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-            "http": {"token_env": "MY_HTTP_TOKEN"},
-        })
+        cfg = _make_http_config(http={"token_env": "MY_HTTP_TOKEN"})
         assert cfg.http_auth_token == "my-secret-token"
 
 
@@ -1432,6 +1525,7 @@ class TestSessions:
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
             get_sessions=lambda: sessions_data,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1448,6 +1542,7 @@ class TestSessions:
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
             get_sessions=lambda: [],
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1462,6 +1557,7 @@ class TestSessions:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1493,6 +1589,7 @@ class TestCost:
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
             get_cost=lambda p: cost_data,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1515,6 +1612,7 @@ class TestCost:
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
             get_cost=mock_cost,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1535,6 +1633,7 @@ class TestCost:
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
             get_cost=mock_cost,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1548,6 +1647,7 @@ class TestCost:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1569,6 +1669,7 @@ class TestCost:
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
             get_cost=mock_cost,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1582,6 +1683,7 @@ class TestCost:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1605,56 +1707,28 @@ class TestCost:
 class TestHTTPCallbackConfig:
     def test_callback_url_default_empty(self):
         """Callback URL defaults to empty when not configured."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-        })
+        cfg = _make_http_config()
         assert cfg.http_callback_url == ""
 
     def test_callback_url_configured(self):
         """Callback URL reads from [http] section."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-            "http": {"callback_url": "https://n8n.local/webhook/abc"},
-        })
+        cfg = _make_http_config(http={"callback_url": "https://n8n.local/webhook/abc"})
         assert cfg.http_callback_url == "https://n8n.local/webhook/abc"
 
     def test_callback_token_from_env(self, monkeypatch):
         """Callback token loaded from env var specified in config."""
         monkeypatch.setenv("MY_CALLBACK_TOKEN", "secret-webhook-token")
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-            "http": {"callback_token_env": "MY_CALLBACK_TOKEN"},
-        })
+        cfg = _make_http_config(http={"callback_token_env": "MY_CALLBACK_TOKEN"})
         assert cfg.http_callback_token == "secret-webhook-token"
 
     def test_callback_token_empty_when_env_not_set(self):
         """Callback token empty when env var is not set."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-            "http": {"callback_token_env": "NONEXISTENT_VAR_12345"},
-        })
+        cfg = _make_http_config(http={"callback_token_env": "NONEXISTENT_VAR_12345"})
         assert cfg.http_callback_token == ""
 
     def test_callback_token_empty_when_no_env_var_configured(self):
         """Callback token empty when callback_token_env is not configured."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-        })
+        cfg = _make_http_config()
         assert cfg.http_callback_token == ""
 
 
@@ -1673,7 +1747,7 @@ class TestHTTPAttachments:
             port=0,
             auth_token="test-token-123",
             agent_timeout=5.0,
-            download_dir=str(tmp_path / "downloads"),
+            **{**_HTTP_DEFAULTS, "download_dir": str(tmp_path / "downloads")},
         )
 
     @pytest.fixture
@@ -1859,7 +1933,7 @@ class TestHTTPAttachments:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
-            download_dir=str(dl_dir),
+            **{**_HTTP_DEFAULTS, "download_dir": str(dl_dir)},
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -1988,44 +2062,22 @@ class TestHTTPAttachments:
 class TestHTTPAttachmentConfig:
     def test_download_dir_default(self):
         """Download dir defaults to /tmp/lucyd-http."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-        })
+        cfg = _make_http_config()
         assert cfg.http_download_dir == "/tmp/lucyd-http"
 
     def test_download_dir_configured(self):
         """Download dir reads from [http] section."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-            "http": {"download_dir": "/var/lucyd/uploads"},
-        })
+        cfg = _make_http_config(http={"download_dir": "/var/lucyd/uploads"})
         assert cfg.http_download_dir == "/var/lucyd/uploads"
 
     def test_max_body_bytes_default(self):
         """Max body bytes defaults to 10 MiB."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-        })
+        cfg = _make_http_config()
         assert cfg.http_max_body_bytes == 10 * 1024 * 1024
 
     def test_max_body_bytes_configured(self):
         """Max body bytes reads from [http] section."""
-        from config import Config
-        cfg = Config({
-            "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-            "http": {"max_body_bytes": 5_000_000},
-        })
+        cfg = _make_http_config(http={"max_body_bytes": 5_000_000})
         assert cfg.http_max_body_bytes == 5_000_000
 
 
@@ -2047,6 +2099,7 @@ class TestAgentIdentity:
             get_status=lambda: {"status": "ok"},
             get_sessions=lambda: [],
             get_cost=lambda period: {"period": period, "total_cost": 0.0, "models": []},
+            **_HTTP_DEFAULTS,
         )
 
     @pytest.mark.asyncio
@@ -2123,6 +2176,7 @@ class TestMonitorEndpoint:
                 "model": "test-model",
                 "turn": 2,
             },
+            **_HTTP_DEFAULTS,
         )
 
     @pytest.mark.asyncio
@@ -2176,6 +2230,7 @@ class TestResetEndpoint:
             port=0,
             auth_token="test-token-123",
             agent_timeout=5.0,
+            **_HTTP_DEFAULTS,
         )
 
     @staticmethod
@@ -2254,6 +2309,7 @@ class TestResetEndpoint:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=0.5,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -2288,6 +2344,7 @@ class TestHistoryEndpoint:
             auth_token="test-token-123",
             agent_timeout=5.0,
             get_history=mock_history,
+            **_HTTP_DEFAULTS,
         )
 
     @pytest.mark.asyncio
@@ -2360,6 +2417,7 @@ class TestEvolveEndpoint:
             auth_token="test-token-123",
             agent_timeout=5.0,
             handle_evolve=mock_evolve,
+            **_HTTP_DEFAULTS,
         )
 
     @pytest.mark.asyncio
@@ -2398,6 +2456,7 @@ class TestEvolveEndpoint:
             auth_token="test-token-123",
             agent_timeout=5.0,
             handle_evolve=broken_evolve,
+            **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
@@ -2423,6 +2482,7 @@ class TestCompactEndpoint:
             port=0,
             auth_token="test-token-123",
             agent_timeout=5.0,
+            **_HTTP_DEFAULTS,
         )
 
     @staticmethod
@@ -2488,6 +2548,10 @@ class TestCompactEndpoint:
 # ─── AI-002: Queue Routing Invariant ─────────────────────────────
 
 
+@pytest.mark.skipif(
+    os.environ.get("MUTMUT_RUNNING") == "1",
+    reason="AST invariant tests fail under mutmut trampoline (inspect.getsource returns wrapper)",
+)
 class TestQueueRoutingInvariant:
     """AI-002: ALL HTTP POST handlers must route through asyncio.Queue.
 

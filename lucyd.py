@@ -336,7 +336,7 @@ class LucydDaemon:
         self.config = config
         self.running = True
         self.start_time = time.time()
-        self.queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=config.queue_capacity)
         self._control_queue: asyncio.Queue = asyncio.Queue()
         self.provider: Any = None
         self.channel: Any = None
@@ -472,6 +472,9 @@ class LucydDaemon:
                 embedding_base_url=self.config.embedding_base_url,
                 embedding_timeout=self.config.embedding_timeout,
                 top_k=self.config.memory_top_k,
+                vector_search_limit=self.config.vector_search_limit,
+                fts_min_results=self.config.fts_min_results,
+                sqlite_timeout=self.config.sqlite_timeout,
             )
             set_memory(mem)
             # Wire structured recall if consolidation enabled
@@ -542,6 +545,7 @@ class LucydDaemon:
                 cost_db=str(self.config.cost_db),
                 start_time=self.start_time,
                 max_context_tokens=primary_cfg.get("max_context_tokens", 0),
+                sqlite_timeout=self.config.sqlite_timeout,
             )
             self.tool_registry.register_many(status_tools)
 
@@ -629,7 +633,7 @@ class LucydDaemon:
 
             from memory_schema import ensure_schema
             self._memory_conn = sqlite3.connect(
-                self.config.memory_db, timeout=30,
+                self.config.memory_db, timeout=self.config.sqlite_timeout,
             )
             self._memory_conn.execute("PRAGMA journal_mode=WAL")
             self._memory_conn.row_factory = sqlite3.Row
@@ -651,7 +655,7 @@ class LucydDaemon:
         self.skill_loader.scan()
 
     def _init_cost_db(self) -> None:
-        _init_cost_db(str(self.config.cost_db))
+        _init_cost_db(str(self.config.cost_db), sqlite_timeout=self.config.sqlite_timeout)
 
     def _check_context_budget(self) -> None:
         """Estimate system prompt size and warn if it consumes too much context.
@@ -694,10 +698,11 @@ class LucydDaemon:
     # The agentic loop still runs — tools execute, cost is recorded, session persists.
     _NO_CHANNEL_DELIVERY = frozenset({"system", "http"})
 
-    def _drain_telemetry(self, max_age: float = 30.0) -> str:
+    def _drain_telemetry(self) -> str:
         """Read and clear passive telemetry buffer. Returns formatted string."""
         if not self._telemetry_buffer:
             return ""
+        max_age = self.config.telemetry_max_age
         now = time.time()
         lines = []
         to_remove = []
@@ -903,10 +908,16 @@ class LucydDaemon:
         if recall_text and self.config.recall_synthesis_style != "structured":
             try:
                 from synthesis import synthesize_recall
+                style = self.config.recall_synthesis_style
+                prompt_map = {
+                    "narrative": self.config.synthesis_prompt_narrative,
+                    "factual": self.config.synthesis_prompt_factual,
+                }
                 synth_result = await synthesize_recall(
                     recall_text,
-                    self.config.recall_synthesis_style,
+                    style,
                     provider,
+                    prompt_override=prompt_map.get(style, ""),
                 )
                 recall_text = synth_result.text
                 if synth_result.usage:
@@ -918,6 +929,7 @@ class LucydDaemon:
                         cost_rates,
                         call_type="synthesis",
                         trace_id=trace_id,
+                        sqlite_timeout=self.config.sqlite_timeout,
                     )
             except Exception:
                 log.exception("recall synthesis failed, using raw recall")
@@ -1026,6 +1038,9 @@ class LucydDaemon:
                         tool_executor=self.tool_registry,
                         max_turns=self.config.max_turns,
                         timeout=self.config.agent_timeout,
+                        api_retries=self.config.api_retries,
+                        api_retry_base_delay=self.config.api_retry_base_delay,
+                        sqlite_timeout=self.config.sqlite_timeout,
                         cost_db=str(self.config.cost_db),
                         session_id=session.id,
                         model_name=model_name,
@@ -1033,8 +1048,6 @@ class LucydDaemon:
                         max_cost=float(max_cost),
                         on_response=_on_response,
                         on_tool_results=_on_tool_results,
-                        api_retries=self.config.api_retries,
-                        api_retry_base_delay=self.config.api_retry_base_delay,
                         trace_id=trace_id,
                     )
                     break  # Success
@@ -1106,6 +1119,7 @@ class LucydDaemon:
         if image_blocks:
             enriched = _enrich_image_caption(
                 text, caption, session.messages, msg_count_before,
+                max_desc_len=self.config.vision_caption_max_chars,
             )
             session.messages[user_msg_idx]["content"] = enriched
 
@@ -1218,11 +1232,14 @@ class LucydDaemon:
                 cost_rates=cost_rates,
                 trace_id=trace_id,
                 keep_recent_pct=self.config.compaction_keep_pct,
+                min_messages=self.config.compaction_min_messages,
+                tool_result_max_chars=self.config.compaction_tool_result_max_chars,
                 max_tokens=self.config.compaction_max_tokens,
                 system_blocks=self.context_builder.build_stable(),
                 verify_enabled=self.config.verify_enabled,
                 verify_max_turn_labels=self.config.verify_max_turn_labels,
                 verify_grounding_threshold=self.config.verify_grounding_threshold,
+                sqlite_timeout=self.config.sqlite_timeout,
             )
 
         # Auto-close one-shot system sessions (evolution, heartbeat).
@@ -1424,6 +1441,7 @@ class LucydDaemon:
                WHERE timestamp >= ?
                GROUP BY model""",
             (ts_filter,),
+            sqlite_timeout=self.config.sqlite_timeout,
         )
 
         if not rows:
@@ -1478,6 +1496,7 @@ class LucydDaemon:
             str(self.config.cost_db),
             "SELECT SUM(cost_usd) FROM costs WHERE timestamp >= ?",
             (today_start_ts(),),
+            sqlite_timeout=self.config.sqlite_timeout,
         )
         if rows and rows[0][0]:
             today_cost = rows[0][0]
@@ -1595,7 +1614,7 @@ class LucydDaemon:
             await self._drain_control_queue()
 
             try:
-                item = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+                item = await asyncio.wait_for(self.queue.get(), timeout=self.config.queue_poll_interval)
             except TimeoutError:
                 continue
             except asyncio.CancelledError:
@@ -1614,7 +1633,8 @@ class LucydDaemon:
                 text = item.text
                 # Inject quote context so the LLM sees what the user replied to
                 if item.quote:
-                    q = item.quote if len(item.quote) <= 200 else item.quote[:200] + "…"
+                    max_q = self.config.quote_max_chars
+                    q = item.quote if len(item.quote) <= max_q else item.quote[:max_q] + "…"
                     text = f"[replying to: {q}]\n{text}"
                 attachments = item.attachments
                 notify_meta = None
@@ -1818,6 +1838,7 @@ class LucydDaemon:
                     rate_limit=cfg.http_rate_limit,
                     rate_window=cfg.http_rate_window,
                     status_rate_limit=cfg.http_status_rate_limit,
+                    rate_cleanup_threshold=cfg.http_rate_cleanup_threshold,
                     agent_name=cfg.agent_name,
                 )
                 await self._http_api.start()

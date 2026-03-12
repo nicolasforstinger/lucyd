@@ -91,16 +91,19 @@ Optional HTTP API server for external integrations.
 enabled = false              # Enable HTTP API (default: false)
 host = "127.0.0.1"          # Listen address (default: 127.0.0.1 — localhost only)
 port = 8100                  # Listen port (default: 8100)
+token_env = "LUCYD_HTTP_TOKEN"  # Env var containing the bearer token
+download_dir = "/tmp/lucyd-http"  # Temp dir for HTTP attachment downloads
+max_body_bytes = 10485760    # Max request body size in bytes (default: 10 MB)
 callback_url = ""            # Webhook URL — POST after every processed message (default: "" = disabled)
 callback_token_env = ""      # Env var name containing the webhook bearer token (default: "" = no auth)
 callback_timeout = 10        # Webhook callback timeout in seconds (default: 10)
-max_body_bytes = 10485760    # Max request body size in bytes (default: 10 MB)
 rate_limit = 30              # Max requests per rate_window per sender (default: 30)
 rate_window = 60             # Rate limit window in seconds (default: 60)
 status_rate_limit = 60       # Max /status requests per rate_window (default: 60)
+rate_limit_cleanup_threshold = 1000  # Evict stale rate limit entries above this count
 ```
 
-Auth token is loaded from the `LUCYD_HTTP_TOKEN` environment variable. Webhook callback token is loaded from the env var named in `callback_token_env`. See [operations — HTTP API](operations.md#http-api) for endpoint details and [webhook callback](operations.md#webhook-callback) for the callback payload format.
+Auth token is loaded from the environment variable named by `token_env` (default: `LUCYD_HTTP_TOKEN`). Webhook callback token is loaded from the env var named in `callback_token_env`. See [operations — HTTP API](operations.md#http-api) for endpoint details and [webhook callback](operations.md#webhook-callback) for the callback payload format.
 
 ## [providers]
 
@@ -180,6 +183,8 @@ Long-term memory configuration.
 db = "~/.lucyd/memory/main.sqlite"            # SQLite DB with FTS5 + embeddings
 search_top_k = 10                             # Default result limit for memory searches
 embedding_timeout = 15                        # Embedding API request timeout (seconds)
+vector_search_limit = 10000                   # Raw DB query cap for vector search
+fts_min_results = 3                           # FTS results threshold before vector fallback
 ```
 
 The memory DB is optional. If the path is empty or the file does not exist, memory tools are not registered.
@@ -254,6 +259,8 @@ fact_format = "natural"              # "natural" (readable) or "compact"
 show_emotional_tone = true           # Include emotional tone in episode display
 episode_section_header = "Recent conversations"  # Header for episode section
 synthesis_style = "structured"       # "structured" (raw), "narrative", or "factual"
+synthesis_prompt_narrative = ""      # Prompt for narrative synthesis ({recall_text} placeholder). Required when synthesis_style = "narrative"
+synthesis_prompt_factual = ""        # Prompt for factual synthesis ({recall_text} placeholder). Required when synthesis_style = "factual"
 ```
 
 Drop order under budget pressure: facts (15) → episodes (25) → vector (35) → commitments (40).
@@ -299,9 +306,10 @@ enabled = [
     "tts",
 ]
 output_truncation = 30000    # Truncate tool output beyond this many characters
+plugins_dir = "plugins.d"   # Directory for custom tool plugins
 exec_timeout = 120           # Default exec tool timeout (seconds)
 exec_max_timeout = 600       # Maximum allowed exec timeout (seconds)
-# subagent_deny = ["sessions_spawn", "tts", "react", "schedule_message"]  # Tools denied to sub-agents (default if omitted)
+subagent_deny = ["sessions_spawn", "tts", "react", "schedule_message"]  # Tools denied to sub-agents
 subagent_max_turns = 0       # Max turns for sub-agents (0 = use max_turns_per_message)
 subagent_timeout = 0         # Timeout for sub-agents in seconds (0 = use agent_timeout_seconds)
 ```
@@ -322,8 +330,9 @@ default_read_limit = 2000                          # Max lines returned by the r
 
 ```toml
 [tools.web_search]
-provider = "brave"    # Web search provider (currently only "brave")
-timeout = 15          # Request timeout in seconds (default: 15)
+provider = "brave"              # Web search provider (currently only "brave")
+api_key_env = "LUCYD_BRAVE_KEY" # Env var for web search API key
+timeout = 15                    # Request timeout in seconds (default: 15)
 ```
 
 ### [tools.web_fetch]
@@ -338,14 +347,14 @@ timeout = 15          # Request timeout in seconds (default: 15)
 ```toml
 [tools.tts]
 provider = "elevenlabs"                # TTS provider (required if tts enabled; empty = TTS disabled)
-# api_key_env = "LUCYD_ELEVENLABS_KEY" # Env var for TTS API key (default: looks up provider name in api_keys)
+api_key_env = "LUCYD_ELEVENLABS_KEY"   # Env var for TTS API key
 default_voice_id = "your-voice-id"     # Voice identifier
 default_model_id = "eleven_v3"         # TTS model (provider-specific; ElevenLabs default: eleven_v3)
 speed = 1.0                            # Speech speed
 stability = 0.5                        # Voice stability (0.0–1.0)
 similarity_boost = 0.75                # Voice similarity boost (0.0–1.0)
 timeout = 60                           # API request timeout in seconds (default: 60)
-# api_url = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"  # TTS endpoint URL template (provider-specific)
+api_url = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"  # TTS endpoint URL template ({voice_id} placeholder)
 ```
 
 The `api_url` setting accepts a `{voice_id}` placeholder. When empty, the provider-specific default is used (e.g., ElevenLabs URL for `provider = "elevenlabs"`).
@@ -405,9 +414,11 @@ Document attachment processing. Extracts text from attachments (PDF, text files)
 enabled = true                  # Enable document text extraction (default: true)
 max_chars = 30000               # Truncation limit for extracted text (default: 30000)
 max_file_bytes = 10485760       # Skip files larger than this (default: 10 MB)
-# text_extensions = [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
-#     ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
-#     ".ini", ".cfg", ".log", ".sql", ".css"]
+text_extensions = [
+    ".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
+    ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
+    ".ini", ".cfg", ".log", ".sql", ".css",
+]
 ```
 
 Files are matched by extension (for text) or MIME type (for PDF). Non-extractable formats fall through to label-only.
@@ -419,10 +430,11 @@ Image processing settings for inbound images.
 ```toml
 [vision]
 max_image_bytes = 5242880              # Skip inbound images larger than this (bytes, default 5 MB)
-# max_dimension = 1568                # Max px on longest side (default: 1568)
-# default_caption = "image"           # Default caption for image attachments
-# too_large_msg = "image too large to display"  # Message when image exceeds size limit
+max_dimension = 1568                   # Max px on longest side (default: 1568)
+default_caption = "image"              # Default caption for image attachments
+too_large_msg = "image too large to display"  # Message when image exceeds size limit
 jpeg_quality_steps = [85, 60, 40]      # JPEG quality reduction steps for fitting oversized images
+caption_max_chars = 200                # Max chars from response embedded in image caption after processing
 ```
 
 When an image exceeds `max_image_bytes`, the daemon tries dimension scaling first, then iterates through `jpeg_quality_steps` to reduce JPEG quality. If the image still exceeds the limit after all steps (e.g., PNG which can't be quality-reduced), the `too_large_msg` fallback is used.
@@ -444,8 +456,13 @@ api_retry_base_delay = 2.0                                             # Initial
 message_retries = 2                                                    # Message-level retries on persistent failure (default: 2)
 message_retry_base_delay = 30                                          # Base delay between message retries in seconds (default: 30)
 audit_truncation_limit = 500                                           # Max chars per message in session audit truncation (default: 500)
+queue_capacity = 1000                                                  # Max messages in the async queue (default: 1000)
+queue_poll_interval = 1.0                                              # Queue poll cycle in seconds (default: 1.0)
+quote_max_chars = 200                                                  # Max chars for quoted reply context (default: 200)
+sqlite_timeout = 30                                                    # SQLite connection timeout in seconds for all DBs (default: 30)
 primary_sender = "Nicolas"                                             # Route all notifications to this sender's session (default: "" = disabled)
 passive_notify_refs = ["sensor-data"]                                  # Notification refs buffered passively without LLM calls (default: [])
+telemetry_max_age = 30.0                                               # Max age in seconds for buffered telemetry injection (default: 30.0)
 ```
 
 **`primary_sender`:** When set, all notifications (`/notify`, `--notify`) route to the named sender's session instead of creating throwaway sessions per source. Keeps notification context in the agent's main conversation. Empty string disables (backward compatible).
@@ -461,13 +478,18 @@ Session compaction (summarization of old messages to free context window).
 ```toml
 [behavior.compaction]
 threshold_tokens = 150000    # Trigger compaction when last input_tokens exceeds this
+warning_pct = 0.8            # Fraction of threshold at which to inject context warning (default: 0.8)
+min_messages = 4             # Minimum messages before compaction can trigger (default: 4)
 keep_recent_pct = 0.33       # Keep newest fraction of messages verbatim (default: 0.33)
+keep_recent_pct_min = 0.05   # Floor for keep_recent_pct (default: 0.05)
+keep_recent_pct_max = 0.9    # Ceiling for keep_recent_pct (default: 0.9)
 max_tokens = 2048            # Max output tokens for compaction summary (caps the primary model's default)
+tool_result_max_chars = 2000 # Max chars per tool result kept in compacted context (default: 2000)
 verify_enabled = true        # Post-hoc verification: structural + entity grounding (default: true)
 verify_max_turn_labels = 3   # Max dialogue turn patterns before rejection (default: 3)
 verify_grounding_threshold = 0.5  # Min fraction of distinctive tokens grounded in source (default: 0.5)
-# prompt = "..."             # Custom compaction prompt (supports {agent_name}, {max_tokens})
-# diary_prompt = "..."       # Custom diary prompt for forced compact (supports {date})
+prompt = "..."               # Compaction prompt (supports {agent_name}, {max_tokens}). See lucyd.toml.example
+diary_prompt = "..."         # Diary prompt for forced compact (supports {date}). See lucyd.toml.example
 ```
 
 Compaction takes the oldest messages (1 - `keep_recent_pct`), summarizes them, and replaces them with the summary. The JSONL audit trail retains the full history.
@@ -484,6 +506,7 @@ Log file rotation settings.
 [logging]
 max_bytes = 10485760    # Max log file size before rotation (default: 10 MB)
 backup_count = 3        # Number of rotated backups to keep (default: 3)
+suppress = ["httpx", "httpcore", "anthropic", "openai"]  # Third-party loggers suppressed to WARNING
 ```
 
 ## [paths]

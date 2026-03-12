@@ -1,95 +1,96 @@
 # Full Audit Report
 
-**Date:** 2026-03-09
-**Audit Cycle:** 17
-**Triggered by:** Post-feature audit (primary_sender routing, passive telemetry, lucyd-send overhaul, compaction token awareness)
+**Date:** 2026-03-12
+**Cycle:** 18
+**Triggered by:** Manual request
 
 ## Stage Results
 
 | Stage | Status | Findings | Fixes |
 |-------|--------|----------|-------|
-| 1. Static Analysis | PASS | 1 import order (test) + MUTMUT_RUNNING fix | 2 |
-| 2. Test Suite | PASS | 1725 tests, 33.16s, all green | 0 |
-| 3. Mutation Testing | PASS | verification.py 81.5% kill, all security 100% | 0 |
-| 4. Orchestrator Testing | PASS | 314 tests + 17 invariant tests | 0 |
-| 5. Dependency Chain | PASS | 19 pipelines healthy, all data fresh | 0 |
-| 6. Security Audit | PASS | 1 LOW (V-1: /compact queue bypass) — **FIXED** | 1 |
-| 7. Documentation Audit | PASS (after fixes) | 9 findings across 3 files | 9 |
-| 8. Remediation | PASS | No stale gaps | 0 |
+| 1. Static Analysis | PASS | 0 security/bug, ~30 test style (cosmetic) | 0 |
+| 2. Test Suite | PASS | 1721/1721 passing, 33.78s | 0 |
+| 3. Mutation Testing | PASS | 74.0% channels/ kill, 100% security | 1 (infra) |
+| 4. Orchestrator Testing | PASS | 297 orchestrator + 17 invariant | 0 |
+| 5. Dependency Chain | PASS | 9 pipelines active, all data fresh | 0 |
+| 6. Security Audit | PASS | 0 vulnerabilities, pip-audit clean | 0 |
+| 7. Documentation Audit | PASS | 6 discrepancies found | 6 |
+| 8. Remediation | PASS | 1 new gap accepted | 0 |
 
 ## Bug Fixes Applied
 
-### Infrastructure Fix: MUTMUT_RUNNING env var (Stage 1/3)
+### Infrastructure Fix: mutmut skipif (Stage 3)
 
-**Found by:** Stage 3 (mutation testing) — all mutants "not checked"
-**Root cause:** `os._exit()` in `conftest.py:pytest_unconfigure` killed the test process before mutmut could capture exit codes.
-**Fix:** Added `MUTMUT_RUNNING` env var check — skips `os._exit()` during mutation testing while preserving the asyncio hang fix for normal runs.
-**Verification:** 81 mutants on verification.py, 66 killed, 15 survived (all cosmetic/equivalent).
+**Found by:** Stage 3 — `TestQueueRoutingInvariant` false failure under mutation
+**Root cause:** `inspect.getsource()` returns mutmut's trampoline wrapper instead of original source, causing AST-based invariant test to fail.
+**Fix:** Added `@pytest.mark.skipif(MUTMUT_RUNNING)` — test is incompatible with trampoline-based mutation by design.
+**Impact:** Zero — test still runs in normal pytest; only skipped during mutation testing.
 
 ### Documentation Fixes (Stage 7)
 
 | # | File | Finding | Fix |
 |---|------|---------|-----|
-| 1 | operations.md | Missing `--status` and `--log` flags | Added to flag table |
-| 2 | operations.md | Stale `tier` field in `/chat` table | Replaced with `attachments` |
-| 3 | operations.md | Stale model override in evolve section | Removed |
-| 4 | operations.md | `/compact` missing from rate limit group | Added |
-| 5 | CLAUDE.md | HTTP route inline list incomplete | Added `/evolve`, `/compact` |
-| 6 | CLAUDE.md | Source module count wrong (35 → 33) | Corrected |
-| 7 | CLAUDE.md | Test-to-source ratio stale | Updated to ~2.6:1 |
-| 8 | diagrams.md | 17 line number references drifted | All updated |
+| 1 | README.md:113 | Test count "~1725" stale | Updated to "~1721" |
+| 2 | README.md:140 | HTTP API "145 tests" stale | Updated to "143 tests" |
+| 3 | README.md:140 | Orchestrator "283 tests" stale | Updated to "297 tests" |
+| 4 | docs/configuration.md | 12 config keys undocumented | All added with descriptions |
+| 5 | lucyd.toml.example | 40+ required keys missing/commented | Complete rewrite — all keys present |
+| 6 | docs/diagrams.md | 16 line number references drifted | All updated |
 
-## Pre-Audit Retrospective
+### Critical Finding: lucyd.toml.example Incomplete
 
-Two production fixes since Cycle 16 analyzed:
+**Root cause:** Cycle 17 Stage 1 converted all config access from `_deep_get()` to `_require()`, making every key mandatory. The example file was not updated to include all required keys. A new deployment copying the example would crash on startup with ConfigError for dozens of missing keys.
 
-1. **Compaction split boundary** (51e578d) — `tool_results` orphaned from `tool_use` after compaction. Should have been caught by Stage 4 contract tests. Now has regression test `test_compact_skips_orphaned_tool_results`.
-2. **lucyd-send defaults** (bfc8066) — wrong default sender for `--notify`. Should have been caught by Stage 2. Now has 17 invariant tests in `test_audit_agnostic.py`.
+**Fix:** Complete rewrite of lucyd.toml.example (245 → 302 lines). All required keys uncommented with generic framework defaults. Context budget documentation added per P-031.
 
-No new patterns needed — both fixes are self-contained with regression tests.
+**Design note:** `_require()` is correct for truly required values (agent.name, channel.type, models) but over-strict for behavioral tunables. Mitigated by complete example file. Formally accepted — see Stage 8 report.
 
 ## Overall Assessment
 
 **EXIT STATUS: PASS**
 
-- Zero static analysis errors
-- All 1725 tests green
-- Security mutation kill rates at target (100% on all security functions)
-- All 314 orchestrator contract tests passing + 17 invariant tests
-- All 19 data pipelines have active producers, all data fresh
-- No unmitigated security vulnerabilities (V-1 fixed: /compact now routes through queue)
-- All docs match source after fixes
+- Zero static analysis errors (security/bug categories)
+- All 1721 tests green
+- Security mutation kill rates at 100% on all critical functions
+- All contract tests passing (297 orchestrator + 17 invariant)
+- All data pipelines have active producers with fresh data
+- No unmitigated security vulnerabilities
+- All docs match source (after Stage 7 fixes)
 - No gap older than 3 cycles remains unresolved
+- All cosmetic debt resolved or formally accepted
 
 ## Patterns
 
 ### Pre-audit retrospective
-Two production fixes analyzed. No new patterns needed — both are regression-tested.
+
+No production fixes between Cycle 17 and Cycle 18. No new patterns to create from incidents.
 
 ### Patterns created during this cycle
+
 None. No new bug classes discovered.
 
 ### Pattern index changes
-None.
+
+None. All existing patterns (P-001 through P-032) remain current and correctly assigned.
 
 ## Known Gaps
 
 | Gap | Source | Status | Cycles Open | Action |
 |-----|--------|--------|-------------|--------|
 | Provider `complete()` mock-boundary | Stage 3 | Accepted | Permanent | Canary test validates SDK behavior |
-| Alias accumulation multi-session | Stage 3 | Accepted | Permanent | INSERT OR IGNORE + unique constraint |
+| Alias accumulation multi-session | Stage 5 | Accepted | Permanent | INSERT OR IGNORE + unique constraint |
 | `_message_loop` debounce/FIFO | Stage 3 | Accepted | Permanent | 15+ contract tests |
-| HTTP `/compact` queue bypass (V-1) | Stage 6 | **Resolved** | 0 | Fixed: now routes through message queue |
+| `_require()` over-strictness | Stage 7 | Accepted | 1 | Mitigated by complete example file. P-020 catches drift. |
 
 ## Remediation Plan
 
-No open items. All findings resolved this cycle.
+No open items. All findings resolved or formally accepted this cycle.
 
 ## Deferred Items
 
-None.
+None. All stages passed clean.
 
 ## Recommendations
 
-1. Monitor evolution runs for MEMORY.md size regression (first week of unattended operation)
-2. Consider updating anthropic SDK (0.81.0 → 0.84.0) and openai SDK (2.21.0 → 2.26.0) when convenient — no security urgency
+1. **New config keys → update example** — any `_require()` path added to `config.py` must be reflected in `lucyd.toml.example` in the same commit. P-020 catches this at audit time.
+2. **Consider `_deep_get()` for tunables** — low priority. `_require()` works for identity/credentials/models but forces example file to list every behavioral knob. Future refactoring opportunity when convenient.

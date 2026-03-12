@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.agents import _DEFAULT_SUBAGENT_DENY, tool_sessions_spawn
+from tools.agents import tool_sessions_spawn
+
+# Canonical deny set — mirrors the value that config provides by default
+_DEFAULT_SUBAGENT_DENY = frozenset({"sessions_spawn", "tts", "react", "schedule_message"})
 
 
 @pytest.fixture
@@ -62,7 +65,7 @@ def setup_agents(mock_registry, mock_provider, mock_config):
     mod._config = mock_config
     mod._provider = mock_provider
     mod._tool_registry = mock_registry
-    mod._subagent_deny = set(mod._DEFAULT_SUBAGENT_DENY)
+    mod._subagent_deny = set(_DEFAULT_SUBAGENT_DENY)
     mod._default_max_turns = 50
     mod._default_timeout = 600.0
     yield
@@ -287,17 +290,6 @@ class TestConfigurableDenyList:
         )
         assert mod._subagent_deny == set()
 
-    def test_configure_with_none_uses_default(self, mock_config, mock_provider, mock_registry):
-        """None subagent_deny preserves default deny-list."""
-        import tools.agents as mod
-        mock_config.subagent_deny = None
-        mod.configure(
-            config=mock_config,
-            provider=mock_provider,
-            tool_registry=mock_registry,
-            session_manager=MagicMock(),
-        )
-        assert mod._subagent_deny == set(_DEFAULT_SUBAGENT_DENY)
 
     @pytest.mark.asyncio
     async def test_custom_deny_blocks_read(self, mock_registry):

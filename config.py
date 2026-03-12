@@ -35,6 +35,17 @@ def _deep_get(d: dict, *keys: str, default: Any = None) -> Any:
     return d
 
 
+def _require(d: dict, *keys: str) -> Any:
+    """Get a config value, raising ConfigError if the key path doesn't exist."""
+    val = _deep_get(d, *keys)
+    if val is None:
+        if len(keys) > 1:
+            section = ".".join(keys[:-1])
+            raise ConfigError(f"Missing required config: [{section}] {keys[-1]}")
+        raise ConfigError(f"Missing required config: {keys[0]}")
+    return val
+
+
 def _resolve_path(p: str) -> Path:
     return Path(p).expanduser().resolve()
 
@@ -129,19 +140,19 @@ class Config:
 
     @property
     def context_stable(self) -> list[str]:
-        return _deep_get(self._data, "agent", "context", "stable", default=[])
+        return _require(self._data, "agent", "context", "stable")
 
     @property
     def context_semi_stable(self) -> list[str]:
-        return _deep_get(self._data, "agent", "context", "semi_stable", default=[])
+        return _require(self._data, "agent", "context", "semi_stable")
 
     @property
     def skills_dir(self) -> str:
-        return _deep_get(self._data, "agent", "skills", "dir", default="skills")
+        return _require(self._data, "agent", "skills", "dir")
 
     @property
     def always_on_skills(self) -> list[str]:
-        return _deep_get(self._data, "agent", "skills", "always_on", default=[])
+        return _require(self._data, "agent", "skills", "always_on")
 
     # --- Channel ---
 
@@ -151,7 +162,7 @@ class Config:
 
     @property
     def debounce_ms(self) -> int:
-        return _deep_get(self._data, "channel", "debounce_ms", default=500)
+        return _require(self._data, "channel", "debounce_ms")
 
     @property
     def contact_names(self) -> list[str]:
@@ -165,53 +176,57 @@ class Config:
 
     @property
     def http_enabled(self) -> bool:
-        return _deep_get(self._data, "http", "enabled", default=False)
+        return _require(self._data, "http", "enabled")
 
     @property
     def http_host(self) -> str:
-        return _deep_get(self._data, "http", "host", default="127.0.0.1")
+        return _require(self._data, "http", "host")
 
     @property
     def http_port(self) -> int:
-        return _deep_get(self._data, "http", "port", default=8100)
+        return _require(self._data, "http", "port")
 
     @property
     def http_auth_token(self) -> str:
-        env = _deep_get(self._data, "http", "token_env", default="")
+        env = _require(self._data, "http", "token_env")
         return os.environ.get(env, "") if env else ""
 
     @property
     def http_download_dir(self) -> str:
-        return _deep_get(self._data, "http", "download_dir", default="/tmp/lucyd-http")  # noqa: S108 — config default; overridden by lucyd.toml
+        return _require(self._data, "http", "download_dir")
 
     @property
     def http_max_body_bytes(self) -> int:
-        return _deep_get(self._data, "http", "max_body_bytes", default=10 * 1024 * 1024)
+        return _require(self._data, "http", "max_body_bytes")
 
     @property
     def http_callback_url(self) -> str:
-        return _deep_get(self._data, "http", "callback_url", default="")
+        return _require(self._data, "http", "callback_url")
 
     @property
     def http_callback_token(self) -> str:
-        env_var = _deep_get(self._data, "http", "callback_token_env", default="")
+        env_var = _require(self._data, "http", "callback_token_env")
         return os.environ.get(env_var, "") if env_var else ""
 
     @property
     def http_callback_timeout(self) -> int:
-        return _deep_get(self._data, "http", "callback_timeout", default=10)
+        return _require(self._data, "http", "callback_timeout")
 
     @property
     def http_rate_limit(self) -> int:
-        return _deep_get(self._data, "http", "rate_limit", default=30)
+        return _require(self._data, "http", "rate_limit")
 
     @property
     def http_rate_window(self) -> int:
-        return _deep_get(self._data, "http", "rate_window", default=60)
+        return _require(self._data, "http", "rate_window")
 
     @property
     def http_status_rate_limit(self) -> int:
-        return _deep_get(self._data, "http", "status_rate_limit", default=60)
+        return _require(self._data, "http", "status_rate_limit")
+
+    @property
+    def http_rate_cleanup_threshold(self) -> int:
+        return _require(self._data, "http", "rate_limit_cleanup_threshold")
 
     # --- Models ---
 
@@ -225,111 +240,128 @@ class Config:
 
     @property
     def memory_db(self) -> str:
-        return _deep_get(self._data, "memory", "db", default="")
+        return _require(self._data, "memory", "db")
 
     @property
     def memory_top_k(self) -> int:
-        return _deep_get(self._data, "memory", "search_top_k", default=10)
+        return _require(self._data, "memory", "search_top_k")
+
+    @property
+    def vector_search_limit(self) -> int:
+        return _require(self._data, "memory", "vector_search_limit")
+
+    @property
+    def fts_min_results(self) -> int:
+        return _require(self._data, "memory", "fts_min_results")
 
     # --- Memory Consolidation ---
 
     @property
     def consolidation_enabled(self) -> bool:
-        return _deep_get(self._data, "memory", "consolidation", "enabled", default=False)
+        return _require(self._data, "memory", "consolidation", "enabled")
 
     @property
     def consolidation_min_messages(self) -> int:
-        return _deep_get(self._data, "memory", "consolidation", "min_messages", default=4)
+        return _require(self._data, "memory", "consolidation", "min_messages")
 
     @property
     def consolidation_confidence_threshold(self) -> float:
-        return _deep_get(self._data, "memory", "consolidation", "confidence_threshold", default=0.6)
+        return _require(self._data, "memory", "consolidation", "confidence_threshold")
 
     @property
     def consolidation_max_extraction_chars(self) -> int:
-        return _deep_get(self._data, "memory", "consolidation", "max_extraction_chars", default=50000)
+        return _require(self._data, "memory", "consolidation", "max_extraction_chars")
 
     # --- Memory Recall ---
 
     @property
     def recall_decay_rate(self) -> float:
-        return _deep_get(self._data, "memory", "recall", "decay_rate", default=0.03)
+        return _require(self._data, "memory", "recall", "decay_rate")
 
     @property
     def recall_max_facts(self) -> int:
-        return _deep_get(self._data, "memory", "recall", "max_facts_in_context", default=20)
+        return _require(self._data, "memory", "recall", "max_facts_in_context")
 
     @property
     def recall_max_dynamic_tokens(self) -> int:
-        return _deep_get(self._data, "memory", "recall", "max_dynamic_tokens", default=1500)
+        return _require(self._data, "memory", "recall", "max_dynamic_tokens")
 
     @property
     def recall_max_episodes_at_start(self) -> int:
-        return _deep_get(self._data, "memory", "recall", "max_episodes_at_start", default=3)
+        return _require(self._data, "memory", "recall", "max_episodes_at_start")
 
     # --- Memory Recall Personality ---
 
     @property
     def recall_priority_vector(self) -> int:
-        return _deep_get(self._data, "memory", "recall", "personality", "priority_vector", default=35)
+        return _require(self._data, "memory", "recall", "personality", "priority_vector")
 
     @property
     def recall_priority_episodes(self) -> int:
-        return _deep_get(self._data, "memory", "recall", "personality", "priority_episodes", default=25)
+        return _require(self._data, "memory", "recall", "personality", "priority_episodes")
 
     @property
     def recall_priority_facts(self) -> int:
-        return _deep_get(self._data, "memory", "recall", "personality", "priority_facts", default=15)
+        return _require(self._data, "memory", "recall", "personality", "priority_facts")
 
     @property
     def recall_priority_commitments(self) -> int:
-        return _deep_get(self._data, "memory", "recall", "personality", "priority_commitments", default=40)
+        return _require(self._data, "memory", "recall", "personality", "priority_commitments")
 
     @property
     def recall_fact_format(self) -> str:
-        return _deep_get(self._data, "memory", "recall", "personality", "fact_format", default="natural")
+        return _require(self._data, "memory", "recall", "personality", "fact_format")
 
     @property
     def recall_show_emotional_tone(self) -> bool:
-        return _deep_get(self._data, "memory", "recall", "personality", "show_emotional_tone", default=True)
+        return _require(self._data, "memory", "recall", "personality", "show_emotional_tone")
 
     @property
     def recall_episode_section_header(self) -> str:
-        return _deep_get(self._data, "memory", "recall", "personality", "episode_section_header", default="Recent conversations")
+        return _require(self._data, "memory", "recall", "personality", "episode_section_header")
 
     @property
     def recall_synthesis_style(self) -> str:
         """Memory synthesis style: 'structured' (raw), 'narrative', or 'factual'."""
-        return _deep_get(self._data, "memory", "recall", "personality", "synthesis_style", default="structured")
+        return _require(self._data, "memory", "recall", "personality", "synthesis_style")
+
+    @property
+    def synthesis_prompt_narrative(self) -> str:
+        """Prompt template for narrative synthesis. {recall_text} is replaced."""
+        return _require(self._data, "memory", "recall", "personality", "synthesis_prompt_narrative")
+
+    @property
+    def synthesis_prompt_factual(self) -> str:
+        """Prompt template for factual synthesis. {recall_text} is replaced."""
+        return _require(self._data, "memory", "recall", "personality", "synthesis_prompt_factual")
 
     # --- Memory Maintenance ---
 
     @property
     def maintenance_stale_threshold_days(self) -> int:
-        return _deep_get(self._data, "memory", "maintenance", "stale_threshold_days", default=90)
+        return _require(self._data, "memory", "maintenance", "stale_threshold_days")
 
     # --- Memory Indexer ---
 
     @property
     def indexer_include_patterns(self) -> list[str]:
-        return _deep_get(self._data, "memory", "indexer", "include_patterns",
-                         default=["memory/*.md", "MEMORY.md"])
+        return _require(self._data, "memory", "indexer", "include_patterns")
 
     @property
     def indexer_exclude_dirs(self) -> list[str]:
-        return _deep_get(self._data, "memory", "indexer", "exclude_dirs", default=[])
+        return _require(self._data, "memory", "indexer", "exclude_dirs")
 
     @property
     def indexer_chunk_size(self) -> int:
-        return _deep_get(self._data, "memory", "indexer", "chunk_size_chars", default=1600)
+        return _require(self._data, "memory", "indexer", "chunk_size_chars")
 
     @property
     def indexer_chunk_overlap(self) -> int:
-        return _deep_get(self._data, "memory", "indexer", "chunk_overlap_chars", default=320)
+        return _require(self._data, "memory", "indexer", "chunk_overlap_chars")
 
     @property
     def indexer_embed_batch_limit(self) -> int:
-        return _deep_get(self._data, "memory", "indexer", "embed_batch_limit", default=100)
+        return _require(self._data, "memory", "indexer", "embed_batch_limit")
 
     # --- Embedding (Provider-Agnostic) ---
 
@@ -363,7 +395,7 @@ class Config:
 
     @property
     def embedding_timeout(self) -> int:
-        return _deep_get(self._data, "memory", "embedding_timeout", default=15)
+        return _require(self._data, "memory", "embedding_timeout")
 
     # --- Tools ---
 
@@ -374,293 +406,296 @@ class Config:
 
     @property
     def plugins_dir(self) -> str:
-        return _deep_get(self._data, "tools", "plugins_dir", default="plugins.d")
+        return _require(self._data, "tools", "plugins_dir")
 
     @property
-    def subagent_deny(self) -> list[str] | None:
-        """Custom sub-agent deny list, or None to use hardcoded default."""
-        return _deep_get(self._data, "tools", "subagent_deny", default=None)
+    def subagent_deny(self) -> list[str]:
+        """Sub-agent tool deny list from config."""
+        return _require(self._data, "tools", "subagent_deny")
 
     @property
     def subagent_max_turns(self) -> int:
         """Max turns for sub-agents. 0 = use max_turns_per_message."""
-        val = _deep_get(self._data, "tools", "subagent_max_turns", default=0)
+        val = _require(self._data, "tools", "subagent_max_turns")
         return val if val > 0 else self.max_turns
 
     @property
     def subagent_timeout(self) -> float:
         """Timeout per API call for sub-agents. 0 = use agent_timeout_seconds."""
-        val = _deep_get(self._data, "tools", "subagent_timeout", default=0.0)
-        return float(val) if float(val) > 0 else self.agent_timeout
+        val = float(_require(self._data, "tools", "subagent_timeout"))
+        return val if val > 0 else self.agent_timeout
 
     @property
     def tools_enabled(self) -> list[str]:
-        return _deep_get(self._data, "tools", "enabled", default=[
-            "read", "write", "edit", "exec",
-        ])
+        return _require(self._data, "tools", "enabled")
 
     @property
     def output_truncation(self) -> int:
-        return _deep_get(self._data, "tools", "output_truncation", default=30000)
+        return _require(self._data, "tools", "output_truncation")
 
     @property
     def filesystem_allowed_paths(self) -> list[str]:
-        explicit = _deep_get(self._data, "tools", "filesystem", "allowed_paths", default=None)
-        if explicit is not None:
-            return [str(_resolve_path(p)) for p in explicit]
-        # Default: workspace dir + /tmp/
-        ws = str(self.workspace)
-        return [ws, "/tmp/"]  # noqa: S108 — allowed read paths; /tmp needed for TTS and Telegram downloads
+        paths = _require(self._data, "tools", "filesystem", "allowed_paths")
+        return [str(_resolve_path(p)) for p in paths]
 
     @property
     def exec_timeout(self) -> int:
-        return _deep_get(self._data, "tools", "exec_timeout", default=120)
+        return _require(self._data, "tools", "exec_timeout")
 
     @property
     def exec_max_timeout(self) -> int:
-        return _deep_get(self._data, "tools", "exec_max_timeout", default=600)
+        return _require(self._data, "tools", "exec_max_timeout")
 
     @property
     def web_search_provider(self) -> str:
-        return _deep_get(self._data, "tools", "web_search", "provider", default="")
+        return _require(self._data, "tools", "web_search", "provider")
 
     @property
     def web_search_api_key(self) -> str:
         """Resolve web search API key from [tools.web_search] api_key_env."""
-        key_env = _deep_get(self._data, "tools", "web_search", "api_key_env", default="")
+        key_env = _require(self._data, "tools", "web_search", "api_key_env")
         return os.environ.get(key_env, "") if key_env else ""
 
     @property
     def tts_provider(self) -> str:
-        return _deep_get(self._data, "tools", "tts", "provider", default="")
+        return _require(self._data, "tools", "tts", "provider")
 
     @property
     def tts_api_key(self) -> str:
         """Resolve TTS API key from [tools.tts] api_key_env."""
-        key_env = _deep_get(self._data, "tools", "tts", "api_key_env", default="")
+        key_env = _require(self._data, "tools", "tts", "api_key_env")
         return os.environ.get(key_env, "") if key_env else ""
 
     @property
     def tts_timeout(self) -> int:
-        return _deep_get(self._data, "tools", "tts", "timeout", default=60)
+        return _require(self._data, "tools", "tts", "timeout")
 
     @property
     def tts_api_url(self) -> str:
         """TTS API URL template. Empty = provider-specific default."""
-        return _deep_get(self._data, "tools", "tts", "api_url", default="")
+        return _require(self._data, "tools", "tts", "api_url")
 
     @property
     def web_search_timeout(self) -> int:
-        return _deep_get(self._data, "tools", "web_search", "timeout", default=15)
+        return _require(self._data, "tools", "web_search", "timeout")
 
     @property
     def web_fetch_timeout(self) -> int:
-        return _deep_get(self._data, "tools", "web_fetch", "timeout", default=15)
+        return _require(self._data, "tools", "web_fetch", "timeout")
 
     @property
     def scheduling_max_scheduled(self) -> int:
-        return _deep_get(self._data, "tools", "scheduling", "max_scheduled", default=50)
+        return _require(self._data, "tools", "scheduling", "max_scheduled")
 
     @property
     def scheduling_max_delay(self) -> int:
-        return _deep_get(self._data, "tools", "scheduling", "max_delay", default=86400)
+        return _require(self._data, "tools", "scheduling", "max_delay")
 
     @property
     def filesystem_default_read_limit(self) -> int:
-        return _deep_get(self._data, "tools", "filesystem", "default_read_limit", default=2000)
+        return _require(self._data, "tools", "filesystem", "default_read_limit")
 
     # --- STT (Speech-to-Text) ---
 
     @property
     def stt_backend(self) -> str:
-        return _deep_get(self._data, "stt", "backend", default="")
+        return _require(self._data, "stt", "backend")
 
     @property
     def stt_voice_label(self) -> str:
-        return _deep_get(self._data, "stt", "voice_label", default="voice message")
+        return _require(self._data, "stt", "voice_label")
 
     @property
     def stt_voice_fail_msg(self) -> str:
-        return _deep_get(self._data, "stt", "voice_fail_msg",
-                         default="voice message — transcription failed")
+        return _require(self._data, "stt", "voice_fail_msg")
 
     @property
     def stt_audio_label(self) -> str:
-        return _deep_get(self._data, "stt", "audio_label", default="audio transcription")
+        return _require(self._data, "stt", "audio_label")
 
     @property
     def stt_audio_fail_msg(self) -> str:
-        return _deep_get(self._data, "stt", "audio_fail_msg",
-                         default="audio transcription — failed")
+        return _require(self._data, "stt", "audio_fail_msg")
 
     # --- Documents ---
 
     @property
     def documents_enabled(self) -> bool:
-        return _deep_get(self._data, "documents", "enabled", default=True)
+        return _require(self._data, "documents", "enabled")
 
     @property
     def documents_max_chars(self) -> int:
-        return _deep_get(self._data, "documents", "max_chars", default=30000)
+        return _require(self._data, "documents", "max_chars")
 
     @property
     def documents_max_file_bytes(self) -> int:
-        return _deep_get(self._data, "documents", "max_file_bytes", default=10 * 1024 * 1024)
+        return _require(self._data, "documents", "max_file_bytes")
 
     @property
     def documents_text_extensions(self) -> list[str]:
-        return _deep_get(self._data, "documents", "text_extensions",
-                         default=[".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
-                                  ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
-                                  ".ini", ".cfg", ".log", ".sql", ".css"])
+        return _require(self._data, "documents", "text_extensions")
 
     # --- Logging ---
 
     @property
     def log_max_bytes(self) -> int:
-        return _deep_get(self._data, "logging", "max_bytes", default=10 * 1024 * 1024)
+        return _require(self._data, "logging", "max_bytes")
 
     @property
     def log_backup_count(self) -> int:
-        return _deep_get(self._data, "logging", "backup_count", default=3)
+        return _require(self._data, "logging", "backup_count")
 
     @property
     def logging_suppress(self) -> list[str]:
-        return _deep_get(self._data, "logging", "suppress", default=[])
+        return _require(self._data, "logging", "suppress")
 
     # --- Vision ---
 
     @property
     def vision_max_image_bytes(self) -> int:
-        return _deep_get(self._data, "vision", "max_image_bytes", default=5 * 1024 * 1024)
+        return _require(self._data, "vision", "max_image_bytes")
 
     @property
     def vision_max_dimension(self) -> int:
-        return _deep_get(self._data, "vision", "max_dimension", default=1568)
+        return _require(self._data, "vision", "max_dimension")
 
     @property
     def vision_default_caption(self) -> str:
-        return _deep_get(self._data, "vision", "default_caption", default="image")
+        return _require(self._data, "vision", "default_caption")
 
     @property
     def vision_too_large_msg(self) -> str:
-        return _deep_get(self._data, "vision", "too_large_msg",
-                         default="image too large to display")
+        return _require(self._data, "vision", "too_large_msg")
 
     @property
     def vision_jpeg_quality_steps(self) -> list[int]:
-        return _deep_get(self._data, "vision", "jpeg_quality_steps", default=[85, 60, 40])
+        return _require(self._data, "vision", "jpeg_quality_steps")
+
+    @property
+    def vision_caption_max_chars(self) -> int:
+        """Max chars of assistant description to embed in image captions."""
+        return _require(self._data, "vision", "caption_max_chars")
 
     # --- Behavior ---
 
     @property
     def silent_tokens(self) -> list[str]:
-        return _deep_get(self._data, "behavior", "silent_tokens",
-                         default=["NO_REPLY"])
+        return _require(self._data, "behavior", "silent_tokens")
 
     @property
     def typing_indicators(self) -> bool:
-        return _deep_get(self._data, "behavior", "typing_indicators", default=True)
+        return _require(self._data, "behavior", "typing_indicators")
 
     @property
     def error_message(self) -> str:
-        return _deep_get(self._data, "behavior", "error_message",
-                         default="I'm having trouble connecting right now. Try again in a moment.")
+        return _require(self._data, "behavior", "error_message")
+
+    @property
+    def sqlite_timeout(self) -> int:
+        """SQLite connection timeout in seconds."""
+        return _require(self._data, "behavior", "sqlite_timeout")
 
     @property
     def api_retries(self) -> int:
-        return _deep_get(self._data, "behavior", "api_retries", default=2)
+        return _require(self._data, "behavior", "api_retries")
 
     @property
     def api_retry_base_delay(self) -> float:
-        return float(_deep_get(self._data, "behavior", "api_retry_base_delay", default=2.0))
+        return float(_require(self._data, "behavior", "api_retry_base_delay"))
 
     @property
     def message_retries(self) -> int:
-        return _deep_get(self._data, "behavior", "message_retries", default=2)
+        return _require(self._data, "behavior", "message_retries")
 
     @property
     def message_retry_base_delay(self) -> float:
-        return float(_deep_get(self._data, "behavior", "message_retry_base_delay", default=30.0))
+        return float(_require(self._data, "behavior", "message_retry_base_delay"))
 
     @property
     def audit_truncation_limit(self) -> int:
-        return _deep_get(self._data, "behavior", "audit_truncation_limit", default=500)
+        return _require(self._data, "behavior", "audit_truncation_limit")
 
     @property
     def agent_timeout(self) -> float:
-        return float(_deep_get(self._data, "behavior", "agent_timeout_seconds", default=600))
+        return float(_require(self._data, "behavior", "agent_timeout_seconds"))
 
     @property
     def max_turns(self) -> int:
-        return _deep_get(self._data, "behavior", "max_turns_per_message", default=50)
+        return _require(self._data, "behavior", "max_turns_per_message")
 
     @property
     def max_cost_per_message(self) -> float:
-        return float(_deep_get(self._data, "behavior", "max_cost_per_message", default=0.0))
+        return float(_require(self._data, "behavior", "max_cost_per_message"))
+
+    @property
+    def queue_capacity(self) -> int:
+        return _require(self._data, "behavior", "queue_capacity")
+
+    @property
+    def queue_poll_interval(self) -> float:
+        return float(_require(self._data, "behavior", "queue_poll_interval"))
+
+    @property
+    def quote_max_chars(self) -> int:
+        return _require(self._data, "behavior", "quote_max_chars")
+
+    @property
+    def telemetry_max_age(self) -> float:
+        return float(_require(self._data, "behavior", "telemetry_max_age"))
 
     @property
     def compaction_threshold(self) -> int:
-        return _deep_get(self._data, "behavior", "compaction", "threshold_tokens", default=150000)
+        return _require(self._data, "behavior", "compaction", "threshold_tokens")
 
     @property
     def compaction_max_tokens(self) -> int:
-        """Max output tokens for compaction summaries (default: 2048)."""
-        return _deep_get(self._data, "behavior", "compaction", "max_tokens", default=2048)
+        """Max output tokens for compaction summaries."""
+        return _require(self._data, "behavior", "compaction", "max_tokens")
 
     @property
     def compaction_prompt(self) -> str:
-        return _deep_get(self._data, "behavior", "compaction", "prompt", default=(
-            "Summarize this conversation for {agent_name}.\n"
-            "Rules:\n"
-            "1. Return ONLY the summary text — no preamble, no labels, no commentary.\n"
-            "2. Write as a dense narrative (200-600 words). Use {agent_name}'s voice.\n"
-            "3. NEVER reproduce individual message turns, timestamps, or \"user:\"/\"A:\" labels.\n"
-            "4. NEVER invent, fabricate, or extend content beyond what appears in the transcript.\n"
-            "5. If something was discussed, state WHAT was discussed and any conclusions reached.\n"
-            "6. Hard limit: {max_tokens} tokens. Your output WILL be cut off if you exceed this. Be concise.\n"
-            "Preserve with full fidelity:\n"
-            "- Emotional moments, relationship dynamics, things said with feeling\n"
-            "- Decisions made and reasoning behind them\n"
-            "- Commitments, promises, plans (who, what, when)\n"
-            "- New information learned about the user or others\n"
-            "- The agent's own reflections, opinions, and realizations\n"
-            "- Any tasks, reminders, or follow-ups mentioned"
-        ))
+        return _require(self._data, "behavior", "compaction", "prompt")
 
     @property
     def compaction_keep_pct(self) -> float:
         """Fraction of recent messages to keep verbatim during compaction (0.0–1.0)."""
-        val = _deep_get(self._data, "behavior", "compaction", "keep_recent_pct", default=0.33)
-        return max(0.05, min(0.9, float(val)))
+        val = _require(self._data, "behavior", "compaction", "keep_recent_pct")
+        keep_min = _require(self._data, "behavior", "compaction", "keep_recent_pct_min")
+        keep_max = _require(self._data, "behavior", "compaction", "keep_recent_pct_max")
+        return max(keep_min, min(keep_max, float(val)))
+
+    @property
+    def compaction_min_messages(self) -> int:
+        """Minimum messages required before compaction can trigger."""
+        return _require(self._data, "behavior", "compaction", "min_messages")
+
+    @property
+    def compaction_tool_result_max_chars(self) -> int:
+        """Max chars per tool result kept in compacted context."""
+        return _require(self._data, "behavior", "compaction", "tool_result_max_chars")
+
+    @property
+    def compaction_warning_pct(self) -> float:
+        """Fraction of compaction_threshold at which to inject a warning (0.0–1.0)."""
+        return float(_require(self._data, "behavior", "compaction", "warning_pct"))
 
     @property
     def diary_prompt(self) -> str:
-        return _deep_get(self._data, "behavior", "compaction", "diary_prompt", default=(
-            "[AUTOMATED DAILY MAINTENANCE]\n\n"
-            "Write a memory log for {date}.\n\n"
-            "RULES:\n"
-            "1. Use the 'write' tool to create the file: memory/{date}.md\n"
-            "2. Write 100-400 words summarizing today's conversations.\n"
-            "3. Include: topics discussed, decisions made, commitments with deadlines, important moments.\n"
-            "4. Write as a first-person diary entry.\n"
-            "5. If the file already exists, overwrite it completely.\n"
-            "6. Do NOT add any text response. ONLY use the write tool."
-        ))
+        return _require(self._data, "behavior", "compaction", "diary_prompt")
 
     # --- Compaction Verification ---
 
     @property
     def verify_enabled(self) -> bool:
-        return _deep_get(self._data, "behavior", "compaction", "verify_enabled", default=True)
+        return _require(self._data, "behavior", "compaction", "verify_enabled")
 
     @property
     def verify_max_turn_labels(self) -> int:
-        return _deep_get(self._data, "behavior", "compaction", "verify_max_turn_labels", default=3)
+        return _require(self._data, "behavior", "compaction", "verify_max_turn_labels")
 
     @property
     def verify_grounding_threshold(self) -> float:
-        return float(_deep_get(self._data, "behavior", "compaction", "verify_grounding_threshold", default=0.5))
+        return float(_require(self._data, "behavior", "compaction", "verify_grounding_threshold"))
 
     @property
     def passive_notify_refs(self) -> list[str]:
@@ -670,37 +705,34 @@ class Config:
         and injected as context into the next real message. No LLM call
         triggered. Refs with priority=active in data bypass the buffer.
         """
-        return _deep_get(self._data, "behavior", "passive_notify_refs", default=[])
+        return _require(self._data, "behavior", "passive_notify_refs")
 
     @property
     def primary_sender(self) -> str:
         """Primary session sender for notification routing.
 
         When set, notifications route to this sender's session instead of
-        creating throwaway system sessions.  Empty = disabled (default).
+        creating throwaway system sessions.  Empty = disabled.
         """
-        return _deep_get(self._data, "behavior", "primary_sender", default="")
+        return _require(self._data, "behavior", "primary_sender")
 
     # --- Paths ---
 
     @property
     def state_dir(self) -> Path:
-        return _resolve_path(_deep_get(self._data, "paths", "state_dir", default="~/.lucyd"))
+        return _resolve_path(_require(self._data, "paths", "state_dir"))
 
     @property
     def sessions_dir(self) -> Path:
-        return _resolve_path(_deep_get(self._data, "paths", "sessions_dir",
-                                       default="~/.lucyd/sessions"))
+        return _resolve_path(_require(self._data, "paths", "sessions_dir"))
 
     @property
     def cost_db(self) -> Path:
-        return _resolve_path(_deep_get(self._data, "paths", "cost_db",
-                                       default="~/.lucyd/cost.db"))
+        return _resolve_path(_require(self._data, "paths", "cost_db"))
 
     @property
     def log_file(self) -> Path:
-        return _resolve_path(_deep_get(self._data, "paths", "log_file",
-                                       default="~/.lucyd/lucyd.log"))
+        return _resolve_path(_require(self._data, "paths", "log_file"))
 
     # --- Raw access ---
 

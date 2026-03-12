@@ -13,6 +13,14 @@ from agentic import _init_cost_db, _record_cost, _truncate_args, is_transient_er
 from providers import LLMResponse, ToolCall, Usage
 from tools import ToolRegistry
 
+# Default kwargs for run_agentic_loop required params (provided by config in production)
+_LOOP_DEFAULTS = dict(
+    timeout=600.0,
+    api_retries=2,
+    api_retry_base_delay=2.0,
+    sqlite_timeout=30,
+)
+
 # ─── Helpers ─────────────────────────────────────────────────────
 
 @dataclass
@@ -101,16 +109,16 @@ class TestRecordCostEdgeCases:
             output_tokens=100_000,
             cache_read_tokens=500_000,
         )
-        cost = _record_cost(str(cost_db), "s1", "opus", usage, [5.0, 25.0, 0.5])
+        cost = _record_cost(str(cost_db), "s1", "opus", usage, [5.0, 25.0, 0.5], sqlite_timeout=30)
         assert abs(cost - 7.75) < 0.001
 
     def test_empty_path_returns_zero(self):
         usage = MockUsage(input_tokens=1000)
-        assert _record_cost("", "s", "m", usage, [5.0, 25.0]) == 0.0
+        assert _record_cost("", "s", "m", usage, [5.0, 25.0], sqlite_timeout=30) == 0.0
 
     def test_empty_rates_returns_zero(self, cost_db):
         usage = MockUsage(input_tokens=1000)
-        assert _record_cost(str(cost_db), "s", "m", usage, []) == 0.0
+        assert _record_cost(str(cost_db), "s", "m", usage, [], sqlite_timeout=30) == 0.0
 
 
 # ─── Agentic Loop ────────────────────────────────────────────────
@@ -125,6 +133,7 @@ class TestAgenticLoop:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=[], tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Hello"
         assert resp.stop_reason == "end_turn"
@@ -141,6 +150,7 @@ class TestAgenticLoop:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Pong"
         # Messages should have been mutated in-place:
@@ -157,6 +167,7 @@ class TestAgenticLoop:
         await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=2,
+            **_LOOP_DEFAULTS,
         )
         # Should have stopped after 2 turns
         assert provider._call_count == 2
@@ -178,6 +189,7 @@ class TestAgenticLoop:
         await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         # The tool error should be in the tool_results message
         tool_results = [m for m in messages if m.get("role") == "tool_results"]
@@ -186,7 +198,7 @@ class TestAgenticLoop:
 
     @pytest.mark.asyncio
     async def test_cost_recorded_in_db(self, cost_db):
-        _init_cost_db(str(cost_db))
+        _init_cost_db(str(cost_db), sqlite_timeout=30)
         provider = MockProvider([_end_turn_response()])
         reg = _make_registry()
         messages = [{"role": "user", "content": "hi"}]
@@ -196,6 +208,7 @@ class TestAgenticLoop:
             tools=[], tool_executor=reg, max_turns=1,
             cost_db=str(cost_db), session_id="test-sess",
             model_name="opus", cost_rates=[5.0, 25.0, 0.5],
+            **_LOOP_DEFAULTS,
         )
 
         conn = sqlite3.connect(str(cost_db))
@@ -205,7 +218,7 @@ class TestAgenticLoop:
 
     @pytest.mark.asyncio
     async def test_max_cost_circuit_breaker(self, cost_db):
-        _init_cost_db(str(cost_db))
+        _init_cost_db(str(cost_db), sqlite_timeout=30)
         # High token counts to trigger cost limit quickly
         resp1 = LLMResponse(
             text=None,
@@ -223,7 +236,8 @@ class TestAgenticLoop:
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
             cost_db=str(cost_db), session_id="cost-test",
             model_name="opus", cost_rates=[5.0, 25.0, 0.5],
-            max_cost=0.01,  # Very low limit
+            max_cost=0.01,  # Very low limit,
+            **_LOOP_DEFAULTS,
         )
         assert resp.cost_limited is True
 
@@ -244,6 +258,7 @@ class TestAgenticLoop:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Final"
 
@@ -273,6 +288,7 @@ class TestAgenticLoop:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=10,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "First thought\n\nSecond thought"
 
@@ -286,6 +302,7 @@ class TestAgenticLoop:
         await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=[], tool_executor=reg, max_turns=1,
+            **_LOOP_DEFAULTS,
         )
         # Same list object, but with new messages appended
         assert id(messages) == original_id
@@ -301,7 +318,7 @@ class TestCostAccumulation:
     @pytest.mark.asyncio
     async def test_cost_accumulates_across_turns(self, cost_db):
         """Cost must ACCUMULATE (+=) not reset (=) across turns."""
-        _init_cost_db(str(cost_db))
+        _init_cost_db(str(cost_db), sqlite_timeout=30)
         # Two tool-use turns, each with known token counts
         turn1 = LLMResponse(
             text=None,
@@ -331,6 +348,7 @@ class TestCostAccumulation:
             cost_db=str(cost_db), session_id="accum-test",
             model_name="opus", cost_rates=[5.0, 25.0, 0.5],
             max_cost=8.0,
+            **_LOOP_DEFAULTS,
         )
         assert resp.cost_limited is True
 
@@ -341,7 +359,7 @@ class TestMaxCostZeroUnlimited:
     @pytest.mark.asyncio
     async def test_max_cost_zero_means_unlimited(self, cost_db):
         """max_cost=0 must NOT trigger the cost limit."""
-        _init_cost_db(str(cost_db))
+        _init_cost_db(str(cost_db), sqlite_timeout=30)
         turn1 = LLMResponse(
             text=None,
             tool_calls=[ToolCall(id="tc-1", name="echo", arguments={"text": "a"})],
@@ -359,7 +377,8 @@ class TestMaxCostZeroUnlimited:
             tools=reg.get_schemas(), tool_executor=reg, max_turns=10,
             cost_db=str(cost_db), session_id="zero-cost-test",
             model_name="opus", cost_rates=[5.0, 25.0, 0.5],
-            max_cost=0.0,  # 0 means unlimited
+            max_cost=0.0,  # 0 means unlimited,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Done normally"
         assert "Cost limit" not in (resp.text or "")
@@ -371,7 +390,7 @@ class TestCostLimitPreservesText:
     @pytest.mark.asyncio
     async def test_cost_limit_preserves_agent_text(self, cost_db):
         """Cost limit keeps agent text intact and sets cost_limited flag."""
-        _init_cost_db(str(cost_db))
+        _init_cost_db(str(cost_db), sqlite_timeout=30)
         resp1 = LLMResponse(
             text="Here is your answer",
             tool_calls=[],
@@ -388,6 +407,7 @@ class TestCostLimitPreservesText:
             cost_db=str(cost_db), session_id="append-test",
             model_name="opus", cost_rates=[5.0, 25.0, 0.5],
             max_cost=0.01,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Here is your answer"
         assert resp.cost_limited is True
@@ -406,6 +426,7 @@ class TestLoopTermination:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=[], tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Done"
         assert provider._call_count == 1
@@ -423,6 +444,7 @@ class TestLoopTermination:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Done"
         assert provider._call_count == 2
@@ -444,6 +466,7 @@ class TestToolResultDictKeys:
         await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         # Find tool_results in messages
         tool_results = [m for m in messages if m.get("role") == "tool_results"]
@@ -485,6 +508,7 @@ class TestReturnExceptions:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         # Should reach end_turn, not crash
         assert resp.text == "Done"
@@ -518,6 +542,7 @@ class TestFallbackText:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Intermediate thought"
 
@@ -537,6 +562,7 @@ class TestFallbackText:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Final answer"
         assert "Intermediate" not in resp.text
@@ -555,6 +581,7 @@ class TestToolsFormatting:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=[], tool_executor=reg, max_turns=1,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "Ok"
 
@@ -574,6 +601,7 @@ class TestToolsFormatting:
         await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=1,
+            **_LOOP_DEFAULTS,
         )
         assert len(calls) == 1
         assert len(calls[0]) > 0  # tools were passed, not None
@@ -599,6 +627,7 @@ class TestMaxTokensWithToolCalls:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         # Loop continued past truncation and reached end_turn
         assert resp.text == "Done"
@@ -633,6 +662,7 @@ class TestMaxTokensWithToolCalls:
         await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=reg.get_schemas(), tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         assert call_log == ["ping"], "Tool must actually execute"
 
@@ -652,6 +682,7 @@ class TestMaxTokensWithToolCalls:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=[], tool_executor=reg, max_turns=5,
+            **_LOOP_DEFAULTS,
         )
         assert resp.text == "I was saying—"
         assert resp.stop_reason == "max_tokens"
@@ -663,7 +694,7 @@ class TestCostInit:
     @pytest.mark.asyncio
     async def test_initial_cost_is_zero(self, cost_db):
         """Without any API calls, accumulated cost should be zero."""
-        _init_cost_db(str(cost_db))
+        _init_cost_db(str(cost_db), sqlite_timeout=30)
         # Single end turn, very small token counts
         provider = MockProvider([_end_turn_response("Ok", input_tokens=1, output_tokens=1)])
         reg = _make_registry()
@@ -675,7 +706,8 @@ class TestCostInit:
             tools=[], tool_executor=reg, max_turns=1,
             cost_db=str(cost_db), session_id="init-test",
             model_name="opus", cost_rates=[5.0, 25.0, 0.5],
-            max_cost=0.5,  # Would trigger if starting at $1
+            max_cost=0.5,  # Would trigger if starting at $1,
+            **_LOOP_DEFAULTS,
         )
         assert "Cost limit" not in (resp.text or "")
 
@@ -785,7 +817,7 @@ class TestRetryLogic:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=[], tool_executor=reg, max_turns=1,
-            api_retries=2, api_retry_base_delay=0.01,
+            **{**_LOOP_DEFAULTS, "api_retries": 2, "api_retry_base_delay": 0.01},
         )
         assert resp.text == "Recovered"
         assert call_count[0] == 2
@@ -809,7 +841,7 @@ class TestRetryLogic:
             await run_agentic_loop(
                 provider=provider, system=[], messages=messages,
                 tools=[], tool_executor=reg, max_turns=1,
-                api_retries=3, api_retry_base_delay=0.01,
+                **{**_LOOP_DEFAULTS, "api_retries": 3, "api_retry_base_delay": 0.01},
             )
         assert call_count[0] == 1  # No retry
 
@@ -830,5 +862,5 @@ class TestRetryLogic:
             await run_agentic_loop(
                 provider=provider, system=[], messages=messages,
                 tools=[], tool_executor=reg, max_turns=1,
-                api_retries=2, api_retry_base_delay=0.01,
+                **{**_LOOP_DEFAULTS, "api_retries": 2, "api_retry_base_delay": 0.01},
             )

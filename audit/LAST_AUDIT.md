@@ -1,62 +1,66 @@
 # Last Audit Summary
 
-**Date:** 2026-03-09
+**Date:** 2026-03-12
 **Mode:** Full Audit
-**Cycle:** 17
+**Cycle:** 18
 **EXIT STATUS:** PASS
-**Test count:** 1725 passing
-**Source modules:** 33 (~10,233 lines)
+**Test count:** 1721 passing
+**Source modules:** 33 (~10,263 lines)
 
 ## Stage Results
 
 | Stage | Status | Key Metric |
 |-------|--------|------------|
-| 1. Static Analysis | PASS | 1 import order fix + MUTMUT_RUNNING infrastructure fix |
-| 2. Test Suite | PASS | 1725 tests, 33.16s |
-| 3. Mutation Testing | PASS | verification.py 81.5% kill, all security mutants killed |
-| 4. Orchestrator Testing | PASS | 314 tests + 17 invariant tests |
-| 5. Dependency Chain | PASS | 19 pipelines healthy, all data fresh |
-| 6. Security Audit | PASS | pip-audit clean, V-1 concurrency finding fixed |
-| 7. Documentation Audit | PASS | 9 discrepancies fixed (operations.md, CLAUDE.md, diagrams.md) |
-| 8. Remediation | PASS | No carried gaps |
+| 1. Static Analysis | PASS | Clean — 0 security/bug findings |
+| 2. Test Suite | PASS | 1721 tests, 33.78s |
+| 3. Mutation Testing | PASS | 74.0% channels/ kill, all security 100% |
+| 4. Orchestrator Testing | PASS | 297 tests + 17 invariant tests |
+| 5. Dependency Chain | PASS | 9 pipelines healthy, all data fresh |
+| 6. Security Audit | PASS | 0 vulnerabilities, pip-audit clean |
+| 7. Documentation Audit | PASS | 6 discrepancies fixed (README, config, diagrams, toml.example) |
+| 8. Remediation | PASS | 1 new gap accepted |
 
 ## Findings Fixed
 
-| # | Stage | File | Finding | Fix |
-|---|-------|------|---------|-----|
-| 1 | 1 | tests/conftest.py | I001 import ordering | Auto-corrected |
-| 2 | 1/3 | tests/conftest.py | `os._exit()` kills mutmut subprocess | Added `MUTMUT_RUNNING` env var check |
-| 3 | 7 | docs/operations.md | Missing `--status` and `--log` flags | Added to flag table |
-| 4 | 7 | docs/operations.md | Stale `tier` field in `/chat` table | Replaced with `attachments` |
-| 5 | 7 | docs/operations.md | Stale model override in evolve description | Removed |
-| 6 | 7 | docs/operations.md | `/compact` missing from rate limit group | Added |
-| 7 | 7 | CLAUDE.md | HTTP route inline list missing `/evolve`, `/compact` | Added |
-| 8 | 7 | CLAUDE.md | Source modules 35 → 33, lines ~10,434 → ~10,233 | Corrected |
-| 9 | 7 | CLAUDE.md | Test-to-source ratio ~2.5:1 → ~2.6:1 | Updated |
-| 10 | 7 | docs/diagrams.md | 17 line number references drifted | All updated |
+| # | Stage | File | Finding | Fix | Status |
+|---|-------|------|---------|-----|--------|
+| 1 | 3 | tests/test_http_api.py | `TestQueueRoutingInvariant` fails under mutmut trampoline | Added `@pytest.mark.skipif(MUTMUT_RUNNING)` | FIXED |
+| 2 | 7 | README.md | Test count "~1725" stale | Updated to "~1721" | FIXED |
+| 3 | 7 | README.md | HTTP API "145 tests", orchestrator "283 tests" stale | Updated to 143, 297 | FIXED |
+| 4 | 7 | docs/configuration.md | 12 config keys undocumented | All keys added | FIXED |
+| 5 | 7 | lucyd.toml.example | 40+ required keys missing/commented | Complete rewrite with all keys | FIXED |
+| 6 | 7 | docs/diagrams.md | 16 line number references drifted | All updated | FIXED |
 
 ## Known Gaps Carried Forward
 
-None. All gaps resolved or permanently accepted.
+Gaps use staleness classification:
+- **Accepted**: Formally justified as permanent. Written justification on record.
 
-## Accepted (Permanent)
+| # | Gap | Status | Cycles | Justification |
+|---|-----|--------|--------|---------------|
+| 1 | Provider `complete()` mock-boundary | Accepted | Permanent | Cannot test without live API + cost. Canary test validates SDK behavior. |
+| 2 | Alias accumulation multi-session | Accepted | Permanent | `INSERT OR IGNORE` + unique constraint prevents by construction. |
+| 3 | `_message_loop` debounce/FIFO | Accepted | Permanent | Orchestrator code (Rule 13). 15+ contract tests cover all observable side effects. |
+| 4 | `_require()` over-strictness for tunables | Accepted | 1 | Mitigated by complete lucyd.toml.example. P-020 catches config-to-example drift. |
+
+## Resolved This Cycle
+
+No gaps from previous cycles required resolution — all were permanently accepted in Cycle 17.
+
+## Accepted This Cycle
 
 | Gap | Justification |
 |-----|---------------|
-| Provider `complete()` mock-boundary | Cannot test without live API credentials + cost. Canary test validates known SDK behavior each run. |
-| Alias accumulation multi-session | `INSERT OR IGNORE` + unique constraint prevents duplicate accumulation by construction. No runtime code path can violate this. |
-| `_message_loop` debounce/FIFO | Orchestrator code (Rule 13 prohibits mutmut). 15+ behavioral contract tests cover all observable side effects. |
-
-## New This Cycle
-
-- **Primary sender routing** — notifications route to named sender's session
-- **Passive telemetry buffer** — high-frequency refs buffered, injected as `[telemetry: ...]`
-- **lucyd-send overhaul** — `--status`, `--log` flags, restructured argument groups, `--notify` flag
-- **Compaction token awareness** — `{max_tokens}` in prompt, split-point boundary fix
-- **MUTMUT_RUNNING** — infrastructure fix for mutation testing compatibility with conftest.py
-- **V-1 fix** — HTTP `/compact` now routes through message queue (was direct `_process_message` call)
-- **+41 tests** (1684 → 1725)
+| `_require()` over-strictness for tunables | Correct for identity/credentials/models. Over-strict for behavioral tuning but fully mitigated by complete example file + P-020 audit pattern. Reverting to `_deep_get()` for tunables is a design choice, not a bug. |
 
 ## Patterns Created This Cycle
 
 None. No new bug classes discovered.
+
+## New This Cycle
+
+- **lucyd.toml.example rewrite** — 40+ missing required keys added, context budget documentation (P-031)
+- **Configuration.md expanded** — 12 undocumented config keys added
+- **Diagram line references refreshed** — 16 references across 4 source files updated
+- **README test counts corrected** — 3 stale test counts updated
+- **-4 tests** (1725 → 1721, config refactoring removals from between cycles)

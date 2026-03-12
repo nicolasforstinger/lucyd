@@ -21,6 +21,16 @@ from lucyd import LucydDaemon, _is_silent
 # ─── Helpers ──────────────────────────────────────────────────────
 
 
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Deep merge overrides into base dict (mutates base)."""
+    for key, val in overrides.items():
+        if key in base and isinstance(base[key], dict) and isinstance(val, dict):
+            _deep_merge(base[key], val)
+        else:
+            base[key] = val
+    return base
+
+
 def _make_config(tmp_path, **overrides):
     """Build a minimal Config for testing daemon methods."""
     from config import Config
@@ -29,12 +39,17 @@ def _make_config(tmp_path, **overrides):
         "agent": {
             "name": "TestAgent",
             "workspace": str(tmp_path / "workspace"),
-            "context": {
-                "stable": ["SOUL.md"],
-                "semi_stable": [],
-            },
+            "context": {"stable": ["SOUL.md"], "semi_stable": []},
+            "skills": {"dir": "skills", "always_on": []},
         },
-        "channel": {"type": "cli"},
+        "channel": {"type": "cli", "debounce_ms": 500},
+        "http": {
+            "enabled": False, "host": "127.0.0.1", "port": 8100, "token_env": "",
+            "download_dir": "/tmp/lucyd-http", "max_body_bytes": 10485760,
+            "callback_url": "", "callback_token_env": "", "callback_timeout": 10,
+            "rate_limit": 30, "rate_window": 60, "status_rate_limit": 60,
+            "rate_limit_cleanup_threshold": 1000,
+        },
         "models": {
             "primary": {
                 "provider": "anthropic-compat",
@@ -44,17 +59,67 @@ def _make_config(tmp_path, **overrides):
                 "supports_vision": True,
             },
         },
+        "memory": {
+            "db": "", "search_top_k": 10, "vector_search_limit": 10000,
+            "fts_min_results": 3, "embedding_timeout": 15,
+            "consolidation": {"enabled": False, "min_messages": 4, "confidence_threshold": 0.6, "max_extraction_chars": 50000},
+            "recall": {
+                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3,
+                "personality": {
+                    "priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
+                    "fact_format": "natural", "show_emotional_tone": True, "episode_section_header": "Recent conversations",
+                    "synthesis_style": "structured",
+                    "synthesis_prompt_narrative": "", "synthesis_prompt_factual": "",
+                },
+            },
+            "maintenance": {"stale_threshold_days": 90},
+            "indexer": {"include_patterns": ["memory/*.md"], "exclude_dirs": [], "chunk_size_chars": 1600, "chunk_overlap_chars": 320, "embed_batch_limit": 100},
+        },
+        "tools": {
+            "enabled": ["read", "write", "edit", "exec"],
+            "plugins_dir": "plugins.d", "output_truncation": 30000,
+            "subagent_deny": [], "subagent_max_turns": 0, "subagent_timeout": 0,
+            "exec_timeout": 120, "exec_max_timeout": 600,
+            "filesystem": {"allowed_paths": ["/tmp/"], "default_read_limit": 2000},
+            "web_search": {"provider": "", "api_key_env": "", "timeout": 15},
+            "web_fetch": {"timeout": 15},
+            "tts": {"provider": "", "api_key_env": "", "timeout": 60, "api_url": ""},
+            "scheduling": {"max_scheduled": 50, "max_delay": 86400},
+        },
+        "stt": {"backend": "", "voice_label": "voice message", "voice_fail_msg": "voice message — transcription failed",
+                "audio_label": "audio transcription", "audio_fail_msg": "audio transcription — failed"},
+        "documents": {"enabled": True, "max_chars": 30000, "max_file_bytes": 10485760,
+                      "text_extensions": [".txt", ".md", ".csv", ".json"]},
+        "logging": {"max_bytes": 10485760, "backup_count": 3, "suppress": []},
+        "vision": {"max_image_bytes": 5242880, "max_dimension": 1568, "default_caption": "image",
+                   "too_large_msg": "image too large to display", "jpeg_quality_steps": [85, 60, 40],
+                   "caption_max_chars": 200},
+        "behavior": {
+            "silent_tokens": ["NO_REPLY"], "typing_indicators": True,
+            "error_message": "connection error", "sqlite_timeout": 30,
+            "api_retries": 2, "api_retry_base_delay": 2.0,
+            "message_retries": 2, "message_retry_base_delay": 30.0,
+            "audit_truncation_limit": 500, "agent_timeout_seconds": 600,
+            "max_turns_per_message": 50, "max_cost_per_message": 0.0,
+            "queue_capacity": 1000, "queue_poll_interval": 1.0, "quote_max_chars": 200,
+            "telemetry_max_age": 30.0, "passive_notify_refs": [], "primary_sender": "",
+            "compaction": {
+                "threshold_tokens": 150000, "max_tokens": 2048,
+                "prompt": "Summarize this conversation for {agent_name}.",
+                "keep_recent_pct": 0.33, "keep_recent_pct_min": 0.05, "keep_recent_pct_max": 0.9,
+                "min_messages": 4, "tool_result_max_chars": 2000, "warning_pct": 0.8,
+                "diary_prompt": "Write a log for {date}.",
+                "verify_enabled": True, "verify_max_turn_labels": 3, "verify_grounding_threshold": 0.5,
+            },
+        },
         "paths": {
             "state_dir": str(tmp_path / "state"),
             "sessions_dir": str(tmp_path / "sessions"),
             "cost_db": str(tmp_path / "cost.db"),
             "log_file": str(tmp_path / "lucyd.log"),
         },
-        "behavior": {
-            "compaction": {"threshold_tokens": 150000},
-        },
     }
-    base.update(overrides)
+    _deep_merge(base, overrides)
 
     # Ensure directories exist
     (tmp_path / "workspace").mkdir(exist_ok=True)
@@ -352,7 +417,7 @@ class TestResolveIntegration:
 
         # Mock tool registry
         daemon.tool_registry = MagicMock()
-        daemon.tool_registry.get_brief_descriptions = MagicMock(return_value=[])
+
         daemon.tool_registry.get_schemas = MagicMock(return_value=[])
 
         # Mock channel
@@ -511,7 +576,7 @@ class TestChannelDeliverySuppression:
         daemon.skill_loader.get_bodies = MagicMock(return_value={})
 
         daemon.tool_registry = MagicMock()
-        daemon.tool_registry.get_brief_descriptions = MagicMock(return_value=[])
+
         daemon.tool_registry.get_schemas = MagicMock(return_value=[])
 
         daemon.channel = AsyncMock()
@@ -688,7 +753,7 @@ class TestContextBuilderSourcePassthrough:
         daemon.skill_loader.get_bodies = MagicMock(return_value={})
 
         daemon.tool_registry = MagicMock()
-        daemon.tool_registry.get_brief_descriptions = MagicMock(return_value=[])
+
         daemon.tool_registry.get_schemas = MagicMock(return_value=[])
 
         daemon.channel = AsyncMock()
@@ -1011,7 +1076,7 @@ class TestProcessMessageIntegration:
 
         # Mock tool registry
         daemon.tool_registry = MagicMock()
-        daemon.tool_registry.get_brief_descriptions = MagicMock(return_value=[])
+
         daemon.tool_registry.get_schemas = MagicMock(return_value=[])
 
         # Mock channel
@@ -1339,7 +1404,7 @@ class TestMessageLoopDebounce:
         daemon.skill_loader.build_index = MagicMock(return_value="")
         daemon.skill_loader.get_bodies = MagicMock(return_value={})
         daemon.tool_registry = MagicMock()
-        daemon.tool_registry.get_brief_descriptions = MagicMock(return_value=[])
+
         daemon.tool_registry.get_schemas = MagicMock(return_value=[])
         daemon.channel = AsyncMock()
 
@@ -1362,6 +1427,17 @@ class TestMessageLoopDebounce:
         daemon.config.message_retries = 0
         daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
+        daemon.config.queue_poll_interval = 1.0
+        daemon.config.quote_max_chars = 200
+        daemon.config.telemetry_max_age = 30.0
+        daemon.config.sqlite_timeout = 30
+        daemon.config.vision_caption_max_chars = 200
+        daemon.config.compaction_warning_pct = 0.8
+        daemon.config.compaction_min_messages = 4
+        daemon.config.compaction_tool_result_max_chars = 2000
+        daemon.config.synthesis_prompt_narrative = ""
+        daemon.config.synthesis_prompt_factual = ""
+        daemon.config.primary_sender = ""
         # Very short debounce for fast tests
         daemon.config.debounce_ms = 50
 
@@ -2577,14 +2653,14 @@ class TestCheckContextBudget:
         assert "1000" in msg  # max_context_tokens
         assert "%" in msg  # percentage
 
-    def test_tools_contribute_to_budget(self, tmp_path, caplog):
-        """Tool descriptions increase system prompt size and can push over budget."""
+    def test_large_workspace_triggers_budget_warning(self, tmp_path, caplog):
+        """Large workspace files inflate system prompt and trigger budget warning."""
         import logging
         from context import ContextBuilder
         from skills import SkillLoader
         from tools import ToolRegistry
 
-        # Tiny soul, but many tools with long descriptions
+        # Very small context window so workspace files push over 40%
         config = _make_config(
             tmp_path,
             models={
@@ -2600,7 +2676,8 @@ class TestCheckContextBudget:
 
         ws = tmp_path / "workspace"
         ws.mkdir(exist_ok=True)
-        (ws / "SOUL.md").write_text("# Tiny")
+        # Large SOUL.md to inflate system prompt beyond 40% of 500 tokens
+        (ws / "SOUL.md").write_text("# Soul\n" + "A" * 2000)
 
         daemon = LucydDaemon(config)
         daemon.context_builder = ContextBuilder(
@@ -2613,21 +2690,12 @@ class TestCheckContextBudget:
             skills_dir=config.skills_dir,
         )
         daemon.skill_loader.scan()
-
-        # Register tools with long descriptions to inflate the context
         daemon.tool_registry = ToolRegistry()
-        for i in range(20):
-            daemon.tool_registry.register(
-                name=f"tool_{i}",
-                description="A" * 200,
-                input_schema={"type": "object"},
-                func=lambda: None,
-            )
 
         with caplog.at_level(logging.WARNING, logger="lucyd"):
             daemon._check_context_budget()
 
         warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         assert any("System prompt uses" in m for m in warning_msgs), (
-            f"Expected warning from tool descriptions inflating budget: {warning_msgs}"
+            f"Expected warning from large workspace inflating budget: {warning_msgs}"
         )

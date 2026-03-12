@@ -81,9 +81,6 @@ def _build_inline_keyboard(links: list[tuple[str, str]]) -> dict | None:
 
 
 class TelegramChannel:
-    # How long to wait for more items in a media group (seconds).
-    _MEDIA_GROUP_DELAY = 0.5
-
     def __init__(self, config: dict):
         import os
 
@@ -102,14 +99,17 @@ class TelegramChannel:
         self.base_url = _API_BASE.format(token=token)
         allow_from = config.get("allow_from", [])
         self.allow_from = set(allow_from) if allow_from else set()
-        self.chunk_limit = config.get("text_chunk_limit", 4000)
-        dl_dir = config.get("download_dir", "/tmp/lucyd-telegram")  # noqa: S108 — config default
+        self.chunk_limit = config["text_chunk_limit"]
+        dl_dir = config["download_dir"]
         self.download_dir = Path(dl_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        self._reconnect_initial = float(config.get("reconnect_initial", 1.0))
-        self._reconnect_max = float(config.get("reconnect_max", 10.0))
-        self._reconnect_factor = float(config.get("reconnect_factor", 2.0))
-        self._reconnect_jitter = float(config.get("reconnect_jitter", 0.2))
+        self._reconnect_initial = float(config["reconnect_initial"])
+        self._reconnect_max = float(config["reconnect_max"])
+        self._reconnect_factor = float(config["reconnect_factor"])
+        self._reconnect_jitter = float(config["reconnect_jitter"])
+        self._media_group_delay = float(config["media_group_delay"])
+        self._http_timeout = float(config["http_timeout"])
+        self._http_connect_timeout = float(config["http_connect_timeout"])
 
         # Name -> user_id for outbound resolution
         self._contacts: dict[str, int] = {}
@@ -129,7 +129,7 @@ class TelegramChannel:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
+            self._client = httpx.AsyncClient(timeout=httpx.Timeout(self._http_timeout, connect=self._http_connect_timeout))
         return self._client
 
     async def _api(self, method: str, **params) -> dict:
@@ -245,7 +245,7 @@ class TelegramChannel:
             now = time.monotonic()
             flush_ids = [
                 gid for gid, since in pending_since.items()
-                if now - since >= self._MEDIA_GROUP_DELAY
+                if now - since >= self._media_group_delay
             ]
             for gid in flush_ids:
                 messages = pending_groups.pop(gid)

@@ -11,68 +11,6 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# --- Synthesis Prompts ------------------------------------------------
-
-PROMPTS: dict[str, str] = {
-    "narrative": (
-        "TASK: Rewrite the memory blocks below into a short narrative paragraph.\n\n"
-        "OUTPUT RULES (follow exactly):\n"
-        "1. Write 2-4 sentences of prose. No more.\n"
-        "2. Use temporal framing: 'over the past week', 'since Monday', 'in the last few days'.\n"
-        "3. Show trajectory: 'went from X to Y', 'started with X, now at Y'.\n"
-        "4. DO NOT list, enumerate, or use bullet points. No dashes, no numbering.\n"
-        "5. DO NOT invent facts. Only use information from the blocks below.\n"
-        "6. If there are open commitments with deadlines, copy them exactly at the end "
-        "on a line starting with 'Open commitments:'.\n"
-        "7. Return ONLY the paragraph (and commitments line if any). "
-        "No preamble, no explanation, no labels, no 'Here is...'.\n\n"
-        "EXAMPLE INPUT:\n"
-        "[Known facts]\n"
-        "  user — project: launched beta\n"
-        "  user — mood: stressed\n"
-        "[Recent conversations]\n"
-        "  [2026-02-20] Debugged auth system (tone: frustrated)\n"
-        "  [2026-02-22] Shipped beta to first client (tone: relieved)\n"
-        "[Open commitments]\n"
-        "  #3 - user: send invoice (by 2026-02-25)\n\n"
-        "EXAMPLE OUTPUT:\n"
-        "After a frustrating stretch debugging the auth system, the user shipped "
-        "the beta to their first client by the end of the week — stressed but relieved "
-        "to have it out the door.\n"
-        "Open commitments: #3 - user: send invoice (by 2026-02-25)\n\n"
-        "MEMORY BLOCKS:\n{recall_text}\n\n"
-        "OUTPUT:"
-    ),
-    "factual": (
-        "TASK: Rewrite the memory blocks below into a short factual summary.\n\n"
-        "OUTPUT RULES (follow exactly):\n"
-        "1. Write 3-5 sentences of prose. No more.\n"
-        "2. Lead with the most recent or important facts.\n"
-        "3. Group related facts in the same sentence where natural.\n"
-        "4. DO NOT list, enumerate, or use bullet points. No dashes, no numbering.\n"
-        "5. DO NOT invent facts. Only use information from the blocks below.\n"
-        "6. Neutral tone. No emotional framing, no editorializing.\n"
-        "7. If there are open commitments with deadlines, copy them exactly at the end "
-        "on a line starting with 'Open commitments:'.\n"
-        "8. Return ONLY the summary (and commitments line if any). "
-        "No preamble, no explanation, no labels, no 'Here is...'.\n\n"
-        "EXAMPLE INPUT:\n"
-        "[Known facts]\n"
-        "  user — location: Vienna\n"
-        "  user — project: CRM migration\n"
-        "[Recent conversations]\n"
-        "  [2026-02-21] Reviewed database schema (tone: neutral)\n"
-        "[Open commitments]\n"
-        "  #5 - user: deploy staging (by 2026-02-24)\n\n"
-        "EXAMPLE OUTPUT:\n"
-        "The user is based in Vienna and currently working on a CRM migration. "
-        "The database schema was reviewed on Feb 21.\n"
-        "Open commitments: #5 - user: deploy staging (by 2026-02-24)\n\n"
-        "MEMORY BLOCKS:\n{recall_text}\n\n"
-        "OUTPUT:"
-    ),
-}
-
 VALID_STYLES = {"structured", "narrative", "factual"}
 
 
@@ -89,6 +27,7 @@ async def synthesize_recall(
     recall_text: str,
     style: str,
     provider,
+    prompt_override: str = "",
 ) -> SynthesisResult:
     """Transform raw recall blocks into synthesized context.
 
@@ -103,12 +42,11 @@ async def synthesize_recall(
     if style == "structured" or not recall_text or not recall_text.strip():
         return SynthesisResult(recall_text)
 
-    prompt_template = PROMPTS.get(style)
-    if prompt_template is None:
-        log.warning("Unknown synthesis_style '%s', falling back to structured", style)
+    if not prompt_override:
+        log.warning("No synthesis prompt provided for style '%s', falling back to structured", style)
         return SynthesisResult(recall_text)
 
-    prompt = prompt_template.format(recall_text=recall_text)
+    prompt = prompt_override.format(recall_text=recall_text)
 
     try:
         fmt_system = provider.format_system([])

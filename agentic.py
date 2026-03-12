@@ -27,7 +27,8 @@ from tools import ToolRegistry
 log = logging.getLogger(__name__)
 
 
-def cost_db_query(path: str, sql: str, params: tuple = ()) -> list:
+def cost_db_query(path: str, sql: str, params: tuple = (), *,
+                  sqlite_timeout: int) -> list:
     """Run a read query against the cost DB, returning all rows.
 
     Handles connect/close lifecycle.  Returns [] on any error or
@@ -35,7 +36,7 @@ def cost_db_query(path: str, sql: str, params: tuple = ()) -> list:
     """
     if not path or not Path(path).exists():
         return []
-    conn = sqlite3.connect(path, timeout=30)
+    conn = sqlite3.connect(path, timeout=sqlite_timeout)
     try:
         conn.row_factory = sqlite3.Row
         return conn.execute(sql, params).fetchall()
@@ -45,12 +46,12 @@ def cost_db_query(path: str, sql: str, params: tuple = ()) -> list:
         conn.close()
 
 
-def _init_cost_db(path: str) -> None:
+def _init_cost_db(path: str, *, sqlite_timeout: int) -> None:
     """Create cost tracking table if it doesn't exist."""
     if not path:
         return
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
+    conn = sqlite3.connect(path, timeout=sqlite_timeout)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA wal_autocheckpoint=1000")
@@ -93,6 +94,8 @@ def _record_cost(
     cost_rates: list[float],
     call_type: str = "agentic",
     trace_id: str = "",
+    *,
+    sqlite_timeout: int,
 ) -> float:
     """Record API cost and return USD amount."""
     if not path or not cost_rates:
@@ -109,7 +112,7 @@ def _record_cost(
         + usage.cache_read_tokens * cache_rate / 1_000_000
     )
 
-    conn = sqlite3.connect(path, timeout=30)
+    conn = sqlite3.connect(path, timeout=sqlite_timeout)
     try:
         conn.execute(
             "INSERT INTO costs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -141,8 +144,11 @@ async def run_agentic_loop(
     messages: list[dict],
     tools: list[dict],
     tool_executor: ToolRegistry,
-    max_turns: int = 50,
-    timeout: float = 600.0,
+    max_turns: int,
+    timeout: float,
+    api_retries: int,
+    api_retry_base_delay: float,
+    sqlite_timeout: int,
     cost_db: str | None = None,
     session_id: str = "",
     model_name: str = "",
@@ -150,8 +156,6 @@ async def run_agentic_loop(
     max_cost: float = 0.0,
     on_response: Any = None,
     on_tool_results: Any = None,
-    api_retries: int = 2,
-    api_retry_base_delay: float = 2.0,
     trace_id: str = "",
 ) -> LLMResponse:
     """Run the provider-agnostic agentic loop.
@@ -216,7 +220,7 @@ async def run_agentic_loop(
         if cost_db and cost_rates:
             turn_cost = _record_cost(
                 cost_db, session_id, model_name, response.usage, cost_rates,
-                trace_id=trace_id,
+                trace_id=trace_id, sqlite_timeout=sqlite_timeout,
             )
             accumulated_cost += turn_cost
 
