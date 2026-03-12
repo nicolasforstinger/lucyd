@@ -110,6 +110,7 @@ class TelegramChannel:
         self._media_group_delay = float(config["media_group_delay"])
         self._http_timeout = float(config["http_timeout"])
         self._http_connect_timeout = float(config["http_connect_timeout"])
+        self._poll_timeout = int(config["poll_timeout"])
 
         # Name -> user_id for outbound resolution
         self._contacts: dict[str, int] = {}
@@ -212,7 +213,7 @@ class TelegramChannel:
 
         while True:
             # Short-poll while we have groups waiting to be flushed.
-            poll_timeout = 1 if pending_groups else 30
+            poll_timeout = 1 if pending_groups else self._poll_timeout
 
             updates = await self._api(
                 "getUpdates",

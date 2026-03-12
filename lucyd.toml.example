@@ -39,6 +39,10 @@ reconnect_initial = 1.0                    # Initial reconnect backoff (seconds)
 reconnect_max = 10.0                       # Max reconnect backoff (seconds)
 reconnect_factor = 2.0                     # Exponential backoff multiplier
 reconnect_jitter = 0.2                     # Random jitter fraction (0.0–1.0)
+media_group_delay = 0.5                    # Seconds to wait for album photos before merging
+poll_timeout = 30                          # Telegram long-polling timeout (seconds)
+http_timeout = 30.0                        # httpx client timeout for API calls (seconds)
+http_connect_timeout = 10.0                # httpx connection timeout (seconds)
 
 [channel.telegram.contacts]
 YourContact = 123456789                    # Your Telegram user ID
@@ -104,6 +108,7 @@ decay_rate = 0.03                                          # Exponential decay f
 max_facts_in_context = 20                                  # Maximum facts injected into context
 max_dynamic_tokens = 1500                                  # Token budget for dynamic recall (0 = unlimited)
 max_episodes_at_start = 3                                  # Maximum episodes injected at session start
+archive_messages = 20                                      # Messages from last archived session included in recall
 
 # Recall personality — priority controls drop order (higher = kept longer under budget pressure)
 [memory.recall.personality]

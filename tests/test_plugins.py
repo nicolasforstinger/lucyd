@@ -39,7 +39,7 @@ def _make_config(tmp_path, enabled=None, plugins_dir="plugins.d"):
             "fts_min_results": 3, "embedding_timeout": 15,
             "consolidation": {"enabled": False, "min_messages": 4, "confidence_threshold": 0.6, "max_extraction_chars": 50000},
             "recall": {
-                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3,
+                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
                 "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
                                "fact_format": "natural", "show_emotional_tone": True, "episode_section_header": "Recent conversations",
                                "synthesis_style": "structured",

@@ -55,7 +55,7 @@ class TestBuildRecallHappyPath:
         _create_and_archive(mgr, "alice", messages)
         await mgr.close_session("alice")
 
-        recall = mgr.build_recall("alice")
+        recall = mgr.build_recall("alice", count=20)
         assert recall.startswith("Session recall (last conversation):")
         # All 10 messages present
         for i in range(5):
@@ -71,7 +71,7 @@ class TestBuildRecallHappyPath:
         ])
         await mgr.close_session("bob")
 
-        recall = mgr.build_recall("bob")
+        recall = mgr.build_recall("bob", count=20)
         assert "**bob:** hello" in recall
 
     @pytest.mark.asyncio
@@ -83,7 +83,7 @@ class TestBuildRecallHappyPath:
         ])
         await mgr.close_session("carol")
 
-        recall = mgr.build_recall("carol")
+        recall = mgr.build_recall("carol", count=20)
         assert "**TestBot:** hey carol" in recall
 
 
@@ -125,7 +125,7 @@ class TestBuildRecallContactMatching:
         ])
         await mgr.close_session("bob")
 
-        recall = mgr.build_recall("alice")
+        recall = mgr.build_recall("alice", count=20)
         assert "alice question" in recall
         assert "bob question" not in recall
 
@@ -154,7 +154,7 @@ class TestBuildRecallMostRecent:
         ])
         await mgr.close_session("eve")
 
-        recall = mgr.build_recall("eve")
+        recall = mgr.build_recall("eve", count=20)
         assert "new question" in recall
         assert "old question" not in recall
 
@@ -162,13 +162,13 @@ class TestBuildRecallMostRecent:
 class TestBuildRecallEmpty:
     def test_no_archive_directory(self, mgr):
         """No .archive/ directory → empty string."""
-        assert mgr.build_recall("nobody") == ""
+        assert mgr.build_recall("nobody", count=20) == ""
 
     @pytest.mark.asyncio
     async def test_empty_archive_directory(self, mgr, tmp_sessions):
         """Empty .archive/ directory → empty string, no crash."""
         (tmp_sessions / ".archive").mkdir()
-        assert mgr.build_recall("nobody") == ""
+        assert mgr.build_recall("nobody", count=20) == ""
 
     def test_nonexistent_contact(self, mgr, tmp_sessions):
         """Archive exists but no session for this contact → empty string."""
@@ -182,7 +182,7 @@ class TestBuildRecallEmpty:
         state_file = tmp_sessions / ".archive" / "other-session.state.json"
         state_file.write_text(json.dumps(state))
 
-        assert mgr.build_recall("ghost") == ""
+        assert mgr.build_recall("ghost", count=20) == ""
 
 
 class TestBuildRecallMessageTypeFiltering:
@@ -199,7 +199,7 @@ class TestBuildRecallMessageTypeFiltering:
         ])
         await mgr.close_session("frank")
 
-        recall = mgr.build_recall("frank")
+        recall = mgr.build_recall("frank", count=20)
         assert "hello" in recall
         assert "hi there" in recall
         assert "follow up" in recall
@@ -228,6 +228,6 @@ class TestBuildRecallJSONLFallback:
         del state["contact"]
         state_file.write_text(json.dumps(state))
 
-        recall = mgr.build_recall("grace")
+        recall = mgr.build_recall("grace", count=20)
         # Should still find via JSONL fallback
         assert "hello from grace" in recall

@@ -141,6 +141,6 @@ class TestAgentName:
         session._save_state()
 
         # build_recall should use agent_name if present in formatting
-        recall_text = mgr.build_recall("recall-user")
+        recall_text = mgr.build_recall("recall-user", count=20)
         # Even if empty (no archive), the method should not crash
         assert isinstance(recall_text, str)

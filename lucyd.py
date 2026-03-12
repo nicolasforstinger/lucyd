@@ -880,7 +880,9 @@ class LucydDaemon:
         # Inject recall from previous session if this one is fresh
         recall_text = ""
         if len(session.messages) <= 1:
-            recall_text = self.session_mgr.build_recall(sender)
+            recall_text = self.session_mgr.build_recall(
+                sender, self.config.recall_archive_messages
+            )
             # Structured memory context
             if self.config.consolidation_enabled:
                 try:

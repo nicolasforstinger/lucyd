@@ -370,7 +370,7 @@ class SessionManager:
                 return await self.close_session(contact)
         return False
 
-    def build_recall(self, contact: str, count: int = 20) -> str:
+    def build_recall(self, contact: str, count: int) -> str:
         """Build recall text from the most recent archived session for a contact.
 
         Returns formatted conversation excerpt, or empty string if none found.

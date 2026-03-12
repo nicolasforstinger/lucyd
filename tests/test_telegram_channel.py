@@ -35,6 +35,7 @@ def _make_channel(_token_value="fake-token", **overrides):
         "media_group_delay": 0.5,
         "http_timeout": 60.0,
         "http_connect_timeout": 10.0,
+        "poll_timeout": 30,
     }
     defaults.update(overrides)
     return TelegramChannel(defaults)

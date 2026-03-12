@@ -290,6 +290,11 @@ class Config:
     def recall_max_episodes_at_start(self) -> int:
         return _require(self._data, "memory", "recall", "max_episodes_at_start")
 
+    @property
+    def recall_archive_messages(self) -> int:
+        """Number of messages to include from the most recent archived session."""
+        return _require(self._data, "memory", "recall", "archive_messages")
+
     # --- Memory Recall Personality ---
 
     @property

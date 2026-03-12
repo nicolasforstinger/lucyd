@@ -155,6 +155,7 @@ def minimal_toml_data():
                 "max_facts_in_context": 20,
                 "max_dynamic_tokens": 1500,
                 "max_episodes_at_start": 3,
+                "archive_messages": 20,
                 "personality": {
                     "priority_vector": 35,
                     "priority_episodes": 25,
