@@ -1,0 +1,21 @@
+#!/bin/sh
+# Verify test count in README.md matches actual test count.
+# Prevents P-007 (test count drift) from recurring.
+#
+# Activate: git config core.hooksPath .githooks
+
+ACTUAL=$(.venv/bin/python -m pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -oP '^\d+')
+
+if [ -z "$ACTUAL" ]; then
+    echo "pre-commit: could not collect test count, skipping check"
+    exit 0
+fi
+
+if grep -qP '\*\*\d+ tests\*\*' README.md; then
+    README_COUNT=$(grep -oP '\*\*\K\d+(?= tests\*\*)' README.md)
+    if [ "$README_COUNT" != "$ACTUAL" ]; then
+        echo "pre-commit: README.md says $README_COUNT tests, actual is $ACTUAL"
+        echo "pre-commit: update test count to $ACTUAL before committing"
+        exit 1
+    fi
+fi

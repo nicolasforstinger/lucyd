@@ -1,0 +1,1373 @@
+"""Tests for session.py — JSONL persistence, state, compaction, persist methods."""
+
+import json
+import time
+from dataclasses import replace
+
+import pytest
+
+from providers import CostContext
+from session import (
+    AUDIT_TRUNCATION_LIMIT,
+    CompactionConfig,
+    Session,
+    SessionManager,
+    _text_from_content,
+)
+
+
+# ── Test helpers for the production call path (bundles) ─────────────
+# Values are test constants, NOT config defaults — config is the
+# single source of truth in lucyd.toml; tests just need known values.
+
+_TEST_COMPACTION = CompactionConfig(
+    keep_recent_pct=0.33,
+    min_messages=4,
+    tool_result_max_chars=2000,
+    max_tokens=2048,
+)
+
+_TEST_COST = CostContext(
+    metering=None,
+    session_id="",
+    model_name="test",
+    cost_rates=[],
+)
+
+
+class TestJSONLDatedFilename:
+    def test_append_creates_dated_file(self, tmp_sessions):
+        session = Session("test-abc", tmp_sessions)
+        session.append_event({"type": "message", "role": "user", "content": "hello"})
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        assert len(files) == 1
+        today = time.strftime("%Y-%m-%d")
+        assert today in files[0].name
+        assert files[0].name == f"test-abc.{today}.jsonl"
+
+    def test_multiple_appends_same_file(self, tmp_sessions):
+        session = Session("test-abc", tmp_sessions)
+        session.append_event({"type": "message", "role": "user", "content": "first"})
+        session.append_event({"type": "message", "role": "user", "content": "second"})
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        assert len(files) == 1
+
+        lines = files[0].read_text().strip().split("\n")
+        assert len(lines) == 2
+        assert json.loads(lines[0])["content"] == "first"
+        assert json.loads(lines[1])["content"] == "second"
+
+
+class TestStateRoundTrip:
+    def test_state_preserves_compaction_fields(self, tmp_sessions):
+        session = Session("test-state", tmp_sessions)
+        session.compaction_count = 3
+        session.warned_about_compaction = True
+        session.pending_system_warning = "Context at 130k tokens"
+        session.messages = [{"role": "user", "content": "test"}]
+        session.save_state()
+
+        loaded = Session("test-state", tmp_sessions)
+        assert loaded.load() is True
+        assert loaded.compaction_count == 3
+        assert loaded.warned_about_compaction is True
+        assert loaded.pending_system_warning == "Context at 130k tokens"
+        assert len(loaded.messages) == 1
+
+    def test_warning_survives_reload(self, tmp_sessions):
+        """Warning persists across save/load without being consumed."""
+        session = Session("warn-persist", tmp_sessions)
+        session.pending_system_warning = "Context at 130k"
+        session.messages = [{"role": "user", "content": "x"}]
+        session.save_state()
+        loaded = Session("warn-persist", tmp_sessions)
+        loaded.load()
+        assert loaded.pending_system_warning == "Context at 130k"
+
+    def test_warning_cleared_is_persisted(self, tmp_sessions):
+        """After clearing the warning and saving, reload shows empty."""
+        session = Session("warn-clear", tmp_sessions)
+        session.pending_system_warning = "Context at 130k"
+        session.messages = [{"role": "user", "content": "x"}]
+        session.save_state()
+        # Simulate delivery: clear and re-save
+        loaded = Session("warn-clear", tmp_sessions)
+        loaded.load()
+        loaded.pending_system_warning = ""
+        loaded.save_state()
+        reloaded = Session("warn-clear", tmp_sessions)
+        reloaded.load()
+        assert reloaded.pending_system_warning == ""
+
+    def test_warning_absent_defaults_empty(self, tmp_sessions):
+        """Session without warning set defaults to empty string."""
+        session = Session("no-warn", tmp_sessions)
+        session.messages = [{"role": "user", "content": "x"}]
+        session.save_state()
+        loaded = Session("no-warn", tmp_sessions)
+        loaded.load()
+        assert loaded.pending_system_warning == ""
+
+    def test_duplicate_warning_overwrites(self, tmp_sessions):
+        """Setting warning again overwrites (no duplication)."""
+        session = Session("warn-dup", tmp_sessions)
+        session.pending_system_warning = "First warning"
+        session.pending_system_warning = "Second warning"
+        session.messages = [{"role": "user", "content": "x"}]
+        session.save_state()
+        loaded = Session("warn-dup", tmp_sessions)
+        loaded.load()
+        assert loaded.pending_system_warning == "Second warning"
+
+    def test_corrupt_state_falls_back_to_jsonl(self, tmp_sessions):
+        sid = "test-corrupt"
+        # Write valid JSONL
+        session = Session(sid, tmp_sessions)
+        session.add_user_message("hello", sender="test")
+        # Corrupt the state file
+        session.state_path.write_text("{{invalid json")
+        # Load should fall back to JSONL rebuild
+        loaded = Session(sid, tmp_sessions)
+        result = loaded.load()
+        # It should rebuild from JSONL (may or may not succeed depending on JSONL)
+        # The important thing is it doesn't crash
+        assert isinstance(result, bool)
+
+
+class TestCompactionWarning:
+    def test_needs_compaction_above_threshold(self, tmp_sessions):
+        session = Session("test-warn", tmp_sessions)
+        session.messages = [{
+            "role": "assistant",
+            "text": "response",
+            "usage": {"input_tokens": 160000, "output_tokens": 500},
+        }]
+        assert session.needs_compaction(150000) is True
+
+    def test_no_compaction_below_threshold(self, tmp_sessions):
+        session = Session("test-ok", tmp_sessions)
+        session.messages = [{
+            "role": "assistant",
+            "text": "response",
+            "usage": {"input_tokens": 100000, "output_tokens": 500},
+        }]
+        assert session.needs_compaction(150000) is False
+
+
+class TestPersistMethods:
+    """Tests for persist_assistant_message and persist_tool_results."""
+
+    def test_persist_assistant_message_updates_tokens(self, tmp_sessions):
+        session = Session("test-persist", tmp_sessions)
+        assert session.total_input_tokens == 0
+        assert session.total_output_tokens == 0
+
+        msg = {
+            "role": "assistant", "text": "hello",
+            "usage": {"input_tokens": 1000, "output_tokens": 200},
+        }
+        session.persist_assistant_message(msg)
+
+        assert session.total_input_tokens == 1000
+        assert session.total_output_tokens == 200
+        # Should NOT have appended to messages list
+        assert len(session.messages) == 0
+
+    def test_persist_assistant_message_writes_jsonl(self, tmp_sessions):
+        session = Session("test-persist-j", tmp_sessions)
+        msg = {
+            "role": "assistant", "text": "hi",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        session.persist_assistant_message(msg)
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        assert len(files) == 1
+        event = json.loads(files[0].read_text().strip())
+        assert event["type"] == "message"
+        assert event["role"] == "assistant"
+
+    def test_persist_tool_results_writes_jsonl(self, tmp_sessions):
+        session = Session("test-persist-t", tmp_sessions)
+        results = [
+            {"tool_call_id": "tc1", "content": "result one"},
+            {"tool_call_id": "tc2", "content": "result two"},
+        ]
+        session.persist_tool_results(results)
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        assert len(files) == 1
+        lines = files[0].read_text().strip().split("\n")
+        assert len(lines) == 2
+        assert json.loads(lines[0])["tool_use_id"] == "tc1"
+        assert json.loads(lines[1])["tool_use_id"] == "tc2"
+
+    def test_persist_tool_results_truncates(self, tmp_sessions):
+        session = Session("test-trunc", tmp_sessions)
+        long_content = "x" * 1000
+        results = [{"tool_call_id": "tc1", "content": long_content}]
+        session.persist_tool_results(results)
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        event = json.loads(files[0].read_text().strip())
+        assert len(event["content"]) == AUDIT_TRUNCATION_LIMIT
+
+
+class TestAuditTruncationLimit:
+    def test_constant_value(self):
+        assert AUDIT_TRUNCATION_LIMIT == 500
+
+    def test_add_tool_results_truncates(self, tmp_sessions):
+        session = Session("test-trunc2", tmp_sessions)
+        long_content = "y" * 1000
+        session.add_tool_results([{"tool_call_id": "tc1", "content": long_content}])
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        event = json.loads(files[0].read_text().strip())
+        assert len(event["content"]) == AUDIT_TRUNCATION_LIMIT
+
+
+class TestSessionManager:
+    def test_get_or_create_new(self, tmp_sessions):
+        mgr = SessionManager(tmp_sessions)
+        session = mgr.get_or_create("user1", model="test")
+        assert session is not None
+        assert session.id  # Should have a UUID
+
+    def test_get_or_create_returns_same(self, tmp_sessions):
+        mgr = SessionManager(tmp_sessions)
+        s1 = mgr.get_or_create("user1")
+        s2 = mgr.get_or_create("user1")
+        assert s1.id == s2.id
+
+    def test_different_contacts_different_sessions(self, tmp_sessions):
+        mgr = SessionManager(tmp_sessions)
+        s1 = mgr.get_or_create("user1")
+        s2 = mgr.get_or_create("user2")
+        assert s1.id != s2.id
+
+
+class TestMessageOrder:
+    def test_add_user_then_assistant_preserves_order(self, tmp_sessions):
+        session = Session("test-order", tmp_sessions)
+        session.add_user_message("hello", sender="test", source="cli")
+        session.messages.append({
+            "role": "assistant", "text": "hi back",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        })
+
+        assert session.messages[0]["role"] == "user"
+        assert session.messages[0]["content"] == "hello"
+        assert session.messages[1]["role"] == "assistant"
+        assert session.messages[1]["text"] == "hi back"
+
+
+# ─── Compaction End-to-End ────────────────────────────────────────
+
+
+class TestCompactionEndToEnd:
+    """TEST-4: Verify SessionManager.compact_session end-to-end."""
+
+    @pytest.fixture
+    def six_message_session(self, tmp_sessions):
+        """Create a session with 6 messages (3 user + 3 assistant with usage)."""
+        session = Session("test-e2e-compact", tmp_sessions)
+        for i in range(3):
+            session.messages.append(
+                {"role": "user", "content": f"user message {i}"}
+            )
+            session.messages.append(
+                {
+                    "role": "assistant",
+                    "text": f"assistant reply {i}",
+                    "usage": {"input_tokens": 100 * (i + 1), "output_tokens": 50 * (i + 1)},
+                }
+            )
+        return session
+
+    @pytest.mark.asyncio
+    async def test_compact_replaces_messages_with_summary_plus_recent(
+        self, tmp_sessions, six_message_session
+    ):
+        """After compaction, messages = [summary_msg] + recent_messages."""
+        session = six_message_session
+        mgr = SessionManager(tmp_sessions)
+
+        # Mock provider
+        mock_provider = MockCompactionProvider(summary_text="Summary of old conversation.")
+        await mgr.compact_session(
+            session, mock_provider, "Summarize this conversation.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        # split_point = 6 * 2 // 3 = 4, so 4 old, 2 recent
+        # Result: 1 summary + 1 compaction marker + 2 recent = 4
+        assert len(session.messages) == 4
+        assert "[Previous conversation summary]" in session.messages[0]["content"]
+        assert "Summary of old conversation." in session.messages[0]["content"]
+        # Compaction marker
+        assert "[system: This conversation was compacted" in session.messages[1]["content"]
+        # Recent messages preserved
+        assert session.messages[2]["role"] == "user"
+        assert session.messages[2]["content"] == "user message 2"
+        assert session.messages[3]["role"] == "assistant"
+        assert session.messages[3]["text"] == "assistant reply 2"
+
+    @pytest.mark.asyncio
+    async def test_compact_increments_compaction_count(
+        self, tmp_sessions, six_message_session
+    ):
+        session = six_message_session
+        mgr = SessionManager(tmp_sessions)
+        assert session.compaction_count == 0
+
+        mock_provider = MockCompactionProvider(summary_text="Summary.")
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        assert session.compaction_count == 1
+
+        # Compact again (add messages to get back above threshold)
+        for i in range(4):
+            session.messages.append({"role": "user", "content": f"extra {i}"})
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+        assert session.compaction_count == 2
+
+    @pytest.mark.asyncio
+    async def test_compact_writes_compaction_event_to_jsonl(
+        self, tmp_sessions, six_message_session
+    ):
+        session = six_message_session
+        mgr = SessionManager(tmp_sessions)
+
+        mock_provider = MockCompactionProvider(summary_text="JSONL summary test.")
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        # Find JSONL files and look for compaction event
+        jsonl_files = list(tmp_sessions.glob("*.jsonl"))
+        assert len(jsonl_files) >= 1
+        found_compaction = False
+        for f in jsonl_files:
+            for line in f.read_text().strip().split("\n"):
+                if not line:
+                    continue
+                event = json.loads(line)
+                if event.get("type") == "compaction":
+                    found_compaction = True
+                    assert event["compaction_number"] == 1
+                    assert event["removed_messages"] == 4  # 6 * 2 // 3
+                    assert "JSONL summary test." in event["summary"]
+        assert found_compaction, "No compaction event found in JSONL"
+
+    @pytest.mark.asyncio
+    async def test_compact_saves_state(self, tmp_sessions, six_message_session):
+        session = six_message_session
+        mgr = SessionManager(tmp_sessions)
+
+        mock_provider = MockCompactionProvider(summary_text="State save test.")
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        # State file should exist and reflect compacted state
+        assert session.state_path.exists()
+        state = json.loads(session.state_path.read_text())
+        assert state["compaction_count"] == 1
+        assert len(state["messages"]) == 4  # 1 summary + 1 compaction marker + 2 recent
+
+    @pytest.mark.asyncio
+    async def test_compact_skips_when_fewer_than_4_messages(self, tmp_sessions):
+        """Sessions with < 4 messages should not be compacted."""
+        session = Session("test-skip-compact", tmp_sessions)
+        session.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "text": "hi", "usage": {"input_tokens": 10, "output_tokens": 5}},
+            {"role": "user", "content": "bye"},
+        ]
+        mgr = SessionManager(tmp_sessions)
+        mock_provider = MockCompactionProvider(summary_text="Should not appear.")
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        # Messages unchanged
+        assert len(session.messages) == 3
+        assert session.compaction_count == 0
+        # Provider should not have been called
+        assert mock_provider.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_compact_resets_warned_flag(self, tmp_sessions, six_message_session):
+        """Compaction should reset warned_about_compaction to False."""
+        session = six_message_session
+        session.warned_about_compaction = True
+        mgr = SessionManager(tmp_sessions)
+
+        mock_provider = MockCompactionProvider(summary_text="Reset flag test.")
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        assert session.warned_about_compaction is False
+
+    @pytest.mark.asyncio
+    async def test_compact_custom_keep_recent_pct(self, tmp_sessions):
+        """keep_recent_pct controls how many recent messages are kept verbatim."""
+        session = Session("test-keep-pct", tmp_sessions)
+        for i in range(10):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+            })
+        assert len(session.messages) == 20
+        mgr = SessionManager(tmp_sessions)
+        mock_provider = MockCompactionProvider(summary_text="Summary.")
+
+        # keep_recent_pct=0.25 → split_point = int(20 * 0.75) = 15
+        # 15 old → summary, 5 recent kept
+        # Result: 1 summary + 1 marker + 5 recent = 7
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.",
+            cost=_TEST_COST,
+            compaction=replace(_TEST_COMPACTION, keep_recent_pct=0.25),
+        )
+        assert len(session.messages) == 7
+        assert "[Previous conversation summary]" in session.messages[0]["content"]
+        # Last message should be the final assistant reply
+        assert session.messages[-1]["text"] == "reply 9"
+
+    @pytest.mark.asyncio
+    async def test_compact_keep_recent_pct_clamped(self, tmp_sessions):
+        """keep_recent_pct clamping now happens in config.py, not session.py.
+
+        compact_session uses keep_recent_pct directly (no re-clamping).
+        With keep_recent_pct=0.0, all messages are old → summary + marker only.
+        """
+        session = Session("test-clamp", tmp_sessions)
+        for i in range(10):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+            })
+        mgr = SessionManager(tmp_sessions)
+        mock_provider = MockCompactionProvider(summary_text="Summary.")
+
+        # keep_recent_pct=0.0 → split_point = int(20 * 1.0) = 20
+        # All 20 old → summary + marker, 0 recent kept
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.",
+            cost=_TEST_COST,
+            compaction=replace(_TEST_COMPACTION, keep_recent_pct=0.0),
+        )
+        assert len(session.messages) == 2  # summary + marker, no recent kept
+
+    @pytest.mark.asyncio
+    async def test_compact_skips_orphaned_tool_results(self, tmp_sessions):
+        """Compaction split must not leave tool_results without matching tool_use."""
+        session = Session("test-tool-boundary", tmp_sessions)
+        # Build: 8 user/assistant pairs + 1 tool exchange + 1 user/assistant
+        for i in range(8):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "tool_calls": [], "usage": {"input_tokens": 100, "output_tokens": 50},
+            })
+        # Tool exchange at positions 16-18
+        session.messages.append({
+            "role": "assistant", "text": "",
+            "tool_calls": [{"id": "tool_1", "name": "tts", "arguments": {"text": "hi"}}],
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
+        session.messages.append({
+            "role": "tool_results",
+            "results": [{"tool_call_id": "tool_1", "content": "sent"}],
+        })
+        session.messages.append({
+            "role": "assistant", "text": "done",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
+        # Final pair at 19-20
+        session.messages.append({"role": "user", "content": "last msg"})
+        session.messages.append({
+            "role": "assistant", "text": "last reply",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
+        # 21 messages total. keep_recent_pct=0.25 → split at int(21*0.75)=15
+        # Position 15 is an assistant (reply 7). No tool_results → split unchanged.
+        # But if we force split to land on tool_results (index 17):
+        # keep_recent_pct such that split = 17 → 17/21 = 0.81 → 1-pct = 0.19
+        # split_point = int(21 * 0.81) = 17 → message[17] is tool_results
+        mgr = SessionManager(tmp_sessions)
+        mock_provider = MockCompactionProvider(summary_text="Summary.")
+
+        await mgr.compact_session(
+            session, mock_provider, "Summarize.",
+            cost=_TEST_COST,
+            compaction=replace(_TEST_COMPACTION, keep_recent_pct=0.19),
+        )
+        # Split should skip past tool_results at index 17 to index 18 (assistant)
+        # old=18, recent=3 → summary + marker + 3 = 5
+        # Verify no tool_results in first position of recent messages
+        assert session.messages[0]["content"].startswith("[Previous conversation summary]")
+        for msg in session.messages[2:]:
+            if msg.get("role") == "tool_results":
+                # Any remaining tool_results must have a preceding assistant with tool_use
+                idx = session.messages.index(msg)
+                prev = session.messages[idx - 1]
+                assert prev.get("role") == "assistant"
+                assert prev.get("tool_calls"), "tool_results without preceding tool_use"
+
+
+class TestCompactionRoundTrip:
+    """End-to-end compaction: real Session, mock only the LLM provider."""
+
+    @pytest.mark.asyncio
+    async def test_round_trip(self, tmp_sessions):
+        """Compact a 30-message session, verify structure and provider input."""
+        session = Session("test-roundtrip", tmp_sessions)
+        for i in range(15):
+            session.messages.append({"role": "user", "content": f"user msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "content": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+        session.save_state()
+        assert len(session.messages) == 30
+
+        # Capture what the provider receives
+        captured_input = []
+        provider = MockCompactionProvider(summary_text="Round-trip summary.")
+        original_complete = provider.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured_input.extend(messages)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider.complete = capturing_complete
+
+        mgr = SessionManager(tmp_sessions)
+        await mgr.compact_session(
+            session, provider, "Summarize this conversation.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        # split_point = 30 * 2 // 3 = 20 old, 10 recent
+        # Result: 1 summary + 1 compaction marker + 10 recent = 12
+        assert len(session.messages) == 12
+        assert "[Previous conversation summary]" in session.messages[0]["content"]
+        assert "Round-trip summary." in session.messages[0]["content"]
+        # Compaction marker
+        assert "[system: This conversation was compacted" in session.messages[1]["content"]
+
+        # Recent 10 messages preserved unchanged
+        assert session.messages[2]["content"] == "user msg 10"
+        assert session.messages[-1]["text"] == "reply 14"
+
+        assert session.compaction_count == 1
+        assert session.warned_about_compaction is False
+
+        # State file on disk reflects compacted state
+        loaded_state = json.loads(session.state_path.read_text())
+        assert loaded_state["compaction_count"] == 1
+        assert len(loaded_state["messages"]) == 12
+
+        # Provider received the oldest 2/3 as formatted text
+        # 30 msgs, split_point=20: old = indices 0-19 (user 0..9, reply 0..9)
+        assert len(captured_input) == 1  # single user message with conversation text
+        sent_text = captured_input[0]["content"]
+        assert "user msg 0" in sent_text
+        assert "user msg 9" in sent_text   # last user message in old 2/3
+        assert "reply 9" in sent_text      # last assistant message in old 2/3
+        # Recent 1/3 messages NOT in compaction input
+        assert "user msg 10" not in sent_text
+        assert "reply 14" not in sent_text
+
+    @pytest.mark.asyncio
+    async def test_double_compaction_preserves_prior_summary(self, tmp_sessions):
+        """Second compaction includes first summary in its input."""
+        session = Session("test-double", tmp_sessions)
+
+        # Round 1: 30 messages
+        for i in range(15):
+            session.messages.append({"role": "user", "content": f"r1 msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"r1 reply {i}",
+                "content": f"r1 reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+        session.save_state()
+
+        mgr = SessionManager(tmp_sessions)
+        provider_a = MockCompactionProvider(summary_text="Summary A.")
+        await mgr.compact_session(
+            session, provider_a, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+        assert session.compaction_count == 1
+        assert "Summary A." in session.messages[0]["content"]
+
+        # Round 2: add 30 more messages, then compact again
+        for i in range(15):
+            session.messages.append({"role": "user", "content": f"r2 msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"r2 reply {i}",
+                "content": f"r2 reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+        session.save_state()
+
+        # Capture round 2 input
+        captured_input = []
+        provider_b = MockCompactionProvider(summary_text="Summary B.")
+        original_complete = provider_b.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured_input.extend(messages)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider_b.complete = capturing_complete
+
+        await mgr.compact_session(
+            session, provider_b, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        assert session.compaction_count == 2
+        # Current messages start with Summary B, not Summary A
+        assert "Summary B." in session.messages[0]["content"]
+
+        # Summary A was in the old 2/3 and sent to the provider
+        sent_text = captured_input[0]["content"]
+        assert "Summary A." in sent_text
+
+
+class TestCompactionReplacesMessages:
+    """Compaction replaces old messages with summary, keeps recent."""
+
+    @pytest.mark.asyncio
+    async def test_compaction_replaces_not_appends(self, tmp_sessions):
+        """After compaction, old messages are GONE, replaced by summary."""
+        session = Session("test-replace", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg-{i}"})
+        mgr = SessionManager(tmp_sessions)
+        mock = MockCompactionProvider("Summary text.")
+        await mgr.compact_session(
+            session, mock, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        # Old messages should be gone
+        contents = [m.get("content", "") for m in session.messages]
+        assert "msg-0" not in contents
+        assert "msg-1" not in contents
+        assert "msg-2" not in contents
+        # Summary should be first
+        assert "Summary text." in session.messages[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_compaction_strips_stale_usage(self, tmp_sessions):
+        """After compaction, surviving assistant messages have no stale usage."""
+        session = Session("test-usage-strip", tmp_sessions)
+        # Build a conversation with assistant messages carrying usage data
+        for i in range(10):
+            session.messages.append({"role": "user", "content": f"msg-{i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply-{i}",
+                "usage": {"context_tokens": 50000, "input_tokens": 40000,
+                          "output_tokens": 200, "cache_read_tokens": 10000},
+            })
+        mgr = SessionManager(tmp_sessions)
+        mock = MockCompactionProvider("Summary.")
+        await mgr.compact_session(
+            session, mock, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        # No surviving assistant message should carry usage
+        for msg in session.messages:
+            if msg.get("role") == "assistant":
+                assert "usage" not in msg, "Stale usage not stripped after compaction"
+        # last_input_tokens should return 0 (no usage data)
+        assert session.last_input_tokens == 0
+
+
+class TestSessionManagerLifecycle:
+    """Session creation and persistence."""
+
+    @pytest.mark.asyncio
+    async def test_close_session_removes_from_index(self, tmp_sessions):
+        mgr = SessionManager(tmp_sessions)
+        mgr.get_or_create("user1")
+        assert "user1" in mgr._index
+
+        result = await mgr.close_session("user1")
+        assert result is True
+        assert "user1" not in mgr._index
+
+    @pytest.mark.asyncio
+    async def test_close_nonexistent_returns_false(self, tmp_sessions):
+        mgr = SessionManager(tmp_sessions)
+        result = await mgr.close_session("nonexistent")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_close_by_id(self, tmp_sessions):
+        mgr = SessionManager(tmp_sessions)
+        session = mgr.get_or_create("user1")
+        sid = session.id
+        result = await mgr.close_session_by_id(sid)
+        assert result is True
+        assert "user1" not in mgr._index
+
+    @pytest.mark.asyncio
+    async def test_close_by_unknown_id_returns_false(self, tmp_sessions):
+        mgr = SessionManager(tmp_sessions)
+        result = await mgr.close_session_by_id("nonexistent-uuid")
+        assert result is False
+
+class TestSessionAddMessages:
+    """add_user_message and add_assistant_message."""
+
+    def test_add_user_message_persists(self, tmp_sessions):
+        session = Session("test-add-user", tmp_sessions)
+        session.add_user_message("hello", sender="nico", source="telegram")
+        assert len(session.messages) == 1
+        assert session.messages[0]["role"] == "user"
+        assert session.messages[0]["content"] == "hello"
+        # State file should exist
+        assert session.state_path.exists()
+
+    def test_add_assistant_message_updates_tokens(self, tmp_sessions):
+        session = Session("test-add-asst", tmp_sessions)
+        msg = {
+            "role": "assistant", "text": "hi",
+            "usage": {"input_tokens": 500, "output_tokens": 100},
+        }
+        session.add_assistant_message(msg)
+        assert session.total_input_tokens == 500
+        assert session.total_output_tokens == 100
+        assert len(session.messages) == 1
+
+
+# ─── _text_from_content ───────────────────────────────────────────
+
+
+class TestTextFromContent:
+    """Tests for _text_from_content helper."""
+
+    def test_plain_string_passthrough(self):
+        assert _text_from_content("hello world") == "hello world"
+
+    def test_empty_string(self):
+        assert _text_from_content("") == ""
+
+    def test_none_returns_empty(self):
+        assert _text_from_content(None) == ""
+
+    def test_empty_list_returns_empty(self):
+        assert _text_from_content([]) == ""
+
+    def test_text_blocks_joined(self):
+        content = [
+            {"type": "text", "text": "describe this"},
+            {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
+        ]
+        assert _text_from_content(content) == "describe this"
+
+    def test_multiple_text_blocks(self):
+        content = [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]
+        assert _text_from_content(content) == "first second"
+
+    def test_image_only_returns_empty(self):
+        content = [
+            {"type": "image", "media_type": "image/png", "data": "abc"},
+        ]
+        assert _text_from_content(content) == ""
+
+    def test_non_dict_items_skipped(self):
+        content = [
+            {"type": "text", "text": "valid"},
+            "stray string",
+            42,
+        ]
+        assert _text_from_content(content) == "valid"
+
+    def test_dict_without_type_skipped(self):
+        content = [
+            {"text": "no type field"},
+            {"type": "text", "text": "has type"},
+        ]
+        assert _text_from_content(content) == "has type"
+
+    def test_integer_returns_empty(self):
+        assert _text_from_content(42) == ""
+
+
+class TestContentBlocksInAudit:
+    """Content blocks handled correctly in JSONL audit trail."""
+
+    def test_add_tool_results_with_content_blocks(self, tmp_sessions):
+        """Tool result with list content truncates text, not the list."""
+        session = Session("test-blocks-audit", tmp_sessions)
+        block_content = [
+            {"type": "text", "text": "x" * 1000},
+            {"type": "image", "media_type": "image/jpeg", "data": "abc"},
+        ]
+        session.add_tool_results([{"tool_call_id": "tc1", "content": block_content}])
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        event = json.loads(files[0].read_text().strip())
+        # Should be a truncated string, not a list
+        assert isinstance(event["content"], str)
+        assert len(event["content"]) == AUDIT_TRUNCATION_LIMIT
+
+    def test_persist_tool_results_with_content_blocks(self, tmp_sessions):
+        session = Session("test-blocks-persist", tmp_sessions)
+        block_content = [
+            {"type": "text", "text": "result text"},
+            {"type": "image", "media_type": "image/png", "data": "data"},
+        ]
+        session.persist_tool_results([{"tool_call_id": "tc1", "content": block_content}])
+
+        files = list(tmp_sessions.glob("*.jsonl"))
+        event = json.loads(files[0].read_text().strip())
+        assert isinstance(event["content"], str)
+        assert "result text" in event["content"]
+
+
+class TestCompactionWithContentBlocks:
+    """Compaction handles vision messages without crashing."""
+
+    @pytest.mark.asyncio
+    async def test_compaction_extracts_text_from_content_blocks(self, tmp_sessions):
+        """Session with vision content blocks compacts without error."""
+        session = Session("test-compact-blocks", tmp_sessions)
+        session.messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "what is in this photo"},
+                {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
+            ]},
+            {"role": "assistant", "text": "I see a cat.",
+             "usage": {"input_tokens": 500, "output_tokens": 50}},
+            {"role": "user", "content": "thanks"},
+            {"role": "assistant", "text": "you're welcome",
+             "usage": {"input_tokens": 600, "output_tokens": 30}},
+            {"role": "user", "content": "another question"},
+            {"role": "assistant", "text": "another answer",
+             "usage": {"input_tokens": 700, "output_tokens": 40}},
+        ]
+        mgr = SessionManager(tmp_sessions)
+        mock = MockCompactionProvider("Summary of vision conversation.")
+        await mgr.compact_session(
+            session, mock, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        assert mock.call_count == 1
+        assert len(session.messages) == 4  # 1 summary + 1 compaction marker + 2 recent
+        assert "Summary of vision conversation." in session.messages[0]["content"]
+
+
+class MockCompactionProvider:
+    """Minimal mock provider for compaction tests."""
+
+    def __init__(self, summary_text: str = "Mock summary."):
+        self.summary_text = summary_text
+        self.call_count = 0
+
+    def format_system(self, blocks):
+        return [{"type": "text", "text": b["text"]} for b in blocks]
+
+    def format_messages(self, messages):
+        return [{"role": m["role"], "content": m.get("content", "")} for m in messages]
+
+    async def complete(self, system, messages, tools, **kwargs):
+        self.call_count += 1
+        from providers import LLMResponse, Usage
+        return LLMResponse(
+            text=self.summary_text,
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=Usage(input_tokens=50, output_tokens=30),
+        )
+
+
+class TestCompactionAntiHallucination:
+    """Compaction input must include structural boundaries against fabrication."""
+
+    @pytest.mark.asyncio
+    async def test_compaction_includes_end_marker_and_anti_fabrication(self, tmp_sessions):
+        """The conversation text sent to the provider must include an end-of-input
+        marker and anti-fabrication instructions to prevent the model from
+        generating fake dialogue beyond the real transcript."""
+        session = Session("test-anti-hallucination", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"user msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        captured_messages = []
+        captured_system = []
+        provider = MockCompactionProvider(summary_text="Clean summary.")
+        original_complete = provider.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured_system.extend(system)
+            captured_messages.extend(messages)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider.complete = capturing_complete
+
+        mgr = SessionManager(tmp_sessions)
+        await mgr.compact_session(
+            session, provider, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        # Verify end-of-input marker in message content
+        sent_text = captured_messages[0]["content"]
+        assert "--- END OF CONVERSATION ---" in sent_text
+        assert "Do not continue, extend, or invent" in sent_text
+
+        # Verify anti-fabrication system prompt
+        system_text = captured_system[0]["text"]
+        assert "NEVER generate new dialogue" in system_text
+        assert "NEVER" in system_text
+
+    @pytest.mark.asyncio
+    async def test_compaction_end_marker_after_all_conversation_content(self, tmp_sessions):
+        """End marker must appear AFTER all conversation content, not before."""
+        session = Session("test-marker-position", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        captured = []
+        provider = MockCompactionProvider(summary_text="Summary.")
+        original_complete = provider.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured.extend(messages)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider.complete = capturing_complete
+
+        mgr = SessionManager(tmp_sessions)
+        await mgr.compact_session(
+            session, provider, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        sent_text = captured[0]["content"]
+        # Last real message should appear BEFORE the end marker
+        last_msg_pos = sent_text.rfind("reply 3")  # last message in old 2/3
+        end_marker_pos = sent_text.find("--- END OF CONVERSATION ---")
+        assert last_msg_pos < end_marker_pos, (
+            "End marker must come after all conversation content"
+        )
+
+
+class TestCompactionStatePersistenceOrder:
+    """save_state() must be called before append_event() in compaction."""
+
+    @pytest.mark.asyncio
+    async def test_save_state_before_append_event(self, tmp_sessions):
+        """State is persisted before the audit event, so a crash between
+        the two doesn't lose the compaction."""
+        from unittest.mock import patch
+
+        session = Session("test-order", tmp_sessions)
+        for i in range(15):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "content": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+        session.save_state()
+
+        call_order = []
+        orig_save = session.save_state
+        orig_append = session.append_event
+
+        def tracking_save():
+            call_order.append("save_state")
+            return orig_save()
+
+        def tracking_append(event):
+            call_order.append("append_event")
+            return orig_append(event)
+
+        mgr = SessionManager(tmp_sessions)
+        provider = MockCompactionProvider(summary_text="Summary.")
+
+        with patch.object(session, "save_state", tracking_save), \
+             patch.object(session, "append_event", tracking_append):
+            await mgr.compact_session(
+                session, provider, "Summarize.",
+                cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            )
+
+        assert "save_state" in call_order
+        assert "append_event" in call_order
+        save_idx = call_order.index("save_state")
+        append_idx = call_order.index("append_event")
+        assert save_idx < append_idx, "save_state must be called before append_event"
+
+
+# ─── build_session_info Tests ────────────────────────────────────
+
+
+class TestBuildSessionInfo:
+    """Tests for the shared build_session_info() function."""
+
+    def test_with_live_session(self, tmp_path):
+        """Enriches from live session object."""
+        from session import Session, build_session_info
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        session = Session("sess-1", sessions_dir, model="primary", contact="alice")
+        session.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "text": "hi", "usage": {
+                "input_tokens": 500, "output_tokens": 100,
+                "cache_read_tokens": 200, "cache_write_tokens": 50,
+            }},
+        ]
+        session.compaction_count = 2
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="sess-1",
+            session=session,
+            max_context_tokens=10000,
+        )
+
+        assert info["session_id"] == "sess-1"
+        assert info["message_count"] == 2
+        assert info["compaction_count"] == 2
+        assert info["context_tokens"] == 500 + 200  # input + cache_read (context, not billing)
+        assert info["context_pct"] == 700 * 100 // 10000
+        assert info["log_files"] == 0
+        assert info["log_bytes"] == 0
+
+    def test_from_state_file(self, tmp_path):
+        """Loads from state file when no live session."""
+        from session import Session, build_session_info
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Create a session, save state, then query without live session
+        session = Session("sess-2", sessions_dir)
+        session.messages = [
+            {"role": "user", "content": "test"},
+            {"role": "assistant", "text": "ok", "usage": {"input_tokens": 300}},
+        ]
+        session.compaction_count = 1
+        session.save_state()
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="sess-2",
+        )
+
+        assert info["message_count"] == 2
+        assert info["compaction_count"] == 1
+        assert info["context_tokens"] == 300
+
+    def test_no_state_no_session(self, tmp_path):
+        """Returns defaults when no state file and no live session."""
+        from session import build_session_info
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="nonexistent",
+        )
+
+        assert info["message_count"] == 0
+        assert info["compaction_count"] == 0
+        assert info["context_tokens"] == 0
+        assert info["context_pct"] == 0
+        assert info["cost"] == 0.0
+
+    def test_with_metering_db(self, tmp_path):
+        """Includes per-session cost from metering DB."""
+        from dataclasses import dataclass
+
+        from metering import MeteringDB
+        from session import build_session_info
+
+        @dataclass
+        class _U:
+            input_tokens: int = 100
+            output_tokens: int = 50
+            cache_read_tokens: int = 0
+            cache_write_tokens: int = 0
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        metering = MeteringDB(str(tmp_path / "metering.db"), agent_id="c")
+        metering.record("sess-3", "model", "p", _U(), [5.0, 10.0])
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="sess-3",
+            metering=metering,
+        )
+
+        assert info["cost"] > 0
+
+    def test_log_file_metadata(self, tmp_path):
+        """Counts log files and total bytes."""
+        from session import build_session_info
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Create some JSONL log files
+        (sessions_dir / "sess-4.2026-02-25.jsonl").write_text('{"test": 1}\n')
+        (sessions_dir / "sess-4.2026-02-26.jsonl").write_text('{"test": 2}\n{"test": 3}\n')
+
+        info = build_session_info(
+            sessions_dir=sessions_dir,
+            session_id="sess-4",
+        )
+
+        assert info["log_files"] == 2
+        assert info["log_bytes"] > 0
+
+
+# ─── read_history_events Tests ───────────────────────────────────
+
+
+class TestReadHistoryEvents:
+    """Tests for read_history_events()."""
+
+    def test_reads_user_and_assistant(self, tmp_path):
+        """Default mode returns user + assistant messages."""
+        import json
+
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        events = [
+            {"type": "session", "id": "s-1", "timestamp": 1.0},
+            {"type": "message", "role": "user", "content": "hello",
+             "from": "alice", "timestamp": 2.0},
+            {"type": "message", "role": "assistant", "text": "hi there",
+             "timestamp": 3.0},
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok",
+             "timestamp": 4.0},
+        ]
+        log_path = sessions_dir / "s-1.2026-02-26.jsonl"
+        log_path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+        result = read_history_events(sessions_dir, "s-1")
+
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == "hello"
+        assert result[0]["from"] == "alice"
+        assert result[1]["role"] == "assistant"
+        assert result[1]["text"] == "hi there"
+
+    def test_full_mode_includes_all(self, tmp_path):
+        """Full mode includes session, tool_result, etc."""
+        import json
+
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        events = [
+            {"type": "session", "id": "s-1", "timestamp": 1.0},
+            {"type": "message", "role": "user", "content": "hello", "timestamp": 2.0},
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok", "timestamp": 3.0},
+            {"type": "message", "role": "assistant", "text": "done", "timestamp": 4.0},
+        ]
+        log_path = sessions_dir / "s-1.2026-02-26.jsonl"
+        log_path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+        result = read_history_events(sessions_dir, "s-1", full=True)
+
+        assert len(result) == 4
+        assert result[0]["type"] == "session"
+        assert result[2]["type"] == "tool_result"
+
+    def test_reads_from_archive(self, tmp_path):
+        """Reads archived JSONL files."""
+        import json
+
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        archive_dir = sessions_dir / ".archive"
+        archive_dir.mkdir()
+
+        events = [
+            {"type": "message", "role": "user", "content": "archived msg", "timestamp": 1.0},
+        ]
+        log_path = archive_dir / "s-2.2026-02-20.jsonl"
+        log_path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+        result = read_history_events(sessions_dir, "s-2")
+
+        assert len(result) == 1
+        assert result[0]["content"] == "archived msg"
+
+    def test_deduplicates_by_timestamp(self, tmp_path):
+        """Duplicate timestamps are deduplicated."""
+        import json
+
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Same event in two files (e.g. migration)
+        event = {"type": "message", "role": "user", "content": "dup", "timestamp": 1.0}
+        (sessions_dir / "s-3.2026-02-25.jsonl").write_text(json.dumps(event) + "\n")
+        (sessions_dir / "s-3.2026-02-26.jsonl").write_text(json.dumps(event) + "\n")
+
+        result = read_history_events(sessions_dir, "s-3")
+
+        assert len(result) == 1
+
+    def test_empty_session(self, tmp_path):
+        """No files returns empty list."""
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        result = read_history_events(sessions_dir, "nonexistent")
+        assert result == []
+
+    def test_chronological_order(self, tmp_path):
+        """Events sorted by timestamp across files."""
+        import json
+
+        from session import read_history_events
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        # Event in file 2 is older than event in file 1
+        (sessions_dir / "s-4.2026-02-26.jsonl").write_text(
+            json.dumps({"type": "message", "role": "user", "content": "later", "timestamp": 10.0}) + "\n"
+        )
+        (sessions_dir / "s-4.2026-02-25.jsonl").write_text(
+            json.dumps({"type": "message", "role": "user", "content": "earlier", "timestamp": 5.0}) + "\n"
+        )
+
+        result = read_history_events(sessions_dir, "s-4")
+
+        assert result[0]["content"] == "earlier"
+        assert result[1]["content"] == "later"
+
+
+# ─── Compaction Identity + Verification ──────────────────────────
+
+
+class TestCompactionIdentity:
+    """system_blocks parameter passes agent identity to compaction model."""
+
+    @pytest.mark.asyncio
+    async def test_system_blocks_used_when_provided(self, tmp_sessions):
+        """When system_blocks is provided, they replace the default summarizer prompt."""
+        session = Session("test-identity", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        captured_system = []
+        provider = MockCompactionProvider(summary_text="Identity-aware summary.")
+        original_complete = provider.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured_system.extend(system)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider.complete = capturing_complete
+
+        persona_blocks = [{"text": "I am Lucy, a goth AI familiar.", "tier": "stable"}]
+        mgr = SessionManager(tmp_sessions)
+        await mgr.compact_session(
+            session, provider, "Summarize.",
+            system_blocks=persona_blocks,
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        assert len(captured_system) == 1
+        assert "Lucy" in captured_system[0]["text"]
+        assert "conversation summarizer" not in captured_system[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_fallback_without_system_blocks(self, tmp_sessions):
+        """When system_blocks is None, the default summarizer prompt is used."""
+        session = Session("test-fallback", tmp_sessions)
+        for i in range(6):
+            session.messages.append({"role": "user", "content": f"msg {i}"})
+            session.messages.append({
+                "role": "assistant", "text": f"reply {i}",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            })
+
+        captured_system = []
+        provider = MockCompactionProvider(summary_text="Default summary.")
+        original_complete = provider.complete
+
+        async def capturing_complete(system, messages, tools, **kwargs):
+            captured_system.extend(system)
+            return await original_complete(system, messages, tools, **kwargs)
+
+        provider.complete = capturing_complete
+
+        mgr = SessionManager(tmp_sessions)
+        await mgr.compact_session(
+            session, provider, "Summarize.",
+            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+        )
+
+        assert "conversation summarizer" in captured_system[0]["text"]
+
+

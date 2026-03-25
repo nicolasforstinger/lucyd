@@ -1,0 +1,2064 @@
+#!/usr/bin/env python3
+"""Lucyd — a daemon for persona-rich AI agents.
+
+Entry point. Wires config → channel → loop → tools → sessions.
+Handles PID file, HTTP API, Unix signals, and the main event loop.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import collections
+import contextlib
+import fcntl
+import json
+import logging
+import logging.handlers
+import os
+import re
+import signal
+import sys
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+# Add lucyd directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
+
+import random
+
+from agentic import SingleShotStrategy, is_transient_error, run_agentic_loop
+from metering import MeteringDB
+from models import InboundMessage
+from relay import create_channel
+from config import Config, ConfigError, load_config
+from context import ContextBuilder, _estimate_tokens
+from log_utils import _log_safe
+from providers import create_provider
+from session import SessionManager, _text_from_content, set_audit_truncation
+from skills import SkillLoader
+from tools import ToolRegistry
+
+log = logging.getLogger("lucyd")
+
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _is_uuid(s: str) -> bool:
+    return bool(_UUID_RE.match(s))
+
+
+# ─── PID File ────────────────────────────────────────────────────
+
+_pid_fd: int | None = None  # held for process lifetime
+
+
+def _acquire_pid_file(path: Path) -> None:
+    """Acquire exclusive lock on PID file. Exits if another instance holds it."""
+    global _pid_fd
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # Another process holds the lock
+        try:
+            existing = os.read(os.open(str(path), os.O_RDONLY), 64).decode().strip()
+        except Exception:
+            existing = "?"
+        sys.stderr.write(f"Another instance is running (PID {existing}). Exiting.\n")
+        os.close(fd)
+        sys.exit(1)
+    # Lock acquired — write our PID (truncate first)
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, str(os.getpid()).encode())
+    _pid_fd = fd  # keep fd open → lock held
+
+
+def _release_pid_file(path: Path) -> None:
+    global _pid_fd
+    if _pid_fd is not None:
+        with contextlib.suppress(Exception):  # daemon shutdown cleanup; failure is benign
+            fcntl.flock(_pid_fd, fcntl.LOCK_UN)
+            os.close(_pid_fd)
+        _pid_fd = None
+    with contextlib.suppress(Exception):  # daemon shutdown cleanup; failure is benign
+        path.unlink(missing_ok=True)
+
+
+
+# ─── Silent Token Check ─────────────────────────────────────────
+
+def _should_warn_context(
+    input_tokens: int,
+    compaction_threshold: int,
+    needs_compaction: bool,
+    already_warned: bool,
+    warning_pct: float = 0.8,
+) -> bool:
+    """Decide whether to set a compaction warning on the session.
+
+    Warns at 80% of compaction threshold, but only if not already
+    at hard threshold and not already warned this session.
+    """
+    warning_threshold = int(compaction_threshold * warning_pct)
+    return (
+        input_tokens > warning_threshold
+        and not needs_compaction
+        and not already_warned
+    )
+
+
+
+
+def _inject_warning(text: str, warning: str) -> tuple[str, bool]:
+    """Prepend pending system warning to user text.
+
+    Returns (modified_text, was_warning_consumed).
+    """
+    if warning:
+        return f"[system: {warning}]\n\n{text}", True
+    return text, False
+
+
+def _append(text: str, suffix: str) -> str:
+    """Append suffix to text with newline separator."""
+    return f"{text}\n{suffix}" if text else suffix
+
+
+def _is_silent(text: str, tokens: list[str]) -> bool:
+    """Check if reply starts or ends with a silent token.
+
+    Tokens should be word-character strings (letters, digits, underscores).
+    """
+    if not text or not tokens:
+        return False
+    text = text.strip()
+    for token in tokens:
+        # Starts with token
+        if re.match(rf"^\s*{re.escape(token)}(?=$|\W)", text):
+            return True
+        # Ends with token
+        if re.search(rf"\b{re.escape(token)}\b\W*$", text):
+            return True
+    return False
+
+
+from attachments import ImageTooLarge, extract_document_text, fit_image, process_audio
+from monitor import MonitorWriter
+
+
+
+@dataclass
+class _MessageState:
+    """Internal state bag for _process_message phases."""
+    text: str
+    sender: str
+    source: str           # Message origin (channel name, "http", or "system")
+    trace_id: str
+    deliver: bool = True  # Should the reply be sent to the channel?
+    image_blocks: list = field(default_factory=list)
+    has_voice: bool = False
+    session: Any = None
+    user_msg_idx: int = 0
+    session_preexisted: bool = False
+    model_cfg: dict = field(default_factory=dict)
+    model_name: str = ""
+    cost_rates: list = field(default_factory=list)
+    fmt_system: Any = None
+    tools: list = field(default_factory=list)
+    msg_count_before: int = 0
+    response: Any = None
+    force_compact: bool = False
+    response_future: Any = None
+    notify_meta: dict | None = None
+
+
+# ─── Daemon ──────────────────────────────────────────────────────
+
+class LucydDaemon:
+    def __init__(self, config: Config):
+        self.config = config
+        self.running = True
+        self.start_time = time.time()
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=config.queue_capacity)
+        self._control_queue: asyncio.Queue = asyncio.Queue()
+        self.provider: Any = None
+        self._single_shot: bool = False
+        self.channel: Any = None
+        self.session_mgr: SessionManager | None = None
+        self.context_builder: ContextBuilder | None = None
+        self.skill_loader: SkillLoader | None = None
+        self.tool_registry: ToolRegistry | None = None
+        self._http_api: Any = None
+        self._memory_conn: Any = None
+        self._current_session: Any = None  # Set per-message for status tool callback
+        self._session_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()  # sender → lock
+        self._webhook_failures: int = 0  # consecutive webhook callback failures
+        self.metering_db: Any = None
+        self._error_counts: dict[str, int] = {}  # error_type → count, for /api/v1/errors
+
+    _MAX_SESSION_LOCKS = 1000  # Bound to prevent unbounded growth (P-018)
+
+    def _get_session_lock(self, sender: str) -> asyncio.Lock:
+        """Get or create a per-sender lock for session mutation safety."""
+        if sender in self._session_locks:
+            self._session_locks.move_to_end(sender)
+            return self._session_locks[sender]
+        lock = asyncio.Lock()
+        self._session_locks[sender] = lock
+        # Evict oldest unlocked entries when over hard cap
+        while len(self._session_locks) > self._MAX_SESSION_LOCKS:
+            oldest_key = next(iter(self._session_locks))
+            oldest_lock = self._session_locks[oldest_key]
+            if oldest_lock.locked():
+                # Don't evict a lock that's actively held — skip it
+                self._session_locks.move_to_end(oldest_key)
+                break
+            self._session_locks.pop(oldest_key)
+        return lock
+
+    def _setup_logging(self) -> None:
+        """Configure logging to file + stderr.
+
+        Supports log_format: "text" (default) or "json" (one JSON object per line).
+        Activates PII-safe mode if configured.
+        """
+        log_file = self.config.log_file
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # JSON logging format for Docker (stdout → Docker log driver)
+        if self.config.log_format == "json":
+            from log_utils import StructuredJSONFormatter
+            fmt = StructuredJSONFormatter()
+        else:
+            fmt = logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+
+        fh = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=self.config.log_max_bytes,
+            backupCount=self.config.log_backup_count, encoding="utf-8",
+        )
+        fh.setFormatter(fmt)
+        fh.setLevel(logging.DEBUG)
+
+        # Stderr handler (for journald)
+        sh = logging.StreamHandler(sys.stderr)
+        sh.setFormatter(fmt)
+        sh.setLevel(logging.INFO)
+
+        root = logging.getLogger()
+        root.setLevel(logging.DEBUG)
+        root.addHandler(fh)
+        root.addHandler(sh)
+
+        # Silence noisy third-party loggers (configurable via [logging] suppress)
+        for name in self.config.logging_suppress:
+            logging.getLogger(name).setLevel(logging.WARNING)
+
+    def _init_provider(self) -> None:
+        """Create the primary provider instance and determine dispatch mode."""
+        self._providers: dict[str, Any] = {}
+        try:
+            self.provider = self._create_provider_for("primary")
+            self._providers["primary"] = self.provider
+            # Determine dispatch mode based on config + model capabilities
+            caps = self.provider.capabilities if self.provider else None
+            if self.config.agent_strategy == "single_shot" or (caps and not caps.supports_tools):
+                self._single_shot = True
+                log.info("Agent strategy: SingleShotStrategy")
+            else:
+                self._single_shot = False
+                log.info("Agent strategy: agentic loop")
+        except Exception as e:
+            log.error("Failed to create provider: %s", e)
+
+    def _create_provider_for(self, model_name: str) -> Any:
+        """Create a provider instance for a named model config."""
+        model_cfg = self.config.model_config(model_name)
+        provider_type = model_cfg.get("provider", "")
+        api_key_env = model_cfg.get("api_key_env", "")
+        api_key = os.environ.get(api_key_env, "") if api_key_env else ""
+        if not api_key and api_key_env:
+            log.debug("API key env var checked: %s", api_key_env)
+            raise ValueError(f"Required API key for model '{model_name}' not configured")
+        provider = create_provider(model_cfg, api_key)
+        log.info("Provider: %s / %s (role: %s)", provider_type, model_cfg.get("model", ""), model_name)
+        return provider
+
+    def get_provider(self, role: str = "primary") -> Any:
+        """Get provider for a specific role, with lazy creation and caching.
+
+        Roles: "primary", "compaction", "consolidation", "subagent".
+        If no model override is configured for a role, returns the primary provider.
+        """
+        if role in self._providers:
+            return self._providers[role]
+        # Look up model override for this role
+        role_attr = f"{role}_model"
+        model_name = getattr(self.config, role_attr, "")
+        if not model_name:
+            return self.provider  # Default to primary
+        try:
+            provider = self._create_provider_for(model_name)
+            self._providers[role] = provider
+            return provider
+        except Exception:
+            log.warning("Failed to create provider for role '%s' (model '%s'), falling back to primary",
+                        role, model_name, exc_info=True)
+            return self.provider
+
+    def _init_channel(self) -> None:
+        self.channel = create_channel(self.config)
+
+    def _init_sessions(self) -> None:
+        set_audit_truncation(self.config.audit_truncation_limit)
+        self.session_mgr = SessionManager(
+            self.config.sessions_dir,
+            agent_name=self.config.agent_name,
+        )
+
+    # Built-in tool modules and the tool names they provide.
+    _TOOL_MODULES = [
+        ("tools.filesystem",   {"read", "write", "edit"}),
+        ("tools.shell",        {"exec"}),
+        ("tools.web",          {"web_search", "web_fetch"}),
+        ("tools.memory_read",  {"memory_search", "memory_get"}),
+        ("tools.memory_write", {"memory_write", "memory_forget", "commitment_update"}),
+        ("tools.agents",       {"sessions_spawn"}),
+        ("skills",             {"load_skill"}),
+        ("tools.status",       {"session_status"}),
+    ]
+
+    def _init_tools(self) -> None:
+        """Register enabled tools via unified loader.
+
+        Same pattern as _init_plugins: import module, call configure()
+        with deps matched by parameter name, register enabled tools.
+        """
+        import importlib
+        import inspect
+
+        # Derive max_result_tokens: ~25% of context for any single tool result
+        max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
+        max_result_tokens = int(max_ctx * 0.25) if max_ctx > 0 else 0
+
+        self.tool_registry = ToolRegistry(
+            truncation_limit=self.config.output_truncation,
+            max_result_tokens=max_result_tokens,
+        )
+
+        enabled = set(self.config.tools_enabled)
+
+        # Shared resources — created once, passed to modules that need them
+        memory = None
+        conn = None
+        if self.config.memory_db and (enabled & {
+            "memory_search", "memory_get",
+            "memory_write", "memory_forget", "commitment_update",
+        }):
+            from memory import MemoryInterface
+            memory = MemoryInterface(
+                db_path=str(Path(self.config.memory_db).expanduser()),
+                embedding_api_key=self.config.embedding_api_key,
+                embedding_model=self.config.embedding_model,
+                embedding_base_url=self.config.embedding_base_url,
+                embedding_timeout=self.config.embedding_timeout,
+                top_k=self.config.memory_top_k,
+                vector_search_limit=self.config.vector_search_limit,
+                fts_min_results=self.config.fts_min_results,
+                sqlite_timeout=self.config.sqlite_timeout,
+            )
+            # Wire metering for embedding cost tracking
+            if self.metering_db:
+                memory.metering = self.metering_db
+            if self.config.consolidation_enabled:
+                conn = self._get_memory_conn()
+
+        # Dependency dict — configure() pulls what it needs by parameter name
+        deps = {
+            "config": self.config,
+            "channel": self.channel,
+            "provider": self.provider,
+            "session_manager": self.session_mgr,
+            "tool_registry": self.tool_registry,
+            "skill_loader": self.skill_loader,
+            "memory": memory,
+            "conn": conn,
+            "get_provider": self.get_provider,
+            "session_getter": lambda: self._current_session,
+            "start_time": self.start_time,
+            "metering": self.metering_db,
+        }
+
+        for module_path, tool_names in self._TOOL_MODULES:
+            if not (enabled & tool_names):
+                continue
+            module = importlib.import_module(module_path)
+            configure_fn = getattr(module, "configure", None)
+            if callable(configure_fn):
+                sig = inspect.signature(configure_fn)
+                kwargs = {k: v for k, v in deps.items() if k in sig.parameters}
+                configure_fn(**kwargs)
+            for t in getattr(module, "TOOLS", []):
+                if t["name"] in enabled:
+                    self.tool_registry.register(
+                        t["name"], t["description"], t["input_schema"],
+                        t["function"], t.get("max_output", 0),
+                    )
+
+        log.info("Registered tools: %s", ", ".join(self.tool_registry.tool_names))
+
+    def _init_plugins(self) -> None:
+        """Load tool plugins from plugins.d/ directory.
+
+        Each plugin is a .py file with a TOOLS list (same format as built-in tools).
+        Optional configure() function receives deps via inspect.signature().
+        Only tools whose names are in [tools] enabled are registered.
+        """
+        import importlib.util
+        import inspect
+
+        plugins_path = self.config.config_dir / self.config.plugins_dir
+        if not plugins_path.is_dir():
+            return
+
+        enabled = set(self.config.tools_enabled)
+
+        # Available deps for plugin configure() injection
+        deps = {
+            "config": self.config,
+            "channel": self.channel,
+            "session_mgr": self.session_mgr,
+            "provider": self.provider,
+            "tool_registry": self.tool_registry,
+        }
+
+        for plugin_file in sorted(plugins_path.glob("*.py")):
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    f"lucyd_plugin_{plugin_file.stem}", plugin_file,
+                )
+                if spec is None or spec.loader is None:
+                    log.warning("Plugin: cannot load %s (invalid spec)", plugin_file.name)
+                    continue
+
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+
+                tools_list = getattr(module, "TOOLS", None)
+                if not isinstance(tools_list, list):
+                    log.debug("Plugin: %s has no TOOLS list, skipping", plugin_file.name)
+                    continue
+
+                # Call configure() if it exists, injecting requested deps
+                configure_fn = getattr(module, "configure", None)
+                if callable(configure_fn):
+                    sig = inspect.signature(configure_fn)
+                    kwargs = {
+                        name: deps[name]
+                        for name in sig.parameters
+                        if name in deps
+                    }
+                    configure_fn(**kwargs)
+
+                # Register only enabled tools
+                for t in tools_list:
+                    name = t.get("name", "")
+                    if name in enabled:
+                        self.tool_registry.register(
+                        t["name"], t["description"], t["input_schema"],
+                        t["function"], t.get("max_output", 0),
+                    )
+                        log.info("Plugin tool registered: %s (from %s)", name, plugin_file.name)
+
+            except Exception:
+                log.exception("Plugin: failed to load %s", plugin_file.name)
+
+    def _get_memory_conn(self):
+        """Get or create the memory DB connection.
+
+        Connection is created once and reused for the daemon's lifetime.
+        Uses WAL mode and Row factory.
+        """
+        if self._memory_conn is None:
+            import sqlite3
+
+            from memory_schema import ensure_schema
+            self._memory_conn = sqlite3.connect(
+                self.config.memory_db, timeout=self.config.sqlite_timeout,
+            )
+            self._memory_conn.execute("PRAGMA journal_mode=WAL")
+            self._memory_conn.row_factory = sqlite3.Row
+            ensure_schema(self._memory_conn)
+        return self._memory_conn
+
+    def _init_context(self) -> None:
+        self.context_builder = ContextBuilder(
+            workspace=self.config.workspace,
+            stable_files=self.config.context_stable,
+            semi_stable_files=self.config.context_semi_stable,
+            max_system_tokens=self.config.max_system_tokens,
+        )
+
+    def _init_skills(self) -> None:
+        self.skill_loader = SkillLoader(
+            workspace=self.config.workspace,
+            skills_dir=self.config.skills_dir,
+        )
+        self.skill_loader.scan()
+
+    def _init_metering(self) -> None:
+        """Initialize metering DB."""
+        metering_path = str(self.config.metering_db)
+        agent_id = self.config.agent_id or self.config.agent_name
+
+        self.metering_db = MeteringDB(
+            metering_path, agent_id=agent_id,
+            sqlite_timeout=self.config.sqlite_timeout,
+        )
+
+    def _check_context_budget(self) -> None:
+        """Validate system prompt size against model context window.
+
+        Builds a representative system prompt (stable + semi-stable
+        files, tool descriptions, skill index) and estimates token count.
+        Persona size: warn >50%, error >80% of max_context_tokens.
+        Produces a budget assembly report at DEBUG level.
+        """
+        max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
+        if not max_ctx:
+            return
+
+        # Build representative system blocks
+        tool_descs = self.tool_registry.get_brief_descriptions()
+        skill_index = self.skill_loader.build_index() if self.skill_loader else ""
+        blocks = self.context_builder.build(
+            tool_descriptions=tool_descs,
+            skill_index=skill_index,
+        )
+
+        # Per-tier token accounting
+        by_tier: dict[str, int] = {}
+        for b in blocks:
+            tier = b.get("tier", "unknown")
+            by_tier[tier] = by_tier.get(tier, 0) + _estimate_tokens(b.get("text", ""))
+        system_tokens = sum(by_tier.values())
+
+        # Budget assembly report (tool defs + safety margin)
+        tool_tokens = sum(_estimate_tokens(t["description"]) for t in self.tool_registry.get_schemas())
+        safety_margin = int(max_ctx * 0.10)
+        history_budget = max_ctx - system_tokens - tool_tokens - safety_margin
+
+        log.debug(
+            "Context budget assembly: total=%d | system=%d (%s) | tools=%d "
+            "| safety_margin=%d (10%%) | history_budget=%d",
+            max_ctx, system_tokens,
+            ", ".join(f"{t}={n}" for t, n in sorted(by_tier.items())),
+            tool_tokens, safety_margin, max(0, history_budget),
+        )
+
+        pct = system_tokens * 100 // max_ctx
+        log.info(
+            "Context budget: system prompt ~%d tokens (%d%% of %d max)",
+            system_tokens, pct, max_ctx,
+        )
+
+        if pct > 80:
+            raise RuntimeError(
+                f"System prompt uses {pct}% of context window "
+                f"({system_tokens} of {max_ctx} tokens). This exceeds the 80% "
+                f"safety limit. Reduce workspace files or increase max_context_tokens."
+            )
+        if pct > 50:
+            log.warning(
+                "System prompt uses %d%% of context window "
+                "(%d of %d tokens). This leaves limited room for "
+                "conversation history and tool output. Consider reducing "
+                "workspace files or increasing max_context_tokens.",
+                pct, system_tokens, max_ctx,
+            )
+
+
+    async def _process_attachments(self, text, attachments, provider):
+        """Process attachments into text descriptions + image blocks.
+
+        Returns (text, image_blocks, has_voice, caption).
+        Dispatches each attachment to _process_image, _process_audio, or _process_document.
+        """
+        has_voice = attachments and any(
+            a.content_type.startswith("audio/") and a.is_voice for a in attachments
+        )
+        image_blocks = []
+        caption = ""
+        if attachments:
+            caption = "image"
+            supports_vision = provider.capabilities.supports_vision
+            for att in attachments:
+                if att.content_type.startswith("image/"):
+                    text, block = self._process_image(text, att, supports_vision, caption)
+                    if block:
+                        image_blocks.append(block)
+                elif att.content_type.startswith("audio/"):
+                    text = await self._process_audio(text, att)
+                else:
+                    text = self._process_document(text, att)
+        return text, image_blocks, has_voice, caption
+
+    def _process_image(self, text, att, supports_vision, caption):
+        """Process a single image attachment. Returns (text, block_or_None)."""
+        too_large_msg = "image too large to display"
+        if not supports_vision:
+            return _append(text, "[image received — vision not available with current provider]"), None
+        try:
+            img_data = Path(att.local_path).read_bytes()
+            try:
+                img_data = fit_image(img_data, att.content_type,
+                                     self.config.vision_max_image_bytes,
+                                     self.config.vision_max_dimension,
+                                     self.config.vision_jpeg_quality_steps,
+                                     att.local_path)
+            except ImageTooLarge as exc:
+                return _append(text, f"[{too_large_msg} — {exc}]"), None
+            block = {
+                "type": "image",
+                "media_type": att.content_type,
+                "data": base64.b64encode(img_data).decode("ascii"),
+            }
+            prefix = f"[{caption}, saved: {att.local_path}]"
+            text = f"{prefix} {text}" if text else prefix
+            return text, block
+        except Exception as e:
+            log.error("Failed to read image %s: %s", att.local_path, e)
+            return _append(text, f"[{too_large_msg} — could not read file]"), None
+
+    async def _process_audio(self, text, att):
+        """Process a single audio attachment via STT. Returns updated text."""
+        result = await process_audio(
+            self.config.raw("stt", default={}),
+            att.local_path, att.content_type,
+            att.is_voice, self.config.stt_backend,
+        )
+        return _append(text, result)
+
+    def _process_document(self, text, att):
+        """Process a single document/file attachment. Returns updated text."""
+        doc_text = None
+        if self.config.documents_enabled:
+            try:
+                doc_text = extract_document_text(
+                    att.local_path, att.content_type, att.filename or "",
+                    max_chars=self.config.documents_max_chars,
+                    max_bytes=self.config.documents_max_file_bytes,
+                    text_extensions=self.config.documents_text_extensions,
+                )
+            except Exception as e:
+                log.error("Document extraction failed for %s: %s", _log_safe(att.filename), e)
+        if doc_text:
+            label = att.filename or "document"
+            return _append(text, f"[document: {label}, saved: {att.local_path}]\n{doc_text}")
+        return _append(text, f"[attachment: {att.filename or 'file'}, {att.content_type}, saved: {att.local_path}]")
+
+    async def _setup_session(self, ctx: _MessageState) -> None:
+        """Set up session state: get/create, inject warnings, add user message."""
+        # Track whether session pre-existed (for auto-close decision).
+        # Notifications routed to the primary session must not close it.
+        ctx.session_preexisted = (
+            self.session_mgr.has_session(ctx.sender)
+        )
+
+        # Get or create session
+        session = self.session_mgr.get_or_create(ctx.sender)
+        ctx.session = session
+
+        # Status tool reads session via callback (configured in _init_tools)
+        self._current_session = session
+
+        # Inject pending compaction warning from previous turn
+        ctx.text, warning_consumed = _inject_warning(ctx.text, session.pending_system_warning)
+        if warning_consumed:
+            session.pending_system_warning = ""
+            self.session_mgr.save_state(session)  # Persist cleared warning before agentic loop
+
+        # Inject timestamp so the agent always knows the current time
+        timestamp = time.strftime("[%a, %d. %b %Y - %H:%M %Z]")
+        ctx.text = f"{timestamp}\n{ctx.text}"
+
+        session.trace_id = ctx.trace_id
+        session.add_user_message(ctx.text, sender=ctx.sender, source=ctx.source)
+
+        # Transiently inject image content blocks for the API call
+        ctx.user_msg_idx = len(session.messages) - 1
+
+        # Merge consecutive user messages (recovery from prior errors, JSONL rebuild)
+        while len(session.messages) >= 2 and session.messages[-2].get("role") == "user":
+            prev_text = _text_from_content(session.messages[-2].get("content", ""))
+            last_text = _text_from_content(session.messages[-1].get("content", ""))
+            session.messages[-2]["content"] = prev_text + "\n" + last_text
+            session.messages.pop()
+            ctx.user_msg_idx = len(session.messages) - 1
+            log.warning("Merged consecutive user messages in session %s", session.id)
+
+        if ctx.image_blocks:
+            session.messages[ctx.user_msg_idx]["_image_blocks"] = ctx.image_blocks
+
+    async def _build_recall(self, ctx: _MessageState, provider) -> str:
+        """Build recall text for fresh sessions: archive + structured memory."""
+        session = ctx.session
+        if len(session.messages) > 1:
+            return ""
+        recall_text = self.session_mgr.build_recall(
+            ctx.sender, self.config.recall_archive_messages
+        )
+        if self.config.consolidation_enabled:
+            try:
+                from memory import get_session_start_context
+                conn = self._get_memory_conn()
+                memory_context = get_session_start_context(
+                    conn=conn, config=self.config,
+                    max_facts=self.config.recall_max_facts,
+                    max_episodes=self.config.recall_max_episodes_at_start,
+                    max_tokens=self.config.recall_max_dynamic_tokens,
+                )
+                if memory_context:
+                    recall_text = f"{recall_text}\n\n{memory_context}" if recall_text else memory_context
+            except Exception:
+                log.exception("structured recall at session start failed")
+                if not recall_text:
+                    recall_text = (
+                        "[Memory recall unavailable — background error. "
+                        "Use memory_search or memory_get to access memory manually.]"
+                    )
+        return recall_text
+
+    async def _build_context(self, ctx: _MessageState, provider) -> None:
+        """Build system prompt, recall, and tools list."""
+        session = ctx.session
+        tool_descs = self.tool_registry.get_brief_descriptions()
+        skill_index = self.skill_loader.build_index() if self.skill_loader else ""
+        always_on = self.config.always_on_skills
+        skill_bodies = self.skill_loader.get_bodies(always_on) if self.skill_loader else {}
+
+        recall_text = await self._build_recall(ctx, provider)
+
+        system_blocks = self.context_builder.build(
+            source=ctx.source,
+            deliver=ctx.deliver,
+            tool_descriptions=tool_descs,
+            skill_index=skill_index,
+            always_on_skills=always_on,
+            skill_bodies=skill_bodies,
+            extra_dynamic=recall_text,
+            silent_tokens=self.config.silent_tokens,
+            max_turns=self.config.max_turns,
+            max_cost=self.config.max_cost_per_message,
+            compaction_threshold=self.config.compaction_threshold,
+            has_images=bool(ctx.image_blocks),
+            sender=ctx.sender,
+        )
+        ctx.fmt_system = provider.format_system(system_blocks)
+
+        # Runtime context budget report
+        try:
+            max_ctx = provider.capabilities.max_context_tokens
+            if not isinstance(max_ctx, int):
+                max_ctx = 0
+        except (AttributeError, TypeError):
+            max_ctx = 0
+        if max_ctx > 0:
+            sys_tokens = sum(_estimate_tokens(b.get("text", "")) for b in system_blocks)
+            history_tokens = sum(
+                _estimate_tokens(_text_from_content(m.get("text", "") or m.get("content", "")))
+                for m in session.messages
+            )
+            tool_def_tokens = sum(
+                _estimate_tokens(t["description"]) for t in self.tool_registry.get_schemas()
+            ) if provider.capabilities.supports_tools else 0
+            used = sys_tokens + history_tokens + tool_def_tokens
+            remaining = max_ctx - used
+            log.debug(
+                "Context budget [%s]: total=%d | system=%d | history=%d (%d msgs) "
+                "| tools=%d | used=%d | remaining=%d",
+                ctx.trace_id[:8], max_ctx, sys_tokens, history_tokens,
+                len(session.messages), tool_def_tokens, used, remaining,
+            )
+
+        # Run agentic loop — it appends to session.messages in place
+        # If model doesn't support tools, degrade gracefully (no tools sent)
+        try:
+            supports_tools = provider.capabilities.supports_tools
+        except (AttributeError, TypeError):
+            supports_tools = True  # default to true for mock/legacy providers
+        if supports_tools:
+            ctx.tools = self.tool_registry.get_schemas()
+        else:
+            ctx.tools = []
+
+        # Snapshot message count to track what the loop added
+        ctx.msg_count_before = len(session.messages)
+
+    async def _run_agentic_with_retries(self, ctx: _MessageState, provider,
+                                         on_response, on_tool_results,
+                                         write_monitor, on_stream_delta=None) -> None:
+        """Run the agentic loop with message-level retries. Sets ctx.response."""
+        session = ctx.session
+        message_retries = self.config.message_retries
+        message_retry_delay = self.config.message_retry_base_delay
+
+        # Snapshot message count so retries can restore to a clean state.
+        # The agentic loop mutates session.messages in-place; on failure
+        # those partial turns must be stripped before the next attempt.
+        pre_attempt_len = len(session.messages)
+
+        for msg_attempt in range(1 + message_retries):
+            try:
+                max_cost = self.config.max_cost_per_message
+                from providers import CostContext
+                cost_ctx = CostContext(
+                    metering=self.metering_db,
+                    session_id=session.id,
+                    model_name=ctx.model_name,
+                    cost_rates=ctx.cost_rates,
+                    provider_name=ctx.provider_name if hasattr(ctx, 'provider_name') else "",
+                )
+                from agentic import LoopConfig
+                loop_cfg = LoopConfig(
+                    max_turns=self.config.max_turns,
+                    timeout=self.config.agent_timeout,
+                    api_retries=self.config.api_retries,
+                    api_retry_base_delay=self.config.api_retry_base_delay,
+                    sqlite_timeout=self.config.sqlite_timeout,
+                    max_cost=float(max_cost),
+                    max_context_for_tools=self.config.max_context_for_tools,
+                    tool_call_retry=self.config.tool_call_retry,
+                    tool_success_warn_threshold=self.config.tool_success_warn_threshold,
+                    thinking_concise_hint=self.config.thinking_concise_hint,
+                    trace_id=ctx.trace_id,
+                )
+                if self._single_shot:
+                    ctx.response = await SingleShotStrategy().run(
+                        provider=provider,
+                        system=ctx.fmt_system,
+                        messages=session.messages,
+                        tools=ctx.tools,
+                        tool_executor=self.tool_registry,
+                        config=loop_cfg,
+                        cost=cost_ctx,
+                        on_response=on_response,
+                        on_tool_results=on_tool_results,
+                        on_stream_delta=on_stream_delta,
+                    )
+                else:
+                    ctx.response = await run_agentic_loop(
+                        provider=provider,
+                        system=ctx.fmt_system,
+                        messages=session.messages,
+                        tools=ctx.tools,
+                        tool_executor=self.tool_registry,
+                        config=loop_cfg,
+                        cost=cost_ctx,
+                        on_response=on_response,
+                        on_tool_results=on_tool_results,
+                        on_stream_delta=on_stream_delta,
+                    )
+                return  # Success
+            except Exception as e:
+                if not is_transient_error(e) or msg_attempt >= message_retries:
+                    raise  # Non-transient or exhausted — propagate
+
+                # Roll back messages added by the failed attempt
+                if len(session.messages) > pre_attempt_len:
+                    del session.messages[pre_attempt_len:]
+
+                delay = message_retry_delay * (2 ** msg_attempt) * (0.5 + random.random())  # noqa: S311
+                log.warning(
+                    "[%s] Message retry (%d/%d) for %s: %s — waiting %.0fs",
+                    ctx.trace_id[:8], msg_attempt + 1, message_retries, ctx.sender, e, delay,
+                )
+                write_monitor("retry_wait")
+                await asyncio.sleep(delay)
+
+                write_monitor("thinking")
+
+    async def _handle_agentic_error(self, ctx: _MessageState, error, _resolve) -> None:
+        """Handle agentic loop failure: cleanup, resolve future, deliver error."""
+        session = ctx.session
+        log.error("[%s] Agentic loop failed: %s", ctx.trace_id[:8], error)
+        err_type = type(error).__name__ if isinstance(error, BaseException) else "unknown"
+        self._error_counts[err_type] = self._error_counts.get(err_type, 0) + 1
+        # Strip transient image metadata before returning
+        if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
+            session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
+        # Roll back all messages the agentic loop added (assistant, tool_results,
+        # system hints) so the session stays in a valid pre-loop state.
+        if len(session.messages) > ctx.msg_count_before:
+            del session.messages[ctx.msg_count_before:]
+        # Remove orphaned user message to prevent consecutive-user corruption
+        if session.messages and session.messages[-1].get("role") == "user":
+            session.messages.pop()
+        self.session_mgr.save_state(session)
+        _resolve({"error": str(error), "session_id": session.id})
+        if ctx.deliver and self.channel is not None:
+            try:
+                await self.channel.send(ctx.sender, self.config.error_message)
+            except Exception as e:
+                log.error("Failed to deliver error message to %s: %s", _log_safe(ctx.sender), e)
+        await self._fire_webhook(
+            reply="", session_id=session.id, sender=ctx.sender, source=ctx.source,
+            silent=False, tokens={"input": 0, "output": 0},
+            notify_meta=ctx.notify_meta, trace_id=ctx.trace_id,
+        )
+        # Auto-close system sessions even on error — but only if the
+        # session was created by this event (not a pre-existing session).
+        if ctx.source == "system" and not ctx.session_preexisted:
+            try:
+                await self.session_mgr.close_session(ctx.sender)
+                log.info("Auto-closed system session for %s", _log_safe(ctx.sender))
+            except Exception:
+                log.warning("Auto-close failed for system session %s",
+                            ctx.sender, exc_info=True)
+
+    async def _finalize_response(self, ctx: _MessageState, _resolve) -> None:
+        """Post-loop work: persist, deliver, compact."""
+        self._persist_response(ctx)
+        await self._deliver_reply(ctx, _resolve)
+        self._check_compaction_warning(ctx)
+        await self._run_compaction_if_needed(ctx)
+        await self._auto_close_if_system(ctx)
+
+    def _persist_response(self, ctx: _MessageState) -> None:
+        """Persist new messages and restore text-only content."""
+        session = ctx.session
+        for msg in session.messages[ctx.msg_count_before:]:
+            role = msg.get("role", "")
+            if role == "assistant":
+                session.persist_assistant_message(msg)
+            elif role == "tool_results":
+                session.persist_tool_results(msg.get("results", []))
+        if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
+            session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
+        self.session_mgr.save_state(session)
+
+    async def _deliver_reply(self, ctx: _MessageState, _resolve) -> None:
+        """Deliver reply to channel, resolve HTTP future, fire webhook."""
+        session = ctx.session
+        response = ctx.response
+        reply = response.text or ""
+        if response.cost_limited and not reply.strip():
+            reply = ("[cost limit reached — max_cost_per_message in lucyd.toml. "
+                     "raise or set to 0 to disable.]")
+        silent = _is_silent(reply, self.config.silent_tokens)
+        token_info = {
+            "input": response.usage.input_tokens,
+            "output": response.usage.output_tokens,
+        }
+        reply_attachments = response.attachments or []
+        if silent:
+            log.info("Silent reply suppressed: %s", _log_safe(reply[:100]))
+            _resolve({"reply": reply, "silent": True, "session_id": session.id,
+                       "tokens": token_info, "attachments": reply_attachments})
+        else:
+            _resolve({"reply": reply, "session_id": session.id,
+                       "tokens": token_info, "attachments": reply_attachments})
+            if ctx.deliver and self.channel is not None:
+                try:
+                    if reply.strip():
+                        await self.channel.send(ctx.sender, reply)
+                    for att_path in reply_attachments:
+                        await self.channel.send(ctx.sender, "", [att_path])
+                except Exception as e:
+                    log.error("Failed to deliver reply: %s", e)
+        await self._fire_webhook(
+            reply=reply, session_id=session.id, sender=ctx.sender, source=ctx.source,
+            silent=silent, tokens=token_info, notify_meta=ctx.notify_meta,
+            trace_id=ctx.trace_id,
+        )
+
+    def _check_compaction_warning(self, ctx: _MessageState) -> None:
+        """Inject context-pressure warning at 80% threshold."""
+        session = ctx.session
+        if _should_warn_context(
+            input_tokens=session.last_input_tokens,
+            compaction_threshold=self.config.compaction_threshold,
+            needs_compaction=session.needs_compaction(self.config.compaction_threshold),
+            already_warned=session.warned_about_compaction,
+            warning_pct=self.config.compaction_warning_pct,
+        ):
+            try:
+                max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
+                if not isinstance(max_ctx, int):
+                    max_ctx = 0
+            except (AttributeError, TypeError):
+                max_ctx = 0
+            pct = session.last_input_tokens * 100 // max_ctx if max_ctx > 0 else 0
+            session.pending_system_warning = (
+                f"[system: context at {session.last_input_tokens:,} tokens "
+                f"({pct}% of capacity). compaction will summarize older messages "
+                f"at {self.config.compaction_threshold:,}. save anything important "
+                f"to memory files, then continue the conversation normally.]"
+            )
+            session.warned_about_compaction = True
+            self.session_mgr.save_state(session)
+            log.info("Compaction warning set for session %s at %d tokens",
+                     session.id, session.last_input_tokens)
+
+    async def _run_compaction_if_needed(self, ctx: _MessageState) -> None:
+        """Run consolidation + compaction if threshold is exceeded."""
+        session = ctx.session
+        _needs_compact = ctx.force_compact or session.needs_compaction(
+            self.config.compaction_threshold)
+        if not _needs_compact:
+            return
+        if self.config.consolidation_enabled:
+            try:
+                import consolidation
+                conn = self._get_memory_conn()
+                result = await consolidation.consolidate_session(
+                    session_id=session.id,
+                    messages=session.messages,
+                    compaction_count=session.compaction_count,
+                    config=self.config,
+                    provider=self.get_provider("consolidation"),
+                    context_builder=self.context_builder,
+                    conn=conn,
+                    metering=self.metering_db,
+                    trace_id=ctx.trace_id,
+                )
+                if result["facts_added"] or result.get("episode_id"):
+                    log.info("consolidation: %d facts, episode=%s",
+                             result["facts_added"], result.get("episode_id"))
+            except Exception:
+                log.exception("consolidation failed, continuing without")
+        prompt = self.config.compaction_prompt.replace(
+            "{agent_name}", self.config.agent_name,
+        ).replace("{max_tokens}", str(self.config.compaction_max_tokens))
+        from providers import CostContext
+        from session import CompactionConfig
+        cost_ctx = CostContext(
+            metering=self.metering_db,
+            session_id=session.id,
+            model_name=ctx.model_name,
+            cost_rates=ctx.cost_rates,
+            provider_name=ctx.provider_name if hasattr(ctx, 'provider_name') else "",
+        )
+        compaction_cfg = CompactionConfig(
+            keep_recent_pct=self.config.compaction_keep_pct,
+            min_messages=self.config.compaction_min_messages,
+            tool_result_max_chars=self.config.compaction_tool_result_max_chars,
+            max_tokens=self.config.compaction_max_tokens,
+        )
+        await self.session_mgr.compact_session(
+            session, self.get_provider("compaction"), prompt,
+            trace_id=ctx.trace_id,
+            system_blocks=self.context_builder.build_stable(),
+            cost=cost_ctx,
+            compaction=compaction_cfg,
+        )
+
+    async def _auto_close_if_system(self, ctx: _MessageState) -> None:
+        """Auto-close one-shot system sessions (evolution, heartbeat)."""
+        if ctx.source == "system" and not ctx.force_compact and not ctx.session_preexisted:
+            try:
+                await self.session_mgr.close_session(ctx.sender)
+                log.info("Auto-closed system session for %s", _log_safe(ctx.sender))
+            except Exception:
+                log.warning("Auto-close failed for system session %s",
+                            ctx.sender, exc_info=True)
+
+    async def _process_message(
+        self,
+        text: str,
+        sender: str,
+        source: str,
+        attachments: list | None = None,
+        response_future: asyncio.Future | None = None,
+        notify_meta: dict | None = None,
+        trace_id: str = "",
+        force_compact: bool = False,
+        stream_queue: Any = None,
+        deliver: bool = True,
+    ) -> None:
+        """Process a single message through the agentic loop."""
+        if not trace_id:
+            trace_id = str(uuid.uuid4())
+
+        def _resolve(result: dict) -> None:
+            """Safely resolve the HTTP response future."""
+            if response_future is not None and not response_future.done():
+                response_future.set_result(result)
+
+        provider = self.provider
+        if provider is None:
+            log.error("[%s] No provider configured", trace_id[:8])
+            _resolve({"error": "no provider configured"})
+            return
+
+        model_cfg = self.config.model_config("primary")
+
+        # Process attachments into text descriptions + image blocks
+        text, image_blocks, has_voice, _caption = await self._process_attachments(
+            text, attachments, provider,
+        )
+
+        # Build context bag
+        ctx = _MessageState(
+            text=text,
+            sender=sender,
+            source=source,
+            trace_id=trace_id,
+            deliver=deliver,
+            image_blocks=image_blocks,
+            has_voice=has_voice,
+            model_cfg=model_cfg,
+            model_name=model_cfg.get("model", ""),
+            cost_rates=model_cfg.get("cost_per_mtok", []),
+            force_compact=force_compact,
+            response_future=response_future,
+            notify_meta=notify_meta,
+        )
+
+        # Session setup: get/create, inject warnings, add user message
+        await self._setup_session(ctx)
+
+        # Set structured log context for this message cycle
+        from log_utils import set_log_context
+        set_log_context(
+            agent_id=self.config.agent_id or self.config.agent_name,
+            session_id=ctx.session.id if ctx.session else "",
+            trace_id=trace_id,
+        )
+
+        # Build system prompt, recall, tools
+        await self._build_context(ctx, provider)
+
+        # Typing indicator (moved out of _build_context — no side effects there)
+        if self.config.typing_indicators and ctx.deliver and self.channel is not None:
+            try:
+                await self.channel.send_typing(ctx.sender)
+            except Exception as e:
+                log.debug("Typing indicator failed: %s", e)
+
+        session = ctx.session
+
+        # ── Monitor ──────────────────────────────────────────────
+        monitor = MonitorWriter(
+            path=self.config.state_dir / "monitor.json",
+            contact=sender,
+            session_id=session.id,
+            trace_id=trace_id,
+            model=ctx.model_name,
+        )
+        monitor.write("thinking")
+
+        # Build streaming callback for channel and/or SSE queue
+        stream_delta_cb = None
+        try:
+            _supports_streaming = provider.capabilities.supports_streaming
+        except (AttributeError, TypeError):
+            _supports_streaming = False
+        channel_streaming = (
+            _supports_streaming
+            and ctx.deliver
+            and self.channel is not None
+            and hasattr(self.channel, "send_stream_chunk")
+        )
+        _sse_done_sent = False  # tracks whether a done event was already streamed
+        if channel_streaming or stream_queue is not None:
+            async def _on_stream_delta(delta):
+                nonlocal _sse_done_sent
+                # Channel streaming (CLI, etc.)
+                if channel_streaming:
+                    if delta.text:
+                        await self.channel.send_stream_chunk(ctx.sender, delta.text)
+                    if delta.stop_reason:
+                        await self.channel.send_stream_chunk(ctx.sender, "", done=True)
+                # HTTP SSE streaming
+                if stream_queue is not None:
+                    event: dict[str, Any] = {}
+                    if delta.text:
+                        event["text"] = delta.text
+                    if delta.thinking:
+                        event["thinking"] = delta.thinking
+                    if delta.status:
+                        event["status"] = delta.status
+                    if delta.stop_reason:
+                        event["done"] = True
+                        event["stop_reason"] = delta.stop_reason
+                    if delta.usage:
+                        event["usage"] = {
+                            "input_tokens": delta.usage.input_tokens,
+                            "output_tokens": delta.usage.output_tokens,
+                        }
+                    if event:
+                        await stream_queue.put(event)
+                        if event.get("done"):
+                            _sse_done_sent = True
+            stream_delta_cb = _on_stream_delta
+
+        try:
+            await self._run_agentic_with_retries(
+                ctx, provider, monitor.on_response, monitor.on_tool_results, monitor.write,
+                on_stream_delta=stream_delta_cb,
+            )
+        except Exception as e:
+            await self._handle_agentic_error(ctx, e, _resolve)
+            if stream_queue is not None:
+                # Emit SSE error event before closing the stream
+                await stream_queue.put({"error": str(e), "done": True})
+                await stream_queue.put(None)  # sentinel
+            return
+        finally:
+            monitor.write("idle")
+
+        # Bridge non-streaming responses into SSE: only when the provider
+        # didn't stream (no done event was pushed via deltas).  If the
+        # provider already streamed text + done, skip to avoid duplicating
+        # the reply.
+        if stream_queue is not None:
+            if not _sse_done_sent:
+                reply_text = ctx.response.text if ctx.response else ""
+                if reply_text:
+                    await stream_queue.put({
+                        "text": reply_text,
+                        "done": True,
+                        "stop_reason": ctx.response.stop_reason if ctx.response else "end_turn",
+                    })
+            await stream_queue.put(None)  # sentinel
+
+        await self._finalize_response(ctx, _resolve)
+
+    async def _consolidate_on_close(self, session) -> None:
+        """Consolidation callback fired before session archival."""
+        try:
+            import consolidation
+            conn = self._get_memory_conn()
+            start_idx, end_idx = consolidation.get_unprocessed_range(
+                session.id, session.messages, session.compaction_count, conn,
+            )
+            if end_idx > start_idx:
+                await consolidation.consolidate_session(
+                    session_id=session.id,
+                    messages=session.messages,
+                    compaction_count=session.compaction_count,
+                    config=self.config,
+                    provider=self.get_provider("consolidation"),
+                    context_builder=self.context_builder,
+                    conn=conn,
+                    metering=self.metering_db,
+                )
+        except Exception:
+            log.exception("consolidation on close failed")
+
+    async def _fire_webhook(
+        self,
+        reply: str,
+        session_id: str,
+        sender: str,
+        source: str,
+        silent: bool,
+        tokens: dict,
+        notify_meta: dict | None,
+        trace_id: str = "",
+    ) -> None:
+        """POST webhook callback to configured URL. No-op when unconfigured."""
+        url = self.config.http_callback_url
+        if not url:
+            return
+
+        try:
+            import httpx
+        except ImportError:
+            log.warning("httpx not installed — webhook callback skipped")
+            return
+
+        payload = {
+            "reply": reply,
+            "session_id": session_id,
+            "sender": sender,
+            "source": source,
+            "silent": silent,
+            "tokens": tokens,
+            "agent": self.config.agent_name,
+        }
+        if trace_id:
+            payload["trace_id"] = trace_id
+        if notify_meta:
+            payload["notify_meta"] = notify_meta
+
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        token = self.config.http_callback_token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        max_failures = self.config.http_callback_max_failures
+        if max_failures and self._webhook_failures >= max_failures:
+            return  # circuit breaker open — stop flooding logs
+
+        try:
+            async with httpx.AsyncClient(timeout=self.config.http_callback_timeout) as client:
+                await client.post(url, json=payload, headers=headers)
+            self._webhook_failures = 0
+        except Exception as e:
+            self._webhook_failures += 1
+            if max_failures and self._webhook_failures >= max_failures:
+                log.error("Webhook callback disabled after %d consecutive failures: %s", max_failures, e)
+            else:
+                log.warning("Webhook callback failed (%d/%s) (%s): %s",
+                            self._webhook_failures, max_failures or "∞", url, e)
+
+    async def _reset_session(self, target: str, by_id: bool = False) -> dict:
+        """Reset session by target: 'all', session ID, or contact name.
+
+        When by_id=True, target is treated as a session ID directly.
+        Otherwise, UUIDs are auto-detected and routed to close_session_by_id.
+        Returns result dict with reset status.
+        """
+        if not self.session_mgr:
+            return {"reset": False, "reason": "no session manager"}
+
+        if target == "all":
+            contacts = self.session_mgr.list_contacts()
+            for contact in contacts:
+                await self.session_mgr.close_session(contact)
+            return {"reset": True, "target": "all", "count": len(contacts)}
+
+        if by_id or _is_uuid(target):
+            if await self.session_mgr.close_session_by_id(target):
+                return {"reset": True, "target": target, "type": "session_id"}
+            return {"reset": False, "reason": f"no session found for ID: {target}"}
+
+        # "user" shortcut: find primary operator contact
+        if target == "user":
+            for contact in self.session_mgr.list_contacts():
+                # Skip framework-internal senders
+                if contact in ("system",) or contact.startswith(("http-", "cli")):
+                    continue
+                target = contact
+                break
+            else:
+                return {"reset": False, "reason": "no user session found"}
+
+        if await self.session_mgr.close_session(target):
+            return {"reset": True, "target": target, "type": "contact"}
+        return {"reset": False, "reason": f"no session found for: {target}"}
+
+    async def _drain_control_queue(self) -> None:
+        """Process all pending control items (resets).
+
+        Called between message processings so resets don't wait behind
+        long-running agentic loops in the main message queue.
+        """
+        while True:
+            try:
+                item = self._control_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item.get("type") == "reset":
+                if item.get("all"):
+                    target = "all"
+                    by_id = False
+                elif item.get("session_id"):
+                    target = item["session_id"]
+                    by_id = True
+                else:
+                    target = item.get("sender", "")
+                    by_id = False
+                result = await self._reset_session(target, by_id=by_id)
+                log.info("Reset: %s", result)
+                reset_future = item.get("response_future")
+                if reset_future is not None and not reset_future.done():
+                    reset_future.set_result(result)
+
+    def _build_sessions(self) -> list[dict]:
+        """Build session list for HTTP /sessions."""
+        from session import build_session_info
+
+        if not self.session_mgr:
+            return []
+
+        max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
+
+        result = []
+        for contact, entry in self.session_mgr.get_index().items():
+            session_id = entry.get("session_id", "")
+            live = self.session_mgr.get_loaded(contact)
+            info = build_session_info(
+                sessions_dir=self.session_mgr.dir,
+                session_id=session_id,
+                session=live,
+                metering=self.metering_db,
+                max_context_tokens=max_ctx,
+            )
+            info["contact"] = contact
+            info["created_at"] = entry.get("created_at")
+            if live:
+                info["model"] = live.model
+            result.append(info)
+        return result
+
+    def _sweep_expired_media(self) -> None:
+        """Delete media downloads older than media_ttl_hours."""
+        ttl = self.config.media_ttl_hours * 3600
+        if ttl <= 0:
+            return
+        download_dir = Path(self.config.http_download_dir)
+        if not download_dir.exists():
+            return
+        cutoff = time.time() - ttl
+        swept = 0
+        for f in download_dir.iterdir():
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    swept += 1
+            except OSError:
+                pass
+        if swept:
+            log.info("Media sweep: deleted %d files older than %dh", swept, self.config.media_ttl_hours)
+
+    def _build_monitor(self) -> dict:
+        """Build monitor data for HTTP /monitor."""
+        monitor_path = self.config.state_dir / "monitor.json"
+        if not monitor_path.exists():
+            return {"state": "unknown"}
+        try:
+            return json.loads(monitor_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {"state": "unknown"}
+
+    def _build_history(self, target: str, full: bool = False) -> dict:
+        """Build session history for HTTP /sessions/{target}/history.
+
+        Target can be a session UUID or a contact name (case-insensitive).
+        """
+        from session import read_history_events
+
+        if not self.session_mgr:
+            return {"session_id": target, "events": []}
+
+        # Resolve contact name to session ID
+        session_id = target
+        index = self.session_mgr.get_index()
+        if target in index:
+            session_id = index[target].get("session_id", target)
+        else:
+            # Case-insensitive lookup
+            for key, entry in index.items():
+                if key.lower() == target.lower():
+                    session_id = entry.get("session_id", target)
+                    break
+
+        events = read_history_events(self.session_mgr.dir, session_id, full=full)
+        return {"session_id": session_id, "events": events}
+
+    def _build_status(self) -> dict:
+        """Build status dict for HTTP /status and SIGUSR2."""
+        from config import today_start_ts
+
+        today_cost = 0.0
+        rows = self.metering_db.query(
+            "SELECT SUM(cost) FROM costs WHERE timestamp >= ?",
+            (today_start_ts(),),
+        )
+        if rows and rows[0][0]:
+            today_cost = rows[0][0]
+
+        active_sessions = 0
+        if self.session_mgr:
+            active_sessions = self.session_mgr.session_count()
+
+        return {
+            "status": "ok",
+            "pid": os.getpid(),
+            "uptime_seconds": round(time.time() - self.start_time),
+            "channel": self.config.channel_type,
+            "model": self.config.model_config("primary").get("model", ""),
+            "active_sessions": active_sessions,
+            "today_cost": round(today_cost, 4),
+            "queue_depth": self.queue.qsize(),
+            "error_counts": dict(self._error_counts),
+        }
+
+    async def _handle_compact(self) -> dict:
+        """Force-compact the primary session after agent writes diary."""
+        # Find primary session (longest active, non-system sender)
+        primary = None
+        system_senders = frozenset(("evolution", "system"))
+        for sender in self.session_mgr.list_contacts():
+            if sender in system_senders:
+                continue
+            session = self.session_mgr.get_or_create(sender)
+            if primary is None or len(session.messages) > len(primary[1].messages):
+                primary = (sender, session)
+
+        if not primary:
+            return {"status": "skipped", "reason": "no active session"}
+
+        sender, session = primary
+        today = time.strftime("%Y-%m-%d")
+        diary_text = self.config.diary_prompt.replace("{date}", today)
+
+        tid = str(uuid.uuid4())
+        log.info("[%s] Forced compact: diary + compaction for session %s (%s)",
+                 tid[:8], session.id, sender)
+
+        async with self._get_session_lock(sender):
+            await self._process_message(
+                text=diary_text,
+                sender=sender,
+                source="system",
+                deliver=False,
+                trace_id=tid,
+                force_compact=True,
+            )
+        return {"status": "completed", "session": session.id}
+
+    async def _handle_evolve(self, *, force: bool = False) -> dict:
+        """Handle evolution request — push to queue for self-driven evolution.
+
+        Args:
+            force: Skip the pre-check for new daily logs.
+        """
+        if not force:
+            try:
+                from evolution import check_new_logs_exist
+                from memory_schema import ensure_schema
+
+                db_path = self.config.memory_db
+                workspace = self.config.workspace
+                if db_path and Path(db_path).exists():
+                    import sqlite3 as _sqlite3
+                    conn = _sqlite3.connect(str(db_path), timeout=self.config.sqlite_timeout)
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.row_factory = _sqlite3.Row
+                    ensure_schema(conn)
+                    try:
+                        has_new, since_date = check_new_logs_exist(workspace, conn)
+                    finally:
+                        conn.close()
+                    if not has_new:
+                        return {"status": "skipped", "reason": f"no new daily logs since {since_date or 'ever'}"}
+            except Exception:
+                log.warning("Evolution pre-check failed, proceeding anyway")
+
+        msg = {
+            "type": "system",
+            "sender": "evolution",
+            "text": (
+                "[AUTOMATED SYSTEM MESSAGE] "
+                "Load the evolution skill and evolve your memory files. "
+                "New daily logs are available."
+            ),
+        }
+        await self.queue.put(msg)
+        return {"status": "queued", "session": "evolution"}
+
+    async def _handle_index(self, full: bool = False) -> dict:
+        """Run workspace indexing in a blocking thread."""
+        from async_utils import run_blocking
+        from tools.indexer import configure as indexer_configure, index_workspace
+
+        indexer_configure(
+            chunk_size=self.config.indexer_chunk_size,
+            chunk_overlap=self.config.indexer_chunk_overlap,
+            embed_batch_limit=self.config.indexer_embed_batch_limit,
+            embedding_model=self.config.embedding_model,
+            embedding_base_url=self.config.embedding_base_url,
+            embedding_provider=self.config.embedding_provider,
+        )
+
+        summary = await run_blocking(
+            index_workspace,
+            workspace=self.config.workspace,
+            db_path=self.config.memory_db,
+            api_key=self.config.embedding_api_key,
+            force=full,
+            embedding_timeout=self.config.embedding_timeout,
+            sqlite_timeout=self.config.sqlite_timeout,
+        )
+        return summary
+
+    async def _handle_index_status(self) -> dict:
+        """Return workspace index status."""
+        from tools.indexer import get_index_status
+        return get_index_status(self.config.memory_db, self.config.workspace)
+
+    async def _handle_consolidate(self) -> dict:
+        """Run memory consolidation — extract facts from workspace files."""
+        conn = self._get_memory_conn()
+        from consolidation import extract_from_file
+        from tools.indexer import scan_workspace
+
+        provider = self.get_provider("consolidation")
+        fact_model_cfg = self.config.model_config("primary") if hasattr(self.config, "model_config") else {}
+        model_name = fact_model_cfg.get("model", "primary")
+        cost_rates = fact_model_cfg.get("cost_per_mtok", [])
+
+        file_list = scan_workspace(
+            self.config.workspace,
+            include_patterns=self.config.indexer_include_patterns,
+            exclude_dirs=set(self.config.indexer_exclude_dirs),
+        )
+
+        total_facts = 0
+        files_with_facts = 0
+        for rel_path, abs_path in file_list:
+            try:
+                count = await extract_from_file(
+                    str(abs_path), provider, conn,
+                    self.config.consolidation_confidence_threshold,
+                    model_name=model_name,
+                    cost_rates=cost_rates,
+                    metering=self.metering_db,
+                )
+                if count:
+                    files_with_facts += 1
+                    log.info("Extracted %d facts from %s", count, rel_path)
+                total_facts += count
+            except Exception:
+                log.exception("Failed to process %s", rel_path)
+
+        return {"status": "completed", "facts": total_facts,
+                "files_scanned": len(file_list), "files_with_facts": files_with_facts}
+
+    async def _handle_maintain(self) -> dict:
+        """Run memory maintenance: stale facts, expired commitments, conflict detection, metering retention."""
+        from async_utils import run_blocking
+
+        conn = self._get_memory_conn()
+
+        def _run():
+            stale_days = self.config.maintenance_stale_threshold_days
+
+            stale = conn.execute("""
+                SELECT id, entity, attribute, value
+                FROM facts
+                WHERE invalidated_at IS NULL
+                  AND julianday('now') - julianday(accessed_at) > ?
+            """, (stale_days,)).fetchall()
+
+            expired = conn.execute("""
+                UPDATE commitments SET status = 'expired'
+                WHERE status = 'open'
+                  AND deadline IS NOT NULL
+                  AND deadline < date('now')
+            """).rowcount
+
+            conflicts = conn.execute("""
+                SELECT f1.entity, f1.attribute,
+                       f1.value AS val1, f2.value AS val2
+                FROM facts f1
+                JOIN facts f2 ON f1.entity = f2.entity
+                    AND f1.attribute = f2.attribute
+                    AND f1.id < f2.id
+                WHERE f1.invalidated_at IS NULL
+                  AND f2.invalidated_at IS NULL
+            """).fetchall()
+
+            stats = {
+                "facts": conn.execute(
+                    "SELECT COUNT(*) FROM facts WHERE invalidated_at IS NULL"
+                ).fetchone()[0],
+                "episodes": conn.execute(
+                    "SELECT COUNT(*) FROM episodes"
+                ).fetchone()[0],
+                "open_commitments": conn.execute(
+                    "SELECT COUNT(*) FROM commitments WHERE status = 'open'"
+                ).fetchone()[0],
+                "stale": len(stale),
+                "expired": expired,
+                "conflicts": len(conflicts),
+            }
+
+            conn.commit()
+
+            # Metering retention
+            metering_deleted = 0
+            metering_db_path = str(self.config.metering_db)
+            if Path(metering_db_path).exists():
+                from metering import MeteringDB
+                mdb = MeteringDB(metering_db_path, sqlite_timeout=self.config.sqlite_timeout)
+                metering_deleted = mdb.enforce_retention(self.config.metering_retention_months)
+
+            stats["metering_deleted"] = metering_deleted
+            return stats
+
+        stats = await run_blocking(_run)
+        log.info("Maintenance stats: %s", stats)
+        return stats
+
+    async def _message_loop(self) -> None:
+        """Main message processing loop — sequential."""
+        debounce_s = self.config.debounce_ms / 1000.0
+        pending: dict[str, list] = {}  # sender → [messages]
+
+        async def drain_pending(sender: str):
+            msgs = pending.pop(sender, [])
+            if not msgs:
+                return
+            # Combine into one
+            combined_text = "\n".join(m["text"] for m in msgs if m["text"])
+            # Collect attachments from all debounced messages
+            combined_attachments = []
+            for m in msgs:
+                if m.get("attachments"):
+                    combined_attachments.extend(m["attachments"])
+            source = msgs[0].get("source", "")
+            deliver = msgs[0].get("deliver", True)
+            n_meta = msgs[0].get("notify_meta")
+            tid = str(uuid.uuid4())
+            log.info("[%s] Processing message from %s (source=%s)",
+                     tid[:8], _log_safe(sender), _log_safe(source))
+            async with self._get_session_lock(sender):
+                await self._process_message(
+                    combined_text, sender, source,
+                    attachments=combined_attachments or None,
+                    notify_meta=n_meta,
+                    trace_id=tid,
+                    deliver=deliver,
+                )
+
+        async def process_http_immediate(item: dict) -> None:
+            """Process HTTP /chat messages immediately (no debounce).
+
+            Each /chat request has its own Future — combining messages
+            would lose Futures and break response delivery.
+            """
+            tid = str(uuid.uuid4())
+            http_sender = item.get("sender", "http")
+            log.info("[%s] Processing HTTP message from %s",
+                     tid[:8], _log_safe(http_sender))
+            async with self._get_session_lock(http_sender):
+                await self._process_message(
+                    text=item.get("text", ""),
+                    sender=http_sender,
+                    source=item.get("type", "http"),
+                    attachments=item.get("attachments"),
+                    response_future=item.get("response_future"),
+                    notify_meta=item.get("notify_meta"),
+                    trace_id=tid,
+                    stream_queue=item.get("stream_queue"),
+                    deliver=False,
+                )
+
+        while self.running:
+            # Drain control queue first (resets bypass message queue)
+            await self._drain_control_queue()
+
+            try:
+                item = await asyncio.wait_for(self.queue.get(), timeout=self.config.queue_poll_interval)
+            except TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+            # Sentinel from channel reader — drain pending and exit
+            if item is None:
+                for s in list(pending.keys()):
+                    await drain_pending(s)
+                self.running = False
+                break
+
+            if isinstance(item, InboundMessage):
+                sender = item.sender
+                source = item.source
+                deliver = True
+                text = item.text
+                # Inject quote context so the LLM sees what the user replied to
+                if item.quote:
+                    max_q = self.config.quote_max_chars
+                    q = item.quote if len(item.quote) <= max_q else item.quote[:max_q] + "…"
+                    text = f"[replying to: {q}]\n{text}"
+                attachments = item.attachments
+                notify_meta = None
+            elif isinstance(item, dict):
+                # Handle session reset (safety net — normally via control queue)
+                if item.get("type") == "reset":
+                    if item.get("all"):
+                        target = "all"
+                        by_id = False
+                    elif item.get("session_id"):
+                        target = item["session_id"]
+                        by_id = True
+                    else:
+                        target = item.get("sender", "")
+                        by_id = False
+                    result = await self._reset_session(target, by_id=by_id)
+                    log.info("Reset: %s", result)
+                    # Resolve HTTP future if this reset came through the API
+                    reset_future = item.get("response_future")
+                    if reset_future is not None and not reset_future.done():
+                        reset_future.set_result(result)
+                    continue
+
+                # Forced compact — find primary session, diary + compact
+                if item.get("type") == "compact":
+                    result = await self._handle_compact()
+                    log.info("Compact: %s", result)
+                    compact_future = item.get("response_future")
+                    if compact_future is not None and not compact_future.done():
+                        compact_future.set_result(result)
+                    continue
+
+                # HTTP /chat — process immediately, bypass debouncing
+                if item.get("response_future") is not None:
+                    await process_http_immediate(item)
+                    continue
+
+                # Queued message (from HTTP /message, /system, /notify)
+                sender = item.get("sender", "system")
+                source = item.get("type", "system")
+                text = item.get("text", "")
+                attachments = item.get("attachments")
+                notify_meta = item.get("notify_meta")
+
+                # Delivery: user messages deliver, system messages don't
+                deliver = source not in ("system", "http")
+
+                # Route notifications to primary session — deliver to channel
+                if item.get("notify") and self.config.notify_target:
+                    sender = self.config.notify_target
+                    deliver = True
+
+            else:
+                continue
+
+            if not text and not attachments:
+                continue
+
+            # Debounce: collect messages from same sender
+            if sender not in pending:
+                pending[sender] = []
+            pending[sender].append({"text": text, "source": source, "deliver": deliver,
+                                    "attachments": attachments, "notify_meta": notify_meta})
+
+            # Wait for more messages
+            await asyncio.sleep(debounce_s)
+
+            # Drain all pending senders
+            for s in list(pending.keys()):
+                await drain_pending(s)
+
+            # Drain control queue after message processing
+            await self._drain_control_queue()
+
+    async def _channel_reader(self) -> None:
+        """Read messages from channel and push to queue."""
+        try:
+            async for msg in self.channel.receive():
+                await self.queue.put(msg)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.error("Channel reader failed: %s", e)
+        # Channel exhausted (e.g., piped stdin EOF) — signal shutdown
+        # Push a sentinel so the message loop can drain and exit
+        await self.queue.put(None)
+
+    def _setup_signals(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Register Unix signal handlers."""
+        def handle_sigusr1():
+            log.info("SIGUSR1: reloading workspace files")
+            if self.skill_loader:
+                self.skill_loader.scan()
+
+        def handle_sigusr2():
+            log.info("SIGUSR2: writing status")
+            status = {
+                "pid": os.getpid(),
+                "uptime_s": time.time() - self.start_time,
+                "tools": self.tool_registry.tool_names if self.tool_registry else [],
+                "channel": self.config.channel_type,
+                "model": self.config.model_config("primary").get("model", ""),
+            }
+            status_path = self.config.state_dir / "status.json"
+            status_path.write_text(json.dumps(status, indent=2))
+
+        def handle_sigterm():
+            log.info("SIGTERM: shutting down gracefully")
+            self.running = False
+
+        try:
+            loop.add_signal_handler(signal.SIGUSR1, handle_sigusr1)
+            loop.add_signal_handler(signal.SIGUSR2, handle_sigusr2)
+            loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
+            loop.add_signal_handler(signal.SIGINT, handle_sigterm)
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler
+            pass
+
+    async def run(self) -> None:
+        """Main entry point — starts all components and runs forever."""
+        cfg = self.config
+        pid_path = cfg.state_dir / "lucyd.pid"
+
+        self._setup_logging()
+        log.info("Starting Lucyd daemon for '%s'", cfg.agent_name)
+
+        # Validate data_dir — all persistent state lives here
+        data_dir = cfg.data_dir
+        log.info("Data directory: %s", data_dir)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        if not os.access(data_dir, os.W_OK):
+            raise RuntimeError(f"Data directory not writable: {data_dir}")
+
+        _acquire_pid_file(pid_path)
+
+        try:
+            self._init_provider()
+            self._init_channel()
+            self._init_sessions()
+            self._init_skills()
+            self._init_context()
+            self._init_metering()
+            self._init_tools()
+            self._init_plugins()
+
+            # Context budget startup check
+            self._check_context_budget()
+
+            # Validate external binary dependencies
+            if self.config.stt_backend == "local":
+                from stt import validate_ffmpeg
+                validate_ffmpeg()
+
+            # Sweep expired media downloads
+            self._sweep_expired_media()
+
+            # Register consolidation on session close
+            if self.config.consolidation_enabled:
+                self.session_mgr.on_close(self._consolidate_on_close)
+
+            # Connect channel if configured
+            channel_task = None
+            if self.channel is not None:
+                try:
+                    await self.channel.connect()
+                    log.info("Channel connected: %s", cfg.channel_type)
+                except Exception as e:
+                    log.error("Channel connection failed: %s — continuing without channel", e)
+                    self.channel = None
+                # Only start channel reader for channels that receive (not relay)
+                if self.channel is not None and hasattr(self.channel, "receive"):
+                    channel_task = asyncio.create_task(self._channel_reader())
+
+            loop = asyncio.get_event_loop()
+            self._setup_signals(loop)
+
+            # Start HTTP API (always on)
+            from api import HTTPApi
+            self._http_api = HTTPApi(
+                queue=self.queue,
+                control_queue=self._control_queue,
+                host=cfg.http_host,
+                port=cfg.http_port,
+                auth_token=cfg.http_auth_token,
+                agent_timeout=cfg.agent_timeout,
+                get_status=self._build_status,
+                get_sessions=self._build_sessions,
+                get_monitor=self._build_monitor,
+                get_history=self._build_history,
+                handle_evolve=self._handle_evolve,
+                handle_index=self._handle_index,
+                handle_index_status=self._handle_index_status,
+                handle_consolidate=self._handle_consolidate,
+                handle_maintain=self._handle_maintain,
+                download_dir=cfg.http_download_dir,
+                max_body_bytes=cfg.http_max_body_bytes,
+                max_attachment_bytes=cfg.http_max_attachment_bytes,
+                rate_limit=cfg.http_rate_limit,
+                rate_window=cfg.http_rate_window,
+                status_rate_limit=cfg.http_status_rate_limit,
+                rate_cleanup_threshold=cfg.http_rate_cleanup_threshold,
+                agent_name=cfg.agent_name,
+                webhook_secret=cfg.http_webhook_secret,
+                metering_db=self.metering_db,
+            )
+            await self._http_api.start()
+
+            log.info("Lucyd daemon running (PID %d)", os.getpid())
+
+            # Main message processing loop
+            await self._message_loop()
+
+            # Cleanup
+            try:
+                await asyncio.wait_for(self._http_api.stop(), timeout=5.0)
+            except TimeoutError:
+                log.warning("HTTP API shutdown timed out after 5s")
+            if channel_task is not None:
+                channel_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await channel_task
+
+        except Exception as e:
+            log.error("Fatal error: %s", e, exc_info=True)
+            raise
+        finally:
+            # Persist active session state before cleanup.
+            # Does NOT call close_session() (which triggers LLM consolidation
+            # callbacks and archival — wrong during shutdown). Sessions resume
+            # from state files on next startup via get_or_create().
+            if hasattr(self, "session_mgr") and self.session_mgr:
+                for session in self.session_mgr.list_sessions():
+                    with contextlib.suppress(Exception):  # session state persist on shutdown; failure is benign
+                        self.session_mgr.save_state(session)
+
+            # Disconnect channel (close httpx client, clean downloads)
+            if self.channel is not None:
+                with contextlib.suppress(Exception):  # channel cleanup on shutdown; failure is benign
+                    await self.channel.disconnect()
+            # Close memory DB connection
+            if self._memory_conn is not None:
+                with contextlib.suppress(Exception):  # DB close on shutdown; failure is benign
+                    self._memory_conn.close()
+            _release_pid_file(pid_path)
+            log.info("Lucyd daemon stopped")
+
+
+# ─── CLI Entry Point ─────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Lucyd — a daemon for persona-rich AI agents",
+    )
+    parser.add_argument(
+        "-c", "--config",
+        default=os.environ.get("LUCYD_CONFIG", "./lucyd.toml"),
+        help="Path to config file (default: $LUCYD_CONFIG or ./lucyd.toml)",
+    )
+    parser.add_argument(
+        "--channel",
+        help="Override channel type (e.g., 'cli' for testing)",
+    )
+    args = parser.parse_args()
+
+    # Build overrides from CLI args
+    overrides = {}
+    if args.channel:
+        overrides["channel.type"] = args.channel
+
+    try:
+        config = load_config(args.config, overrides=overrides)
+    except ConfigError as e:
+        sys.stderr.write(str(e) + "\n")
+        sys.exit(1)
+
+    daemon = LucydDaemon(config)
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(daemon.run())
+
+
+if __name__ == "__main__":
+    main()

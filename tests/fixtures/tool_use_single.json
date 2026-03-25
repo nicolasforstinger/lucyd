@@ -1,0 +1,30 @@
+{
+  "description": "Single tool call — model calls a tool and then responds",
+  "system": [{"text": "You have access to tools.", "tier": "stable"}],
+  "messages": [
+    {"role": "user", "content": "What time is it?"}
+  ],
+  "tools": [
+    {"name": "get_time", "description": "Get current time", "input_schema": {"type": "object", "properties": {}}}
+  ],
+  "mock_responses": [
+    {
+      "text": null,
+      "tool_calls": [{"id": "tc1", "name": "get_time", "arguments": {}}],
+      "stop_reason": "tool_use"
+    },
+    {
+      "text": "It is 3:00 PM.",
+      "tool_calls": [],
+      "stop_reason": "end_turn"
+    }
+  ],
+  "mock_tool_results": {
+    "get_time": "15:00:00"
+  },
+  "expected": {
+    "stop_reason": "end_turn",
+    "has_text": true,
+    "final_text_contains": "3:00"
+  }
+}

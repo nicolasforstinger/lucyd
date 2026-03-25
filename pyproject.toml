@@ -1,0 +1,41 @@
+[tool.mutmut]
+paths_to_mutate = ["tools/"]
+tests_dir = [
+    "tests/test_agents.py",
+    "tests/test_filesystem.py",
+    "tests/test_indexer.py",
+    "tests/test_memory_tools_structured.py",
+    "tests/test_messaging.py",
+    "tests/test_shell_security.py",
+    "tests/test_skills.py",
+    "tests/test_tool_registry.py",
+    "tests/test_tools.py",
+    "tests/test_tts.py",
+    "tests/test_web_security.py",
+    "tests/test_zero_kill_modules.py",
+]
+pythonpath = ["."]
+debug = false
+
+[tool.mypy]
+python_version = "3.13"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    # AsyncMock GC artifact in Python 3.13 — coroutine never awaited during mock teardown.
+    # Not a real issue: the mock's internal coroutine is created but never consumed.
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "bin/*", "deploy/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
