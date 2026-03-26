@@ -37,7 +37,6 @@ from context import ContextBuilder, _estimate_tokens
 from log_utils import _log_safe
 from metering import MeteringDB
 from providers import create_provider
-from relay import create_channel
 from session import SessionManager, _text_from_content
 from skills import SkillLoader
 from tools import ToolRegistry
@@ -306,7 +305,6 @@ class LucydDaemon:
         self._control_queue: asyncio.Queue = asyncio.Queue()
         self.provider: Any = None
         self._single_shot: bool = False
-        self.channel: Any = None
         self.session_mgr: SessionManager | None = None
         self.context_builder: ContextBuilder | None = None
         self.skill_loader: SkillLoader | None = None
@@ -431,9 +429,6 @@ class LucydDaemon:
                         role, model_name, exc_info=True)
             return self.provider
 
-    def _init_channel(self) -> None:
-        self.channel = create_channel(self.config)
-
     def _init_sessions(self) -> None:
         self.session_mgr = SessionManager(
             self.config.sessions_dir,
@@ -502,7 +497,6 @@ class LucydDaemon:
         # Dependency dict — configure() pulls what it needs by parameter name
         deps = {
             "config": self.config,
-            "channel": self.channel,
             "provider": self.provider,
             "session_manager": self.session_mgr,
             "session_mgr": self.session_mgr,
@@ -917,11 +911,6 @@ class LucydDaemon:
             session.messages.pop()
         self.session_mgr.save_state(session)
         _resolve({"error": str(error), "session_id": session.id})
-        if ctx.deliver and self.channel is not None:
-            try:
-                await self.channel.send(ctx.sender, self.config.error_message)
-            except Exception as e:
-                log.error("Failed to deliver error message to %s: %s", _log_safe(ctx.sender), e, exc_info=True)
         # Auto-close ephemeral sessions even on error — but only if the
         # session was created by this event (not a pre-existing session).
         if ctx.task_type in ("task", "system") and not ctx.session_preexisted:
@@ -974,14 +963,6 @@ class LucydDaemon:
         else:
             _resolve({"reply": reply, "session_id": session.id,
                        "tokens": token_info, "attachments": reply_attachments})
-            if ctx.deliver and self.channel is not None:
-                try:
-                    if reply.strip():
-                        await self.channel.send(ctx.sender, reply)
-                    for att_path in reply_attachments:
-                        await self.channel.send(ctx.sender, "", [att_path])
-                except Exception as e:
-                    log.error("Failed to deliver reply: %s", e, exc_info=True)
 
     def _check_compaction_warning(self, ctx: _MessageState) -> None:
         """Inject context-pressure warning at 80% threshold."""
@@ -1138,13 +1119,6 @@ class LucydDaemon:
         # Build system prompt, recall, tools
         await self._build_context(ctx, provider)
 
-        # Typing indicator (moved out of _build_context — no side effects there)
-        if self.config.typing_indicators and ctx.deliver and self.channel is not None:
-            try:
-                await self.channel.send_typing(ctx.sender)
-            except Exception as e:
-                log.debug("Typing indicator failed: %s", e)
-
         session = ctx.session
 
         # ── Monitor ──────────────────────────────────────────────
@@ -1163,43 +1137,29 @@ class LucydDaemon:
             _supports_streaming = provider.capabilities.supports_streaming
         except (AttributeError, TypeError):
             _supports_streaming = False
-        channel_streaming = (
-            _supports_streaming
-            and ctx.deliver
-            and self.channel is not None
-            and hasattr(self.channel, "send_stream_chunk")
-        )
         _sse_done_sent = False  # tracks whether a done event was already streamed
-        if channel_streaming or stream_queue is not None:
+        if stream_queue is not None:
             async def _on_stream_delta(delta):
                 nonlocal _sse_done_sent
-                # Channel streaming (CLI, etc.)
-                if channel_streaming:
-                    if delta.text:
-                        await self.channel.send_stream_chunk(ctx.sender, delta.text)
-                    if delta.stop_reason:
-                        await self.channel.send_stream_chunk(ctx.sender, "", done=True)
-                # HTTP SSE streaming
-                if stream_queue is not None:
-                    event: dict[str, Any] = {}
-                    if delta.text:
-                        event["text"] = delta.text
-                    if delta.thinking:
-                        event["thinking"] = delta.thinking
-                    if delta.status:
-                        event["status"] = delta.status
-                    if delta.stop_reason:
-                        event["done"] = True
-                        event["stop_reason"] = delta.stop_reason
-                    if delta.usage:
-                        event["usage"] = {
-                            "input_tokens": delta.usage.input_tokens,
-                            "output_tokens": delta.usage.output_tokens,
-                        }
-                    if event:
-                        await stream_queue.put(event)
-                        if event.get("done"):
-                            _sse_done_sent = True
+                event: dict[str, Any] = {}
+                if delta.text:
+                    event["text"] = delta.text
+                if delta.thinking:
+                    event["thinking"] = delta.thinking
+                if delta.status:
+                    event["status"] = delta.status
+                if delta.stop_reason:
+                    event["done"] = True
+                    event["stop_reason"] = delta.stop_reason
+                if delta.usage:
+                    event["usage"] = {
+                        "input_tokens": delta.usage.input_tokens,
+                        "output_tokens": delta.usage.output_tokens,
+                    }
+                if event:
+                    await stream_queue.put(event)
+                    if event.get("done"):
+                        _sse_done_sent = True
             stream_delta_cb = _on_stream_delta
 
         try:
@@ -1752,7 +1712,6 @@ class LucydDaemon:
 
         try:
             self._init_provider()
-            self._init_channel()
             self._init_sessions()
             self._init_skills()
             self._init_context()
@@ -1770,15 +1729,6 @@ class LucydDaemon:
             # Register consolidation on session close
             if self.config.consolidation_enabled:
                 self.session_mgr.on_close(self._consolidate_on_close)
-
-            # Connect channel if configured
-            if self.channel is not None:
-                try:
-                    await self.channel.connect()
-                    log.info("Channel connected: %s", cfg.channel_type)
-                except Exception as e:
-                    log.error("Channel connection failed: %s — continuing without channel", e, exc_info=True)
-                    self.channel = None
 
             loop = asyncio.get_event_loop()
             self._setup_signals(loop)
@@ -1836,10 +1786,6 @@ class LucydDaemon:
                     with contextlib.suppress(Exception):  # session state persist on shutdown; failure is benign
                         self.session_mgr.save_state(session)
 
-            # Disconnect channel (close httpx client, clean downloads)
-            if self.channel is not None:
-                with contextlib.suppress(Exception):  # channel cleanup on shutdown; failure is benign
-                    await self.channel.disconnect()
             # Close metering DB connection
             if hasattr(self, "metering_db") and self.metering_db:
                 with contextlib.suppress(Exception):  # DB close on shutdown; failure is benign
