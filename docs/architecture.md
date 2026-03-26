@@ -201,7 +201,7 @@ For `/message`, `/system`, `/notify`: fire-and-forget. No Future. Returns 202 im
 
 ## Plugin System
 
-Plugins are Python files in `plugins.d/`. They export `TOOLS` (tool definitions) and/or `PREPROCESSORS` (attachment transformers). Both are gated by `[tools] enabled` in `lucyd.toml`.
+Plugins are Python files in `plugins.d/`. They export `TOOLS` (tool definitions) and/or `PREPROCESSORS` (attachment transformers). Tools are gated by `[tools] enabled`. Preprocessors register unconditionally when the plugin loads.
 
 At startup, `_init_tools()` (lucyd.py:454) scans `plugins.d/*.py`, loads each via `importlib.util`, calls `configure()` with inspect-based dependency injection, then registers tools and preprocessors.
 

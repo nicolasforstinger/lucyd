@@ -138,12 +138,7 @@ Preprocessor plugins use the same `configure()` DI pattern as tool plugins. A si
 
 ### Gating
 
-Preprocessor plugins are loaded if their filename (without `.py`) appears in `[tools] enabled`:
-
-```toml
-[tools]
-enabled = ["stt"]  # loads plugins.d/stt.py, registers its PREPROCESSORS
-```
+All plugins in `plugins.d/` are loaded and their `configure()` is called unconditionally. Preprocessors register automatically — they are not gated by `[tools] enabled`. Only tool registrations from `TOOLS` are filtered by the enabled list.
 
 ### Reference Implementation
 

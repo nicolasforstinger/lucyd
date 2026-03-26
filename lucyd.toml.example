@@ -4,8 +4,8 @@
 #
 # REQUIRED sections: [agent], [models.primary], [paths]
 # OPTIONAL sections: everything else — missing sections use sensible defaults.
-# Feature-gated: [stt], [vision], [documents], [tools.web_search]
-#   are only needed when those features are enabled in [tools] enabled list.
+# Feature-gated: [vision], [documents], [tools.web_search] — only needed when enabled.
+# Plugin config: [stt], [tools.tts] — read by plugins via config.raw(), not by core.
 
 # ─── Agent Identity (REQUIRED) ───────────────────────────────────
 

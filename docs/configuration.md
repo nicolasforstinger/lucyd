@@ -478,7 +478,7 @@ All paths support `~` expansion. If individual paths are not set, they derive fr
 
 ## Plugin System (`plugins.d/`)
 
-Plugins are Python files in `plugins.d/` exporting `TOOLS` (tool definitions) and/or `PREPROCESSORS` (attachment transformers). Both are gated by `[tools] enabled`. Plugins access their config via `config.raw()` — core never imports from `plugins.d/`.
+Plugins are Python files in `plugins.d/` exporting `TOOLS` (tool definitions) and/or `PREPROCESSORS` (attachment transformers). Tools are gated by `[tools] enabled` — only listed tools are registered. Preprocessors register unconditionally when the plugin loads. Plugins access their config via `config.raw()` — core never imports from `plugins.d/`.
 
 See [Plugin & Channel Guide](plugins.md) for the full developer reference.
 
