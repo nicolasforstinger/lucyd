@@ -20,6 +20,7 @@ from tools.web import (
     _HTMLToText,
     _REQ_ORIGINAL_HOST,
     _REQ_RESOLVED_IP,
+    _extract_port,
     _is_private_ip,
     _SafeRedirectHandler,
     _validate_url,
@@ -518,6 +519,38 @@ class TestHTMLToText:
         assert text == text.strip()
 
 
+# ─── _extract_port — unit tests ──────────────────────────────────
+
+
+class TestExtractPort:
+    """Port extraction from host strings as passed by do_open."""
+
+    def test_host_with_port(self):
+        assert _extract_port("example.com:8080") == 8080
+
+    def test_host_without_port(self):
+        assert _extract_port("example.com") is None
+
+    def test_ip_with_port(self):
+        assert _extract_port("93.184.216.34:8080") == 8080
+
+    def test_ip_without_port(self):
+        assert _extract_port("93.184.216.34") is None
+
+    def test_ipv6_with_port(self):
+        assert _extract_port("[2606:4700::]:8080") == 8080
+
+    def test_ipv6_without_port(self):
+        """IPv6 brackets without port suffix — colons inside brackets must not be parsed as port."""
+        assert _extract_port("[2606:4700::]") is None
+
+    def test_empty_string(self):
+        assert _extract_port("") is None
+
+    def test_non_numeric_port(self):
+        assert _extract_port("example.com:abc") is None
+
+
 # ─── _IPPinnedHTTPSConnection — unit tests ───────────────────────
 
 
@@ -632,8 +665,28 @@ class TestIPPinnedHTTPHandler:
         assert isinstance(conn, http.client.HTTPConnection)
         assert conn.host == "93.184.216.34"
 
-    def test_pinned_ip_factory_forwards_kwargs(self):
-        """The connection factory must forward kwargs (timeout, etc.)."""
+    def test_pinned_ip_factory_forwards_port_from_host_string(self):
+        """Non-standard port in host string (how do_open actually calls) must be forwarded.
+
+        do_open passes req.host as the first arg — e.g., "example.com:8080" —
+        not port= as a kwarg. The factory must extract the port from this string.
+        """
+        handler = _IPPinnedHTTPHandler()
+        req = urllib.request.Request("http://example.com:8080/page")
+        setattr(req, _REQ_RESOLVED_IP, "93.184.216.34")
+
+        with patch.object(handler, "do_open", return_value=MagicMock()) as mock_do_open:
+            handler.http_open(req)
+
+        factory = mock_do_open.call_args[0][0]
+        # Simulate do_open: passes "host:port" as string, timeout as kwarg
+        conn = factory("example.com:8080", timeout=5)
+        assert conn.host == "93.184.216.34"
+        assert conn.port == 8080
+        assert conn.timeout == 5
+
+    def test_pinned_ip_factory_default_port(self):
+        """Standard port (no port in host string) must default to 80."""
         handler = _IPPinnedHTTPHandler()
         req = urllib.request.Request("http://example.com/page")
         setattr(req, _REQ_RESOLVED_IP, "93.184.216.34")
@@ -642,10 +695,9 @@ class TestIPPinnedHTTPHandler:
             handler.http_open(req)
 
         factory = mock_do_open.call_args[0][0]
-        conn = factory("example.com", port=8080, timeout=5)
+        conn = factory("example.com", timeout=5)
         assert conn.host == "93.184.216.34"
-        assert conn.port == 8080
-        assert conn.timeout == 5
+        assert conn.port == 80
 
     def test_no_pinned_ip_falls_back_to_super(self):
         """Without a pinned IP attribute, falls back to super().http_open()."""
@@ -714,8 +766,29 @@ class TestIPPinnedHTTPSHandler:
         assert conn.host == "93.184.216.34"
         assert conn._sni_hostname == "example.com"
 
-    def test_pinned_ip_factory_forwards_kwargs(self):
-        """The connection factory must forward kwargs (timeout, etc.)."""
+    def test_pinned_ip_factory_forwards_port_from_host_string(self):
+        """Non-standard port in host string (how do_open actually calls) must be forwarded.
+
+        do_open passes req.host as the first arg — e.g., "example.com:8443" —
+        not port= as a kwarg. The factory must extract the port from this string.
+        """
+        handler = _IPPinnedHTTPSHandler()
+        req = urllib.request.Request("https://example.com:8443/page")
+        setattr(req, _REQ_RESOLVED_IP, "93.184.216.34")
+        setattr(req, _REQ_ORIGINAL_HOST, "example.com")
+
+        with patch.object(handler, "do_open", return_value=MagicMock()) as mock_do_open:
+            handler.https_open(req)
+
+        factory = mock_do_open.call_args[0][0]
+        # Simulate do_open: passes "host:port" as string, timeout as kwarg
+        conn = factory("example.com:8443", timeout=10)
+        assert conn.host == "93.184.216.34"
+        assert conn.port == 8443
+        assert conn.timeout == 10
+
+    def test_pinned_ip_factory_default_port(self):
+        """Standard port (no port in host string) must default to 443."""
         handler = _IPPinnedHTTPSHandler()
         req = urllib.request.Request("https://example.com/page")
         setattr(req, _REQ_RESOLVED_IP, "93.184.216.34")
@@ -725,10 +798,9 @@ class TestIPPinnedHTTPSHandler:
             handler.https_open(req)
 
         factory = mock_do_open.call_args[0][0]
-        conn = factory("example.com", port=8443, timeout=10)
+        conn = factory("example.com", timeout=10)
         assert conn.host == "93.184.216.34"
-        assert conn.port == 8443
-        assert conn.timeout == 10
+        assert conn.port == 443
 
     def test_no_pinned_ip_falls_back_to_super(self):
         """Without a pinned IP, falls back to super().https_open()."""

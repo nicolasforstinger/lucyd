@@ -121,6 +121,22 @@ _REQ_RESOLVED_IP = "_lucyd_resolved_ip"
 _REQ_ORIGINAL_HOST = "_lucyd_original_hostname"
 
 
+def _extract_port(host_str: str) -> int | None:
+    """Extract port from 'host:port' string passed by do_open.
+
+    Handles IPv6 bracket notation: [::1]:8080 → 8080.
+    Returns None for default-port URLs (no port suffix).
+    """
+    i = host_str.rfind(':')
+    j = host_str.rfind(']')  # IPv6: [::1]:8080
+    if i > j:
+        try:
+            return int(host_str[i + 1:])
+        except ValueError:
+            pass
+    return None
+
+
 class _IPPinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS connection to a pre-resolved IP with correct TLS SNI."""
 
@@ -146,7 +162,9 @@ class _IPPinnedHTTPHandler(urllib.request.HTTPHandler):
         if not resolved_ip:
             return super().http_open(req)
         return self.do_open(
-            lambda host, **kw: http.client.HTTPConnection(resolved_ip, **kw),
+            lambda host, **kw: http.client.HTTPConnection(
+                resolved_ip, port=_extract_port(host), **kw,
+            ),
             req,
         )
 
@@ -161,7 +179,8 @@ class _IPPinnedHTTPSHandler(urllib.request.HTTPSHandler):
             return super().https_open(req)
         return self.do_open(
             lambda host, **kw: _IPPinnedHTTPSConnection(
-                resolved_ip, original_hostname, **kw,
+                resolved_ip, original_hostname,
+                port=_extract_port(host), **kw,
             ),
             req,
         )
