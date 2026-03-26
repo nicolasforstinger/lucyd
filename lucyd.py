@@ -1694,19 +1694,6 @@ class LucydDaemon:
             # Drain control queue after message processing
             await self._drain_control_queue()
 
-    async def _channel_reader(self) -> None:
-        """Read messages from channel and push to queue."""
-        try:
-            async for msg in self.channel.receive():
-                await self.queue.put(msg)
-        except asyncio.CancelledError:
-            return
-        except Exception as e:
-            log.error("Channel reader failed: %s", e, exc_info=True)
-        # Channel exhausted (e.g., piped stdin EOF) — signal shutdown
-        # Push a sentinel so the message loop can drain and exit
-        await self.queue.put(None)
-
     def _setup_signals(self, loop: asyncio.AbstractEventLoop) -> None:
         """Register Unix signal handlers."""
         def handle_sigusr1():
@@ -1765,7 +1752,6 @@ class LucydDaemon:
                 self.session_mgr.on_close(self._consolidate_on_close)
 
             # Connect channel if configured
-            channel_task = None
             if self.channel is not None:
                 try:
                     await self.channel.connect()
@@ -1773,9 +1759,6 @@ class LucydDaemon:
                 except Exception as e:
                     log.error("Channel connection failed: %s — continuing without channel", e, exc_info=True)
                     self.channel = None
-                # Only start channel reader for channels that receive (not relay)
-                if self.channel is not None and hasattr(self.channel, "receive"):
-                    channel_task = asyncio.create_task(self._channel_reader())
 
             loop = asyncio.get_event_loop()
             self._setup_signals(loop)
@@ -1820,11 +1803,6 @@ class LucydDaemon:
                 await asyncio.wait_for(self._http_api.stop(), timeout=5.0)
             except TimeoutError:
                 log.warning("HTTP API shutdown timed out after 5s")
-            if channel_task is not None:
-                channel_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await channel_task
-
         except Exception as e:
             log.error("Fatal error: %s", e, exc_info=True)
             raise

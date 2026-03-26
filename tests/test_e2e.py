@@ -33,8 +33,6 @@ def _make_e2e_config(tmp_path: Path) -> Config:
             "enabled": False, "host": "127.0.0.1", "port": 0, "token_env": "",
             "download_dir": str(tmp_path / "downloads"),
             "max_body_bytes": 10485760,
-            "callback_url": "", "callback_token_env": "",
-            "callback_timeout": 10, "callback_max_failures": 10,
             "max_attachment_bytes": 52428800,
             "rate_limit": 30, "rate_window": 60,
             "status_rate_limit": 60, "rate_limit_cleanup_threshold": 1000,

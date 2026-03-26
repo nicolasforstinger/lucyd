@@ -250,6 +250,11 @@ class ContextBuilder:
                 "(automation pipelines, scripts, webhooks). "
                 "Process requests and return useful responses.",
             )
+        elif source == "user":
+            parts.append(
+                "Session type: user message. "
+                "Messages come from the user via the HTTP API.",
+            )
         else:
             parts.append(
                 f"Session type: {source} channel. "

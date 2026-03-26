@@ -129,7 +129,7 @@ The daemon is a coordinator with hub-and-spoke state topology. `_process_message
 
 **Channel I/O** (1 attr, 5 reader methods)
 - `channel`
-- `_deliver_reply`, `_channel_reader`, `_handle_agentic_error`, `_process_message`, `_init_tools`.
+- `_deliver_reply`, `_handle_agentic_error`, `_process_message`, `_init_tools`.
 
 **Diagnostics** (3 attrs, 3 methods)
 - `_monitor_state`, `_error_counts`, `start_time`

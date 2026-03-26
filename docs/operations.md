@@ -781,35 +781,6 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8100/api/v1/main
 - HTTP messages bypass the debounce window — each `/chat` request is processed immediately.
 - Channel delivery is suppressed for HTTP sources — replies go to the HTTP response, not to Telegram. The agent can still use the `message` tool to send notifications via Telegram during processing.
 
-### Webhook Callback
-
-When `[http] callback_url` is configured, the daemon POSTs a JSON payload after every processed message:
-
-```json
-{
-  "reply": "agent response text",
-  "session_id": "session-uuid",
-  "sender": "http-default",
-  "source": "http",
-  "silent": false,
-  "tokens": {"input": 1500, "output": 200},
-  "notify_meta": {"source": "email-monitor", "ref": "msg-123", "data": {...}}
-}
-```
-
-- **Auth:** Bearer token via `[http] callback_token_env` (env var name in config, value loaded from environment)
-- **Timeout:** Configurable via `[http] callback_timeout` (default: 10 seconds). Log-and-forget on failure — webhook errors never block message processing.
-- **Zero overhead** when unconfigured (empty `callback_url` = no-op).
-- **`notify_meta`:** Echoes the `source`, `ref`, and `data` fields from `/notify` requests. `null` for non-notify messages.
-
-Configuration:
-
-```toml
-[http]
-callback_url = "https://n8n.local/webhook/abc"    # POST target after every message
-callback_token_env = "MY_CALLBACK_TOKEN"           # Env var for bearer token
-```
-
 ## Unix Signals
 
 The daemon handles three Unix signals for runtime control:

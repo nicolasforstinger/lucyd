@@ -101,9 +101,6 @@ port = 8100                  # Listen port (default: 8100)
 token_env = "LUCYD_HTTP_TOKEN"  # Env var containing the bearer token
 download_dir = "/tmp/lucyd-http"  # Temp dir for HTTP attachment downloads
 max_body_bytes = 10485760    # Max request body size in bytes (default: 10 MB)
-callback_url = ""            # Webhook URL — POST after every processed message (default: "" = disabled)
-callback_token_env = ""      # Env var name containing the webhook bearer token (default: "" = no auth)
-callback_timeout = 10        # Webhook callback timeout in seconds (default: 10)
 rate_limit = 30              # Max requests per rate_window per sender (default: 30)
 rate_window = 60             # Rate limit window in seconds (default: 60)
 status_rate_limit = 60       # Max /status requests per rate_window (default: 60)
@@ -111,7 +108,7 @@ rate_limit_cleanup_threshold = 1000  # Evict stale rate limit entries above this
 max_attachment_bytes = 52428800  # Max size for base64-decoded attachments (default: 50 MB)
 ```
 
-Auth token is loaded from the environment variable named by `token_env` (default: `LUCYD_HTTP_TOKEN`). Webhook callback token is loaded from the env var named in `callback_token_env`. See [operations — HTTP API](operations.md#http-api) for endpoint details and [webhook callback](operations.md#webhook-callback) for the callback payload format.
+Auth token is loaded from the environment variable named by `token_env` (default: `LUCYD_HTTP_TOKEN`). See [operations — HTTP API](operations.md#http-api) for endpoint details.
 
 ## [providers]
 
