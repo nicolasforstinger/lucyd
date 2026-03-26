@@ -80,6 +80,105 @@ HTTP response {"reply": "...", "attachments": ["/path/to/file"]}
 Bridge delivers text + files to user
 ```
 
+## Daemon State Architecture
+
+`LucydDaemon` owns 20 `self.*` attributes and 48 methods. This section documents the internal structure so you know where new code belongs and when lucyd.py has outgrown the coordinator pattern.
+
+### Hub-and-Spoke Model
+
+The daemon is a coordinator with hub-and-spoke state topology. `_process_message` is the hub — it orchestrates a pipeline that touches all subsystems sequentially. The spokes are 6 attribute clusters with minimal cross-talk:
+
+```
+                     config (universal — 33 of 46 methods read it)
+                          │
+     ┌────────────────────┼──────────────────────┐
+     │                    │                      │
+ [Provider]          [Event Loop]          [Diagnostics]
+  provider            running               _monitor_state
+  _providers          queue                 _error_counts
+  _single_shot        _control_queue        start_time
+                      _session_locks
+                           │
+                  ┌────────┴────────┐
+                  │                 │
+            [Channel I/O]    _process_message ─── hub
+              channel               │
+                       ┌────────────┼────────────┐
+                       │            │            │
+                  [Sessions]   [Memory]     [Context]
+                  session_mgr  _memory_conn  context_builder
+                  _current_    metering_db   skill_loader
+                  session                    tool_registry
+```
+
+### The 6 Clusters
+
+**Provider** (3 attrs, 3 methods: `_init_provider`, `_create_provider_for`, `get_provider`)
+- `provider`, `_providers`, `_single_shot`
+- Self-contained. No cross-talk with other clusters except as a read-only dependency.
+
+**Sessions** (3 attrs, 12 reader methods)
+- `session_mgr`, `_current_session`, `_session_locks`
+- Highest fan-out: 12 methods read `session_mgr`. Single write site: `_init_sessions`.
+- Methods: `_setup_session`, `_persist_response`, `_auto_close_if_system`, `_reset_session`, `_check_compaction_warning`, `_run_compaction_if_needed`, `_handle_agentic_error`, `_build_sessions`, `_build_history`, `_build_status`, `_handle_compact`.
+
+**Memory** (2 attrs, 7 reader methods)
+- `_memory_conn`, `metering_db`
+- These co-occur in 4 methods (`_run_compaction_if_needed`, `_consolidate_on_close`, `_handle_consolidate`, `_handle_maintain`). All deal with SQLite, facts, indexing, or maintenance.
+- `metering_db` also appears in Sessions cluster methods for cost display — this is the main cross-talk point.
+
+**Channel I/O** (1 attr, 5 reader methods)
+- `channel`
+- `_deliver_reply`, `_channel_reader`, `_handle_agentic_error`, `_process_message`, `_init_tools`.
+
+**Diagnostics** (3 attrs, 3 methods)
+- `_monitor_state`, `_error_counts`, `start_time`
+- `_build_monitor`, `_build_status`, `_handle_agentic_error` (writes `_error_counts`).
+- Nearly zero cross-talk. `_build_status` is the only method that also reads from other clusters.
+
+**Event Loop** (4 attrs, 3 methods: `_message_loop`, `_drain_control_queue`, `_setup_signals`)
+- `running`, `queue`, `_control_queue`, `_session_locks`
+- Pure dispatch infrastructure. Calls into other clusters but shares no mutable state with them.
+
+### Write-Once-Read-Many Topology
+
+Every heavily-shared attribute has exactly **one write site**. After startup, the state graph is read-only — no mutable-state entanglement, just shared references:
+
+| Attribute | Written by | Operational readers |
+|---|---|---|
+| `session_mgr` | `_init_sessions` | 12 methods |
+| `metering_db` | `_init_metering` | 8 methods |
+| `_memory_conn` | `_get_memory_conn` (lazy) | 7 methods |
+| `provider` | `_init_provider` | 6 methods |
+| `channel` | `_init_channel` | 5 methods |
+
+This is why the daemon isn't a god object despite the method count — it's a composition root. The attributes are dependencies, not mutable shared state.
+
+### Bridge Points
+
+Only 4 operational methods touch attributes from 3+ clusters:
+
+| Method | Clusters | Nature |
+|---|---|---|
+| `_init_tools` | All 5 | Wiring — runs once at startup |
+| `_run_compaction_if_needed` | Sessions + Memory | Pipeline step: sessions ↔ memory |
+| `_build_sessions` | Sessions + Memory + Provider | Read-only view builder |
+| `_build_status` | Sessions + Memory + Diagnostics + Loop | Read-only health check |
+
+Three of four are read-only aggregation. `_run_compaction_if_needed` is the only operational bridge — it's where the sessions cluster hands off to the memory cluster during compaction.
+
+### Rules for New Code
+
+1. **Identify the cluster.** New methods should touch attributes from one cluster. If a method needs attrs from 2+ clusters, it's a bridge point — keep it in `_process_message`'s pipeline or as an HTTP callback.
+
+2. **Don't add write sites.** The write-once topology is structural, not accidental. If you need a new shared resource, create it in an `_init_*` method and let operational methods read it.
+
+3. **`metering_db` is the cross-talk point.** It appears in both Sessions and Memory clusters because cost tracking spans both. Accept this coupling rather than creating abstractions to hide it.
+
+4. **When to extract.** If a cluster grows beyond ~8 methods or ~150 lines AND its attributes don't bridge to other clusters, it's a candidate for extraction. The Memory cluster (7 methods, ~120 lines, one private attr) is currently the closest candidate. Extract when it earns it, not before.
+
+5. **When lucyd.py has outgrown the coordinator.** If the bridge point count grows beyond 6-8, or if new mutable shared state appears (attributes written by multiple operational methods), the hub-and-spoke model is breaking down and decomposition is warranted.
+
 ## HTTP API
 
 The API is the single inbound boundary. All messages enter here.
