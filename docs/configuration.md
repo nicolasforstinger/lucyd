@@ -60,15 +60,12 @@ token_env = "LUCYD_HTTP_TOKEN"       # Env var for API auth
 
 All bridges fall back to environment variables if no config file is found. The `debounce_ms` setting in `[behavior]` controls message batching for queued messages on the daemon side.
 
-Contact name lookup is case-insensitive.
-
 ## [http]
 
-Optional HTTP API server for external integrations.
+HTTP API server. Always starts — there is no `enabled` toggle.
 
 ```toml
 [http]
-enabled = false              # Enable HTTP API (default: false)
 host = "127.0.0.1"          # Listen address (code default: 0.0.0.0 — set to 127.0.0.1 for localhost only)
 port = 8100                  # Listen port (default: 8100)
 token_env = "LUCYD_HTTP_TOKEN"  # Env var containing the bearer token
@@ -320,7 +317,7 @@ timeout = 15          # Request timeout in seconds (default: 15)
 
 ## [stt]
 
-Speech-to-text configuration for voice message transcription. Supports pluggable backends.
+Plugin-owned config — read by `plugins.d/stt.py` via `config.raw("stt")`. Core does not reference these keys.
 
 ```toml
 [stt]
@@ -481,36 +478,9 @@ All paths support `~` expansion. If individual paths are not set, they derive fr
 
 ## Plugin System (`plugins.d/`)
 
-Custom tools are loaded from Python files in the `plugins.d/` directory (relative to the `lucyd.toml` location).
+Plugins are Python files in `plugins.d/` exporting `TOOLS` (tool definitions) and/or `PREPROCESSORS` (attachment transformers). Both are gated by `[tools] enabled`. Plugins access their config via `config.raw()` — core never imports from `plugins.d/`.
 
-Each plugin is a `.py` file exporting a `TOOLS` list (same format as built-in tool modules):
-
-```python
-# plugins.d/my_tool.py
-
-def tool_my_action(param: str) -> str:
-    """Do something custom."""
-    return f"Done: {param}"
-
-TOOLS = [
-    {
-        "name": "my_action",
-        "description": "Custom action tool.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "param": {"type": "string", "description": "Input parameter"},
-            },
-            "required": ["param"],
-        },
-        "function": tool_my_action,
-    },
-]
-```
-
-An optional `configure()` function receives dependencies by parameter name (e.g. `config`, `provider`, `session_mgr`).
-
-Plugin tools must be listed in `[tools] enabled` to activate. Unlisted plugin tools are ignored. A failing plugin does not block other plugins or built-in tools from loading.
+See [Plugin & Channel Guide](plugins.md) for the full developer reference.
 
 ## Environment Variables
 

@@ -40,7 +40,6 @@ load = ["anthropic", "openai"]
 # Auth token is loaded from env var named by token_env.
 
 [http]
-enabled = true
 host = "127.0.0.1"
 port = 8100
 token_env = "LUCYD_HTTP_TOKEN"                             # Env var containing the bearer token
