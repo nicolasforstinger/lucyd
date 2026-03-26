@@ -386,7 +386,7 @@ class TestBasicMessageFlow:
             )
 
         daemon.session_mgr.get_or_create.assert_called_once_with(
-            "alice"
+            "http:alice"
         )
 
     @pytest.mark.asyncio
@@ -2079,7 +2079,7 @@ class TestAutoCloseSystemSessions:
                 task_type="system",
             )
 
-        daemon.session_mgr.close_session.assert_called_once_with("evolution")
+        daemon.session_mgr.close_session.assert_called_once_with("http:evolution")
 
     @pytest.mark.asyncio
     async def test_telegram_source_not_closed(self, tmp_path):
@@ -2149,7 +2149,7 @@ class TestAutoCloseSystemSessions:
 
         # System sessions must auto-close even on error — otherwise they
         # accumulate messages and blow past context limits on next trigger.
-        daemon.session_mgr.close_session.assert_awaited_once_with("evolution")
+        daemon.session_mgr.close_session.assert_awaited_once_with("http:evolution")
 
 
 # ─── Primary Sender Routing ─────────────────────────────────────
@@ -2163,12 +2163,12 @@ class TestPrimarySenderRouting:
         """Notification routed to pre-existing primary session must NOT auto-close."""
         daemon, provider, session = _make_daemon(tmp_path)
         # Pre-existing session
-        daemon.session_mgr._sessions = {"Nicolas": session}
-        daemon.session_mgr._index = {"Nicolas": {"session_id": session.id}}
-        daemon.session_mgr.has_session = MagicMock(side_effect=lambda s: s in {"Nicolas"})
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["Nicolas"])
-        daemon.session_mgr.get_loaded = MagicMock(side_effect=lambda c: {"Nicolas": session}.get(c))
-        daemon.session_mgr.get_index = MagicMock(return_value={"Nicolas": {"session_id": session.id}})
+        daemon.session_mgr._sessions = {"http:Nicolas": session}
+        daemon.session_mgr._index = {"http:Nicolas": {"session_id": session.id}}
+        daemon.session_mgr.has_session = MagicMock(side_effect=lambda s: s in {"http:Nicolas"})
+        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:Nicolas"])
+        daemon.session_mgr.get_loaded = MagicMock(side_effect=lambda c: {"http:Nicolas": session}.get(c))
+        daemon.session_mgr.get_index = MagicMock(return_value={"http:Nicolas": {"session_id": session.id}})
         daemon.session_mgr.session_count = MagicMock(return_value=1)
         response = _make_response(text="processed")
 
@@ -2202,18 +2202,18 @@ class TestPrimarySenderRouting:
                 task_type="system",
             )
 
-        daemon.session_mgr.close_session.assert_called_once_with("evolution")
+        daemon.session_mgr.close_session.assert_called_once_with("http:evolution")
 
     @pytest.mark.asyncio
     async def test_error_path_no_autoclose_on_preexisting(self, tmp_path):
         """Error path: pre-existing session NOT auto-closed."""
         daemon, provider, session = _make_daemon(tmp_path)
-        daemon.session_mgr._sessions = {"Nicolas": session}
-        daemon.session_mgr._index = {"Nicolas": {"session_id": session.id}}
-        daemon.session_mgr.has_session = MagicMock(side_effect=lambda s: s in {"Nicolas"})
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["Nicolas"])
-        daemon.session_mgr.get_loaded = MagicMock(side_effect=lambda c: {"Nicolas": session}.get(c))
-        daemon.session_mgr.get_index = MagicMock(return_value={"Nicolas": {"session_id": session.id}})
+        daemon.session_mgr._sessions = {"http:Nicolas": session}
+        daemon.session_mgr._index = {"http:Nicolas": {"session_id": session.id}}
+        daemon.session_mgr.has_session = MagicMock(side_effect=lambda s: s in {"http:Nicolas"})
+        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:Nicolas"])
+        daemon.session_mgr.get_loaded = MagicMock(side_effect=lambda c: {"http:Nicolas": session}.get(c))
+        daemon.session_mgr.get_index = MagicMock(return_value={"http:Nicolas": {"session_id": session.id}})
         daemon.session_mgr.session_count = MagicMock(return_value=1)
 
         async def fake_loop(**kwargs):
@@ -2244,7 +2244,7 @@ class TestPrimarySenderRouting:
                 task_type="system",
             )
 
-        daemon.session_mgr.close_session.assert_awaited_once_with("evolution")
+        daemon.session_mgr.close_session.assert_awaited_once_with("http:evolution")
 
     @pytest.mark.asyncio
     async def test_telegram_source_unaffected(self, tmp_path):
@@ -2282,12 +2282,12 @@ class TestForcedCompact:
 
     @pytest.mark.asyncio
     async def test_handle_compact_skips_system_senders(self, tmp_path):
-        """System senders (evolution, system) are excluded from compact."""
+        """HTTP-channel contacts (system tasks, automations) are excluded from compact."""
         daemon, provider, session = _make_daemon(tmp_path)
         evo_session = MagicMock()
         evo_session.messages = [{"role": "user"}] * 100
-        daemon.session_mgr._index = {"evolution": evo_session, "system": evo_session}
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["evolution", "system"])
+        daemon.session_mgr._index = {"http:evolution": evo_session, "http:http-system": evo_session}
+        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:evolution", "http:http-system"])
 
         result = await daemon._handle_compact()
         assert result["status"] == "skipped"

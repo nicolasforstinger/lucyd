@@ -277,7 +277,8 @@ class _MessageState:
     trace_id: str
     channel_id: str = "http"          # Envelope: which channel sent this
     task_type: str = "conversational"  # Envelope: session lifecycle intent
-    deliver: bool = True  # Should the reply be sent to the channel?
+    session_key: str = ""             # channel_id:sender — computed in _process_message
+    deliver: bool = True
     image_blocks: list = field(default_factory=list)
     session: Any = None
     user_msg_idx: int = 0
@@ -707,11 +708,11 @@ class LucydDaemon:
         # Track whether session pre-existed (for auto-close decision).
         # Notifications routed to the primary session must not close it.
         ctx.session_preexisted = (
-            self.session_mgr.has_session(ctx.sender)
+            self.session_mgr.has_session(ctx.session_key)
         )
 
-        # Get or create session
-        session = self.session_mgr.get_or_create(ctx.sender)
+        # Get or create session (keyed by channel_id:sender)
+        session = self.session_mgr.get_or_create(ctx.session_key)
         ctx.session = session
 
         # Status tool reads session via callback (configured in _init_tools)
@@ -936,7 +937,7 @@ class LucydDaemon:
         # session was created by this event (not a pre-existing session).
         if ctx.task_type in ("task", "system") and not ctx.session_preexisted:
             try:
-                await self.session_mgr.close_session(ctx.sender)
+                await self.session_mgr.close_session(ctx.session_key)
                 log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
             except Exception:
                 log.warning("Auto-close failed for %s session %s",
@@ -1066,7 +1067,7 @@ class LucydDaemon:
         """Auto-close ephemeral sessions (task_type 'task' or 'system')."""
         if ctx.task_type in ("task", "system") and not ctx.force_compact and not ctx.session_preexisted:
             try:
-                await self.session_mgr.close_session(ctx.sender)
+                await self.session_mgr.close_session(ctx.session_key)
                 log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
             except Exception:
                 log.warning("Auto-close failed for %s session %s",
@@ -1085,6 +1086,7 @@ class LucydDaemon:
         deliver: bool = True,
         channel_id: str = "http",
         task_type: str = "conversational",
+        session_key: str = "",
     ) -> None:
         """Process a single message through the agentic loop."""
         if not trace_id:
@@ -1119,6 +1121,7 @@ class LucydDaemon:
             trace_id=trace_id,
             channel_id=channel_id,
             task_type=task_type,
+            session_key=session_key or f"{channel_id}:{sender}",
             deliver=deliver,
             image_blocks=image_blocks,
             model_cfg=model_cfg,
@@ -1257,11 +1260,11 @@ class LucydDaemon:
                 return {"reset": True, "target": target, "type": "session_id"}
             return {"reset": False, "reason": f"no session found for ID: {target}"}
 
-        # "user" shortcut: find primary operator contact
+        # "user" shortcut: find primary operator contact (non-HTTP channel)
         if target == "user":
             for contact in self.session_mgr.list_contacts():
-                # Skip framework-internal senders
-                if contact in ("system",) or contact.startswith(("http-", "cli")):
+                # Skip HTTP API senders (automations, webhooks, system tasks)
+                if contact.startswith("http:"):
                     continue
                 target = contact
                 break
@@ -1403,36 +1406,37 @@ class LucydDaemon:
 
     async def _handle_compact(self) -> dict:
         """Force-compact the primary session after agent writes diary."""
-        # Find primary session (longest active, non-system sender)
+        # Find primary session (longest active, non-automation sender)
         primary = None
-        system_senders = frozenset(("evolution", "system"))
-        for sender in self.session_mgr.list_contacts():
-            if sender in system_senders:
+        for contact in self.session_mgr.list_contacts():
+            # Skip HTTP API senders (system tasks, automations, webhooks)
+            if contact.startswith("http:"):
                 continue
-            session = self.session_mgr.get_or_create(sender)
+            session = self.session_mgr.get_or_create(contact)
             if primary is None or len(session.messages) > len(primary[1].messages):
-                primary = (sender, session)
+                primary = (contact, session)
 
         if not primary:
             return {"status": "skipped", "reason": "no active session"}
 
-        sender, session = primary
+        contact, session = primary
         today = time.strftime("%Y-%m-%d")
         diary_text = self.config.diary_prompt.replace("{date}", today)
 
         tid = str(uuid.uuid4())
         log.info("[%s] Forced compact: diary + compaction for session %s (%s)",
-                 tid[:8], session.id, sender)
+                 tid[:8], session.id, contact)
 
-        async with self._get_session_lock(sender):
+        async with self._get_session_lock(contact):
             await self._process_message(
                 text=diary_text,
-                sender=sender,
+                sender=contact,
                 source="system",
                 deliver=False,
                 trace_id=tid,
                 force_compact=True,
                 task_type="system",
+                session_key=contact,  # already a session key from list_contacts
             )
         return {"status": "completed", "session": session.id}
 
@@ -1578,9 +1582,10 @@ class LucydDaemon:
             channel_id = first.get("channel_id", "http")
             task_type = first.get("task_type", "conversational")
             tid = str(uuid.uuid4())
+            sk = f"{channel_id}:{sender}"
             log.info("[%s] Processing message from %s (source=%s channel=%s)",
                      tid[:8], _log_safe(sender), _log_safe(source), channel_id)
-            async with self._get_session_lock(sender):
+            async with self._get_session_lock(sk):
                 await self._process_message(
                     combined_text, sender, source,
                     attachments=combined_attachments or None,
@@ -1600,9 +1605,10 @@ class LucydDaemon:
             http_sender = item.get("sender", "http")
             channel_id = item.get("channel_id", "http")
             task_type = item.get("task_type", "conversational")
+            sk = f"{channel_id}:{http_sender}"
             log.info("[%s] Processing HTTP message from %s (channel=%s)",
                      tid[:8], _log_safe(http_sender), channel_id)
-            async with self._get_session_lock(http_sender):
+            async with self._get_session_lock(sk):
                 await self._process_message(
                     text=item.get("text", ""),
                     sender=http_sender,
@@ -1665,9 +1671,17 @@ class LucydDaemon:
             # Delivery: user messages deliver, system messages don't
             deliver = source not in ("system", "http")
 
-            # Route notifications to primary session — deliver to channel
+            # Route notifications to primary session
             if item.get("notify") and self.config.notify_target:
-                sender = self.config.notify_target
+                notify_target = self.config.notify_target
+                # Find operator's existing session key (e.g., "telegram:Nicolas")
+                for contact in self.session_mgr.list_contacts():
+                    if contact.endswith(f":{notify_target}"):
+                        sender = contact.split(":", 1)[1]
+                        item["channel_id"] = contact.split(":", 1)[0]
+                        break
+                else:
+                    sender = notify_target
                 deliver = True
 
             if not text and not attachments:

@@ -1339,17 +1339,17 @@ class TestMessageLoopDebounce:
 
     @pytest.mark.asyncio
     async def test_reset_user_alias_resolves_contact(self, loop_daemon):
-        """Reset with sender='user' resolves to first non-system/cli contact."""
+        """Reset with sender='user' resolves to first non-http: contact."""
         daemon, session = loop_daemon
-        daemon.session_mgr._index = {"system": MagicMock(), "cli": MagicMock(), "nicolas": MagicMock()}
-        daemon.session_mgr.list_contacts.return_value = ["system", "cli", "nicolas"]
+        daemon.session_mgr._index = {"http:http-system": MagicMock(), "http:cli": MagicMock(), "telegram:Nicolas": MagicMock()}
+        daemon.session_mgr.list_contacts.return_value = ["http:http-system", "http:cli", "telegram:Nicolas"]
 
         await daemon.queue.put({"type": "reset", "sender": "user"})
         await daemon.queue.put(None)
 
         await daemon._message_loop()
 
-        daemon.session_mgr.close_session.assert_called_once_with("nicolas")
+        daemon.session_mgr.close_session.assert_called_once_with("telegram:Nicolas")
 
     @pytest.mark.asyncio
     async def test_reset_unknown_sender_logs_warning(self, loop_daemon):
@@ -1593,30 +1593,30 @@ class TestResetSession:
 
     @pytest.mark.asyncio
     async def test_reset_user_skips_internal_senders(self, tmp_path):
-        """'user' alias skips system, http-*, and cli contacts."""
+        """'user' alias skips http: prefixed contacts."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {
-            "system": {}, "cli": {}, "http-n8n": {},
-            "nicolas": {},
+            "http:http-system": {}, "http:cli": {}, "http:http-n8n": {},
+            "telegram:Nicolas": {},
         }
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["system", "cli", "http-n8n", "nicolas"])
+        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:http-system", "http:cli", "http:http-n8n", "telegram:Nicolas"])
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
 
         result = await daemon._reset_session("user")
 
         assert result["reset"] is True
-        daemon.session_mgr.close_session.assert_called_once_with("nicolas")
+        daemon.session_mgr.close_session.assert_called_once_with("telegram:Nicolas")
 
     @pytest.mark.asyncio
     async def test_reset_user_no_user_found(self, tmp_path):
-        """'user' alias with only internal senders returns not found."""
+        """'user' alias with only http: contacts returns not found."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
         daemon.session_mgr = MagicMock()
-        daemon.session_mgr._index = {"system": {}, "http-api": {}}
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["system", "http-api"])
+        daemon.session_mgr._index = {"http:http-system": {}, "http:http-api": {}}
+        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:http-system", "http:http-api"])
 
         result = await daemon._reset_session("user")
 
