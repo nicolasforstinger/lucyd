@@ -57,7 +57,7 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 - **Live monitoring** — Real-time agentic loop state via `lucydctl --monitor` and HTTP endpoints
 - **Memory evolution** — Daily rewriting of workspace understanding files via cron
 - **Modular providers** — Swap LLM providers by editing a load list
-- **Plugin system** — Drop `.py` files in `plugins.d/` for custom tools
+- **Plugin system** — Drop `.py` files in `plugins.d/` for custom tools and preprocessors
 - **Environment agnostic** — Single `LUCYD_DATA_DIR` root. No hardcoded paths
 
 ## Project Structure
@@ -99,7 +99,7 @@ Lucyd uses a standalone Telegram bridge process (`channels/telegram.py`) that co
 1. Create a bot via [@BotFather](https://t.me/BotFather) on Telegram
 2. Copy the bot token to your `.env` file as `LUCYD_TELEGRAM_TOKEN`
 3. Find your Telegram user ID (send a message to [@userinfobot](https://t.me/userinfobot))
-4. Configure `lucyd.toml`: add your user ID to `[channel.telegram] allow_from` and set contacts
+4. Configure `telegram.toml`: copy `channels/telegram.toml.example`, add your user ID to `allow_from` and set contacts
 5. Start the daemon, then start the bridge: `python3 channels/telegram.py`
 
 ## Testing

@@ -19,10 +19,10 @@ class TestConfigSchemaMinimal:
     """Minimal config constructs successfully; schema defaults work."""
 
     def test_minimal_config_constructs(self):
-        """agent + channel + models.primary only — should succeed."""
+        """agent + models.primary only — should succeed."""
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
         }
         cfg = Config(data)
@@ -31,7 +31,7 @@ class TestConfigSchemaMinimal:
     def test_stt_backend_defaults_to_empty(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
         }
         cfg = Config(data)
@@ -40,7 +40,7 @@ class TestConfigSchemaMinimal:
     def test_documents_enabled_defaults_to_false(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
         }
         cfg = Config(data)
@@ -49,7 +49,7 @@ class TestConfigSchemaMinimal:
     def test_tools_enabled_defaults_to_empty_list(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
         }
         cfg = Config(data)
@@ -76,7 +76,7 @@ class TestConfigSchemaFloatCoercion:
     def test_agent_timeout_int_coerced_to_float(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
             "behavior": {"agent_timeout_seconds": 600},
         }
@@ -91,7 +91,7 @@ class TestConfigSchemaPathResolution:
     def test_state_dir_is_path(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
             "paths": {"state_dir": "/tmp/my-state"},
         }
@@ -243,7 +243,7 @@ class TestMultiModelRoutingDefaults:
     def test_compaction_model_default(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
         }
         cfg = Config(data)
@@ -252,7 +252,7 @@ class TestMultiModelRoutingDefaults:
     def test_consolidation_model_default(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
         }
         cfg = Config(data)
@@ -261,7 +261,7 @@ class TestMultiModelRoutingDefaults:
     def test_subagent_model_default(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
         }
         cfg = Config(data)
@@ -274,7 +274,7 @@ class TestMultiModelRoutingOverrides:
     def test_routing_overrides_from_config(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
-            "channel": {"type": "cli"},
+
             "models": {
                 "primary": {"provider": "anthropic-compat", "model": "opus"},
                 "routing": {

@@ -305,16 +305,10 @@ class HTTPApi:
         if task_type not in self._VALID_TASK_TYPES:
             log.warning("Unknown task_type %r, defaulting to %r", task_type, default_task_type)
             task_type = default_task_type
-        envelope = {
+        return {
             "channel_id": body.get("channel_id", "http"),
             "task_type": task_type,
         }
-        # Optional metadata — only include if provided
-        for key in ("timestamp", "message_hash", "reply_to"):
-            val = body.get(key)
-            if val is not None:
-                envelope[key] = val
-        return envelope
 
     # ─── Shared Parsing ────────────────────────────────────────────
 

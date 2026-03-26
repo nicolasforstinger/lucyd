@@ -36,8 +36,8 @@ flowchart TD
 
     subgraph Finalize["_finalize_response"]
         PERSIST["Persist to JSONL + state"]
-        DELIVER["Deliver reply via relay"]
-        POST_HOOKS["Webhook → compaction check → auto-close"]
+        DELIVER["Resolve HTTP response future"]
+        POST_HOOKS["Compaction check → auto-close"]
     end
 
     Sources --> HTTP --> Q --> TYPE
@@ -293,7 +293,7 @@ HTTP API is the single boundary. Bridges are standalone processes.
 ```mermaid
 flowchart TD
     subgraph Bridges["Standalone Bridge Processes"]
-        TG["channels/telegram.py<br/>getUpdates + delivery server"]
+        TG["channels/telegram.py<br/>getUpdates polling"]
         CLI["channels/cli.py<br/>stdin/stdout + SSE"]
         EMAIL["channels/email.py<br/>IMAP + SMTP"]
     end
@@ -302,7 +302,7 @@ flowchart TD
         API["api.py — HTTP API"]
         Q["asyncio.Queue"]
         LOOP["_message_loop"]
-        RELAY["RelayChannel"]
+        FUTURE["HTTP response future"]
     end
 
     subgraph External["External Clients"]
@@ -317,11 +317,7 @@ flowchart TD
     N8N -->|"POST /notify"| API
 
     API --> Q --> LOOP
-
-    LOOP -->|deliver| RELAY
-    LOOP -->|no deliver| FUTURE["HTTP response only"]
-
-    RELAY -->|"POST /send, /stream"| TG
+    LOOP --> FUTURE
 ```
 
 ---
@@ -365,7 +361,7 @@ flowchart TD
     subgraph Init["Initialization"]
         LOG["Logging"]
         PROVIDER["Provider"]
-        CHANNEL["Channel (relay or none)"]
+        HTTP["HTTP API"]
         SESSION["SessionManager"]
         TOOLS["ToolRegistry + plugins"]
         MEMORY["Memory DB + schema"]

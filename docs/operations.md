@@ -254,6 +254,8 @@ Synchronous — sends a message and waits for the agent to respond.
 |---|---|---|---|
 | `message` | yes | — | Message text |
 | `sender` | no | `"default"` | Session key (each unique sender gets its own session, prefixed with `http-`) |
+| `channel_id` | no | `"http"` | Channel identifier. Used in session keying (`channel_id:sender`) and metrics labels |
+| `task_type` | no | `"conversational"` | `"conversational"` (session stays open), `"task"` (auto-close after response), `"system"` (auto-close, internal automation) |
 | `context` | no | — | Freeform label prepended as `[context]` (for debugging) |
 | `attachments` | no | — | List of base64-encoded file attachments |
 
@@ -339,7 +341,6 @@ Health check. Auth-exempt — always accessible without a Bearer token.
   "status": "ok",
   "pid": 12345,
   "uptime_seconds": 3600,
-  "channel": "telegram",
   "model": "claude-sonnet-4-6",
   "active_sessions": 3,
   "today_cost": 4.2150,
@@ -353,7 +354,6 @@ Health check. Auth-exempt — always accessible without a Bearer token.
 | `status` | string | Always `"ok"` |
 | `pid` | int | Daemon process ID |
 | `uptime_seconds` | int | Seconds since daemon start |
-| `channel` | string | Active channel type |
 | `model` | string | Primary model name |
 | `active_sessions` | int | Number of tracked sessions |
 | `today_cost` | float | Today's cost in EUR (4 decimal places), `0.0` if metering DB unavailable |
@@ -774,12 +774,20 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8100/api/v1/main
 
 ---
 
+#### `GET /metrics`
+
+Prometheus metrics in text exposition format. Auth-exempt. Returns `text/plain; version=0.0.4; charset=utf-8`.
+
+Only available when `prometheus_client` is installed. Returns 404 otherwise.
+
+---
+
 ### Behavior
 
 - `/chat` waits for the agentic loop to complete (up to `agent_timeout_seconds`). Returns 408 on timeout.
 - `/notify` queues the event and returns immediately. The agent processes it asynchronously.
 - HTTP messages bypass the debounce window — each `/chat` request is processed immediately.
-- Channel delivery is suppressed for HTTP sources — replies go to the HTTP response, not to Telegram. The agent can still use the `message` tool to send notifications via Telegram during processing.
+- Replies return in the HTTP response. There is no outbound push — channels poll the API for replies.
 
 ## Unix Signals
 
@@ -802,17 +810,17 @@ kill -TERM $(cat ~/.lucyd/lucyd.pid)
 
 ## CLI Mode
 
-For testing without Telegram, run with `--channel cli`:
+For interactive testing, run the CLI bridge against a running daemon:
 
 ```bash
 cd ~/lucyd
 source .venv/bin/activate
-python3 lucyd.py --channel cli
+python3 channels/cli.py
 ```
 
-This reads from stdin and writes to stdout. The daemon runs the full agentic loop, tool execution, and session management -- just without Telegram transport. Useful for debugging prompts, tool behavior, or context building.
+The CLI bridge reads from stdin, POSTs to the daemon's `/api/v1/chat/stream` endpoint, and streams the response via SSE. Useful for debugging prompts, tool behavior, or context building.
 
-When stdin reaches EOF (piped input or Ctrl+D), the daemon drains pending messages and exits cleanly.
+When stdin reaches EOF (piped input or Ctrl+D), the CLI exits cleanly.
 
 ## Log Locations
 
@@ -856,14 +864,14 @@ kill -0 $(cat ~/.lucyd/lucyd.pid) && echo "running" || echo "dead"
 systemctl is-active lucyd
 ```
 
-### Telegram channel connected
+### Telegram bridge connected
 
 ```bash
-# Check that the Lucyd daemon is running and polling Telegram
-systemctl is-active lucyd
+# Check that the Telegram bridge process is running
+ps aux | grep telegram.py
 
-# Check daemon log for Telegram connection
-tail -20 ~/.lucyd/lucyd.log | grep -i telegram
+# Check bridge log output for connection status
+journalctl -u lucyd-telegram --since "5 min ago" --no-pager
 ```
 
 ### Status dump
@@ -877,7 +885,6 @@ Returns JSON with:
 - `pid` -- daemon process ID
 - `uptime_s` -- seconds since start
 - `tools` -- list of registered tool names
-- `channel` -- active channel type
 - `models` -- loaded model names
 
 ## Cron Jobs
@@ -940,8 +947,8 @@ rm ~/.lucyd/lucyd.pid              # only if dead
 
 ### Daemon starts but no messages are delivered
 
-1. Check Telegram channel: the daemon handles Bot API long polling directly (no external service needed)
-2. Check `allow_from` in `lucyd.toml` -- sender must be in the allowlist (numeric Telegram user IDs)
+1. Check the Telegram bridge process is running (`python3 channels/telegram.py`)
+2. Check `allow_from` in `telegram.toml` -- sender must be in the allowlist (numeric Telegram user IDs)
 4. Check daemon log for errors: `tail -50 ~/.lucyd/lucyd.log`
 
 ### Messages processed but replies are empty

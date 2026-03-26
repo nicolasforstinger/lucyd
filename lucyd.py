@@ -937,6 +937,8 @@ class LucydDaemon:
         log.error("[%s] Agentic loop failed: %s", ctx.trace_id[:8], error)
         err_type = type(error).__name__ if isinstance(error, BaseException) else "unknown"
         self._error_counts[err_type] = self._error_counts.get(err_type, 0) + 1
+        if metrics.ENABLED:
+            metrics.ERRORS_TOTAL.labels(error_type=err_type).inc()
         # Strip transient image metadata before returning
         if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
             session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
@@ -955,6 +957,8 @@ class LucydDaemon:
             try:
                 await self.session_mgr.close_session(ctx.session_key)
                 log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
+                if metrics.ENABLED:
+                    metrics.SESSION_CLOSE_TOTAL.labels(reason=f"auto_{ctx.task_type}").inc()
             except Exception:
                 log.warning("Auto-close failed for %s session %s",
                             ctx.task_type, ctx.sender, exc_info=True)
@@ -1091,6 +1095,8 @@ class LucydDaemon:
             try:
                 await self.session_mgr.close_session(ctx.session_key)
                 log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
+                if metrics.ENABLED:
+                    metrics.SESSION_CLOSE_TOTAL.labels(reason=f"auto_{ctx.task_type}").inc()
             except Exception:
                 log.warning("Auto-close failed for %s session %s",
                             ctx.task_type, ctx.sender, exc_info=True)
@@ -1302,10 +1308,15 @@ class LucydDaemon:
             contacts = self.session_mgr.list_contacts()
             for contact in contacts:
                 await self.session_mgr.close_session(contact)
+            if metrics.ENABLED:
+                for _ in contacts:
+                    metrics.SESSION_CLOSE_TOTAL.labels(reason="manual").inc()
             return {"reset": True, "target": "all", "count": len(contacts)}
 
         if by_id or _is_uuid(target):
             if await self.session_mgr.close_session_by_id(target):
+                if metrics.ENABLED:
+                    metrics.SESSION_CLOSE_TOTAL.labels(reason="manual").inc()
                 return {"reset": True, "target": target, "type": "session_id"}
             return {"reset": False, "reason": f"no session found for ID: {target}"}
 
@@ -1321,6 +1332,8 @@ class LucydDaemon:
                 return {"reset": False, "reason": "no user session found"}
 
         if await self.session_mgr.close_session(target):
+            if metrics.ENABLED:
+                metrics.SESSION_CLOSE_TOTAL.labels(reason="manual").inc()
             return {"reset": True, "target": target, "type": "contact"}
         return {"reset": False, "reason": f"no session found for: {target}"}
 

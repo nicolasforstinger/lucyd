@@ -9,9 +9,6 @@ MINIMAL_TOML = """\
 name = "TestAgent"
 workspace = "/tmp/test-workspace"
 
-[channel]
-type = "cli"
-
 [models.primary]
 provider = "anthropic-compat"
 model = "claude-haiku-4-5-20251001"
@@ -47,7 +44,6 @@ class TestMissingFields:
         """Missing [agent] name should raise ConfigError."""
         data = {
             "agent": {"workspace": "/tmp"},
-            "channel": {"type": "telegram", "telegram": {"token_env": "LUCYD_TELEGRAM_TOKEN"}},
             "models": {"primary": {"provider": "anthropic-compat", "model": "x"}},
         }
         with pytest.raises(ConfigError, match="name"):
@@ -57,7 +53,6 @@ class TestMissingFields:
         """Missing [models.primary] should raise ConfigError."""
         data = {
             "agent": {"name": "Test", "workspace": "/tmp"},
-            "channel": {"type": "telegram", "telegram": {"token_env": "LUCYD_TELEGRAM_TOKEN"}},
             "models": {},
         }
         with pytest.raises(ConfigError, match="primary"):
@@ -78,7 +73,6 @@ class TestModelConfig:
     def test_model_config_missing_raises(self):
         cfg = Config({
             "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
         })
         with pytest.raises(ValueError, match="nonexistent"):
@@ -117,7 +111,6 @@ class TestWebSearchApiKey:
         monkeypatch.setenv("MY_BRAVE_KEY", "sk-brave-123")
         cfg = Config({
             "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
             "tools": {"web_search": {"api_key_env": "MY_BRAVE_KEY"}},
         })
@@ -126,7 +119,6 @@ class TestWebSearchApiKey:
     def test_web_search_api_key_missing_env(self):
         cfg = Config({
             "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "channel": {"type": "cli"},
             "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
             "tools": {"web_search": {"api_key_env": "NONEXISTENT_KEY"}},
         })

@@ -23,7 +23,6 @@ def _make_config(**overrides):
     """Build a minimal Config with optional overrides."""
     data = {
         "agent": {"name": "Test", "workspace": "/tmp"},
-        "channel": {"type": "cli"},
         "models": {"primary": {"provider": "openai-compat", "model": "test"}},
     }
     for key_path, val in overrides.items():

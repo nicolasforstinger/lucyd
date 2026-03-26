@@ -24,7 +24,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `skills.py` | Skill loader + `load_skill` tool. Markdown with YAML frontmatter. |
 | `metering.py` | Per-call cost recording to SQLite. Billing periods, EUR currency. |
 | ~~`monitor.py`~~ | Removed. `_MonitorWriter` in `lucyd.py` updates an in-memory dict read by `/api/v1/monitor`. |
-| `attachments.py` | Image fitting, document text extraction, audio STT. Pure functions. |
+| `attachments.py` | Image fitting, document text extraction. Pure functions. |
 | `models.py` | Shared data types: `Attachment`. |
 | `stt.py` | Speech-to-text dispatch (OpenAI Whisper or local whisper.cpp). |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
@@ -46,6 +46,8 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `tools/status.py` | `session_status`. Context utilization, uptime, cost. |
 | `tools/indexer.py` | Workspace file indexer for memory. Used by `POST /api/v1/index`. |
 | `plugins.d/tts.py` | TTS plugin. ElevenLabs API, returns audio as attachment. |
+| `plugins.d/stt.py` | STT preprocessor plugin. Claims audio attachments, transcribes via `stt.py` backend, appends text. |
+| `metrics.py` | Prometheus metrics. 20 metric families, graceful no-op if `prometheus_client` not installed. |
 | `bin/lucydctl` | CLI control client. HTTP wrapper for daemon endpoints. |
 | `providers.d/*.toml` | Provider config files. Connection type, API key, model sections. |
 
@@ -53,15 +55,16 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 
 ```
 Bridge (Telegram/CLI/email)
-  ↓ POST /api/v1/chat {"message": "...", "sender": "...", "attachments": [...]}
+  ↓ POST /api/v1/chat {"message": "...", "sender": "...", "channel_id": "...", "task_type": "..."}
 HTTP API (api.py)
-  ↓ asyncio.Queue
+  ↓ extract envelope (channel_id, task_type) → asyncio.Queue
 Message loop (lucyd.py)
   ↓ debounce per sender
 _process_message
-  ├── _process_attachments — images scaled, voice transcribed, docs extracted
-  ├── _setup_session — get/create session
-  ├── _build_context — system prompt + memory recall + tools
+  ├── _run_preprocessors — plugins claim/transform attachments (e.g., STT)
+  ├── _process_attachments — images scaled, docs extracted
+  ├── _setup_session — get/create session (keyed by channel_id:sender)
+  ├── _build_context — system prompt + memory recall + tools + task-type framing
   └── _run_agentic_with_retries — agentic loop with retry
         ↓
       run_agentic_loop (agentic.py)
@@ -141,7 +144,7 @@ Every heavily-shared attribute has exactly **one write site**. After startup, th
 | `metering_db` | `_init_metering` | 8 methods |
 | `_memory_conn` | `_get_memory_conn` (lazy) | 7 methods |
 | `provider` | `_init_provider` | 6 methods |
-| `channel` | `_init_channel` | 5 methods |
+| `_preprocessors` | `_init_tools` | 1 method |
 
 This is why the daemon isn't a god object despite the method count — it's a composition root. The attributes are dependencies, not mutable shared state.
 
@@ -193,10 +196,11 @@ The API is the single inbound boundary. All messages enter here.
 | `/api/v1/index/status` | GET | Workspace index status |
 | `/api/v1/consolidate` | POST | Extract facts from workspace files |
 | `/api/v1/maintain` | POST | Run memory maintenance |
+| `/metrics` | GET | Prometheus metrics (auth-exempt) |
 
 Auth: Bearer token from `LUCYD_HTTP_TOKEN` env var. Localhost is trusted.
 
-For `/chat`, an `asyncio.Future` is attached to the queue item — `_process_message` resolves it with the reply. For `/notify`, no Future — the event routes to the operator's session via `notify_target`, and the reply is delivered through the connected bridge.
+For `/chat`, an `asyncio.Future` is attached to the queue item — `_process_message` resolves it with the reply. For `/notify`, no Future — the event routes to the operator's session via `notify_target`.
 
 ## Tool System
 
@@ -212,7 +216,9 @@ Attachments are collected across all tool calls in the agentic loop and included
 
 Built-in tools (14): `read`, `write`, `edit`, `exec`, `web_search`, `web_fetch`, `memory_search`, `memory_get`, `memory_write`, `memory_forget`, `commitment_update`, `sessions_spawn`, `session_status`, `load_skill`.
 
-Plugins: `tts` (text-to-speech via ElevenLabs, returns audio attachment).
+Plugins also export `PREPROCESSORS` — functions that run before the agentic loop to claim/transform attachments (e.g., `stt` transcribes audio). Both tool plugins and preprocessor plugins live in `plugins.d/` and are gated by `[tools] enabled`.
+
+Plugins: `tts` (text-to-speech, returns audio attachment), `stt` (speech-to-text preprocessor, transcribes audio attachments).
 
 ## Session Storage
 
@@ -223,7 +229,7 @@ Dual-format persistence in `$DATA_DIR/sessions/`:
 | JSONL | `{id}.{YYYY-MM-DD}.jsonl` | Append-only audit trail (daily-split) |
 | State | `{id}.state.json` | Atomic snapshot for fast resume |
 
-Sessions are keyed by sender name. `notify_target` routes notifications to the operator's session. System sessions auto-close after processing.
+Sessions are keyed by `channel_id:sender` (e.g., `telegram:Nicolas`, `http:n8n-daily`). `notify_target` routes notifications to the operator's session. Ephemeral sessions (`task_type` "task" or "system") auto-close after processing.
 
 Compaction triggers when `input_tokens` exceeds `threshold_tokens`: oldest messages are summarized via LLM, keeping the newest third verbatim.
 
@@ -251,9 +257,9 @@ System prompt assembled in three cache tiers:
 |---|---|---|
 | stable | Personality files, tool descriptions | Cached aggressively |
 | semi-stable | MEMORY.md, always-on skills, skill index | Shorter TTL |
-| dynamic | Date/time, sender, source framing, memory recall | Never cached |
+| dynamic | Date/time, sender, task-type framing, memory recall | Never cached |
 
-Source-aware framing tells the agent what kind of session it's in (system automation, HTTP integration, or conversational).
+Task-type framing tells the agent what kind of session it's in: automated infrastructure (system), ephemeral task, or conversation.
 
 ## Cost Tracking
 
