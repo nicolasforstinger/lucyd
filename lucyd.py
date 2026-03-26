@@ -943,7 +943,7 @@ class LucydDaemon:
         self.session_mgr.save_state(session)
 
     async def _deliver_reply(self, ctx: _MessageState, _resolve) -> None:
-        """Deliver reply to channel, resolve HTTP future, fire webhook."""
+        """Resolve HTTP future with reply content."""
         session = ctx.session
         response = ctx.response
         reply = response.text or ""
@@ -1131,13 +1131,9 @@ class LucydDaemon:
         )
         monitor.write("thinking")
 
-        # Build streaming callback for channel and/or SSE queue
+        # Build SSE streaming callback
         stream_delta_cb = None
-        try:
-            _supports_streaming = provider.capabilities.supports_streaming
-        except (AttributeError, TypeError):
-            _supports_streaming = False
-        _sse_done_sent = False  # tracks whether a done event was already streamed
+        _sse_done_sent = False
         if stream_queue is not None:
             async def _on_stream_delta(delta):
                 nonlocal _sse_done_sent
