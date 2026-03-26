@@ -73,6 +73,7 @@ All configuration lives in `lucyd.toml`. API keys go in `.env`. See [configurati
 - [Configuration Reference](docs/configuration.md) — Every `lucyd.toml` setting explained
 - [Operations Guide](docs/operations.md) — Running, controlling, and monitoring the daemon
 - [Architecture](docs/architecture.md) — How the code fits together
+- [Plugin & Channel Guide](docs/plugins.md) — Building tools, preprocessors, and channel bridges
 
 ## System Requirements
 
