@@ -12,16 +12,3 @@ class Attachment:
     filename: str        # Original filename or ""
     size: int            # Bytes
     is_voice: bool = False  # True = recorded voice message; False = audio file
-
-
-@dataclass
-class InboundMessage:
-    text: str
-    sender: str           # Contact name, username, "cli", etc.
-    timestamp: float
-    source: str           # "telegram", "cli", etc.
-    group_id: str | None = None
-    group_name: str | None = None
-    quote: str | None = None
-    attachments: list[Attachment] | None = None
-    message_id: int | None = None

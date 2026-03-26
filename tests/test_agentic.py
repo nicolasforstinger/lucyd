@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 import pytest
 
 from agentic import (
-    LoopConfig, SingleShotStrategy,
+    LoopConfig, run_single_shot,
     _stream_to_response, _truncate_args, is_transient_error,
     run_agentic_loop,
 )
@@ -935,15 +935,14 @@ class TestStreamToResponse:
 
 # ─── Strategy Tests ──────────────────────────────────────────────
 
-class TestSingleShotStrategy:
-    """Verify SingleShotStrategy calls model once without tools."""
+class TestRunSingleShot:
+    """Verify run_single_shot calls model once without tools."""
 
     async def test_single_call(self):
         provider = MockProvider([_end_turn_response("Hello")])
-        strategy = SingleShotStrategy()
         reg = ToolRegistry()
         messages = [{"role": "user", "content": "test"}]
-        resp = await strategy.run(
+        resp = await run_single_shot(
             provider=provider, system=[], messages=messages,
             tools=[{"name": "read", "description": "Read", "input_schema": {}}],
             tool_executor=reg,

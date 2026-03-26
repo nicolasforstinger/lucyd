@@ -45,7 +45,7 @@ class SmokeLocalProvider:
         return messages
 
     async def complete(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs
+        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
     ) -> LLMResponse:
         usage = Usage(
             input_tokens=max(
@@ -67,7 +67,7 @@ class SmokeLocalProvider:
         )
 
     async def stream(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs
+        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
     ) -> AsyncIterator[StreamDelta]:
         async for delta in stream_fallback(self, system, messages, tools, **kwargs):
             yield delta

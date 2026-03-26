@@ -50,9 +50,9 @@ def _make_e2e_config(tmp_path: Path) -> Config:
         },
         "memory": {
             "db": "", "search_top_k": 10, "vector_search_limit": 10000,
-            "fts_min_results": 3, "embedding_timeout": 15,
-            "consolidation": {"enabled": False, "min_messages": 4,
-                              "confidence_threshold": 0.6, "max_extraction_chars": 50000},
+            "embedding_timeout": 15,
+            "consolidation": {"enabled": False,
+                              "confidence_threshold": 0.6},
             "recall": {
                 "decay_rate": 0.03, "max_facts_in_context": 20,
                 "max_dynamic_tokens": 1500, "max_episodes_at_start": 3,
@@ -82,7 +82,7 @@ def _make_e2e_config(tmp_path: Path) -> Config:
         "stt": {"backend": ""},
         "documents": {"enabled": False, "max_chars": 30000, "max_file_bytes": 10485760,
                        "text_extensions": []},
-        "logging": {"max_bytes": 0, "backup_count": 0, "suppress": []},
+        "logging": {"suppress": []},
         "vision": {"max_image_bytes": 5242880, "max_dimension": 1568,
                     "jpeg_quality_steps": [85, 60, 40]},
         "behavior": {
@@ -90,16 +90,14 @@ def _make_e2e_config(tmp_path: Path) -> Config:
             "error_message": "error", "sqlite_timeout": 5,
             "api_retries": 0, "api_retry_base_delay": 0,
             "message_retries": 0, "message_retry_base_delay": 0,
-            "audit_truncation_limit": 500, "agent_timeout_seconds": 30,
+            "agent_timeout_seconds": 30,
             "max_turns_per_message": 5, "max_cost_per_message": 0.0,
-            "queue_capacity": 100, "queue_poll_interval": 0.1,
-            "quote_max_chars": 200, "notify_target": "",
+            "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize.", "keep_recent_pct": 0.33,
                 "keep_recent_pct_min": 0.05, "keep_recent_pct_max": 0.9,
-                "min_messages": 4, "tool_result_max_chars": 2000,
-                "warning_pct": 0.8, "diary_prompt": "Write a log.",
+                "diary_prompt": "Write a log.",
             },
         },
         "paths": {

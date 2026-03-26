@@ -132,15 +132,3 @@ class TestAgentName:
         mgr = SessionManager(tmp_sessions)
         assert mgr.agent_name == "Assistant"
 
-    def test_build_recall_uses_agent_name(self, tmp_sessions):
-        mgr = SessionManager(tmp_sessions, agent_name="Lucy")
-        # Create and close a session to have archived data
-        session = mgr.get_or_create("recall-user")
-        session.add_user_message("test message")
-        session.add_assistant_message({"role": "assistant", "content": "test reply"})
-        session.save_state()
-
-        # build_recall should use agent_name if present in formatting
-        recall_text = mgr.build_recall("recall-user", count=20)
-        # Even if empty (no archive), the method should not crash
-        assert isinstance(recall_text, str)

@@ -30,8 +30,8 @@ from typing import Any
 
 from aiohttp import web
 
-from models import Attachment
 from log_utils import _log_safe
+from models import Attachment
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +99,6 @@ class HTTPApi:
         rate_cleanup_threshold: int,
         agent_name: str = "",
         control_queue: asyncio.Queue | None = None,
-        webhook_secret: str = "",
     ):
         self.queue = queue
         self._control_queue = control_queue or queue
@@ -108,7 +107,6 @@ class HTTPApi:
         self.auth_token = auth_token
         self.agent_timeout = agent_timeout
         self.agent_name = agent_name
-        self._webhook_secret = webhook_secret
         self._get_status = get_status
         self._get_sessions = get_sessions
         self._get_monitor = get_monitor
@@ -144,7 +142,7 @@ class HTTPApi:
     async def start(self) -> None:
         """Start the HTTP server."""
         app = web.Application(
-            middlewares=[self._auth_middleware, self._webhook_middleware, self._rate_middleware],
+            middlewares=[self._auth_middleware, self._rate_middleware],
             client_max_size=self._max_body_bytes,
         )
         app.router.add_post("/api/v1/chat", self._handle_chat)
@@ -215,34 +213,6 @@ class HTTPApi:
             return self._json_response(
                 {"error": "unauthorized"}, status=401,
             )
-        return await handler(request)
-
-    # ─── Webhook Signature Middleware ─────────────────────────────
-
-    _WEBHOOK_PATHS = frozenset({
-        "/api/v1/message",
-        "/api/v1/notify",
-    })
-
-    @web.middleware
-    async def _webhook_middleware(self, request: web.Request, handler):
-        """Verify HMAC-SHA256 webhook signature for inbound webhook endpoints."""
-        if (
-            self._webhook_secret
-            and request.method == "POST"
-            and request.path in self._WEBHOOK_PATHS
-        ):
-            sig_header = request.headers.get("X-Webhook-Signature", "")
-            body = await request.read()
-            expected = hmac.new(
-                self._webhook_secret.encode(), body, "sha256",
-            ).hexdigest()
-            if not sig_header or not hmac.compare_digest(sig_header, expected):
-                log.warning("Webhook signature mismatch from %s %s",
-                            request.remote, request.path)
-                return self._json_response(
-                    {"error": "invalid webhook signature"}, status=401,
-                )
         return await handler(request)
 
     # ─── Rate Limit Middleware ────────────────────────────────────
@@ -560,7 +530,6 @@ class HTTPApi:
         sender = f"http-{body.get('sender', 'default')}"
         source_label = body.get("source", "")
         ref = body.get("ref", "")
-        data = body.get("data")
 
         # Build LLM text with optional prefix brackets
         parts = []
@@ -571,22 +540,12 @@ class HTTPApi:
         parts.append(message)
         text = " ".join(parts)
 
-        # Metadata for webhook echo-back
-        notify_meta: dict = {}
-        if source_label:
-            notify_meta["source"] = source_label
-        if ref:
-            notify_meta["ref"] = ref
-        if data is not None:
-            notify_meta["data"] = data
-
         attachments = self._extract_attachments(body)
 
         queue_item: dict[str, Any] = {
             "sender": sender,
             "type": "system",
             "text": f"[AUTOMATED SYSTEM MESSAGE] {text}",
-            "notify_meta": notify_meta or None,
             "notify": True,
         }
         if attachments:

@@ -31,14 +31,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import random
 
-from agentic import run_single_shot, is_transient_error, run_agentic_loop
-from metering import MeteringDB
-from relay import create_channel
+from agentic import is_transient_error, run_agentic_loop, run_single_shot
 from config import Config, ConfigError, load_config
 from context import ContextBuilder, _estimate_tokens
 from log_utils import _log_safe
+from metering import MeteringDB
 from providers import create_provider
-from session import SessionManager, _text_from_content, set_audit_truncation
+from relay import create_channel
+from session import SessionManager, _text_from_content
 from skills import SkillLoader
 from tools import ToolRegistry
 
@@ -433,7 +433,6 @@ class LucydDaemon:
         self.channel = create_channel(self.config)
 
     def _init_sessions(self) -> None:
-        set_audit_truncation(500)
         self.session_mgr = SessionManager(
             self.config.sessions_dir,
             agent_name=self.config.agent_name,
@@ -1492,7 +1491,8 @@ class LucydDaemon:
     async def _handle_index(self, full: bool = False) -> dict:
         """Run workspace indexing in a blocking thread."""
         from async_utils import run_blocking
-        from tools.indexer import configure as indexer_configure, index_workspace
+        from tools.indexer import configure as indexer_configure
+        from tools.indexer import index_workspace
 
         indexer_configure(
             chunk_size=self.config.indexer_chunk_size,

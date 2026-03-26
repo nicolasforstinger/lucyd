@@ -1,4 +1,4 @@
-"""Tests for tool plugin system — _init_plugins().
+"""Tests for tool plugin loading (plugin path within _init_tools).
 
 Verifies: discovery, filtering by enabled, configure() injection,
 bad plugin resilience, no TOOLS list, no plugins dir.
@@ -37,8 +37,8 @@ def _make_config(tmp_path, enabled=None, plugins_dir="plugins.d"):
         },
         "memory": {
             "db": "", "search_top_k": 10, "vector_search_limit": 10000,
-            "fts_min_results": 3, "embedding_timeout": 15,
-            "consolidation": {"enabled": False, "min_messages": 4, "confidence_threshold": 0.6, "max_extraction_chars": 50000},
+            "embedding_timeout": 15,
+            "consolidation": {"enabled": False, "confidence_threshold": 0.6},
             "recall": {
                 "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
                 "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
@@ -60,7 +60,7 @@ def _make_config(tmp_path, enabled=None, plugins_dir="plugins.d"):
         },
         "documents": {"enabled": True, "max_chars": 30000, "max_file_bytes": 10485760,
                       "text_extensions": [".txt", ".md"]},
-        "logging": {"max_bytes": 10485760, "backup_count": 3, "suppress": []},
+        "logging": {"suppress": []},
         "vision": {"max_image_bytes": 5242880, "max_dimension": 1568,
                    "jpeg_quality_steps": [85, 60, 40],
                    },
@@ -68,15 +68,13 @@ def _make_config(tmp_path, enabled=None, plugins_dir="plugins.d"):
             "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error",
             "sqlite_timeout": 30,
             "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
-            "audit_truncation_limit": 500, "agent_timeout_seconds": 600,
+            "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
-            "queue_capacity": 1000, "queue_poll_interval": 1.0, "quote_max_chars": 200,
             "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize for {agent_name}.", "keep_recent_pct": 0.33,
                 "keep_recent_pct_min": 0.05, "keep_recent_pct_max": 0.9,
-                "min_messages": 4, "tool_result_max_chars": 2000, "warning_pct": 0.8,
                 "diary_prompt": "Write a log for {date}.",
             },
         },
@@ -96,15 +94,14 @@ def _make_config(tmp_path, enabled=None, plugins_dir="plugins.d"):
 
 
 def _make_daemon(tmp_path, enabled=None, plugins_dir="plugins.d"):
-    """Build a daemon with tool registry for plugin testing."""
-    from tools import ToolRegistry
-
+    """Build a daemon with mocked deps for plugin testing."""
     config = _make_config(tmp_path, enabled=enabled, plugins_dir=plugins_dir)
     daemon = LucydDaemon(config)
-    daemon.tool_registry = ToolRegistry()
     daemon.channel = MagicMock()
     daemon.session_mgr = MagicMock()
-    daemon.provider = MagicMock()
+    provider = MagicMock()
+    provider.capabilities.max_context_tokens = 0
+    daemon.provider = provider
     return daemon
 
 
@@ -212,20 +209,20 @@ class TestPluginDiscovery:
         """Plugin with TOOLS list gets registered."""
         _write_plugin(tmp_path / "plugins.d", "simple.py", SIMPLE_PLUGIN)
         daemon = _make_daemon(tmp_path, enabled=["my_tool"])
-        daemon._init_plugins()
+        daemon._init_tools()
         assert "my_tool" in daemon.tool_registry.tool_names
 
     def test_no_plugins_dir_is_silent(self, tmp_path):
         """Missing plugins.d/ directory doesn't raise."""
-        daemon = _make_daemon(tmp_path)
-        daemon._init_plugins()  # Should not raise
+        daemon = _make_daemon(tmp_path, enabled=["nonexistent_plugin_tool"])
+        daemon._init_tools()  # Should not raise
         assert daemon.tool_registry.tool_names == []
 
     def test_custom_plugins_dir(self, tmp_path):
         """Custom plugins_dir path works."""
         _write_plugin(tmp_path / "my_plugins", "simple.py", SIMPLE_PLUGIN)
         daemon = _make_daemon(tmp_path, enabled=["my_tool"], plugins_dir="my_plugins")
-        daemon._init_plugins()
+        daemon._init_tools()
         assert "my_tool" in daemon.tool_registry.tool_names
 
 
@@ -236,7 +233,7 @@ class TestPluginFiltering:
         """Plugin tools not in enabled list are skipped."""
         _write_plugin(tmp_path / "plugins.d", "two.py", TWO_TOOLS_PLUGIN)
         daemon = _make_daemon(tmp_path, enabled=["tool_a"])
-        daemon._init_plugins()
+        daemon._init_tools()
         assert "tool_a" in daemon.tool_registry.tool_names
         assert "tool_b" not in daemon.tool_registry.tool_names
 
@@ -244,7 +241,7 @@ class TestPluginFiltering:
         """Plugin with no matching enabled tools registers nothing."""
         _write_plugin(tmp_path / "plugins.d", "simple.py", SIMPLE_PLUGIN)
         daemon = _make_daemon(tmp_path, enabled=["read", "write"])
-        daemon._init_plugins()
+        daemon._init_tools()
         assert "my_tool" not in daemon.tool_registry.tool_names
 
 
@@ -255,14 +252,14 @@ class TestPluginConfigure:
         """configure(config) gets the Config object."""
         _write_plugin(tmp_path / "plugins.d", "cfg.py", CONFIGURABLE_PLUGIN)
         daemon = _make_daemon(tmp_path, enabled=["cfg_tool"])
-        daemon._init_plugins()
+        daemon._init_tools()
         assert "cfg_tool" in daemon.tool_registry.tool_names
 
     def test_configure_receives_multiple_deps(self, tmp_path):
         """configure(config, channel, session_mgr) gets all requested deps."""
         _write_plugin(tmp_path / "plugins.d", "multi.py", MULTI_DEP_PLUGIN)
         daemon = _make_daemon(tmp_path, enabled=["multi_tool"])
-        daemon._init_plugins()
+        daemon._init_tools()
         assert "multi_tool" in daemon.tool_registry.tool_names
 
 
@@ -275,12 +272,12 @@ class TestPluginResilience:
         _write_plugin(plugins_dir, "aaa_bad.py", BAD_PLUGIN)
         _write_plugin(plugins_dir, "zzz_good.py", SIMPLE_PLUGIN)
         daemon = _make_daemon(tmp_path, enabled=["my_tool"])
-        daemon._init_plugins()
+        daemon._init_tools()
         assert "my_tool" in daemon.tool_registry.tool_names
 
     def test_no_tools_list_skipped(self, tmp_path):
         """Plugin without TOOLS list is silently skipped."""
         _write_plugin(tmp_path / "plugins.d", "no_tools.py", NO_TOOLS_PLUGIN)
-        daemon = _make_daemon(tmp_path, enabled=["read"])
-        daemon._init_plugins()  # Should not raise
+        daemon = _make_daemon(tmp_path, enabled=["nonexistent_plugin_tool"])
+        daemon._init_tools()  # Should not raise
         assert daemon.tool_registry.tool_names == []

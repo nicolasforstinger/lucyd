@@ -13,8 +13,8 @@ import hashlib
 import json
 import logging
 import math
-import time
 import sqlite3
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,7 +149,7 @@ class MemoryInterface:
                 rows = conn.execute(
                     "SELECT id, path, source, text, embedding FROM chunks "
                     "WHERE embedding IS NOT NULL LIMIT ?",
-                    (self.vector_search_limit,)
+                    (self.vector_search_limit,),
                 ).fetchall()
                 if len(rows) == self.vector_search_limit:
                     log.warning("Vector search hit %d row limit — results may be incomplete", self.vector_search_limit)
@@ -291,29 +291,14 @@ class MemoryInterface:
 
 # ─── Structured Recall (Memory v2) ──────────────────────────────
 
-# Default priority assignments (higher = more important, dropped lowest-first).
-# These are overridden by config.recall_priority_* when config is available.
-_DEFAULT_PRIORITIES = {
-    "vector": 35,
-    "episodes": 25,
-    "facts": 15,
-    "commitments": 40,
-}
-
-
-def _recall_config(config) -> dict:
-    """Extract recall config values with defaults."""
-    def _g(attr, default):
-        return getattr(config, attr, default) if config else default
-    return {
-        "fact_fmt": _g("recall_fact_format", "natural"),
-        "show_tone": _g("recall_show_emotional_tone", True),
-        "episode_header": _g("recall_episode_section_header", "Recent conversations"),
-        "p_facts": _g("recall_priority_facts", _DEFAULT_PRIORITIES["facts"]),
-        "p_episodes": _g("recall_priority_episodes", _DEFAULT_PRIORITIES["episodes"]),
-        "p_vector": _g("recall_priority_vector", _DEFAULT_PRIORITIES["vector"]),
-        "p_commitments": _g("recall_priority_commitments", _DEFAULT_PRIORITIES["commitments"]),
-    }
+# Hardcoded recall personality constants.
+RECALL_PRIORITY_VECTOR = 35
+RECALL_PRIORITY_EPISODES = 25
+RECALL_PRIORITY_FACTS = 15
+RECALL_PRIORITY_COMMITMENTS = 40
+RECALL_FACT_FORMAT = "natural"
+RECALL_SHOW_EMOTIONAL_TONE = True
+RECALL_EPISODE_SECTION_HEADER = "Recent conversations"
 
 
 @dataclass
@@ -329,14 +314,12 @@ def _format_fact(f, fmt: str = "natural") -> str:
 
     Normalizes input to (entity, attribute, value) then formats.
     """
-    if isinstance(f, dict):
+    if isinstance(f, dict) or hasattr(f, "keys"):
         entity, attr, value = f["entity"], f["attribute"], f["value"]
-    elif hasattr(f, "keys"):
-        # sqlite3.Row (dict-like access)
-        entity, attr, value = f["entity"], f["attribute"], f["value"]
-    else:
-        # tuple: (entity, attribute, value, ...)
+    elif isinstance(f, (tuple, list)):
         entity, attr, value = f[0], f[1], f[2]
+    else:
+        raise TypeError(f"_format_fact: expected dict, Row, or tuple, got {type(f).__name__}")
     if fmt == "compact":
         return f"  {entity}.{attr}: {value}"
     return f"  {entity.replace('_', ' ')} — {attr.replace('_', ' ')}: {value}"
@@ -383,7 +366,7 @@ def resolve_entity(name: str, conn: sqlite3.Connection) -> str:
     normalized = _normalize_entity(name)
     row = conn.execute(
         "SELECT canonical FROM entity_aliases WHERE alias = ?",
-        (normalized,)
+        (normalized,),
     ).fetchone()
     return row[0] if row else normalized
 
@@ -408,7 +391,7 @@ def extract_query_entities(query: str, conn: sqlite3.Connection) -> set[str]:
         exists = conn.execute(
             "SELECT 1 FROM facts WHERE entity = ? "
             "AND invalidated_at IS NULL LIMIT 1",
-            (candidate,)
+            (candidate,),
         ).fetchone()
         if exists:
             entities.add(candidate)
@@ -508,10 +491,8 @@ async def recall(
     """Three-stage recall: facts -> episodes -> vector fallback.
 
     Returns list of RecallBlocks ordered by priority (highest first).
-    Priorities and formatting are config-driven via [memory.recall.personality].
     """
     blocks: list[RecallBlock] = []
-    rc = _recall_config(config)
     max_facts = getattr(config, "recall_max_facts", 20)
     decay_rate = getattr(config, "recall_decay_rate", 0.03)
 
@@ -520,10 +501,10 @@ async def recall(
     if entities:
         facts = lookup_facts(entities, conn, max_results=max_facts)
         if facts:
-            lines = [_format_fact(f, rc["fact_fmt"]) for f in facts]
+            lines = [_format_fact(f, RECALL_FACT_FORMAT) for f in facts]
             text = "\n".join(lines)
             blocks.append(RecallBlock(
-                priority=rc["p_facts"],
+                priority=RECALL_PRIORITY_FACTS,
                 section="[Known facts]",
                 text=text,
                 est_tokens=_estimate_tokens(text),
@@ -535,11 +516,11 @@ async def recall(
     if keywords:
         episodes = search_episodes(keywords, conn, max_results=max_ep)
         if episodes:
-            lines = [_format_episode(e, rc["show_tone"]) for e in episodes]
+            lines = [_format_episode(e, RECALL_SHOW_EMOTIONAL_TONE) for e in episodes]
             text = "\n".join(lines)
             blocks.append(RecallBlock(
-                priority=rc["p_episodes"],
-                section=f"[{rc['episode_header']}]",
+                priority=RECALL_PRIORITY_EPISODES,
+                section=f"[{RECALL_EPISODE_SECTION_HEADER}]",
                 text=text,
                 est_tokens=_estimate_tokens(text),
             ))
@@ -553,20 +534,20 @@ async def recall(
         for r in vector_results:
             days_old = r.get("days_old", 0)
             r["decayed_score"] = r["score"] * math.exp(
-                -decay_rate * days_old
+                -decay_rate * days_old,
             )
         vector_results.sort(key=lambda r: r["decayed_score"], reverse=True)
         lines = [f"  {r['text'][:200]}" for r in vector_results[:top_k]]
         text = "\n".join(lines)
         blocks.append(RecallBlock(
-            priority=rc["p_vector"],
+            priority=RECALL_PRIORITY_VECTOR,
             section="[Memory search]",
             text=text,
             est_tokens=_estimate_tokens(text),
         ))
 
     # Stage 4: Open commitments (always included)
-    cb = _build_commitment_block(conn, rc["p_commitments"])
+    cb = _build_commitment_block(conn, RECALL_PRIORITY_COMMITMENTS)
     if cb:
         blocks.append(cb)
 
@@ -638,12 +619,8 @@ def get_session_start_context(
 ) -> str:
     """Build structured context for the first message of a session.
 
-    Includes facts, recent episodes, and open commitments. All formatting
-    and priority values are config-driven via [memory.recall.personality].
+    Includes facts, recent episodes, and open commitments.
     """
-    # Read config or fall back to defaults
-    rc = _recall_config(config)
-
     blocks: list[RecallBlock] = []
 
     facts = conn.execute("""
@@ -655,10 +632,10 @@ def get_session_start_context(
     """, (max_facts,)).fetchall()
 
     if facts:
-        lines = [_format_fact(f, rc["fact_fmt"]) for f in facts]
+        lines = [_format_fact(f, RECALL_FACT_FORMAT) for f in facts]
         text = "\n".join(lines)
         blocks.append(RecallBlock(
-            priority=rc["p_facts"],
+            priority=RECALL_PRIORITY_FACTS,
             section="[Known facts]",
             text=text,
             est_tokens=_estimate_tokens(text),
@@ -672,17 +649,67 @@ def get_session_start_context(
     """, (max_episodes,)).fetchall()
 
     if episodes:
-        lines = [_format_episode(e, rc["show_tone"]) for e in episodes]
+        lines = [_format_episode(e, RECALL_SHOW_EMOTIONAL_TONE) for e in episodes]
         text = "\n".join(lines)
         blocks.append(RecallBlock(
-            priority=rc["p_episodes"],
-            section=f"[{rc['episode_header']}]",
+            priority=RECALL_PRIORITY_EPISODES,
+            section=f"[{RECALL_EPISODE_SECTION_HEADER}]",
             text=text,
             est_tokens=_estimate_tokens(text),
         ))
 
-    cb = _build_commitment_block(conn, rc["p_commitments"])
+    cb = _build_commitment_block(conn, RECALL_PRIORITY_COMMITMENTS)
     if cb:
         blocks.append(cb)
 
     return inject_recall(blocks, max_tokens)
+
+
+def run_maintenance(conn: sqlite3.Connection, stale_threshold_days: int) -> dict:
+    """Run memory maintenance: stale facts, expired commitments, conflict detection.
+
+    Returns a stats dict with counts for facts, episodes, open_commitments,
+    stale, expired, and conflicts.  Caller is responsible for metering retention.
+    """
+    stale = conn.execute("""
+        SELECT id, entity, attribute, value
+        FROM facts
+        WHERE invalidated_at IS NULL
+          AND julianday('now') - julianday(accessed_at) > ?
+    """, (stale_threshold_days,)).fetchall()
+
+    expired = conn.execute("""
+        UPDATE commitments SET status = 'expired'
+        WHERE status = 'open'
+          AND deadline IS NOT NULL
+          AND deadline < date('now')
+    """).rowcount
+
+    conflicts = conn.execute("""
+        SELECT f1.entity, f1.attribute,
+               f1.value AS val1, f2.value AS val2
+        FROM facts f1
+        JOIN facts f2 ON f1.entity = f2.entity
+            AND f1.attribute = f2.attribute
+            AND f1.id < f2.id
+        WHERE f1.invalidated_at IS NULL
+          AND f2.invalidated_at IS NULL
+    """).fetchall()
+
+    stats = {
+        "facts": conn.execute(
+            "SELECT COUNT(*) FROM facts WHERE invalidated_at IS NULL",
+        ).fetchone()[0],
+        "episodes": conn.execute(
+            "SELECT COUNT(*) FROM episodes",
+        ).fetchone()[0],
+        "open_commitments": conn.execute(
+            "SELECT COUNT(*) FROM commitments WHERE status = 'open'",
+        ).fetchone()[0],
+        "stale": len(stale),
+        "expired": expired,
+        "conflicts": len(conflicts),
+    }
+
+    conn.commit()
+    return stats

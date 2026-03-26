@@ -59,7 +59,7 @@ async def tool_exec(command: str, timeout: int | None = None) -> str:
             start_new_session=True,
         )
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout
+            proc.communicate(), timeout=timeout,
         )
     except TimeoutError:
         try:

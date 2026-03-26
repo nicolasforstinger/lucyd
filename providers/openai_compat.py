@@ -18,13 +18,21 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 
-from collections.abc import AsyncIterator
 import httpx
 
-from async_utils import run_blocking
-from . import LLMResponse, ModelCapabilities, StreamDelta, ToolCall, Usage, stream_fallback
+from async_utils import run_blocking, threaded_stream
+
+from . import (
+    LLMResponse,
+    ModelCapabilities,
+    StreamDelta,
+    ToolCall,
+    Usage,
+    stream_fallback,
+)
 
 log = logging.getLogger(__name__)
 
@@ -276,7 +284,7 @@ class OpenAICompatProvider:
         if not self.base_url:
             raise RuntimeError(
                 "OpenAI-compatible provider requires either the openai package "
-                "or a configured base_url for direct HTTP fallback"
+                "or a configured base_url for direct HTTP fallback",
             )
 
         # Flatten extra_body into top-level params for direct HTTP requests.
@@ -312,7 +320,7 @@ class OpenAICompatProvider:
         )
 
     async def complete(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs
+        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
     ) -> LLMResponse:
         """Call OpenAI-compatible chat completions API.
 
@@ -349,7 +357,7 @@ class OpenAICompatProvider:
             return await self._complete_via_httpx(params)
 
         response = await run_blocking(
-            self.client.chat.completions.create, **params  # type: ignore[union-attr]
+            self.client.chat.completions.create, **params,  # type: ignore[union-attr]
         )
 
         choice = response.choices[0]
@@ -412,7 +420,7 @@ class OpenAICompatProvider:
         )
 
     async def stream(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs
+        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from OpenAI-compatible API.
 
@@ -449,106 +457,81 @@ class OpenAICompatProvider:
         if extra_body:
             params["extra_body"] = extra_body
 
-        import queue
-        import threading
-
-        q: queue.Queue = queue.Queue()
-        sentinel = object()
-
-        def _run_stream():
-            try:
-                stream_resp = client.chat.completions.create(**params)
-                for chunk in stream_resp:
-                    q.put(chunk)
-            except Exception as exc:
-                q.put(exc)
-            finally:
-                q.put(sentinel)
-
-        thread = threading.Thread(target=_run_stream, daemon=True)
-        thread.start()
+        def _stream_factory():
+            return client.chat.completions.create(**params)
 
         in_think = False
-        try:
-            while True:
-                item = await run_blocking(q.get)
-                if item is sentinel:
-                    break
-                if isinstance(item, Exception):
-                    raise item
+        async for item in threaded_stream(_stream_factory):
+            if not item.choices and item.usage:
+                # Final usage-only chunk
+                u = item.usage
+                usage_dict: dict[str, Any] = {
+                    "prompt_tokens": u.prompt_tokens or 0,
+                    "completion_tokens": u.completion_tokens or 0,
+                }
+                details = getattr(u, "prompt_tokens_details", None)
+                if details and hasattr(details, "cached_tokens"):
+                    usage_dict["cached_tokens"] = details.cached_tokens or 0
+                yield StreamDelta(usage=self._parse_usage_dict(usage_dict))
+                continue
 
-                if not item.choices and item.usage:
-                    # Final usage-only chunk
-                    u = item.usage
-                    usage_dict: dict[str, Any] = {
-                        "prompt_tokens": u.prompt_tokens or 0,
-                        "completion_tokens": u.completion_tokens or 0,
-                    }
-                    details = getattr(u, "prompt_tokens_details", None)
-                    if details and hasattr(details, "cached_tokens"):
-                        usage_dict["cached_tokens"] = details.cached_tokens or 0
-                    yield StreamDelta(usage=self._parse_usage_dict(usage_dict))
-                    continue
+            if not item.choices:
+                continue
 
-                if not item.choices:
-                    continue
+            choice = item.choices[0]
+            delta = choice.delta
 
-                choice = item.choices[0]
-                delta = choice.delta
-
-                # Text content
-                if delta and delta.content:
-                    text = delta.content
-                    # Detect <think> blocks in streaming
-                    if "<think>" in text:
-                        in_think = True
-                        text = text.split("<think>", 1)[0]
-                        think_part = delta.content.split("<think>", 1)[1]
-                        if text:
-                            yield StreamDelta(text=text)
-                        if "</think>" in think_part:
-                            thinking, rest = think_part.split("</think>", 1)
-                            yield StreamDelta(thinking=thinking)
-                            in_think = False
-                            if rest:
-                                yield StreamDelta(text=rest)
-                        else:
-                            yield StreamDelta(thinking=think_part)
-                    elif in_think:
-                        if "</think>" in text:
-                            thinking, rest = text.split("</think>", 1)
-                            yield StreamDelta(thinking=thinking)
-                            in_think = False
-                            if rest:
-                                yield StreamDelta(text=rest)
-                        else:
-                            yield StreamDelta(thinking=text)
-                    else:
+            # Text content
+            if delta and delta.content:
+                text = delta.content
+                # Detect <think> blocks in streaming
+                if "<think>" in text:
+                    in_think = True
+                    text = text.split("<think>", 1)[0]
+                    think_part = delta.content.split("<think>", 1)[1]
+                    if text:
                         yield StreamDelta(text=text)
+                    if "</think>" in think_part:
+                        thinking, rest = think_part.split("</think>", 1)
+                        yield StreamDelta(thinking=thinking)
+                        in_think = False
+                        if rest:
+                            yield StreamDelta(text=rest)
+                    else:
+                        yield StreamDelta(thinking=think_part)
+                elif in_think:
+                    if "</think>" in text:
+                        thinking, rest = text.split("</think>", 1)
+                        yield StreamDelta(thinking=thinking)
+                        in_think = False
+                        if rest:
+                            yield StreamDelta(text=rest)
+                    else:
+                        yield StreamDelta(thinking=text)
+                else:
+                    yield StreamDelta(text=text)
 
-                # Tool call deltas
-                if delta and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index if tc_delta.index is not None else 0
-                        if tc_delta.id:
-                            yield StreamDelta(
-                                tool_call_index=idx,
-                                tool_call_id=tc_delta.id,
-                                tool_name=tc_delta.function.name if tc_delta.function else "",
-                            )
-                        if tc_delta.function and tc_delta.function.arguments:
-                            yield StreamDelta(
-                                tool_call_index=idx,
-                                tool_args_delta=tc_delta.function.arguments,
-                            )
+            # Tool call deltas
+            if delta and delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index if tc_delta.index is not None else 0
+                    if tc_delta.id:
+                        yield StreamDelta(
+                            tool_call_index=idx,
+                            tool_call_id=tc_delta.id,
+                            tool_name=tc_delta.function.name if tc_delta.function else "",
+                        )
+                    if tc_delta.function and tc_delta.function.arguments:
+                        yield StreamDelta(
+                            tool_call_index=idx,
+                            tool_args_delta=tc_delta.function.arguments,
+                        )
 
-                # Finish reason
-                if choice.finish_reason:
-                    stop = "end_turn"
-                    if choice.finish_reason == "tool_calls":
-                        stop = "tool_use"
-                    elif choice.finish_reason == "length":
-                        stop = "max_tokens"
-                    yield StreamDelta(stop_reason=stop)
-        finally:
-            thread.join(timeout=5)
+            # Finish reason
+            if choice.finish_reason:
+                stop = "end_turn"
+                if choice.finish_reason == "tool_calls":
+                    stop = "tool_use"
+                elif choice.finish_reason == "length":
+                    stop = "max_tokens"
+                yield StreamDelta(stop_reason=stop)

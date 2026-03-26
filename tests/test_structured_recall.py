@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from memory import (
-    _DEFAULT_PRIORITIES,
     EMPTY_RECALL_FALLBACK,
+    RECALL_PRIORITY_COMMITMENTS,
+    RECALL_PRIORITY_EPISODES,
+    RECALL_PRIORITY_FACTS,
+    RECALL_PRIORITY_VECTOR,
     RecallBlock,
     _format_episode,
     _format_fact,
@@ -103,16 +106,9 @@ def populated_conn(mem_conn):
 
 
 class FakeConfig:
-    """Config mock with all personality attributes at warm defaults."""
+    """Config mock with recall attributes."""
     recall_max_facts = 20
     recall_decay_rate = 0.03
-    recall_fact_format = "natural"
-    recall_show_emotional_tone = True
-    recall_priority_vector = 35
-    recall_priority_episodes = 25
-    recall_priority_facts = 15
-    recall_priority_commitments = 40
-    recall_episode_section_header = "Recent conversations"
     recall_max_episodes_at_start = 3
     recall_max_dynamic_tokens = 1500
 
@@ -407,30 +403,22 @@ class TestRecall:
         assert has_commitments
 
     @pytest.mark.asyncio
-    async def test_uses_config_priorities(self, populated_conn):
-        """Verify recall uses config priority values, not defaults."""
+    async def test_uses_hardcoded_priorities(self, populated_conn):
+        """Verify recall uses hardcoded priority constants."""
         mock_memory = AsyncMock()
         mock_memory.search.return_value = [
             {"text": "vector", "score": 0.5, "days_old": 0},
         ]
 
-        class FactsHeavyConfig(FakeConfig):
-            recall_priority_facts = 50
-            recall_priority_vector = 5
-
         blocks = await recall(
             "nicolas", populated_conn,
-            mock_memory, FactsHeavyConfig(),
+            mock_memory, FakeConfig(),
         )
 
         fact_block = next(b for b in blocks if b.section == "[Known facts]")
         vector_block = next(b for b in blocks if b.section == "[Memory search]")
-        assert fact_block.priority == 50
-        assert vector_block.priority == 5
-        # Facts should sort before vector
-        fact_idx = blocks.index(fact_block)
-        vector_idx = blocks.index(vector_block)
-        assert fact_idx < vector_idx
+        assert fact_block.priority == RECALL_PRIORITY_FACTS
+        assert vector_block.priority == RECALL_PRIORITY_VECTOR
 
     @pytest.mark.asyncio
     async def test_uses_natural_fact_format(self, populated_conn):
@@ -447,38 +435,18 @@ class TestRecall:
         assert " — " in fact_block.text
 
     @pytest.mark.asyncio
-    async def test_uses_compact_fact_format(self, populated_conn):
+    async def test_episode_section_header_uses_constant(self, populated_conn):
         mock_memory = AsyncMock()
         mock_memory.search.return_value = []
-
-        class CompactConfig(FakeConfig):
-            recall_fact_format = "compact"
-
-        blocks = await recall(
-            "nicolas", populated_conn,
-            mock_memory, CompactConfig(),
-        )
-
-        fact_block = next(b for b in blocks if b.section == "[Known facts]")
-        assert "." in fact_block.text
-        assert " — " not in fact_block.text
-
-    @pytest.mark.asyncio
-    async def test_episode_section_header_from_config(self, populated_conn):
-        mock_memory = AsyncMock()
-        mock_memory.search.return_value = []
-
-        class CustomHeaderConfig(FakeConfig):
-            recall_episode_section_header = "What happened lately"
 
         # Query must match episode keywords — "memory" hits fixture episode topics
         blocks = await recall(
             "tell me about memory architecture", populated_conn,
-            mock_memory, CustomHeaderConfig(),
+            mock_memory, FakeConfig(),
         )
 
         episode_block = next(
-            (b for b in blocks if "What happened lately" in b.section), None
+            (b for b in blocks if "Recent conversations" in b.section), None
         )
         assert episode_block is not None
 
@@ -601,15 +569,12 @@ class TestGetSessionStartContext:
         assert "[Known facts]" in result
         assert "[Open commitments]" in result
 
-    def test_uses_config_fact_format(self, populated_conn):
-        class CompactConfig(FakeConfig):
-            recall_fact_format = "compact"
-
+    def test_uses_natural_fact_format(self, populated_conn):
         result = get_session_start_context(
-            populated_conn, config=CompactConfig()
+            populated_conn, config=FakeConfig()
         )
-        # Compact format uses dots, not em-dashes
-        assert "." in result.split("[Recent conversations]")[0]
+        # Natural format uses em-dashes
+        assert " — " in result.split("[Recent conversations]")[0]
 
     def test_episode_tone_in_output(self, populated_conn):
         result = get_session_start_context(populated_conn, config=FakeConfig())
@@ -621,20 +586,20 @@ class TestGetSessionStartContext:
 
 
 class TestDefaults:
-    def test_default_priorities_exist(self):
-        assert "vector" in _DEFAULT_PRIORITIES
-        assert "episodes" in _DEFAULT_PRIORITIES
-        assert "facts" in _DEFAULT_PRIORITIES
-        assert "commitments" in _DEFAULT_PRIORITIES
+    def test_priority_constants_exist(self):
+        assert RECALL_PRIORITY_VECTOR == 35
+        assert RECALL_PRIORITY_EPISODES == 25
+        assert RECALL_PRIORITY_FACTS == 15
+        assert RECALL_PRIORITY_COMMITMENTS == 40
 
-    def test_commitments_highest_default(self):
-        assert _DEFAULT_PRIORITIES["commitments"] > _DEFAULT_PRIORITIES["vector"]
-        assert _DEFAULT_PRIORITIES["commitments"] > _DEFAULT_PRIORITIES["episodes"]
-        assert _DEFAULT_PRIORITIES["commitments"] > _DEFAULT_PRIORITIES["facts"]
+    def test_commitments_highest(self):
+        assert RECALL_PRIORITY_COMMITMENTS > RECALL_PRIORITY_VECTOR
+        assert RECALL_PRIORITY_COMMITMENTS > RECALL_PRIORITY_EPISODES
+        assert RECALL_PRIORITY_COMMITMENTS > RECALL_PRIORITY_FACTS
 
-    def test_vector_outranks_facts_in_warm_profile(self):
-        """Warm defaults: vector > facts (warmth over clinical precision)."""
-        assert _DEFAULT_PRIORITIES["vector"] > _DEFAULT_PRIORITIES["facts"]
+    def test_vector_outranks_facts(self):
+        """Vector > facts (warmth over clinical precision)."""
+        assert RECALL_PRIORITY_VECTOR > RECALL_PRIORITY_FACTS
 
     def test_empty_recall_fallback_not_empty(self):
         assert len(EMPTY_RECALL_FALLBACK) > 0

@@ -3,7 +3,7 @@
 The core of the agent. Takes a provider, messages, tools, and loops
 until done (end_turn, max_tokens, or max_turns).
 
-SingleShotStrategy: one model call, no tools (for constrained models).
+run_single_shot: one model call, no tools (for constrained models).
 run_agentic_loop: multi-turn tool-use loop (think, act, observe, repeat).
 """
 
@@ -16,9 +16,8 @@ import logging
 import random
 import time
 import uuid
-from typing import Any
-
 from dataclasses import dataclass
+from typing import Any
 
 from providers import LLMProvider, LLMResponse, StreamDelta, ToolCall, Usage
 from tools import ToolRegistry
@@ -61,7 +60,7 @@ async def _call_provider_with_retry(
 ) -> LLMResponse:
     """Call the provider with retry and streaming.
 
-    Shared by both SingleShotStrategy and run_agentic_loop. Handles:
+    Shared by both run_single_shot and run_agentic_loop. Handles:
     - Streaming vs non-streaming dispatch
     - Retry with exponential backoff + jitter for transient errors
     - Timeout enforcement
@@ -101,50 +100,46 @@ async def _call_provider_with_retry(
     raise last_exc  # type: ignore[misc]
 
 
-class SingleShotStrategy:
+async def run_single_shot(
+    provider: LLMProvider,
+    system: Any,
+    messages: list[dict],
+    tools: list[dict],  # ignored
+    tool_executor: ToolRegistry,  # ignored
+    config: LoopConfig | None = None,
+    cost: Any = None,
+    on_response: Any = None,
+    on_tool_results: Any = None,
+    on_stream_delta: Any = None,
+) -> LLMResponse:
     """Single model call, no tools. For constrained models or simple queries."""
+    from providers import CostContext
+    cfg = config or LoopConfig()
+    cc = cost if cost else CostContext.none()
+    trace_id = cfg.trace_id or str(uuid.uuid4())
 
-    async def run(
-        self,
-        provider: LLMProvider,
-        system: Any,
-        messages: list[dict],
-        tools: list[dict],  # ignored
-        tool_executor: ToolRegistry,  # ignored
-        config: LoopConfig | None = None,
-        cost: Any = None,
-        on_response: Any = None,
-        on_tool_results: Any = None,
-        on_stream_delta: Any = None,
-    ) -> LLMResponse:
-        """Single model call — no tool loop."""
-        from providers import CostContext
-        cfg = config or LoopConfig()
-        cc = cost if cost else CostContext.none()
-        trace_id = cfg.trace_id or str(uuid.uuid4())
+    fmt_messages = provider.format_messages(messages)
 
-        fmt_messages = provider.format_messages(messages)
+    response = await _call_provider_with_retry(
+        provider, system, fmt_messages, [],
+        cfg=cfg, trace_id=trace_id, on_stream_delta=on_stream_delta,
+    )
 
-        response = await _call_provider_with_retry(
-            provider, system, fmt_messages, [],
-            cfg=cfg, trace_id=trace_id, on_stream_delta=on_stream_delta,
+    messages.append(response.to_internal_message())
+
+    if cc.metering and cc.cost_rates:
+        cc.metering.record(
+            session_id=cc.session_id,
+            model=cc.model_name, provider=cc.provider_name,
+            usage=response.usage, cost_rates=cc.cost_rates,
+            trace_id=trace_id,
         )
 
-        messages.append(response.to_internal_message())
+    if on_response:
+        await on_response(response) if inspect.iscoroutinefunction(on_response) \
+            else on_response(response)
 
-        if cc.metering and cc.cost_rates:
-            cc.metering.record(
-                session_id=cc.session_id,
-                model=cc.model_name, provider=cc.provider_name,
-                usage=response.usage, cost_rates=cc.cost_rates,
-                trace_id=trace_id,
-            )
-
-        if on_response:
-            await on_response(response) if inspect.iscoroutinefunction(on_response) \
-                else on_response(response)
-
-        return response
+    return response
 
 
 async def _stream_to_response(

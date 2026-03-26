@@ -93,7 +93,7 @@ def validate_ffmpeg() -> None:
     if not shutil.which("ffmpeg"):
         raise RuntimeError(
             "Local STT requires ffmpeg but it is not installed. "
-            "Install it (apt-get install ffmpeg) or use a cloud STT backend."
+            "Install it (apt-get install ffmpeg) or use a cloud STT backend.",
         )
 
 

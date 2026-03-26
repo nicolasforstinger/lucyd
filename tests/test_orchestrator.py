@@ -79,8 +79,8 @@ def _make_config(tmp_path, **overrides):
         },
         "memory": {
             "db": "", "search_top_k": 10, "vector_search_limit": 10000,
-            "fts_min_results": 3, "embedding_timeout": 15,
-            "consolidation": {"enabled": False, "min_messages": 4, "confidence_threshold": 0.6, "max_extraction_chars": 50000},
+            "embedding_timeout": 15,
+            "consolidation": {"enabled": False, "confidence_threshold": 0.6},
             "recall": {
                 "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
                 "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
@@ -100,7 +100,7 @@ def _make_config(tmp_path, **overrides):
         },
         "documents": {"enabled": True, "max_chars": 30000, "max_file_bytes": 10485760,
                       "text_extensions": [".txt", ".md"]},
-        "logging": {"max_bytes": 10485760, "backup_count": 3, "suppress": []},
+        "logging": {"suppress": []},
         "vision": {"max_image_bytes": 5242880, "max_dimension": 1568,
                    "jpeg_quality_steps": [85, 60, 40],
                    },
@@ -108,15 +108,13 @@ def _make_config(tmp_path, **overrides):
             "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error",
             "sqlite_timeout": 30,
             "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
-            "audit_truncation_limit": 500, "agent_timeout_seconds": 600,
+            "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
-            "queue_capacity": 1000, "queue_poll_interval": 1.0, "quote_max_chars": 200,
             "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize for {agent_name}.", "keep_recent_pct": 0.33,
                 "keep_recent_pct_min": 0.05, "keep_recent_pct_max": 0.9,
-                "min_messages": 4, "tool_result_max_chars": 2000, "warning_pct": 0.8,
                 "diary_prompt": "Write a log for {date}.",
             },
         },
@@ -164,13 +162,12 @@ def _make_daemon(tmp_path):
     session.needs_compaction = MagicMock(return_value=False)
     session.warned_about_compaction = False
     session.add_user_message = MagicMock()
-    session.persist_assistant_message = MagicMock()
-    session.persist_tool_results = MagicMock()
+    session.add_assistant_message = MagicMock()
+    session.add_tool_results = MagicMock()
     session.save_state = MagicMock()
 
     daemon.session_mgr = MagicMock()
     daemon.session_mgr.get_or_create = MagicMock(return_value=session)
-    daemon.session_mgr.build_recall = MagicMock(return_value="")
     daemon.session_mgr.close_session = AsyncMock(return_value=True)
     daemon.session_mgr.save_state = MagicMock(side_effect=lambda s: s.save_state())
     daemon.session_mgr.has_session = MagicMock(return_value=False)
@@ -202,7 +199,6 @@ def _make_daemon(tmp_path):
     daemon.config.max_turns = 10
     daemon.config.agent_timeout = 30
     daemon.config.agent_id = "test"
-    daemon.config.metering_currency = "EUR"
     daemon.config.silent_tokens = []
     daemon.config.compaction_threshold = 150000
     daemon.config.always_on_skills = []
@@ -215,14 +211,7 @@ def _make_daemon(tmp_path):
     daemon.config.agent_name = "TestAgent"
     daemon.config.consolidation_enabled = False
     daemon.config.notify_target = ""
-    daemon.config.queue_capacity = 1000
-    daemon.config.queue_poll_interval = 1.0
-    daemon.config.quote_max_chars = 200
     daemon.config.sqlite_timeout = 30
-    daemon.config.compaction_warning_pct = 0.8
-    daemon.config.compaction_min_messages = 4
-    daemon.config.compaction_tool_result_max_chars = 2000
-    daemon.config.http_callback_max_failures = 10
 
     from metering import MeteringDB
     daemon.metering_db = MeteringDB(str(tmp_path / "metering.db"))
@@ -958,7 +947,7 @@ class TestMessagePersistence:
 
     @pytest.mark.asyncio
     async def test_assistant_messages_persisted(self, tmp_path):
-        """Assistant messages appended by loop → persist_assistant_message called."""
+        """Assistant messages appended by loop → add_assistant_message(persist_only=True) called."""
         daemon, provider, session = _make_daemon(tmp_path)
         response = _make_response(text="reply")
 
@@ -972,13 +961,13 @@ class TestMessagePersistence:
                 text="hello", sender="user", source="telegram",
             )
 
-        session.persist_assistant_message.assert_called_once_with(
-            {"role": "assistant", "content": "reply"}
+        session.add_assistant_message.assert_called_once_with(
+            {"role": "assistant", "content": "reply"}, persist_only=True
         )
 
     @pytest.mark.asyncio
     async def test_tool_results_persisted(self, tmp_path):
-        """Tool result messages → persist_tool_results called."""
+        """Tool result messages → add_tool_results(persist_only=True) called."""
         daemon, provider, session = _make_daemon(tmp_path)
         response = _make_response(text="reply")
 
@@ -995,8 +984,8 @@ class TestMessagePersistence:
                 text="hello", sender="user", source="telegram",
             )
 
-        session.persist_tool_results.assert_called_once_with(
-            [{"tool_use_id": "tc-1", "content": "done"}]
+        session.add_tool_results.assert_called_once_with(
+            [{"tool_use_id": "tc-1", "content": "done"}], persist_only=True
         )
 
     @pytest.mark.asyncio

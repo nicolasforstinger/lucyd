@@ -44,7 +44,7 @@ def get_unprocessed_range(
     state = conn.execute(
         "SELECT last_compaction_count, last_message_count "
         "FROM consolidation_state WHERE session_id = ?",
-        (session_id,)
+        (session_id,),
     ).fetchone()
 
     if state is None:
@@ -326,7 +326,7 @@ async def _llm_extract_json(
     """
     fmt_system = provider.format_system(system_blocks)
     fmt_messages = provider.format_messages(
-        [{"role": "user", "content": prompt_text}]
+        [{"role": "user", "content": prompt_text}],
     )
 
     try:
@@ -483,16 +483,15 @@ async def consolidate_session(
     Returns {"facts_added": int, "episode_id": int | None}
     """
     start_idx, end_idx = get_unprocessed_range(
-        session_id, messages, compaction_count, conn
+        session_id, messages, compaction_count, conn,
     )
     if end_idx <= start_idx:
         return {"facts_added": 0, "episode_id": None}
 
-    min_messages = getattr(config, "consolidation_min_messages", 4)
-    if (end_idx - start_idx) < min_messages:
+    if (end_idx - start_idx) < 4:
         return {"facts_added": 0, "episode_id": None}
 
-    max_chars = getattr(config, "consolidation_max_extraction_chars", MAX_EXTRACTION_CHARS)
+    max_chars = MAX_EXTRACTION_CHARS
     text = serialize_messages(messages, start_idx, end_idx, max_chars=max_chars)
     if not text.strip():
         return {"facts_added": 0, "episode_id": None}

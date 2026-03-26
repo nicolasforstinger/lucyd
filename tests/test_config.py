@@ -394,8 +394,6 @@ class TestHttpConfig:
 
     def test_defaults(self, minimal_toml_data):
         cfg = Config(minimal_toml_data)
-        assert cfg.http_callback_timeout == 10
-        assert cfg.http_callback_max_failures == 10
         assert cfg.http_max_attachment_bytes == 52428800
         assert cfg.http_rate_limit == 30
         assert cfg.http_rate_window == 60
@@ -403,47 +401,19 @@ class TestHttpConfig:
 
     def test_overrides(self, minimal_toml_data):
         minimal_toml_data["http"].update({
-            "callback_timeout": 5,
             "rate_limit": 100,
             "rate_window": 120,
             "status_rate_limit": 200,
         })
         cfg = Config(minimal_toml_data)
-        assert cfg.http_callback_timeout == 5
         assert cfg.http_rate_limit == 100
         assert cfg.http_rate_window == 120
         assert cfg.http_status_rate_limit == 200
 
 
 class TestLoggingConfig:
-    """Logging section defaults and overrides."""
-
-    def test_defaults(self, minimal_toml_data):
-        cfg = Config(minimal_toml_data)
-        assert cfg.log_max_bytes == 10 * 1024 * 1024
-        assert cfg.log_backup_count == 3
-
-    def test_overrides(self, minimal_toml_data):
-        minimal_toml_data["logging"] = {
-            "max_bytes": 5_000_000,
-            "backup_count": 5,
-        }
-        cfg = Config(minimal_toml_data)
-        assert cfg.log_max_bytes == 5_000_000
-        assert cfg.log_backup_count == 5
-
-
-class TestBehaviorAuditTruncation:
-    """Audit truncation limit config."""
-
-    def test_default(self, minimal_toml_data):
-        cfg = Config(minimal_toml_data)
-        assert cfg.audit_truncation_limit == 500
-
-    def test_override(self, minimal_toml_data):
-        minimal_toml_data.setdefault("behavior", {})["audit_truncation_limit"] = 1000
-        cfg = Config(minimal_toml_data)
-        assert cfg.audit_truncation_limit == 1000
+    """Logging section — hardcoded values, no config overrides."""
+    pass
 
 
 class TestPrimarySender:
@@ -551,11 +521,6 @@ class TestNumericRangeValidation:
     def test_negative_retry_delay_rejected(self, minimal_toml_data):
         minimal_toml_data.setdefault("behavior", {})["api_retry_base_delay"] = -1.0
         with pytest.raises(ConfigError, match="api_retry_base_delay must be >= 0"):
-            Config(minimal_toml_data)
-
-    def test_zero_queue_capacity_rejected(self, minimal_toml_data):
-        minimal_toml_data.setdefault("behavior", {})["queue_capacity"] = 0
-        with pytest.raises(ConfigError, match="queue_capacity must be >= 1"):
             Config(minimal_toml_data)
 
     def test_negative_compaction_threshold_rejected(self, minimal_toml_data):

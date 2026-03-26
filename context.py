@@ -235,25 +235,25 @@ class ContextBuilder:
                 "Session type: automated infrastructure. "
                 "Messages in this session are cron-triggered system automation, "
                 "not from the user. Execute tasks as instructed. "
-                "Replies are internal only — not delivered to any channel."
+                "Replies are internal only — not delivered to any channel.",
             )
         elif source == "system" and deliver:
             parts.append(
                 "Session type: notification routed to operator. "
                 "This is an automated notification delivered to the operator's session. "
-                "Your reply will be sent to the operator via the configured channel."
+                "Your reply will be sent to the operator via the configured channel.",
             )
         elif source == "http":
             parts.append(
                 "Session type: HTTP API integration. "
                 "Messages in this session come from an external system "
                 "(automation pipelines, scripts, webhooks). "
-                "Process requests and return useful responses."
+                "Process requests and return useful responses.",
             )
         else:
             parts.append(
                 f"Session type: {source} channel. "
-                "Messages come from the user via the primary interface."
+                "Messages come from the user via the primary interface.",
             )
 
         # Session contact
@@ -262,14 +262,14 @@ class ContextBuilder:
 
         # Framework conventions
         parts.append(
-            "Messages prefixed with [system: ...] are framework notifications, not from the user."
+            "Messages prefixed with [system: ...] are framework notifications, not from the user.",
         )
 
         # Consolidation pipeline awareness
         parts.append(
             "Background pipeline: facts, episodes, and commitments are automatically "
             "extracted from your sessions and stored in structured memory. You do not "
-            "need to manually summarize conversations — the pipeline handles this."
+            "need to manually summarize conversations — the pipeline handles this.",
         )
 
         # Silent tokens
@@ -278,7 +278,7 @@ class ContextBuilder:
             parts.append(
                 f"Silent response tokens: {tokens_str}. "
                 f"If your response starts or ends with one of these, "
-                f"it is NOT delivered to the user."
+                f"it is NOT delivered to the user.",
             )
 
         # Limits
@@ -289,7 +289,7 @@ class ContextBuilder:
         if compaction_threshold:
             parts.append(
                 f"Compaction threshold: {compaction_threshold:,} tokens. "
-                f"Older messages are summarized when exceeded."
+                f"Older messages are summarized when exceeded.",
             )
 
         # Image ephemerality (only when images present)
@@ -297,7 +297,7 @@ class ContextBuilder:
             parts.append(
                 "Note: Images are visible only on the turn they are received. "
                 "Previous-turn images are NOT in your conversation history. "
-                "Describe or summarize image content in text if you need to reference it later."
+                "Describe or summarize image content in text if you need to reference it later.",
             )
 
         if extra:

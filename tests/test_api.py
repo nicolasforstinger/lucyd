@@ -46,8 +46,8 @@ _FULL_CONFIG = {
     "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
     "memory": {
         "db": "", "search_top_k": 10, "vector_search_limit": 10000,
-        "fts_min_results": 3, "embedding_timeout": 15,
-        "consolidation": {"enabled": False, "min_messages": 4, "confidence_threshold": 0.6, "max_extraction_chars": 50000},
+        "embedding_timeout": 15,
+        "consolidation": {"enabled": False, "confidence_threshold": 0.6},
         "recall": {
             "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
             "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
@@ -69,7 +69,7 @@ _FULL_CONFIG = {
     },
     "documents": {"enabled": True, "max_chars": 30000, "max_file_bytes": 10485760,
                   "text_extensions": [".txt", ".md"]},
-    "logging": {"max_bytes": 10485760, "backup_count": 3, "suppress": []},
+    "logging": {"suppress": []},
     "vision": {"max_image_bytes": 5242880, "max_dimension": 1568,
                "jpeg_quality_steps": [85, 60, 40],
                },
@@ -77,15 +77,13 @@ _FULL_CONFIG = {
         "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error",
         "sqlite_timeout": 30,
         "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
-        "audit_truncation_limit": 500, "agent_timeout_seconds": 600,
+        "agent_timeout_seconds": 600,
         "max_turns_per_message": 50, "max_cost_per_message": 0.0,
-        "queue_capacity": 1000, "queue_poll_interval": 1.0, "quote_max_chars": 200,
         "notify_target": "",
         "compaction": {
             "threshold_tokens": 150000, "max_tokens": 2048,
             "prompt": "Summarize for {agent_name}.", "keep_recent_pct": 0.33,
             "keep_recent_pct_min": 0.05, "keep_recent_pct_max": 0.9,
-            "min_messages": 4, "tool_result_max_chars": 2000, "warning_pct": 0.8,
             "diary_prompt": "Write a log for {date}.",
         },
     },
@@ -494,26 +492,6 @@ class TestNotify:
         assert "Quote accepted" in item["text"]
 
     @pytest.mark.asyncio
-    async def test_notify_meta_on_queue(self, api, queue, auth_headers):
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={
-                    "message": "test",
-                    "source": "imap",
-                    "ref": "msg-123",
-                    "data": {"from": "bob@test.com"},
-                },
-            )
-
-        item = queue.get_nowait()
-        assert item["notify_meta"]["source"] == "imap"
-        assert item["notify_meta"]["ref"] == "msg-123"
-        assert item["notify_meta"]["data"]["from"] == "bob@test.com"
-
-    @pytest.mark.asyncio
     async def test_notify_flag_on_queue_item(self, api, queue, auth_headers):
         """Queue item from /notify includes notify=True for notify_target routing."""
         app = _make_app(api)
@@ -542,7 +520,6 @@ class TestNotify:
         assert "[source:" not in item["text"]
         assert "[ref:" not in item["text"]
         assert "plain notification" in item["text"]
-        assert item["notify_meta"] is None
 
     @pytest.mark.asyncio
     async def test_custom_sender(self, api, queue, auth_headers):
@@ -653,8 +630,8 @@ class TestNotifyEdgeCases:
         assert item["text"].startswith("[AUTOMATED SYSTEM MESSAGE]")
 
     @pytest.mark.asyncio
-    async def test_data_in_notify_meta_not_text(self, api, queue, auth_headers):
-        """Data field goes to notify_meta, not into LLM text."""
+    async def test_data_not_in_text(self, api, queue, auth_headers):
+        """Data field is not serialized into the LLM text."""
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             await client.post(
@@ -664,8 +641,6 @@ class TestNotifyEdgeCases:
             )
 
         item = queue.get_nowait()
-        # data is in notify_meta, not serialized in text
-        assert item["notify_meta"]["data"]["amount"] == 42.50
         assert "42.50" not in item["text"]
 
     @pytest.mark.asyncio
@@ -1622,36 +1597,6 @@ class TestCost:
             # 400 = no metering_db (expected for default api fixture), not auth error
             assert resp.status in (200, 400)
 
-
-# ─── Config: Callback Properties ─────────────────────────────────
-
-
-class TestHTTPCallbackConfig:
-    def test_callback_url_default_empty(self):
-        """Callback URL defaults to empty when not configured."""
-        cfg = _make_http_config()
-        assert cfg.http_callback_url == ""
-
-    def test_callback_url_configured(self):
-        """Callback URL reads from [http] section."""
-        cfg = _make_http_config(http={"callback_url": "https://n8n.local/webhook/abc"})
-        assert cfg.http_callback_url == "https://n8n.local/webhook/abc"
-
-    def test_callback_token_from_env(self, monkeypatch):
-        """Callback token loaded from env var specified in config."""
-        monkeypatch.setenv("MY_CALLBACK_TOKEN", "secret-webhook-token")
-        cfg = _make_http_config(http={"callback_token_env": "MY_CALLBACK_TOKEN"})
-        assert cfg.http_callback_token == "secret-webhook-token"
-
-    def test_callback_token_empty_when_env_not_set(self):
-        """Callback token empty when env var is not set."""
-        cfg = _make_http_config(http={"callback_token_env": "NONEXISTENT_VAR_12345"})
-        assert cfg.http_callback_token == ""
-
-    def test_callback_token_empty_when_no_env_var_configured(self):
-        """Callback token empty when callback_token_env is not configured."""
-        cfg = _make_http_config()
-        assert cfg.http_callback_token == ""
 
 
 # ─── HTTP Attachment Support ─────────────────────────────────────

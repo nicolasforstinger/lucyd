@@ -8,21 +8,11 @@ typing, reactions, streaming) is forwarded to the bridge's HTTP server.
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol
+from typing import Any
 
 import httpx
 
 log = logging.getLogger(__name__)
-
-
-class Channel(Protocol):
-    """Outbound transport interface."""
-
-    async def connect(self) -> None: ...
-    async def disconnect(self) -> None: ...
-    async def send(self, target: str, text: str, attachments: list[str] | None = None) -> None: ...
-    async def send_typing(self, target: str) -> None: ...
-    async def send_stream_chunk(self, target: str, text: str, done: bool = False) -> None: ...
 
 
 class RelayChannel:
@@ -61,7 +51,7 @@ class RelayChannel:
         await self._post("/stream", {"target": target, "text": text, "done": done})
 
 
-def create_channel(config: Any) -> Channel | None:
+def create_channel(config: Any) -> RelayChannel | None:
     """Create channel from config. Returns None if no channel configured."""
     ch_type = config.channel_type
     if not ch_type:

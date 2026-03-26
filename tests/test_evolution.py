@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from evolution import (
+from lucyd import (
     check_new_logs_exist,
     get_evolution_state,
 )

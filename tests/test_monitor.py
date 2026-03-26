@@ -1,18 +1,15 @@
-"""Tests for the live API call monitor feature.
+"""Tests for the in-memory monitor state feature.
 
-Tests cover monitor callbacks (_write_monitor, _on_response, _on_tool_results)
-wired in _process_message, writing to config.state_dir/monitor.json.
+Tests cover _MonitorWriter callbacks (write, on_response, on_tool_results)
+wired in _process_message, updating daemon._monitor_state in memory.
 """
 
-import json
 import time
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from lucyd import LucydDaemon
-
 
 
 # ─── Helpers ──────────────────────────────────────────────────────
@@ -55,8 +52,8 @@ def _make_config(tmp_path, **overrides):
         },
         "memory": {
             "db": "", "search_top_k": 10, "vector_search_limit": 10000,
-            "fts_min_results": 3, "embedding_timeout": 15,
-            "consolidation": {"enabled": False, "min_messages": 4, "confidence_threshold": 0.6, "max_extraction_chars": 50000},
+            "embedding_timeout": 15,
+            "consolidation": {"enabled": False, "confidence_threshold": 0.6},
             "recall": {
                 "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
                 "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
@@ -76,7 +73,7 @@ def _make_config(tmp_path, **overrides):
         },
         "documents": {"enabled": True, "max_chars": 30000, "max_file_bytes": 10485760,
                       "text_extensions": [".txt", ".md"]},
-        "logging": {"max_bytes": 10485760, "backup_count": 3, "suppress": []},
+        "logging": {"suppress": []},
         "vision": {"max_image_bytes": 5242880, "max_dimension": 1568,
                    "jpeg_quality_steps": [85, 60, 40],
                    },
@@ -84,15 +81,13 @@ def _make_config(tmp_path, **overrides):
             "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error",
             "sqlite_timeout": 30,
             "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
-            "audit_truncation_limit": 500, "agent_timeout_seconds": 600,
+            "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
-            "queue_capacity": 1000, "queue_poll_interval": 1.0, "quote_max_chars": 200,
             "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize for {agent_name}.", "keep_recent_pct": 0.33,
                 "keep_recent_pct_min": 0.05, "keep_recent_pct_max": 0.9,
-                "min_messages": 4, "tool_result_max_chars": 2000, "warning_pct": 0.8,
                 "diary_prompt": "Write a log for {date}.",
             },
         },
@@ -112,11 +107,11 @@ def _make_config(tmp_path, **overrides):
     return Config(base)
 
 
-def _make_daemon_for_monitor(tmp_path, monitor_dir):
+def _make_daemon_for_monitor(tmp_path):
     """Build a daemon rigged for monitor testing.
 
-    Returns (daemon, provider, session, monitor_path).
-    The monitor writes to monitor_dir/monitor.json instead of ~/.lucyd/.
+    Returns (daemon, provider, session).
+    Monitor state lives in daemon._monitor_state (in-memory dict).
     """
     config = _make_config(tmp_path)
     daemon = LucydDaemon(config)
@@ -136,13 +131,12 @@ def _make_daemon_for_monitor(tmp_path, monitor_dir):
     session.needs_compaction = MagicMock(return_value=False)
     session.warned_about_compaction = False
     session.add_user_message = MagicMock()
-    session.persist_assistant_message = MagicMock()
-    session.persist_tool_results = MagicMock()
+    session.add_assistant_message = MagicMock()
+    session.add_tool_results = MagicMock()
     session.save_state = MagicMock()
 
     daemon.session_mgr = MagicMock()
     daemon.session_mgr.get_or_create = MagicMock(return_value=session)
-    daemon.session_mgr.build_recall = MagicMock(return_value="")
 
     daemon.context_builder = MagicMock()
     daemon.context_builder.build = MagicMock(return_value=[])
@@ -158,7 +152,7 @@ def _make_daemon_for_monitor(tmp_path, monitor_dir):
     daemon.channel = AsyncMock()
 
     daemon.config = MagicMock()
-    daemon.config.state_dir = monitor_dir
+    daemon.config.state_dir = tmp_path / "state"
     daemon.config.model_config = MagicMock(return_value={
         "model": "test-model", "cost_per_mtok": [1.0, 5.0, 0.1],
     })
@@ -167,7 +161,6 @@ def _make_daemon_for_monitor(tmp_path, monitor_dir):
     daemon.config.agent_timeout = 30
     daemon.config.agent_id = "test"
     daemon.config.agent_name = "TestAgent"
-    daemon.config.metering_currency = "EUR"
     daemon.config.silent_tokens = []
     daemon.config.compaction_threshold = 150000
     daemon.config.always_on_skills = []
@@ -175,14 +168,11 @@ def _make_daemon_for_monitor(tmp_path, monitor_dir):
     daemon.config.message_retries = 0
     daemon.config.message_retry_base_delay = 0.01
     daemon.config.raw = MagicMock(return_value=0.0)
-    daemon.config.http_callback_max_failures = 10
 
     from metering import MeteringDB
     daemon.metering_db = MeteringDB(str(tmp_path / "metering.db"))
 
-    monitor_path = monitor_dir / "monitor.json"
-
-    return daemon, provider, session, monitor_path
+    return daemon, provider, session
 
 
 def _make_response(text="ok", stop_reason="end_turn", tool_calls=None,
@@ -216,24 +206,17 @@ def _make_tool_call(name, call_id="tc-1"):
 
 class TestMonitorCallbacksWiring:
     """Verify that _process_message wires on_response and on_tool_results
-    callbacks into run_agentic_loop and writes monitor.json correctly."""
+    callbacks into run_agentic_loop and updates daemon._monitor_state."""
 
     @pytest.mark.asyncio
-    async def test_monitor_file_written_on_entry(self, tmp_path):
-        """Before the agentic loop runs, monitor.json should exist with state=thinking."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+    async def test_monitor_state_set_on_entry(self, tmp_path):
+        """Before the agentic loop runs, monitor state should be thinking."""
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response()
 
-        captured_kwargs = {}
-
         async def fake_loop(**kwargs):
-            captured_kwargs.update(kwargs)
-            # At this point, monitor.json should already exist from the initial write
-            assert monitor_path.exists(), "monitor.json should be written before agentic loop"
-            data = json.loads(monitor_path.read_text())
+            data = daemon._monitor_state
             assert data["state"] == "thinking"
             assert data["turn"] == 1
             assert data["contact"] == "TestUser"
@@ -250,9 +233,7 @@ class TestMonitorCallbacksWiring:
     @pytest.mark.asyncio
     async def test_callbacks_passed_to_agentic_loop(self, tmp_path):
         """on_response and on_tool_results are passed as callables to run_agentic_loop."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response()
         captured_kwargs = {}
@@ -274,17 +255,14 @@ class TestMonitorCallbacksWiring:
     @pytest.mark.asyncio
     async def test_on_response_end_turn_writes_idle(self, tmp_path):
         """on_response with stop_reason=end_turn writes state=idle."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response(stop_reason="end_turn", output_tokens=200)
 
         async def fake_loop(**kwargs):
             on_resp = kwargs["on_response"]
             on_resp(response)
-            data = json.loads(monitor_path.read_text())
-            assert data["state"] == "idle"
+            assert daemon._monitor_state["state"] == "idle"
             return response
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
@@ -295,9 +273,7 @@ class TestMonitorCallbacksWiring:
     @pytest.mark.asyncio
     async def test_on_response_tool_use_writes_tools_state(self, tmp_path):
         """on_response with stop_reason=tool_use writes state=tools with tool names."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         tc1 = _make_tool_call("memory_search", "tc-1")
         tc2 = _make_tool_call("read", "tc-2")
@@ -306,7 +282,7 @@ class TestMonitorCallbacksWiring:
         async def fake_loop(**kwargs):
             on_resp = kwargs["on_response"]
             on_resp(response)
-            data = json.loads(monitor_path.read_text())
+            data = daemon._monitor_state
             assert data["state"] == "tools"
             assert data["tools_in_flight"] == ["memory_search", "read"]
             return _make_response()  # final response
@@ -319,9 +295,7 @@ class TestMonitorCallbacksWiring:
     @pytest.mark.asyncio
     async def test_on_tool_results_increments_turn_and_writes_thinking(self, tmp_path):
         """on_tool_results increments turn counter and writes state=thinking."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         tc = _make_tool_call("exec")
         tool_response = _make_response(stop_reason="tool_use", tool_calls=[tc])
@@ -334,7 +308,7 @@ class TestMonitorCallbacksWiring:
             on_resp(tool_response)
             # Tool execution completes
             on_tool({"role": "tool_results", "results": []})
-            data = json.loads(monitor_path.read_text())
+            data = daemon._monitor_state
             assert data["state"] == "thinking"
             assert data["turn"] == 2
             # Turn 2: Final response
@@ -349,9 +323,7 @@ class TestMonitorCallbacksWiring:
     @pytest.mark.asyncio
     async def test_turns_history_records_all_turns(self, tmp_path):
         """Each on_response call appends to the turns history list."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         tc = _make_tool_call("web_search")
         resp1 = _make_response(stop_reason="tool_use", tool_calls=[tc],
@@ -366,7 +338,7 @@ class TestMonitorCallbacksWiring:
             on_tool({"role": "tool_results", "results": []})
             on_resp(resp2)
 
-            data = json.loads(monitor_path.read_text())
+            data = daemon._monitor_state
             assert len(data["turns"]) == 2
 
             # Turn 1
@@ -395,9 +367,7 @@ class TestMonitorCallbacksWiring:
     @pytest.mark.asyncio
     async def test_finally_block_writes_idle(self, tmp_path):
         """After _process_message completes (even with error), monitor shows idle."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         async def fake_loop(**kwargs):
             raise RuntimeError("API down")
@@ -408,21 +378,17 @@ class TestMonitorCallbacksWiring:
             )
 
         # After the error, finally block should have written idle
-        data = json.loads(monitor_path.read_text())
-        assert data["state"] == "idle"
+        assert daemon._monitor_state["state"] == "idle"
 
     @pytest.mark.asyncio
     async def test_monitor_records_model_from_config(self, tmp_path):
-        """Monitor file records the model name from model config."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        """Monitor state records the model name from model config."""
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response()
 
         async def fake_loop(**kwargs):
-            data = json.loads(monitor_path.read_text())
-            assert data["model"] == "test-model"
+            assert daemon._monitor_state["model"] == "test-model"
             return response
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
@@ -432,16 +398,13 @@ class TestMonitorCallbacksWiring:
 
     @pytest.mark.asyncio
     async def test_monitor_records_contact(self, tmp_path):
-        """Monitor file records the contact/sender name."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        """Monitor state records the contact/sender name."""
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response()
 
         async def fake_loop(**kwargs):
-            data = json.loads(monitor_path.read_text())
-            assert data["contact"] == "Nicolas"
+            assert daemon._monitor_state["contact"] == "Nicolas"
             return response
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
@@ -451,16 +414,13 @@ class TestMonitorCallbacksWiring:
 
     @pytest.mark.asyncio
     async def test_monitor_records_session_id(self, tmp_path):
-        """Monitor file records the session ID."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        """Monitor state records the session ID."""
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response()
 
         async def fake_loop(**kwargs):
-            data = json.loads(monitor_path.read_text())
-            assert data["session_id"] == "mon-test-session"
+            assert daemon._monitor_state["session_id"] == "mon-test-session"
             return response
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
@@ -471,9 +431,7 @@ class TestMonitorCallbacksWiring:
     @pytest.mark.asyncio
     async def test_monitor_updated_at_is_recent(self, tmp_path):
         """Monitor updated_at timestamp is close to current time."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response()
         before = time.time()
@@ -487,51 +445,14 @@ class TestMonitorCallbacksWiring:
             )
 
         after = time.time()
-        data = json.loads(monitor_path.read_text())
+        data = daemon._monitor_state
         assert data["updated_at"] >= before
         assert data["updated_at"] <= after
 
     @pytest.mark.asyncio
-    async def test_monitor_atomic_write_via_rename(self, tmp_path):
-        """Monitor uses tmp file + rename for atomic writes."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
-
-        response = _make_response()
-        rename_called = []
-
-        original_rename = Path.rename
-
-        def track_rename(self_path, target):
-            if str(target).endswith("monitor.json"):
-                rename_called.append(str(self_path))
-            return original_rename(self_path, target)
-
-        async def fake_loop(**kwargs):
-            return response
-
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            with patch.object(Path, "rename", track_rename):
-                await daemon._process_message(
-                    text="hello", sender="TestUser", source="telegram",
-                )
-
-        # At least the initial "thinking" + final "idle" writes should have used rename
-        assert len(rename_called) >= 2
-        # All renames should come from .tmp files
-        for path in rename_called:
-            assert path.endswith(".tmp")
-
-    @pytest.mark.asyncio
-    async def test_monitor_write_failure_does_not_crash(self, tmp_path):
-        """If monitor write fails, the daemon continues without crashing."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, _ = _make_daemon_for_monitor(tmp_path, monitor_dir)
-
-        # Point state_dir to a non-existent directory so monitor write fails
-        daemon.config.state_dir = tmp_path / "readonly"
+    async def test_build_monitor_returns_copy(self, tmp_path):
+        """_build_monitor returns a copy so callers cannot mutate internal state."""
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response()
 
@@ -539,24 +460,31 @@ class TestMonitorCallbacksWiring:
             return response
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            # Should not raise
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
 
+        snapshot = daemon._build_monitor()
+        snapshot["state"] = "corrupted"
+        assert daemon._monitor_state["state"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_initial_monitor_state_is_idle(self, tmp_path):
+        """Before any message, monitor state is idle."""
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
+        assert daemon._monitor_state == {"state": "idle"}
+
     @pytest.mark.asyncio
     async def test_on_response_no_tool_calls_empty_tools_list(self, tmp_path):
         """on_response with end_turn and no tool_calls records tools as empty list."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response(stop_reason="end_turn", tool_calls=[])
 
         async def fake_loop(**kwargs):
             on_resp = kwargs["on_response"]
             on_resp(response)
-            data = json.loads(monitor_path.read_text())
+            data = daemon._monitor_state
             assert data["turns"][0]["tools"] == []
             assert data["tools_in_flight"] == []
             return response
@@ -568,10 +496,8 @@ class TestMonitorCallbacksWiring:
 
     @pytest.mark.asyncio
     async def test_multi_turn_sequence_full(self, tmp_path):
-        """Full 3-turn sequence: thinking → tools → thinking → tools → thinking → idle."""
-        monitor_dir = tmp_path / "monitor_out"
-        monitor_dir.mkdir()
-        daemon, provider, session, monitor_path = _make_daemon_for_monitor(tmp_path, monitor_dir)
+        """Full 3-turn sequence: thinking -> tools -> thinking -> tools -> thinking -> idle."""
+        daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         tc_mem = _make_tool_call("memory_search")
         tc_read = _make_tool_call("read")
@@ -587,25 +513,25 @@ class TestMonitorCallbacksWiring:
 
             # Turn 1
             on_resp(resp1)
-            states_seen.append(json.loads(monitor_path.read_text())["state"])
+            states_seen.append(daemon._monitor_state["state"])
 
             on_tool({"role": "tool_results", "results": []})
-            data = json.loads(monitor_path.read_text())
+            data = daemon._monitor_state
             states_seen.append(data["state"])
             assert data["turn"] == 2
 
             # Turn 2
             on_resp(resp2)
-            states_seen.append(json.loads(monitor_path.read_text())["state"])
+            states_seen.append(daemon._monitor_state["state"])
 
             on_tool({"role": "tool_results", "results": []})
-            data = json.loads(monitor_path.read_text())
+            data = daemon._monitor_state
             states_seen.append(data["state"])
             assert data["turn"] == 3
 
             # Turn 3
             on_resp(resp3)
-            states_seen.append(json.loads(monitor_path.read_text())["state"])
+            states_seen.append(daemon._monitor_state["state"])
 
             return resp3
 
@@ -617,8 +543,6 @@ class TestMonitorCallbacksWiring:
         assert states_seen == ["tools", "thinking", "tools", "thinking", "idle"]
 
         # Check final state after finally block
-        data = json.loads(monitor_path.read_text())
+        data = daemon._monitor_state
         assert data["state"] == "idle"
         assert len(data["turns"]) == 3
-
-

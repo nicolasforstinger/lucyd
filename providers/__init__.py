@@ -148,13 +148,13 @@ class LLMProvider(Protocol):
         ...
 
     async def complete(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs
+        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
     ) -> LLMResponse:
         """Send to LLM, return normalized response."""
         ...
 
     def stream(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs
+        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from LLM.
 
@@ -169,7 +169,7 @@ class LLMProvider(Protocol):
 
 async def stream_fallback(
     provider: LLMProvider, system: Any, messages: list[dict],
-    tools: list[dict], **kwargs
+    tools: list[dict], **kwargs,
 ) -> AsyncIterator[StreamDelta]:
     """Non-streaming fallback: call complete() and yield one StreamDelta."""
     response = await provider.complete(system, messages, tools, **kwargs)

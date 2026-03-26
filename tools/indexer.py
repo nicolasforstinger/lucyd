@@ -222,7 +222,7 @@ def rebuild_fts(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM chunks_fts")
     conn.execute(
         "INSERT INTO chunks_fts(rowid, text, id, path, source, model, start_line, end_line) "
-        "SELECT rowid, text, id, path, source, model, start_line, end_line FROM chunks"
+        "SELECT rowid, text, id, path, source, model, start_line, end_line FROM chunks",
     )
 
 

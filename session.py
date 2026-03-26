@@ -12,28 +12,13 @@ import os
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 
-@dataclass
-class CompactionConfig:
-    """Compaction behavior parameters — bundles the keyword-only args of compact_session."""
-    keep_recent_pct: float
-    min_messages: int
-    tool_result_max_chars: int
-    max_tokens: int
-
 AUDIT_TRUNCATION_LIMIT = 500
-
-
-def set_audit_truncation(limit: int) -> None:
-    """Set audit truncation limit from config."""
-    global AUDIT_TRUNCATION_LIMIT
-    AUDIT_TRUNCATION_LIMIT = limit
 
 
 def _text_from_content(content: Any) -> str:
@@ -208,48 +193,38 @@ class Session:
         })
         self.save_state()
 
-    def add_assistant_message(self, msg: dict) -> None:
-        """Add assistant response (from LLMResponse.to_internal_message())."""
-        self.messages.append(msg)
+    def add_assistant_message(self, msg: dict, persist_only: bool = False) -> None:
+        """Add assistant response (from LLMResponse.to_internal_message()).
+
+        When persist_only=True, skip appending to self.messages (use when the
+        agentic loop already appended to session.messages in-place).
+        """
+        if not persist_only:
+            self.messages.append(msg)
         usage = msg.get("usage", {})
         self.total_input_tokens += usage.get("input_tokens", 0)
         self.total_output_tokens += usage.get("output_tokens", 0)
         self.append_event({"type": "message", **msg})
-        self.save_state()
+        if not persist_only:
+            self.save_state()
 
-    def add_tool_results(self, results: list[dict]) -> None:
-        """Add tool results to session."""
-        msg = {"role": "tool_results", "results": results}
-        self.messages.append(msg)
+    def add_tool_results(self, results: list[dict], persist_only: bool = False) -> None:
+        """Add tool results to session.
+
+        When persist_only=True, skip appending to self.messages (use when the
+        agentic loop already appended to session.messages in-place).
+        """
+        if not persist_only:
+            msg = {"role": "tool_results", "results": results}
+            self.messages.append(msg)
         for r in results:
             self.append_event({
                 "type": "tool_result",
                 "tool_use_id": r.get("tool_call_id", ""),
                 "content": _text_from_content(r.get("content", ""))[:AUDIT_TRUNCATION_LIMIT],
             })
-        self.save_state()
-
-    def persist_assistant_message(self, msg: dict) -> None:
-        """Persist assistant message to JSONL + update tokens (no append to messages list).
-
-        Use when the agentic loop already appended to session.messages in-place.
-        """
-        usage = msg.get("usage", {})
-        self.total_input_tokens += usage.get("input_tokens", 0)
-        self.total_output_tokens += usage.get("output_tokens", 0)
-        self.append_event({"type": "message", **msg})
-
-    def persist_tool_results(self, results: list[dict]) -> None:
-        """Persist tool results to JSONL (no append to messages list).
-
-        Use when the agentic loop already appended to session.messages in-place.
-        """
-        for r in results:
-            self.append_event({
-                "type": "tool_result",
-                "tool_use_id": r.get("tool_call_id", ""),
-                "content": _text_from_content(r.get("content", ""))[:AUDIT_TRUNCATION_LIMIT],
-            })
+        if not persist_only:
+            self.save_state()
 
     @property
     def last_input_tokens(self) -> int:
@@ -397,82 +372,6 @@ class SessionManager:
                 return await self.close_session(contact)
         return False
 
-    def build_recall(self, contact: str, count: int) -> str:
-        """Build recall text from the most recent archived session for a contact.
-
-        Returns formatted conversation excerpt, or empty string if none found.
-        """
-        archive = self.dir / ".archive"
-        if not archive.exists():
-            return ""
-
-        # Find archived state files for this contact
-        best_file = None
-        best_mtime = 0.0
-        for state_file in archive.glob("*.state.json"):
-            try:
-                with state_file.open(encoding="utf-8") as f:
-                    state = json.load(f)
-                file_contact = state.get("contact")
-                # Fallback: check JSONL session event if state lacks contact
-                if not file_contact:
-                    session_id = state.get("id", "")
-                    jsonl_files = sorted(archive.glob(f"{session_id}.*.jsonl"))
-                    for jf in jsonl_files[:1]:
-                        try:
-                            with jf.open("r", encoding="utf-8") as fh:
-                                first_line = fh.readline()
-                            event = json.loads(first_line)
-                            file_contact = event.get("contact", "")
-                        except Exception:  # noqa: S110 — session discovery; skip unreadable JSONL files
-                            pass
-                if file_contact != contact:
-                    continue
-                mtime = state_file.stat().st_mtime
-                if mtime > best_mtime:
-                    best_mtime = mtime
-                    best_file = state_file
-            except (json.JSONDecodeError, OSError):
-                continue
-
-        if not best_file:
-            return ""
-
-        try:
-            with best_file.open(encoding="utf-8") as f:
-                state = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return ""
-
-        messages = state.get("messages", [])
-        if not messages:
-            return ""
-
-        # Filter to user + assistant messages only
-        conversation = [m for m in messages if m.get("role") in ("user", "assistant")]
-        tail = conversation[-count:]
-        if not tail:
-            return ""
-
-        lines = []
-        for msg in tail:
-            role = msg["role"]
-            if role == "user":
-                content = _text_from_content(msg.get("content", ""))
-                # Strip timestamp prefix
-                if content.startswith("[") and "]\n" in content[:60]:
-                    content = content[content.index("]\n") + 2:]
-                lines.append(f"**{contact}:** {content}")
-            elif role == "assistant":
-                text = msg.get("text", "")
-                if text:
-                    lines.append(f"**{self.agent_name}:** {text}")
-
-        if not lines:
-            return ""
-
-        return "Session recall (last conversation):\n\n" + "\n\n".join(lines)
-
     async def compact_session(
         self,
         session: Session,
@@ -482,39 +381,25 @@ class SessionManager:
         cost_rates: list[float] | None = None,
         trace_id: str = "",
         *,
-        keep_recent_pct: float | None = None,
-        min_messages: int | None = None,
-        tool_result_max_chars: int | None = None,
-        max_tokens: int | None = None,
+        keep_recent_pct: float = 0.33,
+        min_messages: int = 4,
+        tool_result_max_chars: int = 2000,
+        max_tokens: int = 0,
         system_blocks: list[dict] | None = None,
         cost: Any = None,
-        compaction: CompactionConfig | None = None,
     ) -> None:
-        """Compact old messages using a summarization model.
-
-        Dual interface: accepts either individual keyword args (used by tests
-        for fine-grained control) or cost/compaction bundles (used by production
-        for config-driven invocation). At least one of the two must supply
-        every required value. This is intentional — not over-exposure.
-        """
-        # Unpack bundled params — overwrites any individual args
+        """Compact old messages using a summarization model."""
         metering = None
         if cost is not None:
             metering = cost.metering
             model_name = cost.model_name
             cost_rates = cost.cost_rates
             provider_name = getattr(cost, "provider_name", "")
-        if compaction is not None:
-            keep_recent_pct = compaction.keep_recent_pct
-            min_messages = compaction.min_messages
-            tool_result_max_chars = compaction.tool_result_max_chars
-            max_tokens = compaction.max_tokens
         if len(session.messages) < min_messages:
             return
 
         # Summarize older messages, keep newest fraction verbatim
-        keep_pct = keep_recent_pct
-        split_point = int(len(session.messages) * (1 - keep_pct))
+        split_point = int(len(session.messages) * (1 - keep_recent_pct))
 
         # Ensure split doesn't orphan tool_results — each tool_result
         # needs a matching tool_use in the preceding assistant message.
@@ -555,7 +440,7 @@ class SessionManager:
                 "--- END OF CONVERSATION ---\n\n"
                 "Write ONLY the summary. Do not continue, extend, or "
                 "invent conversation turns beyond what appears above."
-            )}
+            )},
         ]
         if system_blocks:
             fmt_system = provider.format_system(system_blocks)

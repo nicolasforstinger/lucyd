@@ -382,32 +382,18 @@ class TestNewConfigEntries:
         cfg = _make_config()
         assert cfg.max_context_for_tools == 0
 
-    def test_thinking_concise_hint_default(self):
-        """thinking_concise_hint defaults to False."""
-        cfg = _make_config()
-        assert cfg.thinking_concise_hint is False
-
     def test_tool_call_retry_default(self):
         """tool_call_retry defaults to False."""
         cfg = _make_config()
         assert cfg.tool_call_retry is False
-
-    def test_tool_success_warn_threshold_default(self):
-        """tool_success_warn_threshold defaults to 0.5."""
-        cfg = _make_config()
-        assert cfg.tool_success_warn_threshold == 0.5
 
     def test_all_new_entries_settable(self):
         """All new config entries can be set explicitly."""
         cfg = _make_config(**{
             "agent.context.max_system_tokens": 5000,
             "behavior.max_context_for_tools": 20000,
-            "behavior.thinking_concise_hint": True,
             "tools.tool_call_retry": True,
-            "tools.tool_success_warn_threshold": 0.3,
         })
         assert cfg.max_system_tokens == 5000
         assert cfg.max_context_for_tools == 20000
-        assert cfg.thinking_concise_hint is True
         assert cfg.tool_call_retry is True
-        assert cfg.tool_success_warn_threshold == 0.3

@@ -10,14 +10,21 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
-from collections.abc import AsyncIterator
+from async_utils import run_blocking, threaded_stream
 
-from async_utils import run_blocking
-from . import LLMResponse, ModelCapabilities, StreamDelta, ToolCall, Usage, stream_fallback
+from . import (
+    LLMResponse,
+    ModelCapabilities,
+    StreamDelta,
+    ToolCall,
+    Usage,
+    stream_fallback,
+)
 
 log = logging.getLogger(__name__)
 
@@ -374,7 +381,7 @@ class AnthropicCompatProvider:
         return self._response_to_llm(response.json())
 
     async def complete(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs
+        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
     ) -> LLMResponse:
         """Call Anthropic Messages API."""
         params: dict[str, Any] = {
@@ -434,7 +441,7 @@ class AnthropicCompatProvider:
                 raise
         else:
             response = await run_blocking(
-                self.client.messages.create, **params
+                self.client.messages.create, **params,
             )
 
         # Convert SDK response object to dict for shared parsing
@@ -444,7 +451,7 @@ class AnthropicCompatProvider:
         return result
 
     async def stream(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs
+        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from Anthropic Messages API.
 
@@ -469,69 +476,45 @@ class AnthropicCompatProvider:
         if thinking_param:
             params["thinking"] = thinking_param
 
-        import queue
-        import threading
-
-        q: queue.Queue = queue.Queue()
-        sentinel = object()
-
-        def _run_stream():
-            try:
-                with self.client.messages.stream(**params) as stream:
-                    for event in stream:
-                        q.put(event)
-                    # Final message for usage
-                    q.put(stream.get_final_message())
-            except Exception as exc:
-                q.put(exc)
-            finally:
-                q.put(sentinel)
-
-        thread = threading.Thread(target=_run_stream, daemon=True)
-        thread.start()
+        def _stream_factory():
+            with self.client.messages.stream(**params) as stream:
+                yield from stream
+                # Final message for usage
+                yield stream.get_final_message()
 
         tool_index = -1
-        try:
-            while True:
-                item = await run_blocking(q.get)
-                if item is sentinel:
-                    break
-                if isinstance(item, Exception):
-                    raise item
+        async for item in threaded_stream(_stream_factory):
+            # Final message object (has .usage)
+            if hasattr(item, "usage") and hasattr(item, "stop_reason"):
+                data = self._sdk_response_to_dict(item)
+                usage = self._parse_usage_dict(data.get("usage"))
+                stop = "end_turn"
+                if item.stop_reason == "tool_use":
+                    stop = "tool_use"
+                elif item.stop_reason == "max_tokens":
+                    stop = "max_tokens"
+                yield StreamDelta(stop_reason=stop, usage=usage)
+                break
 
-                # Final message object (has .usage)
-                if hasattr(item, "usage") and hasattr(item, "stop_reason"):
-                    data = self._sdk_response_to_dict(item)
-                    usage = self._parse_usage_dict(data.get("usage"))
-                    stop = "end_turn"
-                    if item.stop_reason == "tool_use":
-                        stop = "tool_use"
-                    elif item.stop_reason == "max_tokens":
-                        stop = "max_tokens"
-                    yield StreamDelta(stop_reason=stop, usage=usage)
-                    break
-
-                # SDK event objects
-                etype = getattr(item, "type", "")
-                if etype == "content_block_start":
-                    block = item.content_block
-                    if block.type == "tool_use":
-                        tool_index += 1
-                        yield StreamDelta(
-                            tool_call_index=tool_index,
-                            tool_call_id=block.id,
-                            tool_name=block.name,
-                        )
-                elif etype == "content_block_delta":
-                    delta = item.delta
-                    if delta.type == "text_delta":
-                        yield StreamDelta(text=delta.text)
-                    elif delta.type == "thinking_delta":
-                        yield StreamDelta(thinking=delta.thinking)
-                    elif delta.type == "input_json_delta":
-                        yield StreamDelta(
-                            tool_call_index=tool_index,
-                            tool_args_delta=delta.partial_json,
-                        )
-        finally:
-            thread.join(timeout=5)
+            # SDK event objects
+            etype = getattr(item, "type", "")
+            if etype == "content_block_start":
+                block = item.content_block
+                if block.type == "tool_use":
+                    tool_index += 1
+                    yield StreamDelta(
+                        tool_call_index=tool_index,
+                        tool_call_id=block.id,
+                        tool_name=block.name,
+                    )
+            elif etype == "content_block_delta":
+                delta = item.delta
+                if delta.type == "text_delta":
+                    yield StreamDelta(text=delta.text)
+                elif delta.type == "thinking_delta":
+                    yield StreamDelta(thinking=delta.thinking)
+                elif delta.type == "input_json_delta":
+                    yield StreamDelta(
+                        tool_call_index=tool_index,
+                        tool_args_delta=delta.partial_json,
+                    )

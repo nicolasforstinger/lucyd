@@ -2,14 +2,12 @@
 
 import json
 import time
-from dataclasses import replace
 
 import pytest
 
 from providers import CostContext
 from session import (
     AUDIT_TRUNCATION_LIMIT,
-    CompactionConfig,
     Session,
     SessionManager,
     _text_from_content,
@@ -20,7 +18,7 @@ from session import (
 # Values are test constants, NOT config defaults — config is the
 # single source of truth in lucyd.toml; tests just need known values.
 
-_TEST_COMPACTION = CompactionConfig(
+_TEST_COMPACTION = dict(
     keep_recent_pct=0.33,
     min_messages=4,
     tool_result_max_chars=2000,
@@ -157,7 +155,7 @@ class TestCompactionWarning:
 
 
 class TestPersistMethods:
-    """Tests for persist_assistant_message and persist_tool_results."""
+    """Tests for add_assistant_message(persist_only=True) and add_tool_results(persist_only=True)."""
 
     def test_persist_assistant_message_updates_tokens(self, tmp_sessions):
         session = Session("test-persist", tmp_sessions)
@@ -168,7 +166,7 @@ class TestPersistMethods:
             "role": "assistant", "text": "hello",
             "usage": {"input_tokens": 1000, "output_tokens": 200},
         }
-        session.persist_assistant_message(msg)
+        session.add_assistant_message(msg, persist_only=True)
 
         assert session.total_input_tokens == 1000
         assert session.total_output_tokens == 200
@@ -181,7 +179,7 @@ class TestPersistMethods:
             "role": "assistant", "text": "hi",
             "usage": {"input_tokens": 10, "output_tokens": 5},
         }
-        session.persist_assistant_message(msg)
+        session.add_assistant_message(msg, persist_only=True)
 
         files = list(tmp_sessions.glob("*.jsonl"))
         assert len(files) == 1
@@ -195,7 +193,7 @@ class TestPersistMethods:
             {"tool_call_id": "tc1", "content": "result one"},
             {"tool_call_id": "tc2", "content": "result two"},
         ]
-        session.persist_tool_results(results)
+        session.add_tool_results(results, persist_only=True)
 
         files = list(tmp_sessions.glob("*.jsonl"))
         assert len(files) == 1
@@ -208,7 +206,7 @@ class TestPersistMethods:
         session = Session("test-trunc", tmp_sessions)
         long_content = "x" * 1000
         results = [{"tool_call_id": "tc1", "content": long_content}]
-        session.persist_tool_results(results)
+        session.add_tool_results(results, persist_only=True)
 
         files = list(tmp_sessions.glob("*.jsonl"))
         event = json.loads(files[0].read_text().strip())
@@ -299,7 +297,7 @@ class TestCompactionEndToEnd:
         mock_provider = MockCompactionProvider(summary_text="Summary of old conversation.")
         await mgr.compact_session(
             session, mock_provider, "Summarize this conversation.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         # split_point = 6 * 2 // 3 = 4, so 4 old, 2 recent
@@ -326,7 +324,7 @@ class TestCompactionEndToEnd:
         mock_provider = MockCompactionProvider(summary_text="Summary.")
         await mgr.compact_session(
             session, mock_provider, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         assert session.compaction_count == 1
@@ -336,7 +334,7 @@ class TestCompactionEndToEnd:
             session.messages.append({"role": "user", "content": f"extra {i}"})
         await mgr.compact_session(
             session, mock_provider, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
         assert session.compaction_count == 2
 
@@ -350,7 +348,7 @@ class TestCompactionEndToEnd:
         mock_provider = MockCompactionProvider(summary_text="JSONL summary test.")
         await mgr.compact_session(
             session, mock_provider, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         # Find JSONL files and look for compaction event
@@ -377,7 +375,7 @@ class TestCompactionEndToEnd:
         mock_provider = MockCompactionProvider(summary_text="State save test.")
         await mgr.compact_session(
             session, mock_provider, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         # State file should exist and reflect compacted state
@@ -399,7 +397,7 @@ class TestCompactionEndToEnd:
         mock_provider = MockCompactionProvider(summary_text="Should not appear.")
         await mgr.compact_session(
             session, mock_provider, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         # Messages unchanged
@@ -418,7 +416,7 @@ class TestCompactionEndToEnd:
         mock_provider = MockCompactionProvider(summary_text="Reset flag test.")
         await mgr.compact_session(
             session, mock_provider, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         assert session.warned_about_compaction is False
@@ -442,8 +440,7 @@ class TestCompactionEndToEnd:
         # Result: 1 summary + 1 marker + 5 recent = 7
         await mgr.compact_session(
             session, mock_provider, "Summarize.",
-            cost=_TEST_COST,
-            compaction=replace(_TEST_COMPACTION, keep_recent_pct=0.25),
+            cost=_TEST_COST, **{**_TEST_COMPACTION, "keep_recent_pct": 0.25},
         )
         assert len(session.messages) == 7
         assert "[Previous conversation summary]" in session.messages[0]["content"]
@@ -471,8 +468,7 @@ class TestCompactionEndToEnd:
         # All 20 old → summary + marker, 0 recent kept
         await mgr.compact_session(
             session, mock_provider, "Summarize.",
-            cost=_TEST_COST,
-            compaction=replace(_TEST_COMPACTION, keep_recent_pct=0.0),
+            cost=_TEST_COST, **{**_TEST_COMPACTION, "keep_recent_pct": 0.0},
         )
         assert len(session.messages) == 2  # summary + marker, no recent kept
 
@@ -517,8 +513,7 @@ class TestCompactionEndToEnd:
 
         await mgr.compact_session(
             session, mock_provider, "Summarize.",
-            cost=_TEST_COST,
-            compaction=replace(_TEST_COMPACTION, keep_recent_pct=0.19),
+            cost=_TEST_COST, **{**_TEST_COMPACTION, "keep_recent_pct": 0.19},
         )
         # Split should skip past tool_results at index 17 to index 18 (assistant)
         # old=18, recent=3 → summary + marker + 3 = 5
@@ -564,7 +559,7 @@ class TestCompactionRoundTrip:
         mgr = SessionManager(tmp_sessions)
         await mgr.compact_session(
             session, provider, "Summarize this conversation.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         # split_point = 30 * 2 // 3 = 20 old, 10 recent
@@ -617,7 +612,7 @@ class TestCompactionRoundTrip:
         provider_a = MockCompactionProvider(summary_text="Summary A.")
         await mgr.compact_session(
             session, provider_a, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
         assert session.compaction_count == 1
         assert "Summary A." in session.messages[0]["content"]
@@ -645,7 +640,7 @@ class TestCompactionRoundTrip:
 
         await mgr.compact_session(
             session, provider_b, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         assert session.compaction_count == 2
@@ -670,7 +665,7 @@ class TestCompactionReplacesMessages:
         mock = MockCompactionProvider("Summary text.")
         await mgr.compact_session(
             session, mock, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         # Old messages should be gone
@@ -697,7 +692,7 @@ class TestCompactionReplacesMessages:
         mock = MockCompactionProvider("Summary.")
         await mgr.compact_session(
             session, mock, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         # No surviving assistant message should carry usage
@@ -847,7 +842,7 @@ class TestContentBlocksInAudit:
             {"type": "text", "text": "result text"},
             {"type": "image", "media_type": "image/png", "data": "data"},
         ]
-        session.persist_tool_results([{"tool_call_id": "tc1", "content": block_content}])
+        session.add_tool_results([{"tool_call_id": "tc1", "content": block_content}], persist_only=True)
 
         files = list(tmp_sessions.glob("*.jsonl"))
         event = json.loads(files[0].read_text().strip())
@@ -880,7 +875,7 @@ class TestCompactionWithContentBlocks:
         mock = MockCompactionProvider("Summary of vision conversation.")
         await mgr.compact_session(
             session, mock, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         assert mock.call_count == 1
@@ -943,7 +938,7 @@ class TestCompactionAntiHallucination:
         mgr = SessionManager(tmp_sessions)
         await mgr.compact_session(
             session, provider, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         # Verify end-of-input marker in message content
@@ -980,7 +975,7 @@ class TestCompactionAntiHallucination:
         mgr = SessionManager(tmp_sessions)
         await mgr.compact_session(
             session, provider, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         sent_text = captured[0]["content"]
@@ -1030,7 +1025,7 @@ class TestCompactionStatePersistenceOrder:
              patch.object(session, "append_event", tracking_append):
             await mgr.compact_session(
                 session, provider, "Summarize.",
-                cost=_TEST_COST, compaction=_TEST_COMPACTION,
+                cost=_TEST_COST, **_TEST_COMPACTION,
             )
 
         assert "save_state" in call_order
@@ -1334,7 +1329,7 @@ class TestCompactionIdentity:
         await mgr.compact_session(
             session, provider, "Summarize.",
             system_blocks=persona_blocks,
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         assert len(captured_system) == 1
@@ -1365,7 +1360,7 @@ class TestCompactionIdentity:
         mgr = SessionManager(tmp_sessions)
         await mgr.compact_session(
             session, provider, "Summarize.",
-            cost=_TEST_COST, compaction=_TEST_COMPACTION,
+            cost=_TEST_COST, **_TEST_COMPACTION,
         )
 
         assert "conversation summarizer" in captured_system[0]["text"]

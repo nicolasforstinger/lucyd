@@ -36,6 +36,7 @@ class MeteringDB:
         self._path = db_path
         self._agent_id = agent_id
         self._timeout = sqlite_timeout
+        self._conn: sqlite3.Connection | None = None
         self._ensure_schema()
 
     @property
@@ -43,44 +44,48 @@ class MeteringDB:
         return self._path
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path, timeout=self._timeout)
-        conn.row_factory = sqlite3.Row
-        return conn
+        if self._conn is None:
+            self._conn = sqlite3.connect(self._path, timeout=self._timeout)
+            self._conn.row_factory = sqlite3.Row
+        return self._conn
+
+    def close(self) -> None:
+        """Close the persistent connection."""
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     def _ensure_schema(self) -> None:
         conn = self._connect()
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA wal_autocheckpoint=1000")
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS costs (
-                    timestamp       INTEGER NOT NULL,
-                    agent_id     TEXT    NOT NULL,
-                    session_id      TEXT    NOT NULL,
-                    model           TEXT    NOT NULL,
-                    provider        TEXT    NOT NULL DEFAULT '',
-                    input_tokens    INTEGER NOT NULL DEFAULT 0,
-                    output_tokens   INTEGER NOT NULL DEFAULT 0,
-                    cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
-                    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-                    cost            REAL    NOT NULL DEFAULT 0.0,
-                    currency        TEXT    NOT NULL DEFAULT 'EUR',
-                    call_type       TEXT    NOT NULL DEFAULT 'agentic',
-                    trace_id        TEXT,
-                    billing_period  TEXT    NOT NULL,
-                    latency_ms      INTEGER,
-                    success         INTEGER NOT NULL DEFAULT 1,
-                    error_type      TEXT
-                );
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS costs (
+                timestamp       INTEGER NOT NULL,
+                agent_id     TEXT    NOT NULL,
+                session_id      TEXT    NOT NULL,
+                model           TEXT    NOT NULL,
+                provider        TEXT    NOT NULL DEFAULT '',
+                input_tokens    INTEGER NOT NULL DEFAULT 0,
+                output_tokens   INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                cost            REAL    NOT NULL DEFAULT 0.0,
+                currency        TEXT    NOT NULL DEFAULT 'EUR',
+                call_type       TEXT    NOT NULL DEFAULT 'agentic',
+                trace_id        TEXT,
+                billing_period  TEXT    NOT NULL,
+                latency_ms      INTEGER,
+                success         INTEGER NOT NULL DEFAULT 1,
+                error_type      TEXT
+            );
 
-                CREATE INDEX IF NOT EXISTS idx_costs_agent
-                    ON costs(agent_id);
-                CREATE INDEX IF NOT EXISTS idx_costs_billing
-                    ON costs(agent_id, billing_period);
-            """)
-            conn.commit()
-        finally:
-            conn.close()
+            CREATE INDEX IF NOT EXISTS idx_costs_agent
+                ON costs(agent_id);
+            CREATE INDEX IF NOT EXISTS idx_costs_billing
+                ON costs(agent_id, billing_period);
+        """)
+        conn.commit()
 
     # ── Recording ─────────────────────────────────────────────────
 
@@ -115,8 +120,8 @@ class MeteringDB:
         now = int(time.time())
         billing_period = _current_billing_period()
 
-        conn = self._connect()
         try:
+            conn = self._connect()
             conn.execute(
                 """INSERT INTO costs (
                     timestamp, agent_id, session_id, model, provider,
@@ -136,8 +141,6 @@ class MeteringDB:
             conn.commit()
         except Exception as e:
             log.warning("Failed to record cost: %s", e)
-        finally:
-            conn.close()
 
         return cost_val
 
@@ -147,13 +150,10 @@ class MeteringDB:
         """Read-only query.  Returns [] on error or missing DB."""
         if not Path(self._path).exists():
             return []
-        conn = self._connect()
         try:
-            return conn.execute(sql, params).fetchall()
+            return self._connect().execute(sql, params).fetchall()
         except Exception:
             return []
-        finally:
-            conn.close()
 
     def month_total(self, billing_period: str = "") -> float:
         """Total cost for current agent in a billing period.  Default: current month."""
@@ -207,15 +207,12 @@ class MeteringDB:
         cutoff_ts = int(time.mktime(datetime.date(year, month, 1).timetuple()))
 
         conn = self._connect()
-        try:
-            cursor = conn.execute("DELETE FROM costs WHERE timestamp < ?", (cutoff_ts,))
-            deleted = cursor.rowcount
-            conn.commit()
-            if deleted > 0:
-                log.info("Metering retention: deleted %d records older than %d months",
-                         deleted, max_months)
-            return deleted
-        finally:
-            conn.close()
+        cursor = conn.execute("DELETE FROM costs WHERE timestamp < ?", (cutoff_ts,))
+        deleted = cursor.rowcount
+        conn.commit()
+        if deleted > 0:
+            log.info("Metering retention: deleted %d records older than %d months",
+                     deleted, max_months)
+        return deleted
 
 

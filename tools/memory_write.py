@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from consolidation import _normalize_entity as _normalize, upsert_fact
+from consolidation import _normalize_entity as _normalize
+from consolidation import upsert_fact
 
 log = logging.getLogger(__name__)
 

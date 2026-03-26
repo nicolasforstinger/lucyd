@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+from collections.abc import AsyncIterator, Callable
 from functools import partial
 from typing import TypeVar
 
@@ -40,3 +41,36 @@ async def run_blocking(func, /, *args, **kwargs) -> T:
         if ok:
             return value  # type: ignore[return-value]
         raise value  # type: ignore[misc]
+
+
+async def threaded_stream(sync_iterable_factory: Callable[[], object]) -> AsyncIterator:
+    """Run a synchronous iterable in a daemon thread, yield items async.
+
+    sync_iterable_factory is a callable that returns an iterable (e.g. an SDK
+    stream context manager body).  Items are forwarded through a queue;
+    exceptions raised inside the factory propagate to the caller.
+    """
+    q: queue.Queue = queue.Queue()
+    sentinel = object()
+
+    def _run() -> None:
+        try:
+            for item in sync_iterable_factory():
+                q.put(item)
+        except Exception as exc:
+            q.put(exc)
+        finally:
+            q.put(sentinel)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    try:
+        while True:
+            item = await run_blocking(q.get)
+            if item is sentinel:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+    finally:
+        thread.join(timeout=5)

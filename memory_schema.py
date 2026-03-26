@@ -171,8 +171,6 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_entity_aliases_canonical
             ON entity_aliases (canonical);
 
-        -- Drop legacy pseudonymization table (removed in favor of sysadmin-level security)
-        DROP TABLE IF EXISTS pii_mappings;
     """)
 
     # FTS5 virtual table — separate execute because some SQLite builds

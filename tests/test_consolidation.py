@@ -595,8 +595,6 @@ class TestConsolidateSession:
                 return [{"text": "I am Lucy."}]
 
         class FakeConfig:
-            consolidation_min_messages = 2
-            consolidation_max_extraction_chars = 50000
             consolidation_confidence_threshold = 0.6
 
         result = await consolidate_session(
@@ -617,8 +615,6 @@ class TestConsolidateSession:
         messages = [{"role": "user", "content": "hi"}]
 
         class FakeConfig:
-            consolidation_min_messages = 4
-            consolidation_max_extraction_chars = 50000
             consolidation_confidence_threshold = 0.6
 
         result = await consolidate_session(

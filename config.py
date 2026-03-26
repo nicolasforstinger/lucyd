@@ -13,9 +13,10 @@ logic (env vars, path lists, fallbacks, clamping) are defined explicitly.
 import logging
 import os
 import time
-import tomllib
 from pathlib import Path
 from typing import Any
+
+import tomllib
 
 log = logging.getLogger(__name__)
 
@@ -85,43 +86,25 @@ _SCHEMA: dict[str, tuple] = {
     "http_port":            (("http", "port"),                     int,   8100),
     "http_download_dir":    (("http", "download_dir"),             str,   ""),
     "http_max_body_bytes":  (("http", "max_body_bytes"),           int,   10485760),
-    "http_callback_url":    (("http", "callback_url"),             str,   ""),
-    "http_callback_timeout":     (("http", "callback_timeout"),    int,   10),
-    "http_callback_max_failures":(("http", "callback_max_failures"), int, 10),
     "http_max_attachment_bytes": (("http", "max_attachment_bytes"), int,   52428800),
     "http_rate_limit":      (("http", "rate_limit"),               int,   30),
     "http_rate_window":     (("http", "rate_window"),              int,   60),
     "http_status_rate_limit":    (("http", "status_rate_limit"),   int,   60),
-    "http_rate_cleanup_threshold":(("http", "rate_limit_cleanup_threshold"), int, 1000),
-    "http_webhook_secret":  (("http", "webhook_secret"),              str,   ""),
 
     # ── Memory ───────────────────────────────────────────────────
     "memory_db":            (("memory", "db"),                     str,   ""),
     "memory_top_k":         (("memory", "search_top_k"),           int,   10),
     "vector_search_limit":  (("memory", "vector_search_limit"),    int,   10000),
-    "fts_min_results":      (("memory", "fts_min_results"),        int,   3),
 
     # ── Memory: Consolidation ────────────────────────────────────
     "consolidation_enabled":            (("memory", "consolidation", "enabled"),            bool,  False),
-    "consolidation_min_messages":       (("memory", "consolidation", "min_messages"),       int,   4),
     "consolidation_confidence_threshold":(("memory", "consolidation", "confidence_threshold"), float, 0.6),
-    "consolidation_max_extraction_chars":(("memory", "consolidation", "max_extraction_chars"), int, 50000),
 
     # ── Memory: Recall ───────────────────────────────────────────
     "recall_decay_rate":            (("memory", "recall", "decay_rate"),            float, 0.03),
     "recall_max_facts":             (("memory", "recall", "max_facts_in_context"), int,   20),
     "recall_max_dynamic_tokens":    (("memory", "recall", "max_dynamic_tokens"),   int,   0),
     "recall_max_episodes_at_start": (("memory", "recall", "max_episodes_at_start"), int,  3),
-    "recall_archive_messages":      (("memory", "recall", "archive_messages"),      int,   20),
-
-    # ── Memory: Recall Personality ───────────────────────────────
-    "recall_priority_vector":      (("memory", "recall", "personality", "priority_vector"),      int,  35),
-    "recall_priority_episodes":    (("memory", "recall", "personality", "priority_episodes"),    int,  25),
-    "recall_priority_facts":       (("memory", "recall", "personality", "priority_facts"),       int,  15),
-    "recall_priority_commitments": (("memory", "recall", "personality", "priority_commitments"), int,  40),
-    "recall_fact_format":          (("memory", "recall", "personality", "fact_format"),           str,  "natural"),
-    "recall_show_emotional_tone":  (("memory", "recall", "personality", "show_emotional_tone"),  bool, True),
-    "recall_episode_section_header":(("memory", "recall", "personality", "episode_section_header"), str, "Recent conversations"),
 
     # ── Memory: Maintenance ──────────────────────────────────────
     "maintenance_stale_threshold_days": (("memory", "maintenance", "stale_threshold_days"), int, 90),
@@ -144,7 +127,6 @@ _SCHEMA: dict[str, tuple] = {
     "exec_max_timeout":     (("tools", "exec_max_timeout"),     int,   600),
     "subagent_deny":        (("tools", "subagent_deny"),        list,  []),
     "tool_call_retry":      (("tools", "tool_call_retry"),      bool,  False),
-    "tool_success_warn_threshold": (("tools", "tool_success_warn_threshold"), float, 0.5),
     "filesystem_default_read_limit": (("tools", "filesystem", "default_read_limit"), int, 2000),
 
     # ── Tools: Web ───────────────────────────────────────────────
@@ -153,12 +135,8 @@ _SCHEMA: dict[str, tuple] = {
     "web_search_timeout":   (("tools", "web_search", "timeout"),   int,  15),
     "web_fetch_timeout":    (("tools", "web_fetch", "timeout"),    int,  15),
 
-    # ── Tools: TTS (plugin) ──────────────────────────────────────
-    "tts_api_url":      (("tools", "tts", "api_url"),    str, ""),
-
     # ── STT ──────────────────────────────────────────────────────
     "stt_backend":       (("stt", "backend"),       str, ""),
-    "stt_whisper_url":   (("stt", "whisper_url"),    str, "http://whisper-server:8082"),
 
     # ── Documents ────────────────────────────────────────────────
     "documents_enabled":        (("documents", "enabled"),        bool, False),
@@ -171,15 +149,10 @@ _SCHEMA: dict[str, tuple] = {
     "vision_max_dimension":     (("vision", "max_dimension"),    int,  1568),
     "vision_jpeg_quality_steps":(("vision", "jpeg_quality_steps"), list, [85, 60, 40]),
     # ── Logging ──────────────────────────────────────────────────
-    "log_max_bytes":    (("logging", "max_bytes"),    int,  10485760),
-    "log_backup_count": (("logging", "backup_count"), int,  3),
     "logging_suppress": (("logging", "suppress"),     list, []),
     "log_format":       (("logging", "format"),        str,  "text"),
     # ── Strategy ────────────────────────────────────────────────
     "agent_strategy":           (("agent", "strategy"),                    str,   "tool_use"),
-
-    # ── Media Lifecycle ─────────────────────────────────────────
-    "media_ttl_hours":          (("media", "ttl_hours"),                   int,   24),
 
     # ── Behavior ─────────────────────────────────────────────────
     "silent_tokens":            (("behavior", "silent_tokens"),            list,  ["NO_REPLY"]),
@@ -190,32 +163,19 @@ _SCHEMA: dict[str, tuple] = {
     "api_retry_base_delay":     (("behavior", "api_retry_base_delay"),     float, 2.0),
     "message_retries":          (("behavior", "message_retries"),          int,   2),
     "message_retry_base_delay": (("behavior", "message_retry_base_delay"), float, 30.0),
-    "audit_truncation_limit":   (("behavior", "audit_truncation_limit"),   int,   500),
     "agent_timeout":            (("behavior", "agent_timeout_seconds"),     float, 600.0),
     "max_turns":                (("behavior", "max_turns_per_message"),     int,   50),
     "max_cost_per_message":     (("behavior", "max_cost_per_message"),     float, 0.0),
-    "queue_capacity":           (("behavior", "queue_capacity"),           int,   1000),
-    "queue_poll_interval":      (("behavior", "queue_poll_interval"),      float, 1.0),
-    "quote_max_chars":          (("behavior", "quote_max_chars"),          int,   200),
     "notify_target":            (("behavior", "notify_target"),            str,   ""),
     "max_context_for_tools":    (("behavior", "max_context_for_tools"),    int,   0),
-    "thinking_concise_hint":    (("behavior", "thinking_concise_hint"),    bool,  False),
 
     # ── Behavior: Compaction ─────────────────────────────────────
     "compaction_threshold":     (("behavior", "compaction", "threshold_tokens"),       int,   150000),
     "compaction_max_tokens":    (("behavior", "compaction", "max_tokens"),             int,   2048),
     "compaction_prompt":        (("behavior", "compaction", "prompt"),                 str,   "Summarize this conversation for {agent_name}. Keep it under {max_tokens} tokens."),
-    "compaction_min_messages":  (("behavior", "compaction", "min_messages"),           int,   4),
-    "compaction_tool_result_max_chars": (("behavior", "compaction", "tool_result_max_chars"), int, 2000),
-    "compaction_warning_pct":   (("behavior", "compaction", "warning_pct"),            float, 0.8),
     "diary_prompt":             (("behavior", "compaction", "diary_prompt"),           str,   ""),
     # ── Agent Identity ─────────────────────────────────────────
     "agent_id":                 (("agent", "id"),                    str, ""),
-
-    # ── Metering ───────────────────────────────────────────────
-    "metering_currency":        (("metering", "currency"),           str, "EUR"),
-    "metering_retention_months":(("metering", "retention_months"),   int, 12),
-
 
     # ── Model Routing ────────────────────────────────────────────
     # Override model role for specific tasks. "" = use primary.
@@ -324,7 +284,7 @@ class Config(_ConfigBase):
             if isinstance(v, (int, float)) and v <= 0:
                 errors.append("[models.primary] max_context_tokens must be > 0")
         for key in ("agent_timeout_seconds", "api_retry_base_delay",
-                     "message_retry_base_delay", "queue_poll_interval"):
+                     "message_retry_base_delay"):
             val = _deep_get(self._data, "behavior", key)
             if val is not None and (not isinstance(val, (int, float)) or val < 0):
                 errors.append(f"[behavior] {key} must be >= 0")
@@ -332,9 +292,6 @@ class Config(_ConfigBase):
             val = _deep_get(self._data, "behavior", key)
             if val is not None and (not isinstance(val, (int, float)) or val < 0):
                 errors.append(f"[behavior] {key} must be >= 0")
-        queue_cap = _deep_get(self._data, "behavior", "queue_capacity")
-        if queue_cap is not None and (not isinstance(queue_cap, (int, float)) or queue_cap < 1):
-            errors.append("[behavior] queue_capacity must be >= 1")
         threshold = _deep_get(self._data, "behavior", "compaction", "threshold_tokens")
         if threshold is not None and (not isinstance(threshold, (int, float)) or threshold < 1):
             errors.append("[behavior.compaction] threshold_tokens must be >= 1")
@@ -355,7 +312,7 @@ class Config(_ConfigBase):
         """
         toml_data_dir = _deep_get(self._data, "paths", "data_dir", default="")
         self._data_dir = Path(
-            os.environ.get("LUCYD_DATA_DIR", "") or toml_data_dir or "/data"
+            os.environ.get("LUCYD_DATA_DIR", "") or toml_data_dir or "/data",
         ).resolve()
 
         path_defaults = {
@@ -460,11 +417,6 @@ class Config(_ConfigBase):
     def http_auth_token(self) -> str:
         env = _deep_get(self._data, "http", "token_env", default="")
         return os.environ.get(env, "") if env else ""
-
-    @property
-    def http_callback_token(self) -> str:
-        env_var = _deep_get(self._data, "http", "callback_token_env", default="")
-        return os.environ.get(env_var, "") if env_var else ""
 
     @property
     def web_search_api_key(self) -> str:

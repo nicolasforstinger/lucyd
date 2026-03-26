@@ -191,32 +191,29 @@ class TestSessionManagerPublicAPI:
 class TestMonitorWriter:
     """_MonitorWriter: write, on_response, on_tool_results."""
 
-    def _make_writer(self, tmp_path):
-        from monitor import MonitorWriter
-        path = tmp_path / "monitor.json"
-        return MonitorWriter(
-            path=path,
+    def _make_writer(self):
+        from lucyd import _MonitorWriter
+        state = {}
+        return _MonitorWriter(
+            state=state,
             contact="alice",
             session_id="sess-123",
             trace_id="trace-456",
             model="test-model",
-        )
+        ), state
 
-    def test_write_creates_json_file(self, tmp_path):
-        writer = self._make_writer(tmp_path)
+    def test_write_updates_state_dict(self):
+        writer, state = self._make_writer()
         writer.write("thinking")
-        path = tmp_path / "monitor.json"
-        assert path.exists()
-        data = json.loads(path.read_text())
-        assert data["state"] == "thinking"
-        assert data["contact"] == "alice"
-        assert data["session_id"] == "sess-123"
-        assert data["trace_id"] == "trace-456"
-        assert data["model"] == "test-model"
+        assert state["state"] == "thinking"
+        assert state["contact"] == "alice"
+        assert state["session_id"] == "sess-123"
+        assert state["trace_id"] == "trace-456"
+        assert state["model"] == "test-model"
 
-    def test_on_response_increments_turns(self, tmp_path):
+    def test_on_response_increments_turns(self):
         from providers import LLMResponse, Usage
-        writer = self._make_writer(tmp_path)
+        writer, state = self._make_writer()
         response = LLMResponse(
             text="hello",
             tool_calls=[],
@@ -229,16 +226,12 @@ class TestMonitorWriter:
         assert writer._turns[0]["output_tokens"] == 50
         assert writer._turns[0]["stop_reason"] == "end_turn"
 
-    def test_on_tool_results_increments_turn_counter(self, tmp_path):
-        writer = self._make_writer(tmp_path)
+    def test_on_tool_results_increments_turn_counter(self):
+        writer, state = self._make_writer()
         assert writer._turn == 1
         writer.on_tool_results({"role": "tool_results", "results": []})
         assert writer._turn == 2
-        # Verify it also writes state
-        path = tmp_path / "monitor.json"
-        assert path.exists()
-        data = json.loads(path.read_text())
-        assert data["state"] == "thinking"
+        assert state["state"] == "thinking"
 
 
 # ─── 5. Multi-Model Routing Config Properties ───────────────────

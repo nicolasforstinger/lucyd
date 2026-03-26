@@ -1,6 +1,5 @@
-"""Tests for LucydDaemon internals — _build_status, _check_context_budget,
-_resolve pattern, deliver flag, process_http_immediate, message loop
-HTTP bypass.
+"""Tests for LucydDaemon internals — _build_status, _resolve pattern,
+deliver flag, process_http_immediate, message loop HTTP bypass.
 
 These tests mock heavy dependencies (providers, channels, sessions) to isolate
 the daemon's orchestration logic.
@@ -74,8 +73,8 @@ def _make_config(tmp_path, **overrides):
         },
         "memory": {
             "db": "", "search_top_k": 10, "vector_search_limit": 10000,
-            "fts_min_results": 3, "embedding_timeout": 15,
-            "consolidation": {"enabled": False, "min_messages": 4, "confidence_threshold": 0.6, "max_extraction_chars": 50000},
+            "embedding_timeout": 15,
+            "consolidation": {"enabled": False, "confidence_threshold": 0.6},
             "recall": {
                 "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
                 "personality": {
@@ -97,7 +96,7 @@ def _make_config(tmp_path, **overrides):
         },
         "documents": {"enabled": True, "max_chars": 30000, "max_file_bytes": 10485760,
                       "text_extensions": [".txt", ".md", ".csv", ".json"]},
-        "logging": {"max_bytes": 10485760, "backup_count": 3, "suppress": []},
+        "logging": {"suppress": []},
         "vision": {"max_image_bytes": 5242880, "max_dimension": 1568,
                    "jpeg_quality_steps": [85, 60, 40],
                    },
@@ -106,15 +105,13 @@ def _make_config(tmp_path, **overrides):
             "error_message": "connection error", "sqlite_timeout": 30,
             "api_retries": 2, "api_retry_base_delay": 2.0,
             "message_retries": 2, "message_retry_base_delay": 30.0,
-            "audit_truncation_limit": 500, "agent_timeout_seconds": 600,
+            "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
-            "queue_capacity": 1000, "queue_poll_interval": 1.0, "quote_max_chars": 200,
             "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize this conversation for {agent_name}.",
                 "keep_recent_pct": 0.33, "keep_recent_pct_min": 0.05, "keep_recent_pct_max": 0.9,
-                "min_messages": 4, "tool_result_max_chars": 2000, "warning_pct": 0.8,
                 "diary_prompt": "Write a log for {date}.",
             },
         },
@@ -384,8 +381,8 @@ class TestResolveIntegration:
         session.needs_compaction = MagicMock(return_value=False)
         session.warned_about_compaction = False
         session.add_user_message = MagicMock()
-        session.persist_assistant_message = MagicMock()
-        session.persist_tool_results = MagicMock()
+        session.add_assistant_message = MagicMock()
+        session.add_tool_results = MagicMock()
         session.save_state = MagicMock()
 
         daemon.session_mgr = MagicMock()
@@ -438,7 +435,7 @@ class TestResolveIntegration:
         """Future is resolved with silent=True when reply matches a silent token."""
         daemon, provider, session = daemon_with_mock_provider
         daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
+
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [1.0, 5.0, 0.1],
         })
@@ -482,7 +479,7 @@ class TestResolveIntegration:
         """Future is resolved with reply on normal successful processing."""
         daemon, provider, session = daemon_with_mock_provider
         daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
+
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [1.0, 5.0, 0.1],
         })
@@ -548,8 +545,8 @@ class TestChannelDeliverySuppression:
         session.needs_compaction = MagicMock(return_value=False)
         session.warned_about_compaction = False
         session.add_user_message = MagicMock()
-        session.persist_assistant_message = MagicMock()
-        session.persist_tool_results = MagicMock()
+        session.add_assistant_message = MagicMock()
+        session.add_tool_results = MagicMock()
         session.save_state = MagicMock()
 
         daemon.session_mgr = MagicMock()
@@ -570,7 +567,7 @@ class TestChannelDeliverySuppression:
         daemon.channel = AsyncMock()
 
         daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
+
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [1.0, 5.0, 0.1],
         })
@@ -745,7 +742,7 @@ class TestContextBuilderSourcePassthrough:
         daemon.channel = AsyncMock()
 
         daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
+
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [],
         })
@@ -920,8 +917,8 @@ class TestProcessMessageIntegration:
         session.needs_compaction = MagicMock(return_value=False)
         session.warned_about_compaction = False
         session.add_user_message = MagicMock()
-        session.persist_assistant_message = MagicMock()
-        session.persist_tool_results = MagicMock()
+        session.add_assistant_message = MagicMock()
+        session.add_tool_results = MagicMock()
         session.save_state = MagicMock()
 
         daemon.session_mgr = MagicMock()
@@ -957,7 +954,7 @@ class TestProcessMessageIntegration:
 
         # Override config as MagicMock for controlled attribute access
         daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
+
         daemon.config.model_config = MagicMock(return_value={
             "model": "test-model", "cost_per_mtok": [1.0, 5.0, 0.1],
             "supports_vision": True,
@@ -1041,11 +1038,19 @@ class TestProcessMessageIntegration:
                 source="telegram",
             )
 
-        # persist_assistant_message should be called for each assistant message
-        assert session.persist_assistant_message.call_count == 2
-        # persist_tool_results should be called once
-        session.persist_tool_results.assert_called_once()
-        call_args = session.persist_tool_results.call_args[0][0]
+        # add_assistant_message(persist_only=True) should be called for each assistant message
+        assistant_calls = [
+            c for c in session.add_assistant_message.call_args_list
+            if c.kwargs.get("persist_only") or (len(c.args) > 1 and c.args[1])
+        ]
+        assert len(assistant_calls) == 2
+        # add_tool_results(persist_only=True) should be called once
+        tool_calls = [
+            c for c in session.add_tool_results.call_args_list
+            if c.kwargs.get("persist_only") or (len(c.args) > 1 and c.args[1])
+        ]
+        assert len(tool_calls) == 1
+        call_args = tool_calls[0].args[0]
         assert call_args[0]["tool_use_id"] == "t1"
 
     @pytest.mark.asyncio
@@ -1288,7 +1293,7 @@ class TestMessageLoopDebounce:
         daemon.channel = AsyncMock()
 
         daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
+
         daemon.config.model_config = MagicMock(return_value={
             "model": "test", "cost_per_mtok": [1.0, 5.0, 0.1],
         })
@@ -1306,12 +1311,7 @@ class TestMessageLoopDebounce:
         daemon.config.message_retries = 0
         daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
-        daemon.config.queue_poll_interval = 1.0
-        daemon.config.quote_max_chars = 200
         daemon.config.sqlite_timeout = 30
-        daemon.config.compaction_warning_pct = 0.8
-        daemon.config.compaction_min_messages = 4
-        daemon.config.compaction_tool_result_max_chars = 2000
         daemon.config.notify_target = ""
         # Very short debounce for fast tests
         daemon.config.debounce_ms = 50
@@ -1326,7 +1326,7 @@ class TestMessageLoopDebounce:
 
         The loop reads one item at a time from the queue, appends to pending,
         sleeps for debounce_ms, then drains all pending senders.  With two
-        InboundMessages from the same sender, each is processed in its own
+        messages from the same sender, each is processed in its own
         iteration and add_user_message is called for each.
         """
         daemon, session = loop_daemon
@@ -1338,20 +1338,8 @@ class TestMessageLoopDebounce:
         response.text = "ok"
         response.usage = usage
 
-        from models import InboundMessage
-
-        msg1 = InboundMessage(
-            text="Hello",
-            sender="+431234567890",
-            timestamp=time.time(),
-            source="telegram",
-        )
-        msg2 = InboundMessage(
-            text="How are you?",
-            sender="+431234567890",
-            timestamp=time.time(),
-            source="telegram",
-        )
+        msg1 = {"text": "Hello", "sender": "+431234567890", "type": "user"}
+        msg2 = {"text": "How are you?", "sender": "+431234567890", "type": "user"}
         await daemon.queue.put(msg1)
         await daemon.queue.put(msg2)
         await daemon.queue.put(None)
@@ -1445,15 +1433,7 @@ class TestMessageLoopDebounce:
         """Messages with empty text and no attachments are skipped."""
         daemon, session = loop_daemon
 
-        from models import InboundMessage
-
-        msg = InboundMessage(
-            text="",
-            sender="+431234567890",
-            timestamp=time.time(),
-            source="telegram",
-            attachments=None,
-        )
+        msg = {"text": "", "sender": "+431234567890", "type": "user"}
         await daemon.queue.put(msg)
         await daemon.queue.put(None)
 
@@ -1468,11 +1448,9 @@ class TestMessageLoopDebounce:
         """Messages from same sender queued before sleep completes are combined."""
         daemon, session = loop_daemon
 
-        from models import InboundMessage
-
         # Put two messages from same sender into the queue before loop starts
-        msg1 = InboundMessage(text="A", sender="user1", timestamp=time.time(), source="telegram")
-        msg2 = InboundMessage(text="B", sender="user1", timestamp=time.time(), source="telegram")
+        msg1 = {"text": "A", "sender": "user1", "type": "user"}
+        msg2 = {"text": "B", "sender": "user1", "type": "user"}
         await daemon.queue.put(msg1)
 
         response = MagicMock()
@@ -1503,10 +1481,8 @@ class TestMessageLoopDebounce:
         """Messages from different senders are each processed."""
         daemon, session = loop_daemon
 
-        from models import InboundMessage
-
-        msg1 = InboundMessage(text="Hello", sender="alice", timestamp=time.time(), source="telegram")
-        msg2 = InboundMessage(text="World", sender="bob", timestamp=time.time(), source="telegram")
+        msg1 = {"text": "Hello", "sender": "alice", "type": "user"}
+        msg2 = {"text": "World", "sender": "bob", "type": "user"}
         await daemon.queue.put(msg1)
         await daemon.queue.put(msg2)
         await daemon.queue.put(None)
@@ -1523,7 +1499,7 @@ class TestMessageLoopDebounce:
 
     @pytest.mark.asyncio
     async def test_dict_messages_debounced(self, loop_daemon):
-        """Dict-based queue messages are subject to debounce like InboundMessages."""
+        """Dict-based queue messages are subject to debounce."""
         daemon, session = loop_daemon
 
         queue_item = {
@@ -1588,33 +1564,15 @@ class TestMessageLoopDebounce:
         daemon.session_mgr.close_session.assert_called_once_with("nobody")
 
     @pytest.mark.asyncio
-    async def test_notify_meta_propagates_through_drain(self, loop_daemon):
-        """notify_meta from dict message arrives in _process_message."""
-        daemon, session = loop_daemon
-        meta = {"ref": "ticket-42", "source": "n8n"}
-
-        await daemon.queue.put({
-            "sender": "webhook", "type": "system",
-            "text": "new ticket", "notify_meta": meta,
-        })
-        await daemon.queue.put(None)
-
-        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
-            await daemon._message_loop()
-
-        mock_pm.assert_called_once()
-        assert mock_pm.call_args.kwargs["notify_meta"] == meta
-
-    @pytest.mark.asyncio
     async def test_attachments_preserved_through_processing(self, loop_daemon):
         """Message attachments pass through to _process_message."""
         daemon, session = loop_daemon
-        from models import Attachment, InboundMessage
+        from models import Attachment
 
         att = Attachment(content_type="image/png", local_path="/tmp/a.png",
                          filename="a.png", size=100)
-        msg = InboundMessage(text="pic", sender="user1", timestamp=time.time(),
-                             source="telegram", attachments=[att])
+        msg = {"text": "pic", "sender": "user1", "type": "user",
+               "attachments": [att]}
 
         await daemon.queue.put(msg)
         await daemon.queue.put(None)
@@ -1627,79 +1585,6 @@ class TestMessageLoopDebounce:
         assert passed_atts is not None
         assert len(passed_atts) == 1
         assert passed_atts[0].filename == "a.png"
-
-    @pytest.mark.asyncio
-    async def test_quote_injected_into_text(self, loop_daemon):
-        """InboundMessage.quote is prepended to text before processing."""
-        daemon, session = loop_daemon
-        from models import InboundMessage
-
-        msg = InboundMessage(
-            text="totally agree",
-            sender="user1",
-            timestamp=time.time(),
-            source="telegram",
-            quote="here is my take on things",
-        )
-        await daemon.queue.put(msg)
-        await daemon.queue.put(None)
-
-        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
-            await daemon._message_loop()
-
-        mock_pm.assert_called_once()
-        passed_text = mock_pm.call_args[0][0]  # first positional arg = text
-        assert "[replying to: here is my take on things]" in passed_text
-        assert "totally agree" in passed_text
-
-    @pytest.mark.asyncio
-    async def test_quote_none_not_injected(self, loop_daemon):
-        """No quote prefix when InboundMessage.quote is None."""
-        daemon, session = loop_daemon
-        from models import InboundMessage
-
-        msg = InboundMessage(
-            text="just a normal message",
-            sender="user1",
-            timestamp=time.time(),
-            source="telegram",
-        )
-        await daemon.queue.put(msg)
-        await daemon.queue.put(None)
-
-        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
-            await daemon._message_loop()
-
-        mock_pm.assert_called_once()
-        passed_text = mock_pm.call_args[0][0]
-        assert "[replying to:" not in passed_text
-        assert "just a normal message" in passed_text
-
-    @pytest.mark.asyncio
-    async def test_long_quote_truncated(self, loop_daemon):
-        """Quotes longer than 200 chars are truncated with ellipsis."""
-        daemon, session = loop_daemon
-        from models import InboundMessage
-
-        long_quote = "a" * 300
-        msg = InboundMessage(
-            text="yes",
-            sender="user1",
-            timestamp=time.time(),
-            source="telegram",
-            quote=long_quote,
-        )
-        await daemon.queue.put(msg)
-        await daemon.queue.put(None)
-
-        with patch.object(daemon, "_process_message", new_callable=AsyncMock) as mock_pm:
-            await daemon._message_loop()
-
-        mock_pm.assert_called_once()
-        passed_text = mock_pm.call_args[0][0]
-        # Should be truncated at 200 chars + ellipsis
-        assert "a" * 200 + "…" in passed_text
-        assert "a" * 201 not in passed_text
 
     @pytest.mark.asyncio
     async def test_cancelled_error_exits_cleanly(self, loop_daemon):
@@ -1724,10 +1609,10 @@ class TestMessageLoopDebounce:
 
     @pytest.mark.asyncio
     async def test_unknown_item_type_skipped(self, loop_daemon):
-        """Non-dict, non-InboundMessage items are silently skipped."""
+        """Non-dict items are silently skipped."""
         daemon, session = loop_daemon
 
-        await daemon.queue.put(42)  # Neither InboundMessage nor dict
+        await daemon.queue.put(42)  # Not a dict
         await daemon.queue.put("stray string")
         await daemon.queue.put(None)
 
@@ -1842,178 +1727,6 @@ class TestMeteringIntegration:
         result = daemon.metering_db.get_records()
         assert result["records"] == []
 
-
-# ─── Webhook Tests ────────────────────────────────────────────────
-
-
-@pytest.mark.skipif(
-    not __import__("importlib").util.find_spec("httpx"),
-    reason="httpx not installed",
-)
-class TestFireWebhook:
-    """Tests for LucydDaemon._fire_webhook()."""
-
-    @pytest.mark.asyncio
-    async def test_no_url_skips(self, tmp_path):
-        """Empty callback URL means no HTTP call."""
-        config = _make_config(tmp_path)
-        daemon = LucydDaemon(config)
-        daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
-        daemon.config.http_callback_url = ""
-
-        with patch("httpx.AsyncClient") as mock_cls:
-            await daemon._fire_webhook(
-                reply="test", session_id="s-1", sender="alice",
-                source="telegram", silent=False,
-                tokens={"input": 100, "output": 50},
-                notify_meta=None,
-            )
-            mock_cls.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_posts_payload(self, tmp_path):
-        """Webhook POSTs correct payload to configured URL."""
-        config = _make_config(tmp_path)
-        daemon = LucydDaemon(config)
-        daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
-        daemon.config.http_callback_url = "https://n8n.local/webhook/abc"
-        daemon.config.http_callback_token = ""
-
-        mock_response = MagicMock()
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            await daemon._fire_webhook(
-                reply="Hello!", session_id="s-1", sender="alice",
-                source="telegram", silent=False,
-                tokens={"input": 5000, "output": 200},
-                notify_meta=None,
-            )
-
-        mock_client.post.assert_called_once()
-        call_args = mock_client.post.call_args
-        assert call_args[1]["json"]["reply"] == "Hello!"
-        assert call_args[1]["json"]["session_id"] == "s-1"
-        assert call_args[1]["json"]["sender"] == "alice"
-        assert call_args[1]["json"]["source"] == "telegram"
-        assert call_args[1]["json"]["silent"] is False
-        assert call_args[1]["json"]["tokens"] == {"input": 5000, "output": 200}
-        assert "notify_meta" not in call_args[1]["json"]
-
-    @pytest.mark.asyncio
-    async def test_auth_header(self, tmp_path):
-        """Bearer token included when callback token is configured."""
-        config = _make_config(tmp_path)
-        daemon = LucydDaemon(config)
-        daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
-        daemon.config.http_callback_url = "https://n8n.local/webhook/abc"
-        daemon.config.http_callback_token = "webhook-secret"
-
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=MagicMock())
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            await daemon._fire_webhook(
-                reply="test", session_id="s-1", sender="alice",
-                source="telegram", silent=False,
-                tokens={"input": 100, "output": 50},
-                notify_meta=None,
-            )
-
-        headers = mock_client.post.call_args[1]["headers"]
-        assert headers["Authorization"] == "Bearer webhook-secret"
-
-    @pytest.mark.asyncio
-    async def test_failure_logged_not_raised(self, tmp_path, caplog):
-        """Webhook failure is logged as warning, not raised."""
-        import httpx
-
-        config = _make_config(tmp_path)
-        daemon = LucydDaemon(config)
-        daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
-        daemon.config.http_callback_url = "https://n8n.local/webhook/abc"
-        daemon.config.http_callback_token = ""
-
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            # Should not raise
-            await daemon._fire_webhook(
-                reply="test", session_id="s-1", sender="alice",
-                source="telegram", silent=False,
-                tokens={"input": 100, "output": 50},
-                notify_meta=None,
-            )
-
-        assert any("Webhook callback failed" in r.message for r in caplog.records)
-
-    @pytest.mark.asyncio
-    async def test_silent_flag(self, tmp_path):
-        """Silent flag is correctly passed in webhook payload."""
-        config = _make_config(tmp_path)
-        daemon = LucydDaemon(config)
-        daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
-        daemon.config.http_callback_url = "https://n8n.local/webhook/abc"
-        daemon.config.http_callback_token = ""
-
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=MagicMock())
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            await daemon._fire_webhook(
-                reply="HEARTBEAT_OK", session_id="s-1", sender="system",
-                source="system", silent=True,
-                tokens={"input": 100, "output": 10},
-                notify_meta=None,
-            )
-
-        payload = mock_client.post.call_args[1]["json"]
-        assert payload["silent"] is True
-
-    @pytest.mark.asyncio
-    async def test_notify_meta_echo(self, tmp_path):
-        """notify_meta is echoed in webhook payload."""
-        config = _make_config(tmp_path)
-        daemon = LucydDaemon(config)
-        daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
-        daemon.config.http_callback_url = "https://n8n.local/webhook/abc"
-        daemon.config.http_callback_token = ""
-
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=MagicMock())
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        meta = {"source": "n8n-email", "ref": "Q-47", "data": {"amount": 1500}}
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            await daemon._fire_webhook(
-                reply="Quote accepted", session_id="s-1", sender="http-n8n",
-                source="system", silent=False,
-                tokens={"input": 2000, "output": 100},
-                notify_meta=meta,
-            )
-
-        payload = mock_client.post.call_args[1]["json"]
-        assert payload["notify_meta"]["source"] == "n8n-email"
-        assert payload["notify_meta"]["ref"] == "Q-47"
-        assert payload["notify_meta"]["data"]["amount"] == 1500
 
 
 # ─── _reset_session Tests ────────────────────────────────────────
@@ -2137,27 +1850,34 @@ class TestResetSession:
 class TestBuildMonitor:
     """Tests for _build_monitor()."""
 
-    def test_reads_monitor_json(self, tmp_path):
+    def test_returns_in_memory_state(self, tmp_path):
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
 
-        monitor_path = tmp_path / "state" / "monitor.json"
-        monitor_path.write_text(json.dumps({
+        daemon._monitor_state = {
             "state": "thinking",
             "contact": "alice",
             "turn": 3,
-        }))
+        }
 
         result = daemon._build_monitor()
         assert result["state"] == "thinking"
         assert result["contact"] == "alice"
 
-    def test_no_monitor_file(self, tmp_path):
+    def test_default_state_is_idle(self, tmp_path):
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
 
         result = daemon._build_monitor()
-        assert result["state"] == "unknown"
+        assert result["state"] == "idle"
+
+    def test_returns_copy_not_reference(self, tmp_path):
+        config = _make_config(tmp_path)
+        daemon = LucydDaemon(config)
+
+        result = daemon._build_monitor()
+        result["state"] = "corrupted"
+        assert daemon._monitor_state["state"] == "idle"
 
 
 # ─── _build_history Tests ────────────────────────────────────────
@@ -2197,223 +1917,3 @@ class TestBuildHistory:
         assert result["events"] == []
 
 
-# ─── Webhook agent field Tests ───────────────────────────────────
-
-
-@pytest.mark.skipif(
-    not __import__("importlib").util.find_spec("httpx"),
-    reason="httpx not installed",
-)
-class TestWebhookAgentField:
-    """Tests for agent name in webhook payload."""
-
-    @pytest.mark.asyncio
-    async def test_webhook_includes_agent(self, tmp_path):
-        config = _make_config(tmp_path)
-        daemon = LucydDaemon(config)
-        daemon.config = MagicMock()
-        daemon.config.http_callback_max_failures = 0
-        daemon.config.http_callback_url = "https://test/hook"
-        daemon.config.http_callback_token = ""
-        daemon.config.http_callback_timeout = 10
-        daemon.config.agent_name = "TestAgent"
-
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=MagicMock())
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            await daemon._fire_webhook(
-                reply="test", session_id="s1", sender="alice",
-                source="telegram", silent=False,
-                tokens={"input": 100, "output": 50},
-                notify_meta=None,
-            )
-
-        call_kwargs = mock_client.post.call_args
-        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert payload["agent"] == "TestAgent"
-
-
-# ─── _check_context_budget ─────────────────────────────────────
-
-
-class TestCheckContextBudget:
-    """Tests for LucydDaemon._check_context_budget() startup warning."""
-
-    def _make_daemon_with_budget(self, tmp_path, max_context_tokens, soul_text="# Test Soul"):
-        """Build a daemon with context budget components wired up."""
-        from context import ContextBuilder
-        from skills import SkillLoader
-        from tools import ToolRegistry
-
-        config = _make_config(
-            tmp_path,
-            models={
-                "primary": {
-                    "provider": "anthropic-compat",
-                    "model": "test-model",
-                    "max_tokens": 1024,
-                    "max_context_tokens": max_context_tokens,
-                    "cost_per_mtok": [1.0, 5.0, 0.1],
-                },
-            },
-        )
-
-        # Write workspace content
-        ws = tmp_path / "workspace"
-        ws.mkdir(exist_ok=True)
-        (ws / "SOUL.md").write_text(soul_text)
-
-        daemon = LucydDaemon(config)
-        daemon.context_builder = ContextBuilder(
-            workspace=config.workspace,
-            stable_files=config.context_stable,
-            semi_stable_files=config.context_semi_stable,
-        )
-        daemon.tool_registry = ToolRegistry()
-        daemon.skill_loader = SkillLoader(
-            workspace=config.workspace,
-            skills_dir=config.skills_dir,
-        )
-        daemon.skill_loader.scan()
-
-        # Mock provider with capabilities matching config
-        from providers import ModelCapabilities
-        mock_provider = MagicMock()
-        mock_provider.capabilities = ModelCapabilities(max_context_tokens=max_context_tokens)
-        daemon.provider = mock_provider
-
-        return daemon
-
-    def test_warning_fires_when_over_50_percent(self, tmp_path, caplog):
-        """Warning logged when system prompt exceeds 50% of max_context_tokens."""
-        import logging
-
-        # max_context_tokens=1500 → 50% = 750 tokens.
-        # Varied text produces ~818 tokens with byte fallback → ~60% → triggers warning (between 50-80%).
-        big_soul = "The quick brown fox jumps over the lazy dog. " * 60
-        daemon = self._make_daemon_with_budget(tmp_path, max_context_tokens=1500, soul_text=big_soul)
-
-        with caplog.at_level(logging.WARNING, logger="lucyd"):
-            daemon._check_context_budget()
-
-        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("System prompt uses" in m for m in warning_msgs), (
-            f"Expected context budget warning but got: {warning_msgs}"
-        )
-
-    def test_no_warning_when_under_50_percent(self, tmp_path, caplog):
-        """No warning logged when system prompt is within budget."""
-        import logging
-
-        # max_context_tokens=100000 → 50% = 50000 tokens.
-        # A tiny SOUL.md (~11 chars) → well under threshold.
-        daemon = self._make_daemon_with_budget(tmp_path, max_context_tokens=100000, soul_text="# Test Soul")
-
-        with caplog.at_level(logging.WARNING, logger="lucyd"):
-            daemon._check_context_budget()
-
-        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert not any("System prompt uses" in m for m in warning_msgs), (
-            f"Unexpected context budget warning: {warning_msgs}"
-        )
-
-    def test_info_log_always_emitted(self, tmp_path, caplog):
-        """Info-level context budget log is always emitted regardless of threshold."""
-        import logging
-
-        daemon = self._make_daemon_with_budget(tmp_path, max_context_tokens=100000, soul_text="# Small")
-
-        with caplog.at_level(logging.INFO, logger="lucyd"):
-            daemon._check_context_budget()
-
-        info_msgs = [r.message for r in caplog.records if r.levelno == logging.INFO]
-        assert any("Context budget:" in m for m in info_msgs), (
-            f"Expected context budget info log but got: {info_msgs}"
-        )
-
-    def test_skips_when_no_max_context_tokens(self, tmp_path, caplog):
-        """No warning or info when max_context_tokens is 0 (unset)."""
-        import logging
-
-        config = _make_config(tmp_path)  # Default config has no max_context_tokens
-        daemon = LucydDaemon(config)
-        daemon.context_builder = MagicMock()
-        daemon.tool_registry = MagicMock()
-
-        with caplog.at_level(logging.DEBUG, logger="lucyd"):
-            daemon._check_context_budget()
-
-        # Should not even call build() since it returns early
-        daemon.context_builder.build.assert_not_called()
-
-    def test_warning_includes_percentage_and_tokens(self, tmp_path, caplog):
-        """Warning message includes percentage, estimated tokens, and max tokens."""
-        import logging
-
-        # ~950 tokens out of 1500 → ~63% → warning (between 50% and 80%)
-        big_soul = "The quick brown fox jumps over the lazy dog. " * 60
-        daemon = self._make_daemon_with_budget(tmp_path, max_context_tokens=1500, soul_text=big_soul)
-
-        with caplog.at_level(logging.WARNING, logger="lucyd"):
-            daemon._check_context_budget()
-
-        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warning_msgs) >= 1
-        msg = warning_msgs[0]
-        assert "1500" in msg  # max_context_tokens
-        assert "%" in msg  # percentage
-
-    def test_large_workspace_triggers_budget_warning(self, tmp_path, caplog):
-        """Large workspace files inflate system prompt and trigger budget warning."""
-        import logging
-        from context import ContextBuilder
-        from skills import SkillLoader
-        from tools import ToolRegistry
-
-        # Context window sized so workspace files push over 50% but under 80%
-        config = _make_config(
-            tmp_path,
-            models={
-                "primary": {
-                    "provider": "anthropic-compat",
-                    "model": "test-model",
-                    "max_tokens": 1024,
-                    "max_context_tokens": 1500,
-                    "cost_per_mtok": [1.0, 5.0, 0.1],
-                },
-            },
-        )
-
-        ws = tmp_path / "workspace"
-        ws.mkdir(exist_ok=True)
-        # Large SOUL.md to inflate system prompt beyond 50% of 1500 tokens (~65%)
-        (ws / "SOUL.md").write_text("The quick brown fox jumps. " * 100)
-
-        daemon = LucydDaemon(config)
-        daemon.context_builder = ContextBuilder(
-            workspace=config.workspace,
-            stable_files=config.context_stable,
-            semi_stable_files=config.context_semi_stable,
-        )
-        daemon.skill_loader = SkillLoader(
-            workspace=config.workspace,
-            skills_dir=config.skills_dir,
-        )
-        daemon.skill_loader.scan()
-        daemon.tool_registry = ToolRegistry()
-
-        from providers import ModelCapabilities
-        mock_provider = MagicMock()
-        mock_provider.capabilities = ModelCapabilities(max_context_tokens=1500)
-        daemon.provider = mock_provider
-
-        with caplog.at_level(logging.WARNING, logger="lucyd"):
-            daemon._check_context_budget()
-
-        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("System prompt uses" in m for m in warning_msgs), (
-            f"Expected warning from large workspace inflating budget: {warning_msgs}"
-        )
