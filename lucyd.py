@@ -1286,6 +1286,20 @@ class LucydDaemon:
             return {"reset": True, "target": target, "type": "contact"}
         return {"reset": False, "reason": f"no session found for: {target}"}
 
+    async def _process_reset_item(self, item: dict) -> None:
+        """Parse a reset queue item, execute reset, resolve future."""
+        if item.get("all"):
+            target, by_id = "all", False
+        elif item.get("session_id"):
+            target, by_id = item["session_id"], True
+        else:
+            target, by_id = item.get("sender", ""), False
+        result = await self._reset_session(target, by_id=by_id)
+        log.info("Reset: %s", result)
+        reset_future = item.get("response_future")
+        if reset_future is not None and not reset_future.done():
+            reset_future.set_result(result)
+
     async def _drain_control_queue(self) -> None:
         """Process all pending control items (resets).
 
@@ -1298,20 +1312,7 @@ class LucydDaemon:
             except asyncio.QueueEmpty:
                 break
             if item.get("type") == "reset":
-                if item.get("all"):
-                    target = "all"
-                    by_id = False
-                elif item.get("session_id"):
-                    target = item["session_id"]
-                    by_id = True
-                else:
-                    target = item.get("sender", "")
-                    by_id = False
-                result = await self._reset_session(target, by_id=by_id)
-                log.info("Reset: %s", result)
-                reset_future = item.get("response_future")
-                if reset_future is not None and not reset_future.done():
-                    reset_future.set_result(result)
+                await self._process_reset_item(item)
 
     def _build_sessions(self) -> list[dict]:
         """Build session list for HTTP /sessions."""
@@ -1457,20 +1458,11 @@ class LucydDaemon:
         """
         if not force:
             try:
-                from memory_schema import ensure_schema
-
                 db_path = self.config.memory_db
                 workspace = self.config.workspace
                 if db_path and Path(db_path).exists():
-                    import sqlite3 as _sqlite3
-                    conn = _sqlite3.connect(str(db_path), timeout=self.config.sqlite_timeout)
-                    conn.execute("PRAGMA journal_mode=WAL")
-                    conn.row_factory = _sqlite3.Row
-                    ensure_schema(conn)
-                    try:
-                        has_new, since_date = check_new_logs_exist(workspace, conn)
-                    finally:
-                        conn.close()
+                    conn = self._get_memory_conn()
+                    has_new, since_date = check_new_logs_exist(workspace, conn)
                     if not has_new:
                         return {"status": "skipped", "reason": f"no new daily logs since {since_date or 'ever'}"}
             except Exception:
@@ -1565,23 +1557,16 @@ class LucydDaemon:
         conn = self._get_memory_conn()
 
         def _run():
-            stats = run_maintenance(conn, self.config.maintenance_stale_threshold_days)
-
-            # Metering retention
-            metering_deleted = 0
-            metering_db_path = str(self.config.metering_db)
-            if Path(metering_db_path).exists():
-                from metering import MeteringDB
-                mdb = MeteringDB(metering_db_path, sqlite_timeout=self.config.sqlite_timeout)
-                try:
-                    metering_deleted = mdb.enforce_retention(12)
-                finally:
-                    mdb.close()
-
-            stats["metering_deleted"] = metering_deleted
-            return stats
+            return run_maintenance(conn, self.config.maintenance_stale_threshold_days)
 
         stats = await run_blocking(_run)
+
+        # Metering retention — runs in async context (safe to use shared instance)
+        if self.metering_db:
+            stats["metering_deleted"] = self.metering_db.enforce_retention(12)
+        else:
+            stats["metering_deleted"] = 0
+
         log.info("Maintenance stats: %s", stats)
         return stats
 
@@ -1659,20 +1644,7 @@ class LucydDaemon:
 
             # Handle session reset (safety net — normally via control queue)
             if item.get("type") == "reset":
-                if item.get("all"):
-                    target = "all"
-                    by_id = False
-                elif item.get("session_id"):
-                    target = item["session_id"]
-                    by_id = True
-                else:
-                    target = item.get("sender", "")
-                    by_id = False
-                result = await self._reset_session(target, by_id=by_id)
-                log.info("Reset: %s", result)
-                reset_future = item.get("response_future")
-                if reset_future is not None and not reset_future.done():
-                    reset_future.set_result(result)
+                await self._process_reset_item(item)
                 continue
 
             # Forced compact — find primary session, diary + compact
