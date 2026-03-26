@@ -5,11 +5,15 @@ import logging
 
 from log_utils import (
     StructuredJSONFormatter,
+    _log_context,
     _log_safe,
-    clear_log_context,
-    get_log_context,
     set_log_context,
 )
+
+
+def _clear():
+    """Test helper — reset log context."""
+    _log_context.set(None)
 
 
 class TestLogSafe:
@@ -77,30 +81,30 @@ class TestLogContext:
 
     def test_set_and_get(self):
         set_log_context(agent_id="c1", session_id="s1", trace_id="t1")
-        ctx = get_log_context()
+        ctx = _log_context.get()
         assert ctx["agent_id"] == "c1"
         assert ctx["session_id"] == "s1"
         assert ctx["trace_id"] == "t1"
-        clear_log_context()
+        _clear()
 
     def test_clear(self):
         set_log_context(agent_id="c1")
-        clear_log_context()
-        assert get_log_context() == {}
+        _clear()
+        assert _log_context.get() is None
 
     def test_empty_strings_omitted(self):
         set_log_context(agent_id="", session_id="s1", trace_id="")
-        ctx = get_log_context()
+        ctx = _log_context.get()
         assert "agent_id" not in ctx
         assert ctx["session_id"] == "s1"
-        clear_log_context()
+        _clear()
 
 
 class TestStructuredJSONFormatter:
     """Verify JSON formatter includes context fields."""
 
     def test_basic_output(self):
-        clear_log_context()
+        _clear()
         fmt = StructuredJSONFormatter()
         record = logging.LogRecord(
             name="test", level=logging.INFO, pathname="", lineno=0,
@@ -123,10 +127,10 @@ class TestStructuredJSONFormatter:
         assert data["agent_id"] == "cx"
         assert data["session_id"] == "sx"
         assert data["trace_id"] == "tx"
-        clear_log_context()
+        _clear()
 
     def test_no_context_no_extra_fields(self):
-        clear_log_context()
+        _clear()
         fmt = StructuredJSONFormatter()
         record = logging.LogRecord(
             name="test", level=logging.DEBUG, pathname="", lineno=0,

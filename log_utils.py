@@ -17,8 +17,8 @@ from typing import Any
 # Set once per message processing cycle via set_log_context().
 # The JSON formatter reads this on every log call.
 
-_log_context: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
-    "log_context", default={},
+_log_context: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "log_context", default=None,
 )
 
 
@@ -37,15 +37,6 @@ def set_log_context(
         ctx["trace_id"] = trace_id
     _log_context.set(ctx)
 
-
-def clear_log_context() -> None:
-    """Clear structured log context."""
-    _log_context.set({})
-
-
-def get_log_context() -> dict[str, str]:
-    """Get current log context (for testing)."""
-    return _log_context.get()
 
 
 def _log_safe(s: str | None) -> str:
@@ -73,7 +64,7 @@ class StructuredJSONFormatter(logging.Formatter):
             "logger": record.name,
         }
         # Merge context fields
-        ctx = _log_context.get()
+        ctx = _log_context.get() or {}
         if ctx:
             entry.update(ctx)
         entry["msg"] = record.getMessage()

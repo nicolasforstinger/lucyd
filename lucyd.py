@@ -13,12 +13,12 @@ import base64
 import collections
 import contextlib
 import fcntl
-import json
 import logging
 import logging.handlers
 import os
 import re
 import signal
+import sqlite3
 import sys
 import time
 import uuid
@@ -31,9 +31,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import random
 
-from agentic import SingleShotStrategy, is_transient_error, run_agentic_loop
+from agentic import run_single_shot, is_transient_error, run_agentic_loop
 from metering import MeteringDB
-from models import InboundMessage
 from relay import create_channel
 from config import Config, ConfigError, load_config
 from context import ContextBuilder, _estimate_tokens
@@ -54,6 +53,60 @@ _UUID_RE = re.compile(
 
 def _is_uuid(s: str) -> bool:
     return bool(_UUID_RE.match(s))
+
+
+# ─── Evolution helpers ────────────────────────────────────────────
+
+_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def get_evolution_state(
+    file_path: str,
+    conn: "sqlite3.Connection",
+) -> dict | None:
+    """Return evolution state for *file_path*, or None if never evolved."""
+    row = conn.execute(
+        "SELECT last_evolved_at, content_hash, logs_through "
+        "FROM evolution_state WHERE file_path = ?",
+        (file_path,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "last_evolved_at": row[0],
+        "content_hash": row[1],
+        "logs_through": row[2],
+    }
+
+
+def check_new_logs_exist(
+    workspace: Path,
+    conn: "sqlite3.Connection",
+    reference_file: str = "MEMORY.md",
+) -> tuple[bool, str]:
+    """Check whether new daily logs exist since the last evolution.
+
+    Uses the *reference_file* (default ``MEMORY.md``) to determine the
+    ``logs_through`` date from the ``evolution_state`` table.
+
+    Returns ``(has_new_logs, since_date)`` where *since_date* is the
+    ``logs_through`` value (empty string if never evolved).
+    """
+    state = get_evolution_state(reference_file, conn)
+    since_date = state["logs_through"] if state else ""
+
+    memory_dir = workspace / "memory"
+    if not memory_dir.is_dir():
+        return False, since_date
+
+    for entry in memory_dir.iterdir():
+        if not entry.is_file() or entry.suffix != ".md":
+            continue
+        m = _DATE_RE.search(entry.stem)
+        if m and (not since_date or m.group(1) > since_date):
+            return True, since_date
+
+    return False, since_date
 
 
 # ─── PID File ────────────────────────────────────────────────────
@@ -154,7 +207,65 @@ def _is_silent(text: str, tokens: list[str]) -> bool:
 
 
 from attachments import ImageTooLarge, extract_document_text, fit_image, process_audio
-from monitor import MonitorWriter
+
+
+class _MonitorWriter:
+    """In-memory monitor state tracker for the /api/v1/monitor endpoint.
+
+    Updates a shared dict on the daemon instead of writing JSON to disk.
+    """
+
+    __slots__ = ("_state", "_contact", "_session_id", "_trace_id", "_model",
+                 "_turn", "_turn_started_at", "_message_started_at", "_turns")
+
+    def __init__(self, state: dict, contact: str, session_id: str,
+                 trace_id: str, model: str):
+        self._state = state
+        self._contact = contact
+        self._session_id = session_id
+        self._trace_id = trace_id
+        self._model = model
+        self._turn = 1
+        self._turn_started_at = time.time()
+        self._message_started_at = self._turn_started_at
+        self._turns: list[dict] = []
+
+    def write(self, state: str, tools_in_flight: list[str] | None = None) -> None:
+        self._state.update({
+            "state": state,
+            "contact": self._contact,
+            "session_id": self._session_id,
+            "trace_id": self._trace_id,
+            "model": self._model,
+            "turn": self._turn,
+            "message_started_at": self._message_started_at,
+            "turn_started_at": self._turn_started_at,
+            "tools_in_flight": tools_in_flight or [],
+            "turns": self._turns,
+            "updated_at": time.time(),
+        })
+
+    def on_response(self, response) -> None:
+        duration_ms = int((time.time() - self._turn_started_at) * 1000)
+        tool_names = [tc.name for tc in response.tool_calls] if response.tool_calls else []
+        self._turns.append({
+            "duration_ms": duration_ms,
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+            "cache_read_tokens": response.usage.cache_read_tokens,
+            "cache_write_tokens": response.usage.cache_write_tokens,
+            "stop_reason": response.stop_reason,
+            "tools": tool_names,
+        })
+        if response.stop_reason == "tool_use" and response.tool_calls:
+            self.write("tools", tools_in_flight=tool_names)
+        else:
+            self.write("idle")
+
+    def on_tool_results(self, results_msg) -> None:
+        self._turn += 1
+        self._turn_started_at = time.time()
+        self.write("thinking")
 
 
 
@@ -167,12 +278,12 @@ class _MessageState:
     trace_id: str
     deliver: bool = True  # Should the reply be sent to the channel?
     image_blocks: list = field(default_factory=list)
-    has_voice: bool = False
     session: Any = None
     user_msg_idx: int = 0
     session_preexisted: bool = False
     model_cfg: dict = field(default_factory=dict)
     model_name: str = ""
+    provider_name: str = ""
     cost_rates: list = field(default_factory=list)
     fmt_system: Any = None
     tools: list = field(default_factory=list)
@@ -180,7 +291,6 @@ class _MessageState:
     response: Any = None
     force_compact: bool = False
     response_future: Any = None
-    notify_meta: dict | None = None
 
 
 # ─── Daemon ──────────────────────────────────────────────────────
@@ -190,7 +300,7 @@ class LucydDaemon:
         self.config = config
         self.running = True
         self.start_time = time.time()
-        self.queue: asyncio.Queue = asyncio.Queue(maxsize=config.queue_capacity)
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._control_queue: asyncio.Queue = asyncio.Queue()
         self.provider: Any = None
         self._single_shot: bool = False
@@ -203,9 +313,9 @@ class LucydDaemon:
         self._memory_conn: Any = None
         self._current_session: Any = None  # Set per-message for status tool callback
         self._session_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()  # sender → lock
-        self._webhook_failures: int = 0  # consecutive webhook callback failures
         self.metering_db: Any = None
         self._error_counts: dict[str, int] = {}  # error_type → count, for /api/v1/errors
+        self._monitor_state: dict = {"state": "idle"}
 
     _MAX_SESSION_LOCKS = 1000  # Bound to prevent unbounded growth (P-018)
 
@@ -247,8 +357,8 @@ class LucydDaemon:
             )
 
         fh = logging.handlers.RotatingFileHandler(
-            log_file, maxBytes=self.config.log_max_bytes,
-            backupCount=self.config.log_backup_count, encoding="utf-8",
+            log_file, maxBytes=10_485_760,
+            backupCount=3, encoding="utf-8",
         )
         fh.setFormatter(fmt)
         fh.setLevel(logging.DEBUG)
@@ -277,7 +387,7 @@ class LucydDaemon:
             caps = self.provider.capabilities if self.provider else None
             if self.config.agent_strategy == "single_shot" or (caps and not caps.supports_tools):
                 self._single_shot = True
-                log.info("Agent strategy: SingleShotStrategy")
+                log.info("Agent strategy: single shot")
             else:
                 self._single_shot = False
                 log.info("Agent strategy: agentic loop")
@@ -323,7 +433,7 @@ class LucydDaemon:
         self.channel = create_channel(self.config)
 
     def _init_sessions(self) -> None:
-        set_audit_truncation(self.config.audit_truncation_limit)
+        set_audit_truncation(500)
         self.session_mgr = SessionManager(
             self.config.sessions_dir,
             agent_name=self.config.agent_name,
@@ -342,12 +452,14 @@ class LucydDaemon:
     ]
 
     def _init_tools(self) -> None:
-        """Register enabled tools via unified loader.
+        """Register built-in tools and plugins.
 
-        Same pattern as _init_plugins: import module, call configure()
-        with deps matched by parameter name, register enabled tools.
+        1. Process _TOOL_MODULES (built-in) via importlib.import_module.
+        2. Scan plugins.d/*.py via importlib.util.spec_from_file_location.
+        Both paths share the same configure + register logic.
         """
         import importlib
+        import importlib.util
         import inspect
 
         # Derive max_result_tokens: ~25% of context for any single tool result
@@ -377,7 +489,7 @@ class LucydDaemon:
                 embedding_timeout=self.config.embedding_timeout,
                 top_k=self.config.memory_top_k,
                 vector_search_limit=self.config.vector_search_limit,
-                fts_min_results=self.config.fts_min_results,
+                fts_min_results=3,
                 sqlite_timeout=self.config.sqlite_timeout,
             )
             # Wire metering for embedding cost tracking
@@ -392,6 +504,7 @@ class LucydDaemon:
             "channel": self.channel,
             "provider": self.provider,
             "session_manager": self.session_mgr,
+            "session_mgr": self.session_mgr,
             "tool_registry": self.tool_registry,
             "skill_loader": self.skill_loader,
             "memory": memory,
@@ -402,89 +515,56 @@ class LucydDaemon:
             "metering": self.metering_db,
         }
 
-        for module_path, tool_names in self._TOOL_MODULES:
-            if not (enabled & tool_names):
-                continue
-            module = importlib.import_module(module_path)
+        def _configure_and_register(module: Any, source: str = "") -> None:
+            """Call configure() with inspect-based injection, register enabled tools."""
             configure_fn = getattr(module, "configure", None)
             if callable(configure_fn):
                 sig = inspect.signature(configure_fn)
                 kwargs = {k: v for k, v in deps.items() if k in sig.parameters}
                 configure_fn(**kwargs)
             for t in getattr(module, "TOOLS", []):
-                if t["name"] in enabled:
+                name = t.get("name", "")
+                if name in enabled:
                     self.tool_registry.register(
                         t["name"], t["description"], t["input_schema"],
                         t["function"], t.get("max_output", 0),
                     )
+                    if source:
+                        log.info("Plugin tool registered: %s (from %s)", name, source)
+
+        # ── Built-in tools ───────────────────────────────────────────
+        for module_path, tool_names in self._TOOL_MODULES:
+            if not (enabled & tool_names):
+                continue
+            module = importlib.import_module(module_path)
+            _configure_and_register(module)
+
+        # ── Plugin tools (plugins.d/*.py) ────────────────────────────
+        plugins_path = self.config.config_dir / self.config.plugins_dir
+        if plugins_path.is_dir():
+            for plugin_file in sorted(plugins_path.glob("*.py")):
+                try:
+                    spec = importlib.util.spec_from_file_location(
+                        f"lucyd_plugin_{plugin_file.stem}", plugin_file,
+                    )
+                    if spec is None or spec.loader is None:
+                        log.warning("Plugin: cannot load %s (invalid spec)", plugin_file.name)
+                        continue
+
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+
+                    tools_list = getattr(module, "TOOLS", None)
+                    if not isinstance(tools_list, list):
+                        log.debug("Plugin: %s has no TOOLS list, skipping", plugin_file.name)
+                        continue
+
+                    _configure_and_register(module, source=plugin_file.name)
+
+                except Exception:
+                    log.exception("Plugin: failed to load %s", plugin_file.name)
 
         log.info("Registered tools: %s", ", ".join(self.tool_registry.tool_names))
-
-    def _init_plugins(self) -> None:
-        """Load tool plugins from plugins.d/ directory.
-
-        Each plugin is a .py file with a TOOLS list (same format as built-in tools).
-        Optional configure() function receives deps via inspect.signature().
-        Only tools whose names are in [tools] enabled are registered.
-        """
-        import importlib.util
-        import inspect
-
-        plugins_path = self.config.config_dir / self.config.plugins_dir
-        if not plugins_path.is_dir():
-            return
-
-        enabled = set(self.config.tools_enabled)
-
-        # Available deps for plugin configure() injection
-        deps = {
-            "config": self.config,
-            "channel": self.channel,
-            "session_mgr": self.session_mgr,
-            "provider": self.provider,
-            "tool_registry": self.tool_registry,
-        }
-
-        for plugin_file in sorted(plugins_path.glob("*.py")):
-            try:
-                spec = importlib.util.spec_from_file_location(
-                    f"lucyd_plugin_{plugin_file.stem}", plugin_file,
-                )
-                if spec is None or spec.loader is None:
-                    log.warning("Plugin: cannot load %s (invalid spec)", plugin_file.name)
-                    continue
-
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-
-                tools_list = getattr(module, "TOOLS", None)
-                if not isinstance(tools_list, list):
-                    log.debug("Plugin: %s has no TOOLS list, skipping", plugin_file.name)
-                    continue
-
-                # Call configure() if it exists, injecting requested deps
-                configure_fn = getattr(module, "configure", None)
-                if callable(configure_fn):
-                    sig = inspect.signature(configure_fn)
-                    kwargs = {
-                        name: deps[name]
-                        for name in sig.parameters
-                        if name in deps
-                    }
-                    configure_fn(**kwargs)
-
-                # Register only enabled tools
-                for t in tools_list:
-                    name = t.get("name", "")
-                    if name in enabled:
-                        self.tool_registry.register(
-                        t["name"], t["description"], t["input_schema"],
-                        t["function"], t.get("max_output", 0),
-                    )
-                        log.info("Plugin tool registered: %s (from %s)", name, plugin_file.name)
-
-            except Exception:
-                log.exception("Plugin: failed to load %s", plugin_file.name)
 
     def _get_memory_conn(self):
         """Get or create the memory DB connection.
@@ -529,94 +609,30 @@ class LucydDaemon:
             sqlite_timeout=self.config.sqlite_timeout,
         )
 
-    def _check_context_budget(self) -> None:
-        """Validate system prompt size against model context window.
 
-        Builds a representative system prompt (stable + semi-stable
-        files, tool descriptions, skill index) and estimates token count.
-        Persona size: warn >50%, error >80% of max_context_tokens.
-        Produces a budget assembly report at DEBUG level.
-        """
-        max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
-        if not max_ctx:
-            return
-
-        # Build representative system blocks
-        tool_descs = self.tool_registry.get_brief_descriptions()
-        skill_index = self.skill_loader.build_index() if self.skill_loader else ""
-        blocks = self.context_builder.build(
-            tool_descriptions=tool_descs,
-            skill_index=skill_index,
-        )
-
-        # Per-tier token accounting
-        by_tier: dict[str, int] = {}
-        for b in blocks:
-            tier = b.get("tier", "unknown")
-            by_tier[tier] = by_tier.get(tier, 0) + _estimate_tokens(b.get("text", ""))
-        system_tokens = sum(by_tier.values())
-
-        # Budget assembly report (tool defs + safety margin)
-        tool_tokens = sum(_estimate_tokens(t["description"]) for t in self.tool_registry.get_schemas())
-        safety_margin = int(max_ctx * 0.10)
-        history_budget = max_ctx - system_tokens - tool_tokens - safety_margin
-
-        log.debug(
-            "Context budget assembly: total=%d | system=%d (%s) | tools=%d "
-            "| safety_margin=%d (10%%) | history_budget=%d",
-            max_ctx, system_tokens,
-            ", ".join(f"{t}={n}" for t, n in sorted(by_tier.items())),
-            tool_tokens, safety_margin, max(0, history_budget),
-        )
-
-        pct = system_tokens * 100 // max_ctx
-        log.info(
-            "Context budget: system prompt ~%d tokens (%d%% of %d max)",
-            system_tokens, pct, max_ctx,
-        )
-
-        if pct > 80:
-            raise RuntimeError(
-                f"System prompt uses {pct}% of context window "
-                f"({system_tokens} of {max_ctx} tokens). This exceeds the 80% "
-                f"safety limit. Reduce workspace files or increase max_context_tokens."
-            )
-        if pct > 50:
-            log.warning(
-                "System prompt uses %d%% of context window "
-                "(%d of %d tokens). This leaves limited room for "
-                "conversation history and tool output. Consider reducing "
-                "workspace files or increasing max_context_tokens.",
-                pct, system_tokens, max_ctx,
-            )
 
 
     async def _process_attachments(self, text, attachments, provider):
         """Process attachments into text descriptions + image blocks.
 
-        Returns (text, image_blocks, has_voice, caption).
+        Returns (text, image_blocks).
         Dispatches each attachment to _process_image, _process_audio, or _process_document.
         """
-        has_voice = attachments and any(
-            a.content_type.startswith("audio/") and a.is_voice for a in attachments
-        )
         image_blocks = []
-        caption = ""
         if attachments:
-            caption = "image"
             supports_vision = provider.capabilities.supports_vision
             for att in attachments:
                 if att.content_type.startswith("image/"):
-                    text, block = self._process_image(text, att, supports_vision, caption)
+                    text, block = self._process_image(text, att, supports_vision)
                     if block:
                         image_blocks.append(block)
                 elif att.content_type.startswith("audio/"):
                     text = await self._process_audio(text, att)
                 else:
                     text = self._process_document(text, att)
-        return text, image_blocks, has_voice, caption
+        return text, image_blocks
 
-    def _process_image(self, text, att, supports_vision, caption):
+    def _process_image(self, text, att, supports_vision):
         """Process a single image attachment. Returns (text, block_or_None)."""
         too_large_msg = "image too large to display"
         if not supports_vision:
@@ -636,7 +652,7 @@ class LucydDaemon:
                 "media_type": att.content_type,
                 "data": base64.b64encode(img_data).decode("ascii"),
             }
-            prefix = f"[{caption}, saved: {att.local_path}]"
+            prefix = f"[image, saved: {att.local_path}]"
             text = f"{prefix} {text}" if text else prefix
             return text, block
         except Exception as e:
@@ -714,33 +730,24 @@ class LucydDaemon:
             session.messages[ctx.user_msg_idx]["_image_blocks"] = ctx.image_blocks
 
     async def _build_recall(self, ctx: _MessageState, provider) -> str:
-        """Build recall text for fresh sessions: archive + structured memory."""
+        """Build recall text for fresh sessions via structured memory."""
         session = ctx.session
         if len(session.messages) > 1:
             return ""
-        recall_text = self.session_mgr.build_recall(
-            ctx.sender, self.config.recall_archive_messages
-        )
-        if self.config.consolidation_enabled:
-            try:
-                from memory import get_session_start_context
-                conn = self._get_memory_conn()
-                memory_context = get_session_start_context(
-                    conn=conn, config=self.config,
-                    max_facts=self.config.recall_max_facts,
-                    max_episodes=self.config.recall_max_episodes_at_start,
-                    max_tokens=self.config.recall_max_dynamic_tokens,
-                )
-                if memory_context:
-                    recall_text = f"{recall_text}\n\n{memory_context}" if recall_text else memory_context
-            except Exception:
-                log.exception("structured recall at session start failed")
-                if not recall_text:
-                    recall_text = (
-                        "[Memory recall unavailable — background error. "
-                        "Use memory_search or memory_get to access memory manually.]"
-                    )
-        return recall_text
+        if not self.config.consolidation_enabled:
+            return ""
+        try:
+            from memory import get_session_start_context
+            conn = self._get_memory_conn()
+            return get_session_start_context(
+                conn=conn, config=self.config,
+                max_facts=self.config.recall_max_facts,
+                max_episodes=self.config.recall_max_episodes_at_start,
+                max_tokens=self.config.recall_max_dynamic_tokens,
+            ) or ""
+        except Exception:
+            log.exception("structured recall at session start failed")
+            return "[Memory recall unavailable — use memory_search to access memory manually.]"
 
     async def _build_context(self, ctx: _MessageState, provider) -> None:
         """Build system prompt, recall, and tools list."""
@@ -830,7 +837,7 @@ class LucydDaemon:
                     session_id=session.id,
                     model_name=ctx.model_name,
                     cost_rates=ctx.cost_rates,
-                    provider_name=ctx.provider_name if hasattr(ctx, 'provider_name') else "",
+                    provider_name=ctx.provider_name,
                 )
                 from agentic import LoopConfig
                 loop_cfg = LoopConfig(
@@ -842,12 +849,12 @@ class LucydDaemon:
                     max_cost=float(max_cost),
                     max_context_for_tools=self.config.max_context_for_tools,
                     tool_call_retry=self.config.tool_call_retry,
-                    tool_success_warn_threshold=self.config.tool_success_warn_threshold,
-                    thinking_concise_hint=self.config.thinking_concise_hint,
+                    tool_success_warn_threshold=0.5,
+                    thinking_concise_hint=False,
                     trace_id=ctx.trace_id,
                 )
                 if self._single_shot:
-                    ctx.response = await SingleShotStrategy().run(
+                    ctx.response = await run_single_shot(
                         provider=provider,
                         system=ctx.fmt_system,
                         messages=session.messages,
@@ -914,11 +921,6 @@ class LucydDaemon:
                 await self.channel.send(ctx.sender, self.config.error_message)
             except Exception as e:
                 log.error("Failed to deliver error message to %s: %s", _log_safe(ctx.sender), e)
-        await self._fire_webhook(
-            reply="", session_id=session.id, sender=ctx.sender, source=ctx.source,
-            silent=False, tokens={"input": 0, "output": 0},
-            notify_meta=ctx.notify_meta, trace_id=ctx.trace_id,
-        )
         # Auto-close system sessions even on error — but only if the
         # session was created by this event (not a pre-existing session).
         if ctx.source == "system" and not ctx.session_preexisted:
@@ -943,9 +945,9 @@ class LucydDaemon:
         for msg in session.messages[ctx.msg_count_before:]:
             role = msg.get("role", "")
             if role == "assistant":
-                session.persist_assistant_message(msg)
+                session.add_assistant_message(msg, persist_only=True)
             elif role == "tool_results":
-                session.persist_tool_results(msg.get("results", []))
+                session.add_tool_results(msg.get("results", []), persist_only=True)
         if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
             session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
         self.session_mgr.save_state(session)
@@ -979,11 +981,6 @@ class LucydDaemon:
                         await self.channel.send(ctx.sender, "", [att_path])
                 except Exception as e:
                     log.error("Failed to deliver reply: %s", e)
-        await self._fire_webhook(
-            reply=reply, session_id=session.id, sender=ctx.sender, source=ctx.source,
-            silent=silent, tokens=token_info, notify_meta=ctx.notify_meta,
-            trace_id=ctx.trace_id,
-        )
 
     def _check_compaction_warning(self, ctx: _MessageState) -> None:
         """Inject context-pressure warning at 80% threshold."""
@@ -993,7 +990,7 @@ class LucydDaemon:
             compaction_threshold=self.config.compaction_threshold,
             needs_compaction=session.needs_compaction(self.config.compaction_threshold),
             already_warned=session.warned_about_compaction,
-            warning_pct=self.config.compaction_warning_pct,
+            warning_pct=0.8,
         ):
             try:
                 max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
@@ -1044,26 +1041,22 @@ class LucydDaemon:
             "{agent_name}", self.config.agent_name,
         ).replace("{max_tokens}", str(self.config.compaction_max_tokens))
         from providers import CostContext
-        from session import CompactionConfig
         cost_ctx = CostContext(
             metering=self.metering_db,
             session_id=session.id,
             model_name=ctx.model_name,
             cost_rates=ctx.cost_rates,
-            provider_name=ctx.provider_name if hasattr(ctx, 'provider_name') else "",
-        )
-        compaction_cfg = CompactionConfig(
-            keep_recent_pct=self.config.compaction_keep_pct,
-            min_messages=self.config.compaction_min_messages,
-            tool_result_max_chars=self.config.compaction_tool_result_max_chars,
-            max_tokens=self.config.compaction_max_tokens,
+            provider_name=ctx.provider_name,
         )
         await self.session_mgr.compact_session(
             session, self.get_provider("compaction"), prompt,
             trace_id=ctx.trace_id,
             system_blocks=self.context_builder.build_stable(),
             cost=cost_ctx,
-            compaction=compaction_cfg,
+            keep_recent_pct=self.config.compaction_keep_pct,
+            min_messages=4,
+            tool_result_max_chars=2000,
+            max_tokens=self.config.compaction_max_tokens,
         )
 
     async def _auto_close_if_system(self, ctx: _MessageState) -> None:
@@ -1083,7 +1076,6 @@ class LucydDaemon:
         source: str,
         attachments: list | None = None,
         response_future: asyncio.Future | None = None,
-        notify_meta: dict | None = None,
         trace_id: str = "",
         force_compact: bool = False,
         stream_queue: Any = None,
@@ -1107,7 +1099,7 @@ class LucydDaemon:
         model_cfg = self.config.model_config("primary")
 
         # Process attachments into text descriptions + image blocks
-        text, image_blocks, has_voice, _caption = await self._process_attachments(
+        text, image_blocks = await self._process_attachments(
             text, attachments, provider,
         )
 
@@ -1119,13 +1111,12 @@ class LucydDaemon:
             trace_id=trace_id,
             deliver=deliver,
             image_blocks=image_blocks,
-            has_voice=has_voice,
             model_cfg=model_cfg,
             model_name=model_cfg.get("model", ""),
+            provider_name=model_cfg.get("provider", ""),
             cost_rates=model_cfg.get("cost_per_mtok", []),
             force_compact=force_compact,
             response_future=response_future,
-            notify_meta=notify_meta,
         )
 
         # Session setup: get/create, inject warnings, add user message
@@ -1152,8 +1143,8 @@ class LucydDaemon:
         session = ctx.session
 
         # ── Monitor ──────────────────────────────────────────────
-        monitor = MonitorWriter(
-            path=self.config.state_dir / "monitor.json",
+        monitor = _MonitorWriter(
+            state=self._monitor_state,
             contact=sender,
             session_id=session.id,
             trace_id=trace_id,
@@ -1260,63 +1251,6 @@ class LucydDaemon:
         except Exception:
             log.exception("consolidation on close failed")
 
-    async def _fire_webhook(
-        self,
-        reply: str,
-        session_id: str,
-        sender: str,
-        source: str,
-        silent: bool,
-        tokens: dict,
-        notify_meta: dict | None,
-        trace_id: str = "",
-    ) -> None:
-        """POST webhook callback to configured URL. No-op when unconfigured."""
-        url = self.config.http_callback_url
-        if not url:
-            return
-
-        try:
-            import httpx
-        except ImportError:
-            log.warning("httpx not installed — webhook callback skipped")
-            return
-
-        payload = {
-            "reply": reply,
-            "session_id": session_id,
-            "sender": sender,
-            "source": source,
-            "silent": silent,
-            "tokens": tokens,
-            "agent": self.config.agent_name,
-        }
-        if trace_id:
-            payload["trace_id"] = trace_id
-        if notify_meta:
-            payload["notify_meta"] = notify_meta
-
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        token = self.config.http_callback_token
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-
-        max_failures = self.config.http_callback_max_failures
-        if max_failures and self._webhook_failures >= max_failures:
-            return  # circuit breaker open — stop flooding logs
-
-        try:
-            async with httpx.AsyncClient(timeout=self.config.http_callback_timeout) as client:
-                await client.post(url, json=payload, headers=headers)
-            self._webhook_failures = 0
-        except Exception as e:
-            self._webhook_failures += 1
-            if max_failures and self._webhook_failures >= max_failures:
-                log.error("Webhook callback disabled after %d consecutive failures: %s", max_failures, e)
-            else:
-                log.warning("Webhook callback failed (%d/%s) (%s): %s",
-                            self._webhook_failures, max_failures or "∞", url, e)
-
     async def _reset_session(self, target: str, by_id: bool = False) -> dict:
         """Reset session by target: 'all', session ID, or contact name.
 
@@ -1409,9 +1343,7 @@ class LucydDaemon:
 
     def _sweep_expired_media(self) -> None:
         """Delete media downloads older than media_ttl_hours."""
-        ttl = self.config.media_ttl_hours * 3600
-        if ttl <= 0:
-            return
+        ttl = 24 * 3600
         download_dir = Path(self.config.http_download_dir)
         if not download_dir.exists():
             return
@@ -1425,17 +1357,11 @@ class LucydDaemon:
             except OSError:
                 pass
         if swept:
-            log.info("Media sweep: deleted %d files older than %dh", swept, self.config.media_ttl_hours)
+            log.info("Media sweep: deleted %d files older than 24h", swept)
 
     def _build_monitor(self) -> dict:
         """Build monitor data for HTTP /monitor."""
-        monitor_path = self.config.state_dir / "monitor.json"
-        if not monitor_path.exists():
-            return {"state": "unknown"}
-        try:
-            return json.loads(monitor_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return {"state": "unknown"}
+        return dict(self._monitor_state)
 
     def _build_history(self, target: str, full: bool = False) -> dict:
         """Build session history for HTTP /sessions/{target}/history.
@@ -1463,7 +1389,7 @@ class LucydDaemon:
         return {"session_id": session_id, "events": events}
 
     def _build_status(self) -> dict:
-        """Build status dict for HTTP /status and SIGUSR2."""
+        """Build status dict for HTTP /status."""
         from config import today_start_ts
 
         today_cost = 0.0
@@ -1532,7 +1458,6 @@ class LucydDaemon:
         """
         if not force:
             try:
-                from evolution import check_new_logs_exist
                 from memory_schema import ensure_schema
 
                 db_path = self.config.memory_db
@@ -1633,55 +1558,14 @@ class LucydDaemon:
                 "files_scanned": len(file_list), "files_with_facts": files_with_facts}
 
     async def _handle_maintain(self) -> dict:
-        """Run memory maintenance: stale facts, expired commitments, conflict detection, metering retention."""
+        """Run memory maintenance + metering retention."""
         from async_utils import run_blocking
+        from memory import run_maintenance
 
         conn = self._get_memory_conn()
 
         def _run():
-            stale_days = self.config.maintenance_stale_threshold_days
-
-            stale = conn.execute("""
-                SELECT id, entity, attribute, value
-                FROM facts
-                WHERE invalidated_at IS NULL
-                  AND julianday('now') - julianday(accessed_at) > ?
-            """, (stale_days,)).fetchall()
-
-            expired = conn.execute("""
-                UPDATE commitments SET status = 'expired'
-                WHERE status = 'open'
-                  AND deadline IS NOT NULL
-                  AND deadline < date('now')
-            """).rowcount
-
-            conflicts = conn.execute("""
-                SELECT f1.entity, f1.attribute,
-                       f1.value AS val1, f2.value AS val2
-                FROM facts f1
-                JOIN facts f2 ON f1.entity = f2.entity
-                    AND f1.attribute = f2.attribute
-                    AND f1.id < f2.id
-                WHERE f1.invalidated_at IS NULL
-                  AND f2.invalidated_at IS NULL
-            """).fetchall()
-
-            stats = {
-                "facts": conn.execute(
-                    "SELECT COUNT(*) FROM facts WHERE invalidated_at IS NULL"
-                ).fetchone()[0],
-                "episodes": conn.execute(
-                    "SELECT COUNT(*) FROM episodes"
-                ).fetchone()[0],
-                "open_commitments": conn.execute(
-                    "SELECT COUNT(*) FROM commitments WHERE status = 'open'"
-                ).fetchone()[0],
-                "stale": len(stale),
-                "expired": expired,
-                "conflicts": len(conflicts),
-            }
-
-            conn.commit()
+            stats = run_maintenance(conn, self.config.maintenance_stale_threshold_days)
 
             # Metering retention
             metering_deleted = 0
@@ -1689,7 +1573,10 @@ class LucydDaemon:
             if Path(metering_db_path).exists():
                 from metering import MeteringDB
                 mdb = MeteringDB(metering_db_path, sqlite_timeout=self.config.sqlite_timeout)
-                metering_deleted = mdb.enforce_retention(self.config.metering_retention_months)
+                try:
+                    metering_deleted = mdb.enforce_retention(12)
+                finally:
+                    mdb.close()
 
             stats["metering_deleted"] = metering_deleted
             return stats
@@ -1716,7 +1603,6 @@ class LucydDaemon:
                     combined_attachments.extend(m["attachments"])
             source = msgs[0].get("source", "")
             deliver = msgs[0].get("deliver", True)
-            n_meta = msgs[0].get("notify_meta")
             tid = str(uuid.uuid4())
             log.info("[%s] Processing message from %s (source=%s)",
                      tid[:8], _log_safe(sender), _log_safe(source))
@@ -1724,7 +1610,6 @@ class LucydDaemon:
                 await self._process_message(
                     combined_text, sender, source,
                     attachments=combined_attachments or None,
-                    notify_meta=n_meta,
                     trace_id=tid,
                     deliver=deliver,
                 )
@@ -1746,7 +1631,6 @@ class LucydDaemon:
                     source=item.get("type", "http"),
                     attachments=item.get("attachments"),
                     response_future=item.get("response_future"),
-                    notify_meta=item.get("notify_meta"),
                     trace_id=tid,
                     stream_queue=item.get("stream_queue"),
                     deliver=False,
@@ -1757,7 +1641,7 @@ class LucydDaemon:
             await self._drain_control_queue()
 
             try:
-                item = await asyncio.wait_for(self.queue.get(), timeout=self.config.queue_poll_interval)
+                item = await asyncio.wait_for(self.queue.get(), timeout=1.0)
             except TimeoutError:
                 continue
             except asyncio.CancelledError:
@@ -1770,69 +1654,54 @@ class LucydDaemon:
                 self.running = False
                 break
 
-            if isinstance(item, InboundMessage):
-                sender = item.sender
-                source = item.source
-                deliver = True
-                text = item.text
-                # Inject quote context so the LLM sees what the user replied to
-                if item.quote:
-                    max_q = self.config.quote_max_chars
-                    q = item.quote if len(item.quote) <= max_q else item.quote[:max_q] + "…"
-                    text = f"[replying to: {q}]\n{text}"
-                attachments = item.attachments
-                notify_meta = None
-            elif isinstance(item, dict):
-                # Handle session reset (safety net — normally via control queue)
-                if item.get("type") == "reset":
-                    if item.get("all"):
-                        target = "all"
-                        by_id = False
-                    elif item.get("session_id"):
-                        target = item["session_id"]
-                        by_id = True
-                    else:
-                        target = item.get("sender", "")
-                        by_id = False
-                    result = await self._reset_session(target, by_id=by_id)
-                    log.info("Reset: %s", result)
-                    # Resolve HTTP future if this reset came through the API
-                    reset_future = item.get("response_future")
-                    if reset_future is not None and not reset_future.done():
-                        reset_future.set_result(result)
-                    continue
-
-                # Forced compact — find primary session, diary + compact
-                if item.get("type") == "compact":
-                    result = await self._handle_compact()
-                    log.info("Compact: %s", result)
-                    compact_future = item.get("response_future")
-                    if compact_future is not None and not compact_future.done():
-                        compact_future.set_result(result)
-                    continue
-
-                # HTTP /chat — process immediately, bypass debouncing
-                if item.get("response_future") is not None:
-                    await process_http_immediate(item)
-                    continue
-
-                # Queued message (from HTTP /message, /system, /notify)
-                sender = item.get("sender", "system")
-                source = item.get("type", "system")
-                text = item.get("text", "")
-                attachments = item.get("attachments")
-                notify_meta = item.get("notify_meta")
-
-                # Delivery: user messages deliver, system messages don't
-                deliver = source not in ("system", "http")
-
-                # Route notifications to primary session — deliver to channel
-                if item.get("notify") and self.config.notify_target:
-                    sender = self.config.notify_target
-                    deliver = True
-
-            else:
+            if not isinstance(item, dict):
                 continue
+
+            # Handle session reset (safety net — normally via control queue)
+            if item.get("type") == "reset":
+                if item.get("all"):
+                    target = "all"
+                    by_id = False
+                elif item.get("session_id"):
+                    target = item["session_id"]
+                    by_id = True
+                else:
+                    target = item.get("sender", "")
+                    by_id = False
+                result = await self._reset_session(target, by_id=by_id)
+                log.info("Reset: %s", result)
+                reset_future = item.get("response_future")
+                if reset_future is not None and not reset_future.done():
+                    reset_future.set_result(result)
+                continue
+
+            # Forced compact — find primary session, diary + compact
+            if item.get("type") == "compact":
+                result = await self._handle_compact()
+                log.info("Compact: %s", result)
+                compact_future = item.get("response_future")
+                if compact_future is not None and not compact_future.done():
+                    compact_future.set_result(result)
+                continue
+
+            # HTTP /chat — process immediately, bypass debouncing
+            if item.get("response_future") is not None:
+                await process_http_immediate(item)
+                continue
+
+            # Queued message (from HTTP /message, /system, /notify)
+            sender = item.get("sender", "system")
+            source = item.get("type", "system")
+            text = item.get("text", "")
+            attachments = item.get("attachments")
+
+            # Delivery: user messages deliver, system messages don't
+            deliver = source not in ("system", "http")
+
+            # Route notifications to primary session — deliver to channel
+            if item.get("notify") and self.config.notify_target:
+                sender = self.config.notify_target
+                deliver = True
 
             if not text and not attachments:
                 continue
@@ -1841,7 +1710,7 @@ class LucydDaemon:
             if sender not in pending:
                 pending[sender] = []
             pending[sender].append({"text": text, "source": source, "deliver": deliver,
-                                    "attachments": attachments, "notify_meta": notify_meta})
+                                    "attachments": attachments})
 
             # Wait for more messages
             await asyncio.sleep(debounce_s)
@@ -1873,25 +1742,12 @@ class LucydDaemon:
             if self.skill_loader:
                 self.skill_loader.scan()
 
-        def handle_sigusr2():
-            log.info("SIGUSR2: writing status")
-            status = {
-                "pid": os.getpid(),
-                "uptime_s": time.time() - self.start_time,
-                "tools": self.tool_registry.tool_names if self.tool_registry else [],
-                "channel": self.config.channel_type,
-                "model": self.config.model_config("primary").get("model", ""),
-            }
-            status_path = self.config.state_dir / "status.json"
-            status_path.write_text(json.dumps(status, indent=2))
-
         def handle_sigterm():
             log.info("SIGTERM: shutting down gracefully")
             self.running = False
 
         try:
             loop.add_signal_handler(signal.SIGUSR1, handle_sigusr1)
-            loop.add_signal_handler(signal.SIGUSR2, handle_sigusr2)
             loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
             loop.add_signal_handler(signal.SIGINT, handle_sigterm)
         except NotImplementedError:
@@ -1923,10 +1779,6 @@ class LucydDaemon:
             self._init_context()
             self._init_metering()
             self._init_tools()
-            self._init_plugins()
-
-            # Context budget startup check
-            self._check_context_budget()
 
             # Validate external binary dependencies
             if self.config.stt_backend == "local":
@@ -1980,9 +1832,8 @@ class LucydDaemon:
                 rate_limit=cfg.http_rate_limit,
                 rate_window=cfg.http_rate_window,
                 status_rate_limit=cfg.http_status_rate_limit,
-                rate_cleanup_threshold=cfg.http_rate_cleanup_threshold,
+                rate_cleanup_threshold=1000,
                 agent_name=cfg.agent_name,
-                webhook_secret=cfg.http_webhook_secret,
                 metering_db=self.metering_db,
             )
             await self._http_api.start()
@@ -2019,6 +1870,10 @@ class LucydDaemon:
             if self.channel is not None:
                 with contextlib.suppress(Exception):  # channel cleanup on shutdown; failure is benign
                     await self.channel.disconnect()
+            # Close metering DB connection
+            if hasattr(self, "metering_db") and self.metering_db:
+                with contextlib.suppress(Exception):  # DB close on shutdown; failure is benign
+                    self.metering_db.close()
             # Close memory DB connection
             if self._memory_conn is not None:
                 with contextlib.suppress(Exception):  # DB close on shutdown; failure is benign
