@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """Telegram bridge — standalone process that connects Telegram to Lucyd.
 
-Inbound:  Polls Telegram getUpdates → POSTs to daemon HTTP API
-Outbound: Accepts delivery requests from daemon relay → sends via Telegram
+Polls Telegram getUpdates → POSTs to daemon HTTP API → sends reply back.
 
 Run:  python3 channels/telegram.py
 Env:  LUCYD_TELEGRAM_TOKEN (required)
       LUCYD_URL            (default: http://127.0.0.1:8100)
-      LUCYD_BRIDGE_PORT    (default: 8101)
 """
 
 from __future__ import annotations
@@ -24,18 +22,12 @@ from pathlib import Path
 
 import httpx
 
-try:
-    from aiohttp import web
-except ImportError:
-    sys.exit("aiohttp required: pip install aiohttp")
-
 log = logging.getLogger("bridge.telegram")
 
 # ─── Config ──────────────────────────────────────────────────────
 
 TOKEN = os.environ.get("LUCYD_TELEGRAM_TOKEN", "")
 DAEMON_URL = os.environ.get("LUCYD_URL", "http://127.0.0.1:8100")
-BRIDGE_PORT = int(os.environ.get("LUCYD_BRIDGE_PORT", "8101"))
 
 # Telegram API
 API_BASE = f"https://api.telegram.org/bot{TOKEN}"
@@ -51,7 +43,6 @@ MEDIA_GROUP_DELAY = 0.5
 MAX_ATTACHMENT_BYTES = 0  # 0 = no limit
 
 # Contact resolution
-CONTACTS: dict[str, int] = {}      # name → user_id
 ID_TO_NAME: dict[int, str] = {}    # user_id → name
 ALLOW_FROM: set[int] = set()
 
@@ -138,15 +129,6 @@ def chunk_text(text: str) -> list[str]:
 
 
 # ─── Send Helpers ─────────────────────────────────────────────────
-
-
-def resolve_target(target: str) -> int:
-    if isinstance(target, str) and not target.lstrip("-").isdigit():
-        chat_id = CONTACTS.get(target.lower())
-        if chat_id is None:
-            raise ValueError(f"Unknown contact: {target!r}")
-        return chat_id
-    return int(target)
 
 
 async def send_text(chat_id: int, text: str) -> None:
@@ -388,97 +370,12 @@ async def process_message(message: dict, download_dir: Path,
         log.error("Daemon request failed: %s", e, exc_info=True)
 
 
-# ─── Delivery Server (outbound from daemon) ──────────────────────
-
-
-async def handle_send(request: web.Request) -> web.Response:
-    body = await request.json()
-    chat_id = resolve_target(body["target"])
-    text = body.get("text", "")
-    attachments = body.get("attachments") or []
-    if text:
-        await send_text(chat_id, text)
-    for att_path in attachments:
-        if isinstance(att_path, str):
-            await send_attachment(chat_id, att_path)
-    return web.json_response({"ok": True})
-
-
-async def handle_typing(request: web.Request) -> web.Response:
-    body = await request.json()
-    chat_id = resolve_target(body["target"])
-    await tg_api("sendChatAction", chat_id=chat_id, action="typing")
-    return web.json_response({"ok": True})
-
-
-_stream_state: dict[int, dict] = {}
-
-
-async def handle_stream(request: web.Request) -> web.Response:
-    body = await request.json()
-    chat_id = resolve_target(body["target"])
-    text = body.get("text", "")
-    done = body.get("done", False)
-
-    state = _stream_state.get(chat_id)
-
-    if text and state is None:
-        try:
-            resp = await tg_api("sendMessage", chat_id=chat_id, text=text)
-            _stream_state[chat_id] = {
-                "message_id": resp.get("message_id"),
-                "text": text,
-                "edit_count": 0,
-            }
-        except Exception:
-            log.warning("Stream: initial sendMessage failed for %s", chat_id, exc_info=True)
-    elif text and state is not None:
-        state["text"] += text
-        state["edit_count"] += 1
-        if state["edit_count"] % 10 == 0 or done:
-            msg_id = state.get("message_id")
-            if msg_id:
-                try:
-                    await tg_api("editMessageText", chat_id=chat_id,
-                                 message_id=msg_id, text=state["text"][:4096])
-                except Exception:
-                    log.warning("Stream: editMessageText failed for %s", chat_id, exc_info=True)
-
-    if done:
-        if state and state.get("message_id"):
-            try:
-                await tg_api("editMessageText", chat_id=chat_id,
-                             message_id=state["message_id"], text=state["text"][:4096])
-            except Exception:
-                log.warning("Stream: final editMessageText failed for %s", chat_id, exc_info=True)
-        _stream_state.pop(chat_id, None)
-
-    return web.json_response({"ok": True})
-
-
-async def delivery_server():
-    """HTTP server accepting outbound requests from daemon relay."""
-    app = web.Application()
-    app.router.add_post("/send", handle_send)
-    app.router.add_post("/typing", handle_typing)
-    app.router.add_post("/stream", handle_stream)
-
-    runner = web.AppRunner(app, access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", BRIDGE_PORT)
-    await site.start()
-    log.info("Delivery server listening on 127.0.0.1:%d", BRIDGE_PORT)
-
-    # Keep running
-    await asyncio.Event().wait()
-
-
 # ─── Config Loading ──────────────────────────────────────────────
 
 
 def load_config():
     """Load contacts and settings from lucyd.toml if available."""
-    global CONTACTS, ID_TO_NAME, ALLOW_FROM
+    global ID_TO_NAME, ALLOW_FROM
 
     config_path = os.environ.get("LUCYD_CONFIG", "")
     if not config_path:
@@ -502,9 +399,8 @@ def load_config():
             ALLOW_FROM = set(allow)
         contacts = tg.get("contacts", {})
         for name, uid in contacts.items():
-            CONTACTS[name.lower()] = uid
             ID_TO_NAME[uid] = name
-        log.info("Loaded %d contacts from config", len(CONTACTS))
+        log.info("Loaded %d contacts from config", len(contacts))
     except Exception as e:
         log.warning("Failed to load config: %s", e, exc_info=True)
 
@@ -518,10 +414,7 @@ async def main():
 
     load_config()
 
-    await asyncio.gather(
-        inbound_loop(),
-        delivery_server(),
-    )
+    await inbound_loop()
 
 
 if __name__ == "__main__":
