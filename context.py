@@ -76,7 +76,7 @@ class ContextBuilder:
 
     def build(
         self,
-        source: str = "",
+        task_type: str = "conversational",
         deliver: bool = True,
         tool_descriptions: list[tuple[str, str]] | None = None,
         skill_index: str = "",
@@ -135,7 +135,7 @@ class ContextBuilder:
 
         # Dynamic block: runtime metadata
         dynamic = self._build_dynamic(
-            source=source, deliver=deliver, extra=extra_dynamic,
+            task_type=task_type, deliver=deliver, extra=extra_dynamic,
             silent_tokens=silent_tokens, max_turns=max_turns,
             max_cost=max_cost, compaction_threshold=compaction_threshold,
             has_images=has_images, sender=sender,
@@ -215,7 +215,7 @@ class ContextBuilder:
 
     def _build_dynamic(
         self,
-        source: str = "",
+        task_type: str = "conversational",
         deliver: bool = True,
         extra: str = "",
         silent_tokens: list[str] | None = None,
@@ -229,36 +229,30 @@ class ContextBuilder:
         now = time.strftime("%a, %d. %b %Y - %H:%M %Z")
         parts = [f"Current date/time: {now}"]
 
-        # Source framing — tell agent where messages come from and whether replies are delivered
-        if source == "system" and not deliver:
+        # Session framing — tell agent the session lifecycle and intent
+        if task_type == "system" and not deliver:
             parts.append(
                 "Session type: automated infrastructure. "
-                "Messages in this session are cron-triggered system automation, "
+                "Messages in this session are system automation, "
                 "not from the user. Execute tasks as instructed. "
                 "Replies are internal only — not delivered to any channel.",
             )
-        elif source == "system" and deliver:
+        elif task_type == "system" and deliver:
             parts.append(
                 "Session type: notification routed to operator. "
                 "This is an automated notification delivered to the operator's session. "
-                "Your reply will be sent to the operator via the configured channel.",
+                "Your reply will be sent to the operator.",
             )
-        elif source == "http":
+        elif task_type == "task":
             parts.append(
-                "Session type: HTTP API integration. "
-                "Messages in this session come from an external system "
-                "(automation pipelines, scripts, webhooks). "
-                "Process requests and return useful responses.",
-            )
-        elif source == "user":
-            parts.append(
-                "Session type: user message. "
-                "Messages come from the user via the HTTP API.",
+                "Session type: ephemeral task. "
+                "Process the request and return a response. "
+                "This session closes after your reply.",
             )
         else:
             parts.append(
-                f"Session type: {source} channel. "
-                "Messages come from the user via the primary interface.",
+                "Session type: conversation. "
+                "Messages come from the user. Conversation history is preserved.",
             )
 
         # Session contact

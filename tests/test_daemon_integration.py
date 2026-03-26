@@ -700,7 +700,7 @@ class TestChannelDeliverySuppression:
 
 
 class TestContextBuilderSourcePassthrough:
-    """Verify that source is passed through to context_builder.build()."""
+    """Verify that task_type is passed through to context_builder.build()."""
 
     @pytest.fixture
     def daemon_for_context_test(self, tmp_path):
@@ -763,22 +763,21 @@ class TestContextBuilderSourcePassthrough:
         return daemon, resp
 
     @pytest.mark.asyncio
-    async def test_system_source_passed_to_context(self, daemon_for_context_test):
+    async def test_system_task_type_passed_to_context(self, daemon_for_context_test):
         daemon, resp = daemon_for_context_test
 
         with patch("lucyd.run_agentic_loop", return_value=resp):
             await daemon._process_message(
                 text="test", sender="system", source="system", deliver=False,
+                task_type="system",
             )
 
         daemon.context_builder.build.assert_called_once()
         call_kwargs = daemon.context_builder.build.call_args
-        assert call_kwargs.kwargs.get("source") == "system" or \
-               (len(call_kwargs.args) >= 2 and call_kwargs.args[1] == "system") or \
-               call_kwargs[1].get("source") == "system"
+        assert call_kwargs.kwargs.get("task_type") == "system"
 
     @pytest.mark.asyncio
-    async def test_http_source_passed_to_context(self, daemon_for_context_test):
+    async def test_conversational_task_type_passed_to_context(self, daemon_for_context_test):
         daemon, resp = daemon_for_context_test
         loop = asyncio.get_running_loop()
         future = loop.create_future()
@@ -791,24 +790,21 @@ class TestContextBuilderSourcePassthrough:
 
         daemon.context_builder.build.assert_called_once()
         call_kwargs = daemon.context_builder.build.call_args
-        assert call_kwargs.kwargs.get("source") == "http" or \
-               (len(call_kwargs.args) >= 2 and call_kwargs.args[1] == "http") or \
-               call_kwargs[1].get("source") == "http"
+        assert call_kwargs.kwargs.get("task_type") == "conversational"
 
     @pytest.mark.asyncio
-    async def test_telegram_source_passed_to_context(self, daemon_for_context_test):
+    async def test_task_type_passed_to_context(self, daemon_for_context_test):
         daemon, resp = daemon_for_context_test
 
         with patch("lucyd.run_agentic_loop", return_value=resp):
             await daemon._process_message(
                 text="hello", sender="+431234567890", source="telegram",
+                task_type="task",
             )
 
         daemon.context_builder.build.assert_called_once()
         call_kwargs = daemon.context_builder.build.call_args
-        assert call_kwargs.kwargs.get("source") == "telegram" or \
-               (len(call_kwargs.args) >= 2 and call_kwargs.args[1] == "telegram") or \
-               call_kwargs[1].get("source") == "telegram"
+        assert call_kwargs.kwargs.get("task_type") == "task"
 
 
 # ─── Message Loop HTTP Bypass ────────────────────────────────────

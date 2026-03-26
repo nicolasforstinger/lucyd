@@ -44,54 +44,54 @@ class TestMissingFile:
 
 class TestSourceAwareDynamic:
     def test_system_no_deliver_adds_automation_framing(self, tmp_workspace):
-        """System source with deliver=False adds automated infrastructure annotation."""
+        """System task_type with deliver=False adds automated infrastructure annotation."""
         builder = ContextBuilder(
             workspace=tmp_workspace,
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(source="system", deliver=False)
+        blocks = builder.build(task_type="system", deliver=False)
         dynamic = blocks[-1]
         assert dynamic["tier"] == "dynamic"
         assert "automated infrastructure" in dynamic["text"]
 
     def test_system_deliver_adds_notification_framing(self, tmp_workspace):
-        """System source with deliver=True adds notification framing."""
+        """System task_type with deliver=True adds notification framing."""
         builder = ContextBuilder(
             workspace=tmp_workspace,
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(source="system", deliver=True)
+        blocks = builder.build(task_type="system", deliver=True)
         dynamic = blocks[-1]
         assert "notification routed to operator" in dynamic["text"]
 
     def test_http_source_adds_framing(self, tmp_workspace):
-        """HTTP source adds API integration annotation."""
+        """Conversational task_type adds conversation framing."""
         builder = ContextBuilder(
             workspace=tmp_workspace,
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(source="http")
+        blocks = builder.build(task_type="conversational")
         dynamic = blocks[-1]
         assert dynamic["tier"] == "dynamic"
-        assert "HTTP API" in dynamic["text"]
+        assert "conversation" in dynamic["text"].lower()
 
     def test_telegram_source_no_framing(self, tmp_workspace):
-        """Telegram source has no special annotation."""
+        """Task task_type adds ephemeral framing."""
         builder = ContextBuilder(
             workspace=tmp_workspace,
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(source="telegram")
+        blocks = builder.build(task_type="task")
         dynamic = blocks[-1]
+        assert "ephemeral task" in dynamic["text"]
         assert "automated infrastructure" not in dynamic["text"]
-        assert "HTTP API" not in dynamic["text"]
 
     def test_empty_source_no_framing(self, tmp_workspace):
-        """Empty source (default) has no special annotation."""
+        """Default task_type (conversational) has no system annotation."""
         builder = ContextBuilder(
             workspace=tmp_workspace,
             stable_files=["SOUL.md"],
@@ -100,7 +100,7 @@ class TestSourceAwareDynamic:
         blocks = builder.build()
         dynamic = blocks[-1]
         assert "automated infrastructure" not in dynamic["text"]
-        assert "HTTP API" not in dynamic["text"]
+        assert "ephemeral task" not in dynamic["text"]
 
 
 class TestSkillsAppended:

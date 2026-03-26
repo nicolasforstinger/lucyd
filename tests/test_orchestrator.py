@@ -2172,7 +2172,7 @@ class TestAutoCloseSystemSessions:
 
     @pytest.mark.asyncio
     async def test_system_source_triggers_close(self, tmp_path):
-        """source='system' → close_session called after processing."""
+        """task_type='system' → close_session called after processing."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
         response = _make_response(text="done")
@@ -2183,6 +2183,7 @@ class TestAutoCloseSystemSessions:
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="evolve", sender="evolution", source="system", deliver=False,
+                task_type="system",
             )
 
         daemon.session_mgr.close_session.assert_called_once_with("evolution")
@@ -2250,6 +2251,7 @@ class TestAutoCloseSystemSessions:
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="evolve", sender="evolution", source="system", deliver=False,
+                task_type="system",
             )
 
         # System sessions must auto-close even on error — otherwise they
@@ -2284,6 +2286,7 @@ class TestPrimarySenderRouting:
             await daemon._process_message(
                 text="[AUTOMATED SYSTEM MESSAGE] New tweet",
                 sender="Nicolas", source="system", deliver=False,
+                task_type="system",
             )
 
         daemon.session_mgr.close_session.assert_not_called()
@@ -2303,6 +2306,7 @@ class TestPrimarySenderRouting:
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="evolve", sender="evolution", source="system", deliver=False,
+                task_type="system",
             )
 
         daemon.session_mgr.close_session.assert_called_once_with("evolution")
@@ -2326,6 +2330,7 @@ class TestPrimarySenderRouting:
             await daemon._process_message(
                 text="[AUTOMATED SYSTEM MESSAGE] notification",
                 sender="Nicolas", source="system", deliver=False,
+                task_type="system",
             )
 
         daemon.session_mgr.close_session.assert_not_called()
@@ -2343,6 +2348,7 @@ class TestPrimarySenderRouting:
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="evolve", sender="evolution", source="system", deliver=False,
+                task_type="system",
             )
 
         daemon.session_mgr.close_session.assert_awaited_once_with("evolution")

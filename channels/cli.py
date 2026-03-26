@@ -32,7 +32,7 @@ async def main():
             if not text:
                 continue
 
-            body = {"message": text, "sender": "cli"}
+            body = {"message": text, "sender": "cli", "channel_id": "cli"}
 
             try:
                 # Stream response via SSE

@@ -276,6 +276,8 @@ class _MessageState:
     sender: str
     source: str           # Message origin (channel name, "http", or "system")
     trace_id: str
+    channel_id: str = "http"          # Envelope: which channel sent this
+    task_type: str = "conversational"  # Envelope: session lifecycle intent
     deliver: bool = True  # Should the reply be sent to the channel?
     image_blocks: list = field(default_factory=list)
     session: Any = None
@@ -759,7 +761,7 @@ class LucydDaemon:
         recall_text = await self._build_recall(ctx, provider)
 
         system_blocks = self.context_builder.build(
-            source=ctx.source,
+            task_type=ctx.task_type,
             deliver=ctx.deliver,
             tool_descriptions=tool_descs,
             skill_index=skill_index,
@@ -920,15 +922,15 @@ class LucydDaemon:
                 await self.channel.send(ctx.sender, self.config.error_message)
             except Exception as e:
                 log.error("Failed to deliver error message to %s: %s", _log_safe(ctx.sender), e, exc_info=True)
-        # Auto-close system sessions even on error — but only if the
+        # Auto-close ephemeral sessions even on error — but only if the
         # session was created by this event (not a pre-existing session).
-        if ctx.source == "system" and not ctx.session_preexisted:
+        if ctx.task_type in ("task", "system") and not ctx.session_preexisted:
             try:
                 await self.session_mgr.close_session(ctx.sender)
-                log.info("Auto-closed system session for %s", _log_safe(ctx.sender))
+                log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
             except Exception:
-                log.warning("Auto-close failed for system session %s",
-                            ctx.sender, exc_info=True)
+                log.warning("Auto-close failed for %s session %s",
+                            ctx.task_type, ctx.sender, exc_info=True)
 
     async def _finalize_response(self, ctx: _MessageState, _resolve) -> None:
         """Post-loop work: persist, deliver, compact."""
@@ -936,7 +938,7 @@ class LucydDaemon:
         await self._deliver_reply(ctx, _resolve)
         self._check_compaction_warning(ctx)
         await self._run_compaction_if_needed(ctx)
-        await self._auto_close_if_system(ctx)
+        await self._auto_close_if_ephemeral(ctx)
 
     def _persist_response(self, ctx: _MessageState) -> None:
         """Persist new messages and restore text-only content."""
@@ -1058,15 +1060,15 @@ class LucydDaemon:
             max_tokens=self.config.compaction_max_tokens,
         )
 
-    async def _auto_close_if_system(self, ctx: _MessageState) -> None:
-        """Auto-close one-shot system sessions (evolution, heartbeat)."""
-        if ctx.source == "system" and not ctx.force_compact and not ctx.session_preexisted:
+    async def _auto_close_if_ephemeral(self, ctx: _MessageState) -> None:
+        """Auto-close ephemeral sessions (task_type 'task' or 'system')."""
+        if ctx.task_type in ("task", "system") and not ctx.force_compact and not ctx.session_preexisted:
             try:
                 await self.session_mgr.close_session(ctx.sender)
-                log.info("Auto-closed system session for %s", _log_safe(ctx.sender))
+                log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
             except Exception:
-                log.warning("Auto-close failed for system session %s",
-                            ctx.sender, exc_info=True)
+                log.warning("Auto-close failed for %s session %s",
+                            ctx.task_type, ctx.sender, exc_info=True)
 
     async def _process_message(
         self,
@@ -1079,6 +1081,8 @@ class LucydDaemon:
         force_compact: bool = False,
         stream_queue: Any = None,
         deliver: bool = True,
+        channel_id: str = "http",
+        task_type: str = "conversational",
     ) -> None:
         """Process a single message through the agentic loop."""
         if not trace_id:
@@ -1108,6 +1112,8 @@ class LucydDaemon:
             sender=sender,
             source=source,
             trace_id=trace_id,
+            channel_id=channel_id,
+            task_type=task_type,
             deliver=deliver,
             image_blocks=image_blocks,
             model_cfg=model_cfg,
@@ -1447,6 +1453,7 @@ class LucydDaemon:
                 deliver=False,
                 trace_id=tid,
                 force_compact=True,
+                task_type="system",
             )
         return {"status": "completed", "session": session.id}
 
@@ -1586,17 +1593,22 @@ class LucydDaemon:
             for m in msgs:
                 if m.get("attachments"):
                     combined_attachments.extend(m["attachments"])
-            source = msgs[0].get("source", "")
-            deliver = msgs[0].get("deliver", True)
+            first = msgs[0]
+            source = first.get("source", "")
+            deliver = first.get("deliver", True)
+            channel_id = first.get("channel_id", "http")
+            task_type = first.get("task_type", "conversational")
             tid = str(uuid.uuid4())
-            log.info("[%s] Processing message from %s (source=%s)",
-                     tid[:8], _log_safe(sender), _log_safe(source))
+            log.info("[%s] Processing message from %s (source=%s channel=%s)",
+                     tid[:8], _log_safe(sender), _log_safe(source), channel_id)
             async with self._get_session_lock(sender):
                 await self._process_message(
                     combined_text, sender, source,
                     attachments=combined_attachments or None,
                     trace_id=tid,
                     deliver=deliver,
+                    channel_id=channel_id,
+                    task_type=task_type,
                 )
 
         async def process_http_immediate(item: dict) -> None:
@@ -1607,8 +1619,10 @@ class LucydDaemon:
             """
             tid = str(uuid.uuid4())
             http_sender = item.get("sender", "http")
-            log.info("[%s] Processing HTTP message from %s",
-                     tid[:8], _log_safe(http_sender))
+            channel_id = item.get("channel_id", "http")
+            task_type = item.get("task_type", "conversational")
+            log.info("[%s] Processing HTTP message from %s (channel=%s)",
+                     tid[:8], _log_safe(http_sender), channel_id)
             async with self._get_session_lock(http_sender):
                 await self._process_message(
                     text=item.get("text", ""),
@@ -1619,6 +1633,8 @@ class LucydDaemon:
                     trace_id=tid,
                     stream_queue=item.get("stream_queue"),
                     deliver=False,
+                    channel_id=channel_id,
+                    task_type=task_type,
                 )
 
         while self.running:
@@ -1681,8 +1697,12 @@ class LucydDaemon:
             # Debounce: collect messages from same sender
             if sender not in pending:
                 pending[sender] = []
-            pending[sender].append({"text": text, "source": source, "deliver": deliver,
-                                    "attachments": attachments})
+            pending[sender].append({
+                "text": text, "source": source, "deliver": deliver,
+                "channel_id": item.get("channel_id", "http"),
+                "task_type": item.get("task_type", "conversational"),
+                "attachments": attachments,
+            })
 
             # Wait for more messages
             await asyncio.sleep(debounce_s)

@@ -371,7 +371,7 @@ async def process_message(message: dict, download_dir: Path,
         pass
 
     # POST to daemon
-    body: dict = {"message": text, "sender": sender}
+    body: dict = {"message": text, "sender": sender, "channel_id": "telegram"}
     if attachments:
         body["attachments"] = attachments
 

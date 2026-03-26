@@ -138,6 +138,7 @@ async def poll_loop():
                     resp = await client.post(f"{URL}/api/v1/chat", json={
                         "message": msg["body"],
                         "sender": msg["from"],
+                        "channel_id": "email",
                     })
                     data = resp.json()
                     reply = data.get("reply", "")

@@ -120,7 +120,7 @@ The daemon is a coordinator with hub-and-spoke state topology. `_process_message
 **Sessions** (3 attrs, 12 reader methods)
 - `session_mgr`, `_current_session`, `_session_locks`
 - Highest fan-out: 12 methods read `session_mgr`. Single write site: `_init_sessions`.
-- Methods: `_setup_session`, `_persist_response`, `_auto_close_if_system`, `_reset_session`, `_check_compaction_warning`, `_run_compaction_if_needed`, `_handle_agentic_error`, `_build_sessions`, `_build_history`, `_build_status`, `_handle_compact`.
+- Methods: `_setup_session`, `_persist_response`, `_auto_close_if_ephemeral`, `_reset_session`, `_check_compaction_warning`, `_run_compaction_if_needed`, `_handle_agentic_error`, `_build_sessions`, `_build_history`, `_build_status`, `_handle_compact`.
 
 **Memory** (2 attrs, 7 reader methods)
 - `_memory_conn`, `metering_db`

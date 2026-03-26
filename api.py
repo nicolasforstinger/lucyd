@@ -291,6 +291,30 @@ class HTTPApi:
 
         return attachments
 
+    # ─── Message Envelope ─────────────────────────────────────────
+
+    _VALID_TASK_TYPES = frozenset(("conversational", "task", "system"))
+
+    def _extract_envelope(self, body: dict, default_task_type: str = "conversational") -> dict:
+        """Extract message envelope fields from request body.
+
+        All fields are optional — missing fields get safe defaults.
+        """
+        task_type = body.get("task_type", default_task_type)
+        if task_type not in self._VALID_TASK_TYPES:
+            log.warning("Unknown task_type %r, defaulting to %r", task_type, default_task_type)
+            task_type = default_task_type
+        envelope = {
+            "channel_id": body.get("channel_id", "http"),
+            "task_type": task_type,
+        }
+        # Optional metadata — only include if provided
+        for key in ("timestamp", "message_hash", "reply_to"):
+            val = body.get(key)
+            if val is not None:
+                envelope[key] = val
+        return envelope
+
     # ─── Shared Parsing ────────────────────────────────────────────
 
     async def _parse_and_queue(
@@ -300,6 +324,7 @@ class HTTPApi:
         sender_default: str = "default",
         text_prefix: str = "",
         extra_fields: dict | None = None,
+        default_task_type: str = "conversational",
     ) -> web.Response:
         """Shared parse body -> validate -> build queue item -> queue -> 202 response.
 
@@ -329,6 +354,7 @@ class HTTPApi:
             "sender": sender,
             "type": msg_type,
             "text": text,
+            **self._extract_envelope(body, default_task_type=default_task_type),
         }
         if attachments:
             queue_item["attachments"] = attachments
@@ -337,8 +363,8 @@ class HTTPApi:
 
         await self.queue.put(queue_item)
 
-        log.info("HTTP /%s queued: sender=%s attachments=%d",
-                 msg_type, _log_safe(sender),
+        log.info("HTTP /%s queued: sender=%s channel=%s attachments=%d",
+                 msg_type, _log_safe(sender), queue_item["channel_id"],
                  len(attachments) if attachments else 0)
 
         return self._json_response(
@@ -382,14 +408,15 @@ class HTTPApi:
             "type": "http",
             "text": text,
             "response_future": future,
+            **self._extract_envelope(body),
         }
         if attachments:
             queue_item["attachments"] = attachments
 
         await self.queue.put(queue_item)
 
-        log.info("HTTP /chat queued: sender=%s context=%s attachments=%d",
-                 _log_safe(sender), _log_safe(context),
+        log.info("HTTP /chat queued: sender=%s channel=%s context=%s attachments=%d",
+                 _log_safe(sender), queue_item["channel_id"], _log_safe(context),
                  len(attachments) if attachments else 0)
 
         try:
@@ -441,6 +468,7 @@ class HTTPApi:
             "text": text,
             "response_future": future,
             "stream_queue": delta_queue,
+            **self._extract_envelope(body),
         }
         if attachments:
             queue_item["attachments"] = attachments
@@ -503,6 +531,7 @@ class HTTPApi:
             request, msg_type="system",
             sender_default="system",
             text_prefix="[AUTOMATED SYSTEM MESSAGE] ",
+            default_task_type="system",
         )
 
     async def _handle_notify(self, request: web.Request) -> web.Response:
@@ -547,6 +576,7 @@ class HTTPApi:
             "type": "system",
             "text": f"[AUTOMATED SYSTEM MESSAGE] {text}",
             "notify": True,
+            **self._extract_envelope(body, default_task_type="system"),
         }
         if attachments:
             queue_item["attachments"] = attachments
