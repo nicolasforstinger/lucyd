@@ -63,7 +63,7 @@ class _RateLimiter:
 class HTTPApi:
     """HTTP API server that feeds messages into the daemon's queue."""
 
-    _AUTH_EXEMPT_PATHS = frozenset({"/api/v1/status"})
+    _AUTH_EXEMPT_PATHS = frozenset({"/api/v1/status", "/metrics"})
     _READ_ONLY_PATHS = frozenset({
         "/api/v1/status",
         "/api/v1/sessions",
@@ -151,6 +151,7 @@ class HTTPApi:
         app.router.add_post("/api/v1/system", self._handle_system)
         app.router.add_post("/api/v1/notify", self._handle_notify)
         app.router.add_get("/api/v1/status", self._handle_status)
+        app.router.add_get("/metrics", self._handle_metrics)
         app.router.add_get("/api/v1/sessions", self._handle_sessions)
         app.router.add_get("/api/v1/cost", self._handle_cost)
         app.router.add_get("/api/v1/monitor", self._handle_monitor)
@@ -591,6 +592,18 @@ class HTTPApi:
             {"accepted": True, "queued_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
             status=202,
         )
+
+    async def _handle_metrics(self, request: web.Request) -> web.Response:
+        """GET /metrics — Prometheus text format."""
+        import metrics as m
+        if not m.ENABLED or m.generate_latest is None:
+            return web.Response(text="# prometheus_client not installed\n",
+                                content_type="text/plain")
+        # Update gauges that are only refreshed on scrape
+        if self._get_status:
+            self._get_status()  # triggers gauge updates in _build_status
+        body = m.generate_latest()
+        return web.Response(body=body, content_type=m.CONTENT_TYPE_LATEST)
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         """GET /api/v1/status — health check + stats."""

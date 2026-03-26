@@ -83,6 +83,8 @@ class LLMResponse:
     cost_limited: bool = False
     # File paths produced by tools during the agentic loop
     attachments: list[str] = field(default_factory=list)
+    # Agentic loop turn count (set by run_agentic_loop)
+    turns: int = 0
 
     def to_internal_message(self) -> dict:
         """Convert to internal message format for session storage."""

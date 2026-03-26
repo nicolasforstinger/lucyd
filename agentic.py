@@ -19,6 +19,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+import metrics
+
 from providers import LLMProvider, LLMResponse, StreamDelta, ToolCall, Usage
 from tools import ToolRegistry
 
@@ -71,7 +73,11 @@ async def _call_provider_with_retry(
     )
 
     last_exc: BaseException | None = None
+    _model = getattr(provider, "model", "")
+    _prov = getattr(provider, "provider_name", "")
+
     for attempt in range(1 + cfg.api_retries):
+        _api_start = time.time()
         try:
             if use_streaming:
                 response = await asyncio.wait_for(
@@ -83,12 +89,24 @@ async def _call_provider_with_retry(
                     provider.complete(system, fmt_messages, fmt_tools),
                     timeout=cfg.timeout,
                 )
+            if metrics.ENABLED:
+                metrics.API_LATENCY.labels(model=_model, provider=_prov).observe(time.time() - _api_start)
+                metrics.API_CALLS_TOTAL.labels(model=_model, provider=_prov, status="success").inc()
+                u = response.usage
+                metrics.TOKENS_TOTAL.labels(direction="input", model=_model, provider=_prov).inc(u.input_tokens)
+                metrics.TOKENS_TOTAL.labels(direction="output", model=_model, provider=_prov).inc(u.output_tokens)
+                if u.cache_read_tokens:
+                    metrics.TOKENS_TOTAL.labels(direction="cache_read", model=_model, provider=_prov).inc(u.cache_read_tokens)
             return response
         except TimeoutError:
             log.error("[%s] API call timed out after %.0fs", trace_id[:8], cfg.timeout)
+            if metrics.ENABLED:
+                metrics.API_CALLS_TOTAL.labels(model=_model, provider=_prov, status="timeout").inc()
             raise
         except Exception as exc:
             log.warning("[%s] API error: %s: %s", trace_id[:8], type(exc).__name__, str(exc)[:200])
+            if metrics.ENABLED:
+                metrics.API_CALLS_TOTAL.labels(model=_model, provider=_prov, status="error").inc()
             if not is_transient_error(exc) or attempt >= cfg.api_retries:
                 raise
             delay = cfg.api_retry_base_delay * (2 ** attempt) * (0.5 + random.random())  # noqa: S311 — jitter for backoff timing
@@ -344,6 +362,8 @@ async def run_agentic_loop(
                 trace_id=trace_id,
             )
             accumulated_cost += turn_cost
+            if metrics.ENABLED:
+                metrics.API_COST.labels(model=cc.model_name, provider=cc.provider_name).inc(turn_cost)
 
         # Max cost circuit breaker
         if max_cost > 0 and accumulated_cost > max_cost:
@@ -354,6 +374,7 @@ async def run_agentic_loop(
             if not response.text and fallback_text:
                 response.text = "\n\n".join(fallback_text)
             response.attachments = all_attachments
+            response.turns = turn + 1
             return response
 
         # Add to messages
@@ -394,6 +415,7 @@ async def run_agentic_loop(
         # This prevents re-entering the loop when the model intended to stop.
         if not response.tool_calls or response.stop_reason == "end_turn":
             response.attachments = all_attachments
+            response.turns = turn + 1
             return response
 
         # Context pressure check (Challenge 6): inject wrap-up hint
@@ -516,6 +538,7 @@ async def run_agentic_loop(
         else:
             response.text = stop_msg
         response.attachments = all_attachments
+    response.turns = max_turns  # type: ignore[union-attr]
     return response  # type: ignore[return-value]
 
 

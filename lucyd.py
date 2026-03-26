@@ -206,6 +206,7 @@ def _is_silent(text: str, tokens: list[str]) -> bool:
 
 
 from attachments import ImageTooLarge, extract_document_text, fit_image
+import metrics
 
 
 class _MonitorWriter:
@@ -632,10 +633,16 @@ class LucydDaemon:
         if not self._preprocessors or not attachments:
             return text, attachments
         for pp in self._preprocessors:
+            _pp_start = time.time()
             try:
                 text, attachments = await pp["fn"](text, attachments, self.config)
+                if metrics.ENABLED:
+                    metrics.PREPROCESSOR_TOTAL.labels(name=pp["name"], status="success").inc()
+                    metrics.PREPROCESSOR_DURATION.labels(name=pp["name"]).observe(time.time() - _pp_start)
             except Exception:
                 log.exception("Preprocessor %s failed", pp["name"])
+                if metrics.ENABLED:
+                    metrics.PREPROCESSOR_TOTAL.labels(name=pp["name"], status="error").inc()
             if not attachments:
                 break
         return text, attachments or None
@@ -817,6 +824,10 @@ class LucydDaemon:
                 ctx.trace_id[:8], max_ctx, sys_tokens, history_tokens,
                 len(session.messages), tool_def_tokens, used, remaining,
             )
+            if metrics.ENABLED and isinstance(used, (int, float)):
+                metrics.CONTEXT_UTILIZATION.labels(
+                    channel_id=ctx.channel_id, task_type=ctx.task_type,
+                ).observe(used / max_ctx if max_ctx > 0 else 0)
 
         # Run agentic loop — it appends to session.messages in place
         # If model doesn't support tools, degrade gracefully (no tools sent)
@@ -1052,6 +1063,7 @@ class LucydDaemon:
             cost_rates=ctx.cost_rates,
             provider_name=ctx.provider_name,
         )
+        _pre_tokens = session.last_input_tokens
         await self.session_mgr.compact_session(
             session, self.get_provider("compaction"), prompt,
             trace_id=ctx.trace_id,
@@ -1062,6 +1074,11 @@ class LucydDaemon:
             tool_result_max_chars=2000,
             max_tokens=self.config.compaction_max_tokens,
         )
+        if metrics.ENABLED and isinstance(_pre_tokens, int):
+            metrics.COMPACTION_TOTAL.inc()
+            reclaimed = max(0, _pre_tokens - (session.last_input_tokens or 0))
+            if reclaimed > 0:
+                metrics.COMPACTION_TOKENS_RECLAIMED.observe(reclaimed)
 
     async def _auto_close_if_ephemeral(self, ctx: _MessageState) -> None:
         """Auto-close ephemeral sessions (task_type 'task' or 'system')."""
@@ -1089,6 +1106,7 @@ class LucydDaemon:
         session_key: str = "",
     ) -> None:
         """Process a single message through the agentic loop."""
+        _msg_start = time.time()
         if not trace_id:
             trace_id = str(uuid.uuid4())
 
@@ -1216,6 +1234,28 @@ class LucydDaemon:
             await stream_queue.put(None)  # sentinel
 
         await self._finalize_response(ctx, _resolve)
+
+        # ── Prometheus metrics ────────────────────────────────────────
+        if metrics.ENABLED:
+            try:
+                _labels = {"channel_id": ctx.channel_id, "task_type": ctx.task_type}
+                metrics.MESSAGES_TOTAL.labels(**_labels).inc()
+                metrics.MESSAGE_DURATION.labels(**_labels).observe(time.time() - _msg_start)
+                if ctx.response:
+                    turns = getattr(ctx.response, "turns", 0)
+                    if isinstance(turns, int) and turns > 0:
+                        metrics.AGENTIC_TURNS.labels(**_labels).observe(turns)
+                    u = getattr(ctx.response, "usage", None)
+                    if u and isinstance(getattr(u, "input_tokens", None), int):
+                        _cost = 0.0
+                        if ctx.cost_rates and len(ctx.cost_rates) >= 2:
+                            _cost = (u.input_tokens * ctx.cost_rates[0]
+                                     + u.output_tokens * ctx.cost_rates[1]) / 1_000_000
+                            if len(ctx.cost_rates) >= 3:
+                                _cost += u.cache_read_tokens * ctx.cost_rates[2] / 1_000_000
+                        metrics.MESSAGE_COST.labels(**_labels).observe(_cost)
+            except Exception:
+                log.debug("Metrics recording failed", exc_info=True)
 
     async def _consolidate_on_close(self, session) -> None:
         """Consolidation callback fired before session archival."""
@@ -1392,6 +1432,12 @@ class LucydDaemon:
         active_sessions = 0
         if self.session_mgr:
             active_sessions = self.session_mgr.session_count()
+
+        # Update Prometheus gauges
+        if metrics.ENABLED:
+            metrics.UPTIME.set(time.time() - self.start_time)
+            metrics.ACTIVE_SESSIONS.set(active_sessions)
+            metrics.QUEUE_DEPTH.set(self.queue.qsize())
 
         return {
             "status": "ok",

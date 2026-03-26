@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
+
+import metrics
 
 log = logging.getLogger(__name__)
 
@@ -158,17 +161,25 @@ class ToolRegistry:
 
         tool = self._tools[name]
         func = tool["function"]
+        _tool_start = time.time()
         try:
             import inspect
             if inspect.iscoroutinefunction(func):
                 result = await func(**arguments)
             else:
                 result = func(**arguments)
+            if metrics.ENABLED:
+                metrics.TOOL_CALLS_TOTAL.labels(tool_name=name, status="success").inc()
+                metrics.TOOL_DURATION.labels(tool_name=name).observe(time.time() - _tool_start)
         except TypeError as e:
             log.warning("Tool %s argument error: %s", name, e)
+            if metrics.ENABLED:
+                metrics.TOOL_CALLS_TOTAL.labels(tool_name=name, status="error").inc()
             return {"text": f"Error: Invalid arguments for '{name}': {e}", "attachments": []}
         except Exception as e:
             log.error("Tool %s failed: %s", name, e, exc_info=True)
+            if metrics.ENABLED:
+                metrics.TOOL_CALLS_TOTAL.labels(tool_name=name, status="error").inc()
             return {
                 "text": (
                     f"Error: Tool '{name}' failed ({type(e).__name__}). "
