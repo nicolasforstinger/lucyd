@@ -5,14 +5,8 @@ Polls an IMAP mailbox for unread emails, sends them to the daemon,
 and replies via SMTP.
 
 Run:  python3 channels/email.py
-Env:  LUCYD_URL                 (default: http://127.0.0.1:8100)
-      LUCYD_EMAIL_IMAP_HOST     (required)
-      LUCYD_EMAIL_SMTP_HOST     (required)
-      LUCYD_EMAIL_USER          (required)
-      LUCYD_EMAIL_PASSWORD      (required)
-      LUCYD_EMAIL_FOLDER        (default: INBOX)
-      LUCYD_EMAIL_POLL_INTERVAL (default: 60)
-      LUCYD_EMAIL_FROM          (default: same as LUCYD_EMAIL_USER)
+Config: LUCYD_EMAIL_CONFIG env var, or email.toml in working dir.
+        Falls back to env vars for backward compatibility.
 """
 
 from __future__ import annotations
@@ -29,16 +23,72 @@ from email.mime.text import MIMEText
 
 import httpx
 
+from pathlib import Path
+
 log = logging.getLogger("bridge.email")
 
-URL = os.environ.get("LUCYD_URL", "http://127.0.0.1:8100")
-IMAP_HOST = os.environ.get("LUCYD_EMAIL_IMAP_HOST", "")
-SMTP_HOST = os.environ.get("LUCYD_EMAIL_SMTP_HOST", "")
-USER = os.environ.get("LUCYD_EMAIL_USER", "")
-PASSWORD = os.environ.get("LUCYD_EMAIL_PASSWORD", "")
-FOLDER = os.environ.get("LUCYD_EMAIL_FOLDER", "INBOX")
-POLL_INTERVAL = int(os.environ.get("LUCYD_EMAIL_POLL_INTERVAL", "60"))
-FROM_ADDR = os.environ.get("LUCYD_EMAIL_FROM", "") or USER
+# ─── Config (defaults — overridden by load_config) ──────────────
+
+URL = "http://127.0.0.1:8100"
+IMAP_HOST = ""
+SMTP_HOST = ""
+USER = ""
+PASSWORD = ""
+FOLDER = "INBOX"
+POLL_INTERVAL = 60
+FROM_ADDR = ""
+
+
+def load_config():
+    """Load bridge config from standalone email.toml.
+
+    Search order: LUCYD_EMAIL_CONFIG env var, email.toml, /config/email.toml.
+    Falls back to env vars for backward compatibility.
+    """
+    global URL, IMAP_HOST, SMTP_HOST, USER, PASSWORD, FOLDER, POLL_INTERVAL, FROM_ADDR
+
+    config_path = os.environ.get("LUCYD_EMAIL_CONFIG", "")
+    if not config_path:
+        for p in ["email.toml", "/config/email.toml"]:
+            if Path(p).exists():
+                config_path = p
+                break
+
+    if config_path and Path(config_path).exists():
+        try:
+            import tomllib
+            with Path(config_path).open("rb") as f:
+                data = tomllib.load(f)
+
+            daemon = data.get("daemon", {})
+            URL = daemon.get("url", URL)
+
+            em = data.get("email", {})
+            IMAP_HOST = em.get("imap_host", IMAP_HOST)
+            SMTP_HOST = em.get("smtp_host", SMTP_HOST)
+            user_env = em.get("user_env", "LUCYD_EMAIL_USER")
+            password_env = em.get("password_env", "LUCYD_EMAIL_PASSWORD")
+            USER = os.environ.get(user_env, "")
+            PASSWORD = os.environ.get(password_env, "")
+            FOLDER = em.get("folder", FOLDER)
+            POLL_INTERVAL = em.get("poll_interval", POLL_INTERVAL)
+            FROM_ADDR = em.get("from_address", "") or USER
+
+            log.info("Loaded config from %s", config_path)
+            return
+
+        except Exception as e:
+            log.warning("Failed to load config %s: %s", config_path, e, exc_info=True)
+
+    # Fallback: env vars only (backward compat)
+    URL = os.environ.get("LUCYD_URL", URL)
+    IMAP_HOST = os.environ.get("LUCYD_EMAIL_IMAP_HOST", "")
+    SMTP_HOST = os.environ.get("LUCYD_EMAIL_SMTP_HOST", "")
+    USER = os.environ.get("LUCYD_EMAIL_USER", "")
+    PASSWORD = os.environ.get("LUCYD_EMAIL_PASSWORD", "")
+    FOLDER = os.environ.get("LUCYD_EMAIL_FOLDER", FOLDER)
+    POLL_INTERVAL = int(os.environ.get("LUCYD_EMAIL_POLL_INTERVAL", str(POLL_INTERVAL)))
+    FROM_ADDR = os.environ.get("LUCYD_EMAIL_FROM", "") or USER
 
 
 def fetch_unread() -> list[dict]:
@@ -160,9 +210,10 @@ async def poll_loop():
 
 
 async def main():
+    load_config()
     if not all([IMAP_HOST, SMTP_HOST, USER, PASSWORD]):
-        sys.exit("Required env vars: LUCYD_EMAIL_IMAP_HOST, LUCYD_EMAIL_SMTP_HOST, "
-                 "LUCYD_EMAIL_USER, LUCYD_EMAIL_PASSWORD")
+        sys.exit("Email bridge requires imap_host, smtp_host, user, and password. "
+                 "Set via email.toml or environment variables.")
     await poll_loop()
 
 

@@ -41,7 +41,24 @@ Skills not in `always_on` appear in an index. The agent loads them on demand via
 
 ## Channels
 
-Channels are standalone bridge processes that connect external services (Telegram, email, CLI) to the daemon via its HTTP API. They are configured independently — see each channel's own documentation. The `debounce_ms` setting in `[behavior]` controls message batching for queued messages.
+Channels are standalone bridge processes with their own config files. Each bridge config has the same structure:
+
+```toml
+[daemon]
+url = "http://127.0.0.1:8100"       # Where to find the daemon
+token_env = "LUCYD_HTTP_TOKEN"       # Env var for API auth
+
+[<protocol>]
+# Protocol-specific settings
+```
+
+| Bridge | Config file | Env var override | Template |
+|--------|-------------|-----------------|----------|
+| Telegram | `telegram.toml` | `LUCYD_TELEGRAM_CONFIG` | `channels/telegram.toml.example` |
+| Email | `email.toml` | `LUCYD_EMAIL_CONFIG` | `channels/email.toml.example` |
+| CLI | env vars only | `LUCYD_URL` | — |
+
+All bridges fall back to environment variables if no config file is found. The `debounce_ms` setting in `[behavior]` controls message batching for queued messages on the daemon side.
 
 Contact name lookup is case-insensitive.
 
@@ -491,7 +508,7 @@ TOOLS = [
 ]
 ```
 
-An optional `configure()` function receives dependencies by parameter name (e.g. `config`, `channel`, `session_mgr`, `provider`).
+An optional `configure()` function receives dependencies by parameter name (e.g. `config`, `provider`, `session_mgr`).
 
 Plugin tools must be listed in `[tools] enabled` to activate. Unlisted plugin tools are ignored. A failing plugin does not block other plugins or built-in tools from loading.
 

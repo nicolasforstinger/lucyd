@@ -24,13 +24,11 @@ import httpx
 
 log = logging.getLogger("bridge.telegram")
 
-# ─── Config ──────────────────────────────────────────────────────
+# ─── Config (defaults — overridden by load_config) ──────────────
 
-TOKEN = os.environ.get("LUCYD_TELEGRAM_TOKEN", "")
-DAEMON_URL = os.environ.get("LUCYD_URL", "http://127.0.0.1:8100")
-
-# Telegram API
-API_BASE = f"https://api.telegram.org/bot{TOKEN}"
+TOKEN = ""
+DAEMON_URL = "http://127.0.0.1:8100"
+API_BASE = ""
 CHUNK_LIMIT = 4000
 POLL_TIMEOUT = 30
 HTTP_TIMEOUT = 45.0
@@ -374,35 +372,81 @@ async def process_message(message: dict, download_dir: Path,
 
 
 def load_config():
-    """Load contacts and settings from lucyd.toml if available."""
-    global ID_TO_NAME, ALLOW_FROM
+    """Load bridge config from standalone telegram.toml.
 
-    config_path = os.environ.get("LUCYD_CONFIG", "")
+    Search order:
+      1. LUCYD_TELEGRAM_CONFIG env var
+      2. telegram.toml in working directory
+      3. /config/telegram.toml
+
+    Falls back to env vars (LUCYD_TELEGRAM_TOKEN, LUCYD_URL) for
+    backward compatibility if no config file is found.
+    """
+    global TOKEN, DAEMON_URL, API_BASE, CHUNK_LIMIT, POLL_TIMEOUT
+    global HTTP_TIMEOUT, CONNECT_TIMEOUT, RECONNECT_INITIAL, RECONNECT_MAX
+    global RECONNECT_FACTOR, RECONNECT_JITTER, MEDIA_GROUP_DELAY
+    global MAX_ATTACHMENT_BYTES, ID_TO_NAME, ALLOW_FROM
+
+    config_path = os.environ.get("LUCYD_TELEGRAM_CONFIG", "")
     if not config_path:
-        # Try common locations
-        for p in ["lucyd.toml", "/config/lucyd.toml"]:
+        for p in ["telegram.toml", "/config/telegram.toml"]:
             if Path(p).exists():
                 config_path = p
                 break
 
-    if not config_path or not Path(config_path).exists():
-        return
+    if config_path and Path(config_path).exists():
+        try:
+            import tomllib
+            with Path(config_path).open("rb") as f:
+                data = tomllib.load(f)
 
-    try:
-        import tomllib
-        with open(config_path, "rb") as f:
-            data = tomllib.load(f)
+            # [daemon] section
+            daemon = data.get("daemon", {})
+            DAEMON_URL = daemon.get("url", DAEMON_URL)
+            daemon_token_env = daemon.get("token_env", "")
+            if daemon_token_env:
+                token = os.environ.get(daemon_token_env, "")
+                if token:
+                    # Set for httpx auth header (used in _get_client)
+                    os.environ.setdefault("LUCYD_HTTP_TOKEN", token)
 
-        tg = data.get("channel", {}).get("telegram", {})
-        allow = tg.get("allow_from", [])
-        if allow:
-            ALLOW_FROM = set(allow)
-        contacts = tg.get("contacts", {})
-        for name, uid in contacts.items():
-            ID_TO_NAME[uid] = name
-        log.info("Loaded %d contacts from config", len(contacts))
-    except Exception as e:
-        log.warning("Failed to load config: %s", e, exc_info=True)
+            # [telegram] section
+            tg = data.get("telegram", {})
+            token_env = tg.get("token_env", "LUCYD_TELEGRAM_TOKEN")
+            TOKEN = os.environ.get(token_env, "")
+            API_BASE = f"https://api.telegram.org/bot{TOKEN}"
+
+            allow = tg.get("allow_from", [])
+            if allow:
+                ALLOW_FROM = set(allow)
+
+            CHUNK_LIMIT = tg.get("text_chunk_limit", CHUNK_LIMIT)
+            POLL_TIMEOUT = tg.get("poll_timeout", POLL_TIMEOUT)
+            HTTP_TIMEOUT = tg.get("http_timeout", HTTP_TIMEOUT)
+            CONNECT_TIMEOUT = tg.get("http_connect_timeout", CONNECT_TIMEOUT)
+            RECONNECT_INITIAL = tg.get("reconnect_initial", RECONNECT_INITIAL)
+            RECONNECT_MAX = tg.get("reconnect_max", RECONNECT_MAX)
+            RECONNECT_FACTOR = tg.get("reconnect_factor", RECONNECT_FACTOR)
+            RECONNECT_JITTER = tg.get("reconnect_jitter", RECONNECT_JITTER)
+            MEDIA_GROUP_DELAY = tg.get("media_group_delay", MEDIA_GROUP_DELAY)
+            MAX_ATTACHMENT_BYTES = tg.get("max_attachment_bytes", MAX_ATTACHMENT_BYTES)
+
+            # [telegram.contacts] section
+            contacts = tg.get("contacts", {})
+            for name, uid in contacts.items():
+                ID_TO_NAME[uid] = name
+
+            log.info("Loaded config from %s (%d contacts)", config_path, len(contacts))
+            return
+
+        except Exception as e:
+            log.warning("Failed to load config %s: %s", config_path, e, exc_info=True)
+
+    # Fallback: env vars only (backward compat)
+    TOKEN = os.environ.get("LUCYD_TELEGRAM_TOKEN", "")
+    DAEMON_URL = os.environ.get("LUCYD_URL", DAEMON_URL)
+    API_BASE = f"https://api.telegram.org/bot{TOKEN}"
+    log.info("No config file found — using environment variables")
 
 
 # ─── Main ─────────────────────────────────────────────────────────
