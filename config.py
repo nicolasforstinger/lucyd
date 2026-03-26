@@ -78,9 +78,6 @@ _SCHEMA: dict[str, tuple] = {
     "skills_dir":           (("agent", "skills", "dir"),           str,   "skills"),
     "always_on_skills":     (("agent", "skills", "always_on"),     list,  []),
 
-    # ── Channel ──────────────────────────────────────────────────
-    "debounce_ms":          (("channel", "debounce_ms"),           int,   500),
-
     # ── HTTP API (always on) ─────────────────────────────────────
     "http_host":            (("http", "host"),                     str,   "0.0.0.0"),  # noqa: S104 — intentional: operator overrides via config
     "http_port":            (("http", "port"),                     int,   8100),
@@ -155,6 +152,7 @@ _SCHEMA: dict[str, tuple] = {
     "agent_strategy":           (("agent", "strategy"),                    str,   "tool_use"),
 
     # ── Behavior ─────────────────────────────────────────────────
+    "debounce_ms":              (("behavior", "debounce_ms"),              int,   500),
     "silent_tokens":            (("behavior", "silent_tokens"),            list,  ["NO_REPLY"]),
     "typing_indicators":        (("behavior", "typing_indicators"),        bool,  True),
     "error_message":            (("behavior", "error_message"),            str,   "connection error"),
@@ -401,10 +399,6 @@ class Config(_ConfigBase):
     @property
     def workspace(self) -> Path:
         return _resolve_path(self._data["agent"]["workspace"])
-
-    @property
-    def channel_type(self) -> str:
-        return _deep_get(self._data, "channel", "type", default="")
 
     @property
     def config_dir(self) -> Path:

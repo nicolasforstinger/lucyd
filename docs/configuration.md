@@ -39,53 +39,9 @@ always_on = ["compute-routing", "natural-conversation"]  # Injected into every s
 
 Skills not in `always_on` appear in an index. The agent loads them on demand via the `load_skill` tool.
 
-## [channel]
+## Channels
 
-Messaging transport configuration.
-
-```toml
-[channel]
-type = "telegram"    # "telegram", "cli", or "" (HTTP-only)
-debounce_ms = 500    # Collect messages from same sender within this window before processing
-```
-
-### [channel.telegram]
-
-Telegram-specific settings. Only required when `type = "telegram"`.
-
-```toml
-[channel.telegram]
-token_env = "LUCYD_TELEGRAM_TOKEN"           # Env var containing the bot token
-allow_from = [123456789]                     # Allowed sender Telegram user IDs (numeric)
-text_chunk_limit = 4000                      # Max chars per Telegram message (splits longer replies)
-download_dir = "/tmp/lucyd-telegram"         # Directory for downloaded attachments
-```
-
-The bot token is loaded from the environment variable specified by `token_env` (default: `LUCYD_TELEGRAM_TOKEN`, set in `.env`). No external daemon is needed — Lucyd connects directly to the Telegram Bot API via httpx long polling.
-
-Reconnect backoff parameters control retry behavior when the Telegram connection drops:
-
-```toml
-[channel.telegram]
-reconnect_initial = 1.0      # Initial backoff delay (seconds, default: 1.0)
-reconnect_max = 10.0          # Maximum backoff delay (seconds, default: 10.0)
-reconnect_factor = 2.0        # Exponential multiplier (default: 2.0)
-reconnect_jitter = 0.2        # Random jitter fraction (0.0–1.0, default: 0.2)
-media_group_delay = 0.5       # Seconds to wait for album photos before merging
-poll_timeout = 30             # Telegram long-polling timeout (seconds)
-http_timeout = 45.0           # httpx client timeout — must exceed poll_timeout to avoid races
-http_connect_timeout = 10.0   # httpx connection timeout (seconds)
-```
-
-### [channel.telegram.contacts]
-
-Name-to-ID mapping for outbound messages. Allows the agent to send messages using contact names instead of raw Telegram user IDs.
-
-```toml
-[channel.telegram.contacts]
-Alice = 123456789
-Bob = 987654321
-```
+Channels are standalone bridge processes that connect external services (Telegram, email, CLI) to the daemon via its HTTP API. They are configured independently — see each channel's own documentation. The `debounce_ms` setting in `[behavior]` controls message batching for queued messages.
 
 Contact name lookup is case-insensitive.
 

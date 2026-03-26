@@ -161,7 +161,7 @@ The agent processes system events (spawns sub-agents, writes memory, sends messa
 
 ## HTTP API
 
-The daemon always starts an HTTP API server. Channels (Telegram, CLI) are optional transports configured via `[channel] type`.
+The daemon always starts an HTTP API server. Channels (Telegram, CLI, email) are standalone bridge processes that connect via the HTTP API.
 
 ### Configuration
 

@@ -2,7 +2,7 @@
 # Copy to lucyd.toml and customize for your setup.
 # API keys are loaded from .env via environment variables.
 #
-# REQUIRED sections: [agent], [channel], [models.primary], [paths]
+# REQUIRED sections: [agent], [models.primary], [paths]
 # OPTIONAL sections: everything else — missing sections use sensible defaults.
 # Feature-gated: [stt], [vision], [documents], [tools.web_search]
 #   are only needed when those features are enabled in [tools] enabled list.
@@ -25,32 +25,6 @@ semi_stable = ["MEMORY.md"]
 [agent.skills]
 dir = "skills"
 always_on = []
-
-# ─── Channel (REQUIRED) ──────────────────────────────────────────
-
-[channel]
-type = "telegram"        # Optional — "telegram", "cli", or "" (HTTP-only, no channel)
-debounce_ms = 500
-
-# Create a bot via @BotFather, get the token, set it in .env as LUCYD_TELEGRAM_TOKEN.
-# Get your numeric user ID via @userinfobot. Message the bot first (required by Telegram).
-
-[channel.telegram]
-token_env = "LUCYD_TELEGRAM_TOKEN"         # Env var containing the bot token
-allow_from = [123456789]                   # Your Telegram user ID (numeric)
-text_chunk_limit = 4000
-download_dir = "/tmp/lucyd-telegram"
-reconnect_initial = 1.0                    # Initial reconnect backoff (seconds)
-reconnect_max = 10.0                       # Max reconnect backoff (seconds)
-reconnect_factor = 2.0                     # Exponential backoff multiplier
-reconnect_jitter = 0.2                     # Random jitter fraction (0.0–1.0)
-media_group_delay = 0.5                    # Seconds to wait for album photos before merging
-poll_timeout = 30                          # Telegram long-polling timeout (seconds)
-http_timeout = 45.0                        # httpx client timeout — must exceed poll_timeout to avoid races
-http_connect_timeout = 10.0                # httpx connection timeout (seconds)
-
-[channel.telegram.contacts]
-YourContact = 123456789                    # Your Telegram user ID
 
 # ─── Providers ───────────────────────────────────────────────────
 # Models loaded from providers.d/{name}.toml files.
@@ -209,6 +183,7 @@ jpeg_quality_steps = [85, 60, 40]                          # JPEG quality reduct
 # ─── Behavior ────────────────────────────────────────────────────
 
 [behavior]
+debounce_ms = 500                                          # Debounce window for queued messages (milliseconds)
 silent_tokens = ["NO_REPLY"]                               # Replies matching these are not delivered
 typing_indicators = true                                   # Send typing indicator before processing
 error_message = "I'm having trouble connecting right now. Try again in a moment."
