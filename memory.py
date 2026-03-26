@@ -221,7 +221,7 @@ class MemoryInterface:
             await self._cache_embedding(text, embedding)
             return embedding
         except Exception as e:
-            log.error("Embedding failed: %s", e)
+            log.error("Embedding failed: %s", e, exc_info=True)
             return []
 
     async def _get_cached_embedding(self, text: str) -> list[float]:
@@ -238,7 +238,7 @@ class MemoryInterface:
                 if row:
                     return json.loads(row[0])
             except Exception as e:
-                log.warning("Embedding cache lookup failed: %s", e)
+                log.warning("Embedding cache lookup failed: %s", e, exc_info=True)
             finally:
                 conn.close()
             return []
@@ -261,7 +261,7 @@ class MemoryInterface:
                 )
                 conn.commit()
             except Exception as e:
-                log.warning("Failed to cache embedding: %s", e)
+                log.warning("Failed to cache embedding: %s", e, exc_info=True)
             finally:
                 conn.close()
 

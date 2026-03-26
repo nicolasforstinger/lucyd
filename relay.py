@@ -39,7 +39,7 @@ class RelayChannel:
             resp = await self._client.post(f"{self.url}{path}", json=body)
             resp.raise_for_status()
         except Exception as e:
-            log.warning("Relay delivery failed (%s): %s", path, e)
+            log.warning("Relay delivery failed (%s): %s", path, e, exc_info=True)
 
     async def send(self, target: str, text: str, attachments: list[str] | None = None) -> None:
         await self._post("/send", {"target": target, "text": text, "attachments": attachments})

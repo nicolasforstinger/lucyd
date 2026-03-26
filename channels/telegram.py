@@ -216,7 +216,7 @@ async def download_file(file_id: str, download_dir: Path) -> tuple[str, str, int
         ct = ct_map.get(ext, "application/octet-stream")
         return str(local), ct, len(resp.content)
     except Exception as e:
-        log.warning("Download failed for %s: %s", file_id, e)
+        log.warning("Download failed for %s: %s", file_id, e, exc_info=True)
         return None
 
 
@@ -327,7 +327,7 @@ async def inbound_loop():
         except Exception as e:
             jitter = backoff * RECONNECT_JITTER * (random.random() * 2 - 1)  # noqa: S311
             wait = backoff + jitter
-            log.warning("Poll error (%s), reconnecting in %.1fs", e, wait)
+            log.warning("Poll error (%s), reconnecting in %.1fs", e, wait, exc_info=True)
             await asyncio.sleep(wait)
             backoff = min(backoff * RECONNECT_FACTOR, RECONNECT_MAX)
 
@@ -385,7 +385,7 @@ async def process_message(message: dict, download_dir: Path,
         for att_path in data.get("attachments", []):
             await send_attachment(chat_id, att_path)
     except Exception as e:
-        log.error("Daemon request failed: %s", e)
+        log.error("Daemon request failed: %s", e, exc_info=True)
 
 
 # ─── Delivery Server (outbound from daemon) ──────────────────────
@@ -506,7 +506,7 @@ def load_config():
             ID_TO_NAME[uid] = name
         log.info("Loaded %d contacts from config", len(CONTACTS))
     except Exception as e:
-        log.warning("Failed to load config: %s", e)
+        log.warning("Failed to load config: %s", e, exc_info=True)
 
 
 # ─── Main ─────────────────────────────────────────────────────────

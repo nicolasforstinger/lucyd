@@ -85,7 +85,7 @@ def fetch_unread() -> list[dict]:
         imap.close()
         imap.logout()
     except Exception as e:
-        log.error("IMAP error: %s", e)
+        log.error("IMAP error: %s", e, exc_info=True)
 
     return messages
 
@@ -104,7 +104,7 @@ def send_reply(to: str, subject: str, body: str) -> None:
 
         log.info("Reply sent to %s", to)
     except Exception as e:
-        log.error("SMTP error: %s", e)
+        log.error("SMTP error: %s", e, exc_info=True)
 
 
 def mark_read(uid: bytes) -> None:
@@ -117,7 +117,7 @@ def mark_read(uid: bytes) -> None:
         imap.close()
         imap.logout()
     except Exception as e:
-        log.warning("Failed to mark as read: %s", e)
+        log.warning("Failed to mark as read: %s", e, exc_info=True)
 
 
 async def poll_loop():
@@ -153,7 +153,7 @@ async def poll_loop():
                     mark_read(msg["uid"])
 
                 except Exception as e:
-                    log.error("Failed to process email from %s: %s", msg["from"], e)
+                    log.error("Failed to process email from %s: %s", msg["from"], e, exc_info=True)
 
             await asyncio.sleep(POLL_INTERVAL)
 

@@ -129,7 +129,7 @@ class SkillLoader:
                 }
                 log.debug("Loaded skill: %s", name)
             except Exception as e:
-                log.warning("Failed to load skill from %s: %s", skill_dir, e)
+                log.warning("Failed to load skill from %s: %s", skill_dir, e, exc_info=True)
 
         self._loaded = True
         log.info("Loaded %d skills from %s", len(self._skills), skills_path)

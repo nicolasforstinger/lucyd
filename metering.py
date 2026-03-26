@@ -140,7 +140,7 @@ class MeteringDB:
             )
             conn.commit()
         except Exception as e:
-            log.warning("Failed to record cost: %s", e)
+            log.warning("Failed to record cost: %s", e, exc_info=True)
 
         return cost_val
 
@@ -153,6 +153,7 @@ class MeteringDB:
         try:
             return self._connect().execute(sql, params).fetchall()
         except Exception:
+            log.warning("Metering query failed", exc_info=True)
             return []
 
     def month_total(self, billing_period: str = "") -> float:

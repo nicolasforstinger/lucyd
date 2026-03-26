@@ -460,7 +460,7 @@ class SessionManager:
             response = await provider.complete(fmt_system, fmt_messages, [], **kwargs)
             summary = response.text or ""
         except Exception as e:
-            log.error("Compaction failed: %s", e)
+            log.error("Compaction failed: %s", e, exc_info=True)
             return
 
         # Record compaction cost

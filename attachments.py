@@ -118,5 +118,5 @@ async def process_audio(stt_config: dict, local_path: str,
         transcription = await stt_mod.transcribe(stt_config, local_path, content_type)
         return f"[{label}, saved: {local_path}]: {transcription}"
     except Exception as e:
-        log.error("STT transcription failed (%s): %s", stt_backend, e)
+        log.error("STT transcription failed (%s): %s", stt_backend, e, exc_info=True)
         return f"[{fail_label}]"

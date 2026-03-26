@@ -375,7 +375,7 @@ def index_workspace(
                 for i, emb in enumerate(embeddings):
                     chunks[i]["embedding"] = emb
             except Exception as e:
-                log.error("Embedding failed for %s: %s", rel_path, e)
+                log.error("Embedding failed for %s: %s", rel_path, e, exc_info=True)
                 summary["errors"].append(f"{rel_path}: embedding error: {e}")
                 continue
 

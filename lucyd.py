@@ -392,7 +392,7 @@ class LucydDaemon:
                 self._single_shot = False
                 log.info("Agent strategy: agentic loop")
         except Exception as e:
-            log.error("Failed to create provider: %s", e)
+            log.error("Failed to create provider: %s", e, exc_info=True)
 
     def _create_provider_for(self, model_name: str) -> Any:
         """Create a provider instance for a named model config."""
@@ -655,7 +655,7 @@ class LucydDaemon:
             text = f"{prefix} {text}" if text else prefix
             return text, block
         except Exception as e:
-            log.error("Failed to read image %s: %s", att.local_path, e)
+            log.error("Failed to read image %s: %s", att.local_path, e, exc_info=True)
             return _append(text, f"[{too_large_msg} — could not read file]"), None
 
     async def _process_audio(self, text, att):
@@ -679,7 +679,7 @@ class LucydDaemon:
                     text_extensions=self.config.documents_text_extensions,
                 )
             except Exception as e:
-                log.error("Document extraction failed for %s: %s", _log_safe(att.filename), e)
+                log.error("Document extraction failed for %s: %s", _log_safe(att.filename), e, exc_info=True)
         if doc_text:
             label = att.filename or "document"
             return _append(text, f"[document: {label}, saved: {att.local_path}]\n{doc_text}")
@@ -919,7 +919,7 @@ class LucydDaemon:
             try:
                 await self.channel.send(ctx.sender, self.config.error_message)
             except Exception as e:
-                log.error("Failed to deliver error message to %s: %s", _log_safe(ctx.sender), e)
+                log.error("Failed to deliver error message to %s: %s", _log_safe(ctx.sender), e, exc_info=True)
         # Auto-close system sessions even on error — but only if the
         # session was created by this event (not a pre-existing session).
         if ctx.source == "system" and not ctx.session_preexisted:
@@ -979,7 +979,7 @@ class LucydDaemon:
                     for att_path in reply_attachments:
                         await self.channel.send(ctx.sender, "", [att_path])
                 except Exception as e:
-                    log.error("Failed to deliver reply: %s", e)
+                    log.error("Failed to deliver reply: %s", e, exc_info=True)
 
     def _check_compaction_warning(self, ctx: _MessageState) -> None:
         """Inject context-pressure warning at 80% threshold."""
@@ -1702,7 +1702,7 @@ class LucydDaemon:
         except asyncio.CancelledError:
             return
         except Exception as e:
-            log.error("Channel reader failed: %s", e)
+            log.error("Channel reader failed: %s", e, exc_info=True)
         # Channel exhausted (e.g., piped stdin EOF) — signal shutdown
         # Push a sentinel so the message loop can drain and exit
         await self.queue.put(None)
@@ -1771,7 +1771,7 @@ class LucydDaemon:
                     await self.channel.connect()
                     log.info("Channel connected: %s", cfg.channel_type)
                 except Exception as e:
-                    log.error("Channel connection failed: %s — continuing without channel", e)
+                    log.error("Channel connection failed: %s — continuing without channel", e, exc_info=True)
                     self.channel = None
                 # Only start channel reader for channels that receive (not relay)
                 if self.channel is not None and hasattr(self.channel, "receive"):
