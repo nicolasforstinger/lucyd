@@ -205,7 +205,7 @@ def _is_silent(text: str, tokens: list[str]) -> bool:
     return False
 
 
-from attachments import ImageTooLarge, extract_document_text, fit_image, process_audio
+from attachments import ImageTooLarge, extract_document_text, fit_image
 
 
 class _MonitorWriter:
@@ -306,6 +306,7 @@ class LucydDaemon:
         self.provider: Any = None
         self._single_shot: bool = False
         self.session_mgr: SessionManager | None = None
+        self._preprocessors: list[dict] = []
         self.context_builder: ContextBuilder | None = None
         self.skill_loader: SkillLoader | None = None
         self.tool_registry: ToolRegistry | None = None
@@ -534,7 +535,7 @@ class LucydDaemon:
             module = importlib.import_module(module_path)
             _configure_and_register(module)
 
-        # ── Plugin tools (plugins.d/*.py) ────────────────────────────
+        # ── Plugin tools + preprocessors (plugins.d/*.py) ────────────
         plugins_path = self.config.config_dir / self.config.plugins_dir
         if plugins_path.is_dir():
             for plugin_file in sorted(plugins_path.glob("*.py")):
@@ -549,17 +550,30 @@ class LucydDaemon:
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
 
-                    tools_list = getattr(module, "TOOLS", None)
-                    if not isinstance(tools_list, list):
-                        log.debug("Plugin: %s has no TOOLS list, skipping", plugin_file.name)
+                    has_tools = isinstance(getattr(module, "TOOLS", None), list)
+                    has_preprocessors = isinstance(getattr(module, "PREPROCESSORS", None), list)
+
+                    if not has_tools and not has_preprocessors:
+                        log.debug("Plugin: %s has no TOOLS or PREPROCESSORS, skipping", plugin_file.name)
                         continue
 
                     _configure_and_register(module, source=plugin_file.name)
+
+                    # Collect preprocessors
+                    for pp in getattr(module, "PREPROCESSORS", []):
+                        name = pp.get("name", plugin_file.stem)
+                        fn = pp.get("fn")
+                        if callable(fn):
+                            self._preprocessors.append({"name": name, "fn": fn})
+                            log.info("Plugin preprocessor registered: %s (from %s)", name, plugin_file.name)
 
                 except Exception:
                     log.exception("Plugin: failed to load %s", plugin_file.name)
 
         log.info("Registered tools: %s", ", ".join(self.tool_registry.tool_names))
+        if self._preprocessors:
+            log.info("Registered preprocessors: %s",
+                     ", ".join(pp["name"] for pp in self._preprocessors))
 
     def _get_memory_conn(self):
         """Get or create the memory DB connection.
@@ -607,11 +621,29 @@ class LucydDaemon:
 
 
 
+    async def _run_preprocessors(self, text: str, attachments: list | None) -> tuple[str, list | None]:
+        """Run registered preprocessors on inbound message.
+
+        Each preprocessor receives (text, attachments, config) and returns
+        (text, attachments). Preprocessors run in registration order.
+        A preprocessor claims attachments it handles and passes the rest through.
+        """
+        if not self._preprocessors or not attachments:
+            return text, attachments
+        for pp in self._preprocessors:
+            try:
+                text, attachments = await pp["fn"](text, attachments, self.config)
+            except Exception:
+                log.exception("Preprocessor %s failed", pp["name"])
+            if not attachments:
+                break
+        return text, attachments or None
+
     async def _process_attachments(self, text, attachments, provider):
         """Process attachments into text descriptions + image blocks.
 
         Returns (text, image_blocks).
-        Dispatches each attachment to _process_image, _process_audio, or _process_document.
+        Audio is handled by the STT preprocessor plugin before this runs.
         """
         image_blocks = []
         if attachments:
@@ -621,8 +653,6 @@ class LucydDaemon:
                     text, block = self._process_image(text, att, supports_vision)
                     if block:
                         image_blocks.append(block)
-                elif att.content_type.startswith("audio/"):
-                    text = await self._process_audio(text, att)
                 else:
                     text = self._process_document(text, att)
         return text, image_blocks
@@ -653,15 +683,6 @@ class LucydDaemon:
         except Exception as e:
             log.error("Failed to read image %s: %s", att.local_path, e, exc_info=True)
             return _append(text, f"[{too_large_msg} — could not read file]"), None
-
-    async def _process_audio(self, text, att):
-        """Process a single audio attachment via STT. Returns updated text."""
-        result = await process_audio(
-            self.config.raw("stt", default={}),
-            att.local_path, att.content_type,
-            att.is_voice, self.config.stt_backend,
-        )
-        return _append(text, result)
 
     def _process_document(self, text, att):
         """Process a single document/file attachment. Returns updated text."""
@@ -1082,7 +1103,10 @@ class LucydDaemon:
 
         model_cfg = self.config.model_config("primary")
 
-        # Process attachments into text descriptions + image blocks
+        # Run preprocessors (STT, etc.) before core attachment handling
+        text, attachments = await self._run_preprocessors(text, attachments)
+
+        # Process remaining attachments into text descriptions + image blocks
         text, image_blocks = await self._process_attachments(
             text, attachments, provider,
         )

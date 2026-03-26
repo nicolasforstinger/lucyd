@@ -101,22 +101,3 @@ def extract_document_text(path: str, content_type: str, filename: str,
         return "\n".join(parts) or None
 
     return None
-
-
-async def process_audio(stt_config: dict, local_path: str,
-                        content_type: str, is_voice: bool,
-                        stt_backend: str) -> str:
-    """Transcribe audio via STT. Returns descriptive text with transcription."""
-    if is_voice:
-        label = "voice message"
-        fail_label = "voice message — transcription failed"
-    else:
-        label = "audio transcription"
-        fail_label = "audio transcription — failed"
-    try:
-        import stt as stt_mod
-        transcription = await stt_mod.transcribe(stt_config, local_path, content_type)
-        return f"[{label}, saved: {local_path}]: {transcription}"
-    except Exception as e:
-        log.error("STT transcription failed (%s): %s", stt_backend, e, exc_info=True)
-        return f"[{fail_label}]"
