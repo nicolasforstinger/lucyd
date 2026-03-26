@@ -17,37 +17,49 @@ flowchart TD
         CTL["lucydctl / scripts"]
     end
 
-    HTTP["HTTP API — api.py"]
+    HTTP["HTTP API — api.py<br/>extract envelope: channel_id, task_type, reply_to"]
     Q["asyncio.Queue"]
 
     subgraph Loop["_message_loop — lucyd.py"]
         TYPE{"Message type?"}
-        DEB["Debounce 500ms"]
+        DEB["Debounce per sender"]
         RESET["_reset_session"]
         COMPACT["_handle_compact"]
     end
 
     subgraph Process["_process_message"]
+        PREPROC["_run_preprocessors 📊"]
         ATTACH["_process_attachments"]
-        SETUP["_setup_session"]
-        BUILD["_build_context"]
-        RUN["_run_agentic_with_retries"]
+        SETUP["_setup_session<br/>key = channel_id:sender"]
+        BUILD["_build_context 📊"]
+        RUN["_run_agentic_with_retries 📊"]
     end
 
     subgraph Finalize["_finalize_response"]
         PERSIST["Persist to JSONL + state"]
-        DELIVER["Resolve HTTP response future"]
-        POST_HOOKS["Compaction check → auto-close"]
+        DELIVER{"_deliver_reply<br/>reply_to?"}
+        DEFAULT["Resolve HTTP future"]
+        SILENT["Log only (silent: true)"]
+        REDIRECT["Resolve future +<br/>enqueue to target session"]
+        POST_HOOKS["Compaction check → auto-close 📊"]
     end
+
+    METRICS["📊 Prometheus metrics recorded"]
 
     Sources --> HTTP --> Q --> TYPE
     TYPE -->|"user / http / system"| DEB
     TYPE -->|reset| RESET
     TYPE -->|compact| COMPACT
 
-    DEB --> ATTACH --> SETUP --> BUILD --> RUN
-    RUN --> PERSIST --> DELIVER --> POST_HOOKS
+    DEB --> PREPROC --> ATTACH --> SETUP --> BUILD --> RUN
+    RUN --> PERSIST --> DELIVER
+    DELIVER -->|"empty (default)"| DEFAULT --> POST_HOOKS
+    DELIVER -->|"'silent'"| SILENT --> POST_HOOKS
+    DELIVER -->|"sender name"| REDIRECT --> POST_HOOKS
+    POST_HOOKS -.-> METRICS
 ```
+
+📊 = Prometheus metric observation point: preprocessor duration/count, context utilization, API latency/tokens/cost, message duration/count, session close, agentic turns.
 
 ---
 
@@ -107,7 +119,7 @@ flowchart LR
     end
 
     subgraph Dynamic["Dynamic Tier (never cached)"]
-        RUNTIME["Date, sender, source framing"]
+        RUNTIME["Date, sender, task-type framing"]
         RECALL["Memory recall blocks"]
         LIMITS["Limits + warnings"]
     end
@@ -246,8 +258,8 @@ flowchart TD
     subgraph Startup["Registration — _init_tools"]
         CONFIG["[tools] enabled list"]
         MODULES["10 built-in modules + plugins.d/"]
-        CONFIGURE["Per-module configure()<br/>inject config, channel, DB connections"]
-        REG["ToolRegistry.register_many()"]
+        CONFIGURE["Per-module configure()<br/>inject config, provider, DB connections"]
+        REG["ToolRegistry + preprocessors"]
         CONFIG --> MODULES --> CONFIGURE --> REG
     end
 
@@ -358,23 +370,20 @@ Initialization order in `LucydDaemon.run()`.
 flowchart TD
     MAIN["main() → load_config → LucydDaemon"]
 
-    subgraph Init["Initialization"]
+    subgraph Init["Initialization (in order)"]
         LOG["Logging"]
         PROVIDER["Provider"]
-        HTTP["HTTP API"]
         SESSION["SessionManager"]
-        TOOLS["ToolRegistry + plugins"]
-        MEMORY["Memory DB + schema"]
-        CONTEXT["ContextBuilder"]
         SKILLS["SkillLoader"]
+        CONTEXT["ContextBuilder"]
         METER["MeteringDB"]
+        TOOLS["ToolRegistry + plugins + preprocessors"]
     end
 
-    BUDGET["Check context budget"]
     PID["Acquire PID file"]
     SIGNALS["Install signal handlers"]
-    RUN["Start _message_loop + HTTP API"]
+    RUN["Start HTTP API + _message_loop"]
 
     MAIN --> Init
-    Init --> BUDGET --> PID --> SIGNALS --> RUN
+    Init --> PID --> SIGNALS --> RUN
 ```
