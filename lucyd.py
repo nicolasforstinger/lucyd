@@ -1859,11 +1859,6 @@ class LucydDaemon:
             self._init_metering()
             self._init_tools()
 
-            # Validate external binary dependencies
-            if self.config.stt_backend == "local":
-                from stt import validate_ffmpeg
-                validate_ffmpeg()
-
             # Sweep expired media downloads
             self._sweep_expired_media()
 
