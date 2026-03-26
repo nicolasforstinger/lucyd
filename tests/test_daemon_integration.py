@@ -29,6 +29,25 @@ class _U:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
 
+def _mock_response(**overrides):
+    """Build a mock LLMResponse with real field types (no MagicMock leaks)."""
+    usage = MagicMock()
+    usage.input_tokens = overrides.pop("input_tokens", 1000)
+    usage.output_tokens = overrides.pop("output_tokens", 50)
+    usage.cache_read_tokens = overrides.pop("cache_read_tokens", 0)
+    resp = MagicMock()
+    resp.text = overrides.pop("text", "ok")
+    resp.usage = usage
+    resp.turns = overrides.pop("turns", 1)
+    resp.attachments = overrides.pop("attachments", [])
+    resp.cost_limited = overrides.pop("cost_limited", False)
+    resp.stop_reason = overrides.pop("stop_reason", "end_turn")
+    resp.tool_calls = overrides.pop("tool_calls", [])
+    for k, v in overrides.items():
+        setattr(resp, k, v)
+    return resp
+
+
 # ─── Helpers ──────────────────────────────────────────────────────
 
 
@@ -365,6 +384,9 @@ class TestResolveIntegration:
         provider.format_system = MagicMock(return_value=[])
         provider.format_messages = MagicMock(return_value=[])
         provider.format_tools = MagicMock(return_value=[])
+        provider.capabilities.max_context_tokens = 200000
+        provider.capabilities.supports_tools = True
+        provider.capabilities.supports_streaming = False
 
         daemon.provider = provider
         daemon._providers = {"primary": provider}
@@ -448,12 +470,7 @@ class TestResolveIntegration:
         future = loop.create_future()
 
         # Mock the agentic loop to return a silent reply
-        usage = MagicMock()
-        usage.input_tokens = 1000
-        usage.output_tokens = 50
-        response = MagicMock()
-        response.text = "HEARTBEAT_OK"
-        response.usage = usage
+        response = _mock_response(text="HEARTBEAT_OK")
 
         with patch("lucyd.run_agentic_loop", return_value=response):
             await daemon._process_message(
@@ -491,12 +508,7 @@ class TestResolveIntegration:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        usage = MagicMock()
-        usage.input_tokens = 5000
-        usage.output_tokens = 200
-        response = MagicMock()
-        response.text = "Here is my answer."
-        response.usage = usage
+        response = _mock_response(text="Here is my answer.", input_tokens=5000, output_tokens=200)
 
         with patch("lucyd.run_agentic_loop", return_value=response):
             await daemon._process_message(
@@ -527,6 +539,9 @@ class TestContextBuilderSourcePassthrough:
 
         provider = MagicMock()
         provider.format_system = MagicMock(return_value=[])
+        provider.capabilities.max_context_tokens = 200000
+        provider.capabilities.supports_tools = True
+        provider.capabilities.supports_streaming = False
         daemon.provider = provider
         daemon._providers = {"primary": provider}
 
@@ -568,12 +583,7 @@ class TestContextBuilderSourcePassthrough:
         daemon.config.always_on_skills = []
         daemon.config.raw = MagicMock(return_value=0.0)
 
-        usage = MagicMock()
-        usage.input_tokens = 100
-        usage.output_tokens = 50
-        resp = MagicMock()
-        resp.text = "ok"
-        resp.usage = usage
+        resp = _mock_response(text="ok", input_tokens=100, output_tokens=50)
 
         return daemon, resp
 
@@ -715,6 +725,9 @@ class TestProcessMessageIntegration:
         provider.format_system = MagicMock(return_value=[])
         provider.format_messages = MagicMock(return_value=[])
         provider.format_tools = MagicMock(return_value=[])
+        provider.capabilities.max_context_tokens = 200000
+        provider.capabilities.supports_tools = True
+        provider.capabilities.supports_streaming = False
         daemon.provider = provider
         daemon._providers = {"primary": provider}
 
@@ -790,12 +803,7 @@ class TestProcessMessageIntegration:
         """Normal text message flows through and updates the session."""
         daemon, provider, session = full_daemon
 
-        usage = MagicMock()
-        usage.input_tokens = 3000
-        usage.output_tokens = 150
-        response = MagicMock()
-        response.text = "Here is the answer to your question."
-        response.usage = usage
+        response = _mock_response(text="Here is the answer to your question.")
 
         with patch("lucyd.run_agentic_loop", return_value=response):
             await daemon._process_message(
@@ -826,13 +834,7 @@ class TestProcessMessageIntegration:
             ]})
             msgs.append({"role": "assistant", "content": "Here is the result."})
 
-            usage = MagicMock()
-            usage.input_tokens = 4000
-            usage.output_tokens = 300
-            resp = MagicMock()
-            resp.text = "Here is the result."
-            resp.usage = usage
-            return resp
+            return _mock_response(text="Here is the result.", input_tokens=4000, output_tokens=300)
 
         with patch("lucyd.run_agentic_loop", side_effect=mock_agentic_loop):
             await daemon._process_message(
@@ -916,12 +918,7 @@ class TestProcessMessageIntegration:
             size=img_path.stat().st_size,
         )
 
-        usage = MagicMock()
-        usage.input_tokens = 2000
-        usage.output_tokens = 100
-        response = MagicMock()
-        response.text = "I see an image."
-        response.usage = usage
+        response = _mock_response(text="I see an image.")
 
         # Make add_user_message actually append a message to session.messages
         # so that session.messages[user_msg_idx] works for image block injection
@@ -950,12 +947,7 @@ class TestProcessMessageIntegration:
         # Set very low limit — PNG can't quality-reduce
         daemon.config.vision_max_image_bytes = 100
 
-        usage = MagicMock()
-        usage.input_tokens = 2000
-        usage.output_tokens = 100
-        response = MagicMock()
-        response.text = "ok"
-        response.usage = usage
+        response = _mock_response(text="ok")
 
         def fake_add_user(text, **kwargs):
             session.messages.append({"role": "user", "content": text})
@@ -985,12 +977,7 @@ class TestProcessMessageIntegration:
         """Image file that can't be read injects fallback instead of silent drop."""
         daemon, provider, session = full_daemon
 
-        usage = MagicMock()
-        usage.input_tokens = 2000
-        usage.output_tokens = 100
-        response = MagicMock()
-        response.text = "ok"
-        response.usage = usage
+        response = _mock_response(text="ok")
 
         def fake_add_user(text, **kwargs):
             session.messages.append({"role": "user", "content": text})
@@ -1020,12 +1007,7 @@ class TestProcessMessageIntegration:
         session.needs_compaction = MagicMock(return_value=True)
         session.last_input_tokens = 160000  # Above threshold
 
-        usage = MagicMock()
-        usage.input_tokens = 160000
-        usage.output_tokens = 500
-        response = MagicMock()
-        response.text = "Done."
-        response.usage = usage
+        response = _mock_response(text="Done.")
 
         with patch("lucyd.run_agentic_loop", return_value=response):
             await daemon._process_message(
@@ -1058,6 +1040,9 @@ class TestMessageLoopDebounce:
         # Mock everything _process_message needs
         provider = MagicMock()
         provider.format_system = MagicMock(return_value=[])
+        provider.capabilities.max_context_tokens = 200000
+        provider.capabilities.supports_tools = True
+        provider.capabilities.supports_streaming = False
         daemon.provider = provider
         daemon._providers = {"primary": provider}
 
@@ -1132,12 +1117,7 @@ class TestMessageLoopDebounce:
         """
         daemon, session = loop_daemon
 
-        usage = MagicMock()
-        usage.input_tokens = 100
-        usage.output_tokens = 50
-        response = MagicMock()
-        response.text = "ok"
-        response.usage = usage
+        response = _mock_response(text="ok")
 
         msg1 = {"text": "Hello", "sender": "+431234567890", "type": "user"}
         msg2 = {"text": "How are you?", "sender": "+431234567890", "type": "user"}
@@ -1205,12 +1185,7 @@ class TestMessageLoopDebounce:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        usage = MagicMock()
-        usage.input_tokens = 100
-        usage.output_tokens = 50
-        response = MagicMock()
-        response.text = "http reply"
-        response.usage = usage
+        response = _mock_response(text="http reply")
 
         http_item = {
             "sender": "http-client",
@@ -1254,9 +1229,7 @@ class TestMessageLoopDebounce:
         msg2 = {"text": "B", "sender": "user1", "type": "user"}
         await daemon.queue.put(msg1)
 
-        response = MagicMock()
-        response.text = "ok"
-        response.usage = MagicMock(input_tokens=100, output_tokens=50)
+        response = _mock_response(text="ok", input_tokens=100, output_tokens=50)
 
         sleep_calls = []
         original_sleep = asyncio.sleep
@@ -1288,9 +1261,7 @@ class TestMessageLoopDebounce:
         await daemon.queue.put(msg2)
         await daemon.queue.put(None)
 
-        response = MagicMock()
-        response.text = "ok"
-        response.usage = MagicMock(input_tokens=100, output_tokens=50)
+        response = _mock_response(text="ok", input_tokens=100, output_tokens=50)
 
         with patch("lucyd.run_agentic_loop", return_value=response):
             await daemon._message_loop()
@@ -1311,9 +1282,7 @@ class TestMessageLoopDebounce:
         await daemon.queue.put(queue_item)
         await daemon.queue.put(None)
 
-        response = MagicMock()
-        response.text = "ok"
-        response.usage = MagicMock(input_tokens=100, output_tokens=50)
+        response = _mock_response(text="ok", input_tokens=100, output_tokens=50)
 
         with patch("lucyd.run_agentic_loop", return_value=response):
             await daemon._message_loop()

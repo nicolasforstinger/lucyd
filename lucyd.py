@@ -807,8 +807,6 @@ class LucydDaemon:
         # Runtime context budget report
         try:
             max_ctx = provider.capabilities.max_context_tokens
-            if not isinstance(max_ctx, int):
-                max_ctx = 0
         except (AttributeError, TypeError):
             max_ctx = 0
         if max_ctx > 0:
@@ -828,7 +826,7 @@ class LucydDaemon:
                 ctx.trace_id[:8], max_ctx, sys_tokens, history_tokens,
                 len(session.messages), tool_def_tokens, used, remaining,
             )
-            if metrics.ENABLED and isinstance(used, (int, float)):
+            if metrics.ENABLED:
                 metrics.CONTEXT_UTILIZATION.labels(
                     channel_id=ctx.channel_id, task_type=ctx.task_type,
                     session_id=session.id if session else "",
@@ -1051,8 +1049,6 @@ class LucydDaemon:
         ):
             try:
                 max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
-                if not isinstance(max_ctx, int):
-                    max_ctx = 0
             except (AttributeError, TypeError):
                 max_ctx = 0
             pct = session.last_input_tokens * 100 // max_ctx if max_ctx > 0 else 0
@@ -1116,7 +1112,7 @@ class LucydDaemon:
             tool_result_max_chars=2000,
             max_tokens=self.config.compaction_max_tokens,
         )
-        if metrics.ENABLED and isinstance(_pre_tokens, int):
+        if metrics.ENABLED:
             metrics.COMPACTION_TOTAL.inc()
             reclaimed = max(0, _pre_tokens - (session.last_input_tokens or 0))
             if reclaimed > 0:
@@ -1283,29 +1279,26 @@ class LucydDaemon:
 
         # ── Prometheus metrics ────────────────────────────────────────
         if metrics.ENABLED:
-            try:
-                _sid = ctx.session.id if ctx.session else ""
-                _labels = {
-                    "channel_id": ctx.channel_id, "task_type": ctx.task_type,
-                    "session_id": _sid, "sender": ctx.sender,
-                }
-                metrics.MESSAGES_TOTAL.labels(**_labels).inc()
-                metrics.MESSAGE_DURATION.labels(**_labels).observe(time.time() - _msg_start)
-                if ctx.response:
-                    turns = getattr(ctx.response, "turns", 0)
-                    if isinstance(turns, int) and turns > 0:
-                        metrics.AGENTIC_TURNS.labels(**_labels).observe(turns)
-                    u = getattr(ctx.response, "usage", None)
-                    if u and isinstance(getattr(u, "input_tokens", None), int):
-                        _cost = 0.0
-                        if ctx.cost_rates and len(ctx.cost_rates) >= 2:
-                            _cost = (u.input_tokens * ctx.cost_rates[0]
-                                     + u.output_tokens * ctx.cost_rates[1]) / 1_000_000
-                            if len(ctx.cost_rates) >= 3:
-                                _cost += u.cache_read_tokens * ctx.cost_rates[2] / 1_000_000
-                        metrics.MESSAGE_COST.labels(**_labels).observe(_cost)
-            except Exception:
-                log.debug("Metrics recording failed", exc_info=True)
+            _sid = ctx.session.id if ctx.session else ""
+            _labels = {
+                "channel_id": ctx.channel_id, "task_type": ctx.task_type,
+                "session_id": _sid, "sender": ctx.sender,
+            }
+            metrics.MESSAGES_TOTAL.labels(**_labels).inc()
+            metrics.MESSAGE_DURATION.labels(**_labels).observe(time.time() - _msg_start)
+            if ctx.response:
+                turns = ctx.response.turns
+                if turns > 0:
+                    metrics.AGENTIC_TURNS.labels(**_labels).observe(turns)
+                u = ctx.response.usage
+                if u:
+                    _cost = 0.0
+                    if ctx.cost_rates and len(ctx.cost_rates) >= 2:
+                        _cost = (u.input_tokens * ctx.cost_rates[0]
+                                 + u.output_tokens * ctx.cost_rates[1]) / 1_000_000
+                        if len(ctx.cost_rates) >= 3:
+                            _cost += u.cache_read_tokens * ctx.cost_rates[2] / 1_000_000
+                    metrics.MESSAGE_COST.labels(**_labels).observe(_cost)
 
     async def _consolidate_on_close(self, session) -> None:
         """Consolidation callback fired before session archival."""

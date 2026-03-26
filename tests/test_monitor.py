@@ -118,6 +118,9 @@ def _make_daemon_for_monitor(tmp_path):
     provider.format_system = MagicMock(return_value=[])
     provider.format_messages = MagicMock(return_value=[])
     provider.format_tools = MagicMock(return_value=[])
+    provider.capabilities.max_context_tokens = 200000
+    provider.capabilities.supports_tools = True
+    provider.capabilities.supports_streaming = False
     daemon.provider = provider
     daemon._providers = {"primary": provider}
 
@@ -186,6 +189,9 @@ def _make_response(text="ok", stop_reason="end_turn", tool_calls=None,
     response.stop_reason = stop_reason
     response.tool_calls = tool_calls or []
     response.usage = usage
+    response.turns = 1
+    response.attachments = []
+    response.cost_limited = False
     return response
 
 
