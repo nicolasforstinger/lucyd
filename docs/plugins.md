@@ -179,6 +179,7 @@ All envelope fields are optional. Missing fields get safe defaults.
 | `sender` | string | `"default"` | Sender identifier (prefixed with `http-` by the API) |
 | `channel_id` | string | `"http"` | Channel identifier. Used in session keying and metrics. |
 | `task_type` | string | `"conversational"` | `"conversational"` (session stays open), `"task"` (auto-close after response), `"system"` (auto-close, internal) |
+| `reply_to` | string | — | Response routing: omit for normal reply, `"silent"` to suppress delivery, or a sender name to redirect the reply into that sender's session |
 | `attachments` | list | `[]` | Base64-encoded file attachments |
 | `context` | string | — | Freeform label prepended as `[context]` |
 

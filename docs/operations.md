@@ -256,6 +256,7 @@ Synchronous — sends a message and waits for the agent to respond.
 | `sender` | no | `"default"` | Session key (each unique sender gets its own session, prefixed with `http-`) |
 | `channel_id` | no | `"http"` | Channel identifier. Used in session keying (`channel_id:sender`) and metrics labels |
 | `task_type` | no | `"conversational"` | `"conversational"` (session stays open), `"task"` (auto-close after response), `"system"` (auto-close, internal automation) |
+| `reply_to` | no | — | Response routing: omit for normal reply, `"silent"` to suppress delivery (log only), or a sender name to redirect the reply into that sender's session as a system message |
 | `context` | no | — | Freeform label prepended as `[context]` (for debugging) |
 | `attachments` | no | — | List of base64-encoded file attachments |
 

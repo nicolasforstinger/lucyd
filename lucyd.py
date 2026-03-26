@@ -278,6 +278,7 @@ class _MessageState:
     trace_id: str
     channel_id: str = "http"          # Envelope: which channel sent this
     task_type: str = "conversational"  # Envelope: session lifecycle intent
+    reply_to: str = ""                # Envelope: response routing ("" = caller, "silent", or sender name)
     session_key: str = ""             # channel_id:sender — computed in _process_message
     deliver: bool = True
     image_blocks: list = field(default_factory=list)
@@ -985,7 +986,14 @@ class LucydDaemon:
         self.session_mgr.save_state(session)
 
     async def _deliver_reply(self, ctx: _MessageState, _resolve) -> None:
-        """Resolve HTTP future with reply content."""
+        """Resolve HTTP future with reply content.
+
+        Routing via reply_to:
+        - "" (default): resolve the caller's HTTP future with the reply
+        - "silent": process and persist, but mark reply as silent (log only)
+        - "<sender>": resolve caller's future AND enqueue reply as system
+          message into <sender>'s session through the normal pipeline
+        """
         session = ctx.session
         response = ctx.response
         reply = response.text or ""
@@ -998,6 +1006,31 @@ class LucydDaemon:
             "output": response.usage.output_tokens,
         }
         reply_attachments = response.attachments or []
+
+        # Route: silent — suppress delivery
+        if ctx.reply_to == "silent":
+            log.info("[%s] reply_to=silent — reply logged, not delivered", ctx.trace_id[:8])
+            _resolve({"reply": reply, "silent": True, "session_id": session.id,
+                       "tokens": token_info, "attachments": reply_attachments})
+            return
+
+        # Route: redirect — resolve caller AND enqueue reply into target session
+        if ctx.reply_to:
+            log.info("[%s] reply_to=%s — redirecting reply", ctx.trace_id[:8], _log_safe(ctx.reply_to))
+            _resolve({"reply": reply, "session_id": session.id,
+                       "tokens": token_info, "attachments": reply_attachments,
+                       "redirected_to": ctx.reply_to})
+            if reply.strip():
+                await self.queue.put({
+                    "text": reply,
+                    "sender": ctx.reply_to,
+                    "type": "system",
+                    "channel_id": ctx.channel_id,
+                    "task_type": "system",
+                })
+            return
+
+        # Route: default — resolve HTTP future
         if silent:
             log.info("Silent reply suppressed: %s", _log_safe(reply[:100]))
             _resolve({"reply": reply, "silent": True, "session_id": session.id,
@@ -1114,6 +1147,7 @@ class LucydDaemon:
         deliver: bool = True,
         channel_id: str = "http",
         task_type: str = "conversational",
+        reply_to: str = "",
         session_key: str = "",
     ) -> None:
         """Process a single message through the agentic loop."""
@@ -1150,6 +1184,7 @@ class LucydDaemon:
             trace_id=trace_id,
             channel_id=channel_id,
             task_type=task_type,
+            reply_to=reply_to,
             session_key=session_key or f"{channel_id}:{sender}",
             deliver=deliver,
             image_blocks=image_blocks,
@@ -1649,6 +1684,7 @@ class LucydDaemon:
             deliver = first.get("deliver", True)
             channel_id = first.get("channel_id", "http")
             task_type = first.get("task_type", "conversational")
+            reply_to = first.get("reply_to", "")
             tid = str(uuid.uuid4())
             sk = f"{channel_id}:{sender}"
             log.info("[%s] Processing message from %s (source=%s channel=%s)",
@@ -1661,6 +1697,7 @@ class LucydDaemon:
                     deliver=deliver,
                     channel_id=channel_id,
                     task_type=task_type,
+                    reply_to=reply_to,
                 )
 
         async def process_http_immediate(item: dict) -> None:
@@ -1673,6 +1710,7 @@ class LucydDaemon:
             http_sender = item.get("sender", "http")
             channel_id = item.get("channel_id", "http")
             task_type = item.get("task_type", "conversational")
+            reply_to = item.get("reply_to", "")
             sk = f"{channel_id}:{http_sender}"
             log.info("[%s] Processing HTTP message from %s (channel=%s)",
                      tid[:8], _log_safe(http_sender), channel_id)
@@ -1688,6 +1726,7 @@ class LucydDaemon:
                     deliver=False,
                     channel_id=channel_id,
                     task_type=task_type,
+                    reply_to=reply_to,
                 )
 
         while self.running:
@@ -1762,6 +1801,7 @@ class LucydDaemon:
                 "text": text, "source": source, "deliver": deliver,
                 "channel_id": item.get("channel_id", "http"),
                 "task_type": item.get("task_type", "conversational"),
+                "reply_to": item.get("reply_to", ""),
                 "attachments": attachments,
             })
 

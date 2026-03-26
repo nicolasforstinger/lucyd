@@ -252,3 +252,78 @@ async def test_metrics_incremented(tmp_path):
         if s.labels.get("reason") == "auto_task"
     )
     assert close_total > 0, "SESSION_CLOSE_TOTAL{reason=auto_task} should be > 0"
+
+
+# ─── reply_to routing ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reply_to_default(tmp_path):
+    """No reply_to — normal HTTP response with reply text."""
+    daemon = await _boot_daemon(tmp_path)
+
+    result = await _send_and_process(daemon, {
+        "text": "normal request",
+        "sender": "caller",
+        "source": "http",
+        "channel_id": "test",
+    })
+
+    assert "Acknowledged" in result.get("reply", "")
+    assert "redirected_to" not in result
+    assert result.get("silent") is not True
+
+
+@pytest.mark.asyncio
+async def test_reply_to_silent(tmp_path):
+    """reply_to='silent' — reply marked silent, not delivered."""
+    daemon = await _boot_daemon(tmp_path)
+
+    result = await _send_and_process(daemon, {
+        "text": "silent request",
+        "sender": "caller",
+        "source": "http",
+        "channel_id": "test",
+        "reply_to": "silent",
+    })
+
+    assert "Acknowledged" in result.get("reply", "")
+    assert result.get("silent") is True
+
+
+@pytest.mark.asyncio
+async def test_reply_to_redirect(tmp_path):
+    """reply_to='<sender>' — reply enqueued as system message into target session."""
+    daemon = await _boot_daemon(tmp_path)
+
+    # First, create the target's session so we can verify the redirect lands
+    await _send_and_process(daemon, {
+        "text": "setup target session",
+        "sender": "target-user",
+        "source": "http",
+        "channel_id": "test",
+        "task_type": "conversational",
+    })
+    assert "test:target-user" in daemon.session_mgr.list_contacts()
+
+    # Now send a message with reply_to pointing to the target
+    result = await _send_and_process(daemon, {
+        "text": "generate a reply for someone else",
+        "sender": "caller",
+        "source": "http",
+        "channel_id": "test",
+        "reply_to": "target-user",
+    })
+
+    # Caller gets the reply with redirect metadata
+    assert "Acknowledged" in result.get("reply", "")
+    assert result.get("redirected_to") == "target-user"
+
+    # The redirect enqueued a system message — drain it
+    # The queue should have the redirected message
+    assert not daemon.queue.empty(), "Redirect should have enqueued a system message"
+    redirected_item = daemon.queue.get_nowait()
+    assert redirected_item["sender"] == "target-user"
+    assert redirected_item["type"] == "system"
+    assert redirected_item["task_type"] == "system"
+    assert "Acknowledged" in redirected_item["text"]
