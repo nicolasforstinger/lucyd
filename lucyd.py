@@ -1466,7 +1466,7 @@ class LucydDaemon:
                     if not has_new:
                         return {"status": "skipped", "reason": f"no new daily logs since {since_date or 'ever'}"}
             except Exception:
-                log.warning("Evolution pre-check failed, proceeding anyway")
+                log.warning("Evolution pre-check failed, proceeding anyway", exc_info=True)
 
         msg = {
             "type": "system",

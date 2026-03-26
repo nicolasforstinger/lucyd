@@ -431,7 +431,7 @@ async def handle_stream(request: web.Request) -> web.Response:
                 "edit_count": 0,
             }
         except Exception:
-            pass
+            log.warning("Stream: initial sendMessage failed for %s", chat_id, exc_info=True)
     elif text and state is not None:
         state["text"] += text
         state["edit_count"] += 1
@@ -442,7 +442,7 @@ async def handle_stream(request: web.Request) -> web.Response:
                     await tg_api("editMessageText", chat_id=chat_id,
                                  message_id=msg_id, text=state["text"][:4096])
                 except Exception:
-                    pass
+                    log.warning("Stream: editMessageText failed for %s", chat_id, exc_info=True)
 
     if done:
         if state and state.get("message_id"):
@@ -450,7 +450,7 @@ async def handle_stream(request: web.Request) -> web.Response:
                 await tg_api("editMessageText", chat_id=chat_id,
                              message_id=state["message_id"], text=state["text"][:4096])
             except Exception:
-                pass
+                log.warning("Stream: final editMessageText failed for %s", chat_id, exc_info=True)
         _stream_state.pop(chat_id, None)
 
     return web.json_response({"ok": True})
