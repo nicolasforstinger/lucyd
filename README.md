@@ -62,7 +62,7 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 
 ## Project Structure
 
-Top-level modules: `lucyd.py` (daemon), `api.py` (HTTP API), `relay.py` (outbound proxy), `models.py` (shared types), `agentic.py` (tool-use loop), `config.py`, `context.py` (system prompt builder), `session.py`, `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `evolution.py`, `metering.py`, `attachments.py`, `monitor.py`, `stt.py`, `log_utils.py`, `async_utils.py`. Subdirectories: `channels/` (standalone bridges: Telegram, CLI, email), `providers/` (Anthropic, OpenAI-compatible, smoke-test), `tools/` (14 agent tools), `plugins.d/` (custom tool plugins), `bin/` (`lucydctl` control client), `providers.d/` (provider configs). See [architecture](docs/architecture.md#module-map) for the full module map.
+Top-level modules: `lucyd.py` (daemon), `api.py` (HTTP API), `models.py` (shared types), `agentic.py` (tool-use loop), `config.py`, `context.py` (system prompt builder), `session.py`, `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `metering.py`, `attachments.py`, `stt.py`, `log_utils.py`, `async_utils.py`. Subdirectories: `channels/` (standalone bridges: Telegram, CLI, email), `providers/` (Anthropic, OpenAI-compatible, smoke-test), `tools/` (14 agent tools), `plugins.d/` (custom tool plugins), `bin/` (`lucydctl` control client), `providers.d/` (provider configs). See [architecture](docs/architecture.md#module-map) for the full module map.
 
 ## Configuration
 

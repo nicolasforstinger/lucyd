@@ -4,7 +4,7 @@ How Lucyd fits together. Read this when you need to fix something, add a feature
 
 ## Overview
 
-HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone processes that POST messages to the daemon and deliver replies. The daemon processes messages through an LLM with tool access and returns responses via HTTP. Outbound delivery (typing indicators, streaming, reply text + attachments) flows through `RelayChannel` back to the bridge.
+HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone HTTP clients that POST messages to the daemon and receive replies in the HTTP response. The daemon processes messages through an LLM with tool access. SSE streaming is available via `/chat/stream`. There is no outbound push — the framework does not send replies to channels.
 
 ## Module Map
 
@@ -16,7 +16,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone p
 | `config.py` | TOML config loader with env overrides. Typed access, immutable after load. |
 | `context.py` | System prompt builder. Cache tiers (stable/semi-stable/dynamic). Token counting. |
 | `session.py` | Session manager. Dual storage: JSONL audit trail + atomic state snapshots. Compaction. |
-| `relay.py` | Outbound proxy. `RelayChannel` forwards send/typing/stream to bridge via HTTP. |
+| ~~`relay.py`~~ | Removed. Outbound push eliminated — replies return via HTTP response. |
 | `memory.py` | Long-term memory. FTS5 keyword search + vector similarity. Structured recall (facts, episodes, commitments). |
 | `memory_schema.py` | SQLite schema for 11 memory tables. Safe to call on every startup. |
 | `consolidation.py` | Structured data extraction from sessions via LLM. Facts, episodes, commitments, aliases. |
@@ -72,12 +72,9 @@ _process_message
         ↓
 _finalize_response
   ├── persist session (JSONL + state)
-  ├── deliver reply + attachments via relay → bridge
   └── check compaction threshold
         ↓
 HTTP response {"reply": "...", "attachments": ["/path/to/file"]}
-  ↓
-Bridge delivers text + files to user
 ```
 
 ## Daemon State Architecture
@@ -86,7 +83,7 @@ Bridge delivers text + files to user
 
 ### Hub-and-Spoke Model
 
-The daemon is a coordinator with hub-and-spoke state topology. `_process_message` is the hub — it orchestrates a pipeline that touches all subsystems sequentially. The spokes are 6 attribute clusters with minimal cross-talk:
+The daemon is a coordinator with hub-and-spoke state topology. `_process_message` is the hub — it orchestrates a pipeline that touches all subsystems sequentially. The spokes are 5 attribute clusters with minimal cross-talk:
 
 ```
                      config (universal — 33 of 46 methods read it)
@@ -99,19 +96,17 @@ The daemon is a coordinator with hub-and-spoke state topology. `_process_message
   _single_shot        _control_queue        start_time
                       _session_locks
                            │
-                  ┌────────┴────────┐
-                  │                 │
-            [Channel I/O]    _process_message ─── hub
-              channel               │
-                       ┌────────────┼────────────┐
-                       │            │            │
-                  [Sessions]   [Memory]     [Context]
-                  session_mgr  _memory_conn  context_builder
-                  _current_    metering_db   skill_loader
-                  session                    tool_registry
+                    _process_message ─── hub
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+         [Sessions]   [Memory]     [Context]
+         session_mgr  _memory_conn  context_builder
+         _current_    metering_db   skill_loader
+         session                    tool_registry
 ```
 
-### The 6 Clusters
+### The 5 Clusters
 
 **Provider** (3 attrs, 3 methods: `_init_provider`, `_create_provider_for`, `get_provider`)
 - `provider`, `_providers`, `_single_shot`
@@ -126,10 +121,6 @@ The daemon is a coordinator with hub-and-spoke state topology. `_process_message
 - `_memory_conn`, `metering_db`
 - These co-occur in 4 methods (`_run_compaction_if_needed`, `_consolidate_on_close`, `_handle_consolidate`, `_handle_maintain`). All deal with SQLite, facts, indexing, or maintenance.
 - `metering_db` also appears in Sessions cluster methods for cost display — this is the main cross-talk point.
-
-**Channel I/O** (1 attr, 5 reader methods)
-- `channel`
-- `_deliver_reply`, `_handle_agentic_error`, `_process_message`, `_init_tools`.
 
 **Diagnostics** (3 attrs, 3 methods)
 - `_monitor_state`, `_error_counts`, `start_time`
