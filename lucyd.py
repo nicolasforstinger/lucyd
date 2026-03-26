@@ -652,7 +652,7 @@ class LucydDaemon:
         """Process attachments into text descriptions + image blocks.
 
         Returns (text, image_blocks).
-        Audio is handled by the STT preprocessor plugin before this runs.
+        Audio is handled by preprocessor plugins before this runs.
         """
         image_blocks = []
         if attachments:
@@ -1168,7 +1168,7 @@ class LucydDaemon:
 
         model_cfg = self.config.model_config("primary")
 
-        # Run preprocessors (STT, etc.) before core attachment handling
+        # Run preprocessors before core attachment handling
         text, attachments = await self._run_preprocessors(text, attachments)
 
         # Process remaining attachments into text descriptions + image blocks

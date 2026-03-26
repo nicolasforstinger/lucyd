@@ -1,4 +1,4 @@
-"""Attachment processing — image fitting, document text extraction, audio STT.
+"""Attachment processing — image fitting, document text extraction.
 
 Pure functions that take config values as parameters and return results.
 No daemon state access.

@@ -226,7 +226,7 @@ TOOLS = [
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tool names to make available (default: all except sessions_spawn, tts, react)",
+                    "description": "Tool names to make available (default: all except sessions_spawn and subagent_deny list)",
                 },
                 "timeout": {"type": "number", "description": "Timeout per API call in seconds (default: same as parent agent)"},
             },

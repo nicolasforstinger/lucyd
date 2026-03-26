@@ -181,11 +181,7 @@ class TestTodayStartTs:
 
 
 class TestSTTConfig:
-    """STT generic properties — backend-specific config read via raw()."""
-
-    def test_values_from_config(self, minimal_toml_data):
-        cfg = Config(minimal_toml_data)
-        assert cfg.stt_backend == ""
+    """STT config is plugin-owned — core only sees it via raw()."""
 
     def test_stt_raw_config(self, minimal_toml_data):
         minimal_toml_data["stt"] = {
@@ -194,8 +190,8 @@ class TestSTTConfig:
             "openai": {"model": "whisper-large-v3"},
         }
         cfg = Config(minimal_toml_data)
-        assert cfg.stt_backend == "openai"
         raw = cfg.raw("stt", default={})
+        assert raw["backend"] == "openai"
         assert raw["openai"]["model"] == "whisper-large-v3"
         assert raw["api_key_env"] == "MY_STT_KEY"
 
@@ -335,19 +331,6 @@ class TestEmbeddingConfig:
         cfg = Config(minimal_toml_data)
         assert cfg.embedding_timeout == 30
 
-
-
-class TestSttBackendDefault:
-    """STT backend default is empty (provider-agnostic)."""
-
-    def test_stt_backend_default_empty(self, minimal_toml_data):
-        cfg = Config(minimal_toml_data)
-        assert cfg.stt_backend == ""
-
-    def test_stt_backend_from_config(self, minimal_toml_data):
-        minimal_toml_data["stt"] = {"backend": "local"}
-        cfg = Config(minimal_toml_data)
-        assert cfg.stt_backend == "local"
 
 
 class TestIndexerConfig:

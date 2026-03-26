@@ -23,7 +23,7 @@ _stt_backend: str = ""
 def configure(config: Any) -> None:
     global _stt_config, _stt_backend
     _stt_config = config.raw("stt", default={})
-    _stt_backend = config.stt_backend
+    _stt_backend = _stt_config.get("backend", "")
     if _stt_backend == "local":
         validate_ffmpeg()
 

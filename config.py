@@ -132,9 +132,6 @@ _SCHEMA: dict[str, tuple] = {
     "web_search_timeout":   (("tools", "web_search", "timeout"),   int,  15),
     "web_fetch_timeout":    (("tools", "web_fetch", "timeout"),    int,  15),
 
-    # ── STT ──────────────────────────────────────────────────────
-    "stt_backend":       (("stt", "backend"),       str, ""),
-
     # ── Documents ────────────────────────────────────────────────
     "documents_enabled":        (("documents", "enabled"),        bool, False),
     "documents_max_chars":      (("documents", "max_chars"),      int,  30000),
@@ -416,12 +413,6 @@ class Config(_ConfigBase):
     def web_search_api_key(self) -> str:
         """Resolve web search API key from [tools.web_search] api_key_env."""
         key_env = _deep_get(self._data, "tools", "web_search", "api_key_env", default="")
-        return os.environ.get(key_env, "") if key_env else ""
-
-    @property
-    def tts_api_key(self) -> str:
-        """Resolve TTS API key from [tools.tts] api_key_env."""
-        key_env = _deep_get(self._data, "tools", "tts", "api_key_env", default="")
         return os.environ.get(key_env, "") if key_env else ""
 
     # ── Embedding (fallback: models.embeddings → memory section) ─

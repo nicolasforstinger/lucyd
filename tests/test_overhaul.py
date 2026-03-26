@@ -28,15 +28,6 @@ class TestConfigSchemaMinimal:
         cfg = Config(data)
         assert cfg.agent_name == "Test"
 
-    def test_stt_backend_defaults_to_empty(self):
-        data = {
-            "agent": {"name": "Test", "workspace": "/tmp/ws"},
-
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-        }
-        cfg = Config(data)
-        assert cfg.stt_backend == ""
-
     def test_documents_enabled_defaults_to_false(self):
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
