@@ -6,6 +6,8 @@ Delegates to the same SQLite DB used by consolidation and recall.
 
 from __future__ import annotations
 
+import metrics
+
 import logging
 import sqlite3
 
@@ -52,6 +54,8 @@ def handle_memory_write(entity: str, attribute: str, value: str) -> str:
 
     if result == "unchanged":
         return f"Already known: {entity}.{attribute} = {value}"
+    if metrics.ENABLED:
+        metrics.MEMORY_OPS_TOTAL.labels(operation="fact_written").inc()
     if result == "updated":
         return f"Updated: {entity}.{attribute} = {value} (was: {old_value})"
     return f"Stored: {entity}.{attribute} = {value}"
@@ -90,6 +94,8 @@ def handle_commitment_update(commitment_id: int, status: str) -> str:
     _conn.commit()
 
     if cursor.rowcount > 0:
+        if metrics.ENABLED:
+            metrics.MEMORY_OPS_TOTAL.labels(operation="commitment_updated").inc()
         return f"Commitment #{commitment_id} marked as {status}"
     return f"No open commitment found with ID #{commitment_id}"
 

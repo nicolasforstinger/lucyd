@@ -11,37 +11,40 @@ try:
 
     # ── Per-message ──────────────────────────────────────────────────
 
+    # Per-message label set: drill from aggregate down to individual conversation
+    _MSG_LABELS = ["channel_id", "task_type", "session_id", "sender"]
+
     MESSAGES_TOTAL = Counter(
         "lucyd_messages_total",
         "Total messages processed",
-        ["channel_id", "task_type"],
+        _MSG_LABELS,
     )
 
     MESSAGE_DURATION = Histogram(
         "lucyd_message_duration_seconds",
         "End-to-end message processing duration (received → response returned)",
-        ["channel_id", "task_type"],
+        _MSG_LABELS,
         buckets=(1, 2, 5, 10, 20, 30, 60, 120, 300, 600),
     )
 
     MESSAGE_COST = Histogram(
         "lucyd_message_cost_eur",
         "Total cost per message in EUR",
-        ["channel_id", "task_type"],
+        _MSG_LABELS,
         buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 5),
     )
 
     AGENTIC_TURNS = Histogram(
         "lucyd_agentic_turns",
         "Number of agentic loop turns per message",
-        ["channel_id", "task_type"],
+        _MSG_LABELS,
         buckets=(1, 2, 3, 5, 8, 10, 15, 20, 30, 50),
     )
 
     CONTEXT_UTILIZATION = Histogram(
         "lucyd_context_utilization_ratio",
         "Context window utilization (tokens used / max tokens)",
-        ["channel_id", "task_type"],
+        _MSG_LABELS,
         buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0),
     )
 
@@ -100,6 +103,14 @@ try:
         "Preprocessor execution duration",
         ["name"],
         buckets=(0.1, 0.5, 1, 2, 5, 10, 30),
+    )
+
+    # ── Memory operations ──────────────────────────────────────────
+
+    MEMORY_OPS_TOTAL = Counter(
+        "lucyd_memory_ops_total",
+        "Memory operations",
+        ["operation"],
     )
 
     # ── Per-session ──────────────────────────────────────────────────

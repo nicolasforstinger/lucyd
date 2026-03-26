@@ -763,12 +763,15 @@ class LucydDaemon:
         try:
             from memory import get_session_start_context
             conn = self._get_memory_conn()
-            return get_session_start_context(
+            result = get_session_start_context(
                 conn=conn, config=self.config,
                 max_facts=self.config.recall_max_facts,
                 max_episodes=self.config.recall_max_episodes_at_start,
                 max_tokens=self.config.recall_max_dynamic_tokens,
             ) or ""
+            if result and metrics.ENABLED:
+                metrics.MEMORY_OPS_TOTAL.labels(operation="recall_triggered").inc()
+            return result
         except Exception:
             log.exception("structured recall at session start failed")
             return "[Memory recall unavailable — use memory_search to access memory manually.]"
@@ -827,6 +830,8 @@ class LucydDaemon:
             if metrics.ENABLED and isinstance(used, (int, float)):
                 metrics.CONTEXT_UTILIZATION.labels(
                     channel_id=ctx.channel_id, task_type=ctx.task_type,
+                    session_id=session.id if session else "",
+                    sender=ctx.sender,
                 ).observe(used / max_ctx if max_ctx > 0 else 0)
 
         # Run agentic loop — it appends to session.messages in place
@@ -1238,7 +1243,11 @@ class LucydDaemon:
         # ── Prometheus metrics ────────────────────────────────────────
         if metrics.ENABLED:
             try:
-                _labels = {"channel_id": ctx.channel_id, "task_type": ctx.task_type}
+                _sid = ctx.session.id if ctx.session else ""
+                _labels = {
+                    "channel_id": ctx.channel_id, "task_type": ctx.task_type,
+                    "session_id": _sid, "sender": ctx.sender,
+                }
                 metrics.MESSAGES_TOTAL.labels(**_labels).inc()
                 metrics.MESSAGE_DURATION.labels(**_labels).observe(time.time() - _msg_start)
                 if ctx.response:

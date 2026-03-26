@@ -8,6 +8,8 @@ in SQLite tables managed by memory_schema.py.
 from __future__ import annotations
 
 import contextlib
+
+import metrics
 import hashlib
 import json
 import logging
@@ -223,6 +225,8 @@ def _store_facts(
         if result != "unchanged":
             count += 1
 
+    if count > 0 and metrics.ENABLED:
+        metrics.MEMORY_OPS_TOTAL.labels(operation="fact_written").inc(count)
     return count
 
 
@@ -260,6 +264,8 @@ def _store_episode(
         ),
     )
     episode_id = cursor.lastrowid
+    if metrics.ENABLED:
+        metrics.MEMORY_OPS_TOTAL.labels(operation="episode_created").inc()
 
     for c in commitments:
         who = c.get("who", "")

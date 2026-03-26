@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+
+import metrics
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -47,6 +49,8 @@ async def tool_memory_search(query: str, top_k: int = 10) -> str:
             max_tokens = getattr(_config, "recall_max_dynamic_tokens", 1000)
             blocks = await recall(query, _conn, _memory, _config, top_k)
             result = inject_recall(blocks, max_tokens)
+            if metrics.ENABLED:
+                metrics.MEMORY_OPS_TOTAL.labels(operation="recall_triggered").inc()
             if not result:
                 return EMPTY_RECALL_FALLBACK
             return result
