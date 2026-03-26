@@ -118,15 +118,6 @@ def minimal_toml_data():
                 "always_on": ["compute-routing"],
             },
         },
-        "channel": {
-            "type": "telegram",
-            "debounce_ms": 500,
-            "telegram": {
-                "token_env": "LUCYD_TELEGRAM_TOKEN",
-                "allow_from": [123456789],
-                "contacts": {"TestUser": 123456789},
-            },
-        },
         "http": {
             "enabled": False,
             "host": "127.0.0.1",

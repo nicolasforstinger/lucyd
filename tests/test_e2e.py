@@ -28,7 +28,6 @@ def _make_e2e_config(tmp_path: Path) -> Config:
             "context": {"stable": ["SOUL.md"], "semi_stable": []},
             "skills": {"dir": "skills", "always_on": []},
         },
-        "channel": {"type": "", "debounce_ms": 0},
         "http": {
             "enabled": False, "host": "127.0.0.1", "port": 0, "token_env": "",
             "download_dir": str(tmp_path / "downloads"),
@@ -119,14 +118,11 @@ async def test_e2e_message_cycle(tmp_path):
 
     # Run daemon startup (without PID file / signals)
     daemon._init_provider()
-    daemon._init_channel()
     daemon._init_sessions()
     daemon._init_skills()
     daemon._init_context()
     daemon._init_metering()
     daemon._init_tools()
-    if daemon.channel is not None:
-        await daemon.channel.connect()
 
     # Enqueue a message with a response future to capture the reply
     response_future = asyncio.get_event_loop().create_future()
@@ -160,6 +156,3 @@ async def test_e2e_message_cycle(tmp_path):
     meter_conn.close()
     assert rows[0] >= 1, "At least one metering record should exist"
 
-    # Cleanup
-    if daemon.channel is not None:
-        await daemon.channel.disconnect()

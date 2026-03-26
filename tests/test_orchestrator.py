@@ -61,7 +61,6 @@ def _make_config(tmp_path, **overrides):
             "context": {"stable": ["SOUL.md"], "semi_stable": []},
             "skills": {"dir": "skills", "always_on": []},
         },
-        "channel": {"type": "cli", "debounce_ms": 500},
         "http": {
             "enabled": False, "host": "127.0.0.1", "port": 8100, "token_env": "",
             "download_dir": "/tmp/lucyd-http", "max_body_bytes": 10485760,
@@ -104,7 +103,7 @@ def _make_config(tmp_path, **overrides):
                    "jpeg_quality_steps": [85, 60, 40],
                    },
         "behavior": {
-            "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error",
+            "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error", "debounce_ms": 500,
             "sqlite_timeout": 30,
             "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
             "agent_timeout_seconds": 600,
@@ -185,8 +184,6 @@ def _make_daemon(tmp_path):
 
     daemon.tool_registry = MagicMock()
     daemon.tool_registry.get_schemas = MagicMock(return_value=[])
-
-    daemon.channel = AsyncMock()
 
     daemon.config = MagicMock()
     daemon.config.state_dir = state_dir
@@ -355,22 +352,24 @@ class TestBasicMessageFlow:
 
     @pytest.mark.asyncio
     async def test_reply_delivered_to_channel(self, tmp_path):
-        """Provider response text is sent to channel.send."""
+        """Provider response text is returned via response_future."""
         daemon, provider, session = _make_daemon(tmp_path)
         response = _make_response(text="Hello, Nicolas!")
 
         async def fake_loop(**kwargs):
             return response
 
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hi", sender="Nicolas", source="telegram",
+                response_future=future,
             )
 
-        daemon.channel.send.assert_called_once()
-        args = daemon.channel.send.call_args[0]
-        assert args[0] == "Nicolas"
-        assert args[1] == "Hello, Nicolas!"
+        result = future.result()
+        assert result["reply"] == "Hello, Nicolas!"
 
     @pytest.mark.asyncio
     async def test_session_get_or_create_called(self, tmp_path):
@@ -416,21 +415,23 @@ class TestProviderErrorHandling:
 
     @pytest.mark.asyncio
     async def test_error_sends_graceful_message(self, tmp_path):
-        """Agentic loop raises → error message sent to channel."""
+        """Agentic loop raises → error returned via response_future."""
         daemon, provider, session = _make_daemon(tmp_path)
 
         async def fake_loop(**kwargs):
             raise RuntimeError("API connection failed")
 
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
+                response_future=future,
             )
 
-        daemon.channel.send.assert_called_once()
-        args = daemon.channel.send.call_args[0]
-        assert args[0] == "user"
-        assert args[1] == "Something went wrong."
+        result = future.result()
+        assert "error" in result
 
     @pytest.mark.asyncio
     async def test_error_does_not_crash(self, tmp_path):
@@ -448,7 +449,7 @@ class TestProviderErrorHandling:
 
     @pytest.mark.asyncio
     async def test_error_no_delivery_for_system_source(self, tmp_path):
-        """System source error → no error message via channel."""
+        """System source error → no crash, completes without raising."""
         daemon, provider, session = _make_daemon(tmp_path)
 
         async def fake_loop(**kwargs):
@@ -458,8 +459,6 @@ class TestProviderErrorHandling:
             await daemon._process_message(
                 text="heartbeat", sender="system", source="system", deliver=False,
             )
-
-        daemon.channel.send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_provider_returns_early(self, tmp_path):
@@ -476,84 +475,12 @@ class TestProviderErrorHandling:
         mock_loop.assert_not_called()
 
 
-class TestTypingIndicators:
-    """Contract: typing indicators sent/suppressed based on source."""
-
-    @pytest.mark.asyncio
-    async def test_typing_sent_for_telegram(self, tmp_path):
-        """Telegram source + typing enabled → send_typing called."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.typing_indicators = True
-        response = _make_response()
-
-        async def fake_loop(**kwargs):
-            return response
-
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="hello", sender="user", source="telegram",
-            )
-
-        daemon.channel.send_typing.assert_called_once_with("user")
-
-    @pytest.mark.asyncio
-    async def test_no_typing_when_deliver_false(self, tmp_path):
-        """deliver=False → typing suppressed even if enabled."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.typing_indicators = True
-        response = _make_response()
-
-        async def fake_loop(**kwargs):
-            return response
-
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="hello", sender="user", source="system", deliver=False,
-            )
-
-        daemon.channel.send_typing.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_typing_for_http(self, tmp_path):
-        """HTTP source → typing suppressed."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.typing_indicators = True
-        response = _make_response()
-
-        async def fake_loop(**kwargs):
-            return response
-
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="hello", sender="user", source="http", deliver=False,
-            )
-
-        daemon.channel.send_typing.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_typing_when_disabled(self, tmp_path):
-        """typing_indicators=False → no typing regardless of source."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.typing_indicators = False
-        response = _make_response()
-
-        async def fake_loop(**kwargs):
-            return response
-
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="hello", sender="user", source="telegram",
-            )
-
-        daemon.channel.send_typing.assert_not_called()
-
-
 class TestSilentTokenSuppression:
     """Contract: silent token replies are not delivered to channel."""
 
     @pytest.mark.asyncio
     async def test_silent_reply_not_delivered(self, tmp_path):
-        """Reply matching silent_tokens → channel.send not called."""
+        """Reply matching silent_tokens → future resolved with silent=True."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.silent_tokens = ["HEARTBEAT_OK"]
         response = _make_response(text="HEARTBEAT_OK")
@@ -561,16 +488,21 @@ class TestSilentTokenSuppression:
         async def fake_loop(**kwargs):
             return response
 
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="run heartbeat", sender="user", source="telegram",
+                response_future=future,
             )
 
-        daemon.channel.send.assert_not_called()
+        result = future.result()
+        assert result["silent"] is True
 
     @pytest.mark.asyncio
     async def test_non_silent_reply_delivered(self, tmp_path):
-        """Reply not matching silent_tokens → channel.send called."""
+        """Reply not matching silent_tokens → future resolved with reply."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.silent_tokens = ["HEARTBEAT_OK"]
         response = _make_response(text="Here's your answer!")
@@ -578,80 +510,17 @@ class TestSilentTokenSuppression:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="hello", sender="user", source="telegram",
-            )
-
-        daemon.channel.send.assert_called_once()
-
-
-class TestDeliverySuppression:
-    """Contract: non-channel sources don't get channel.send."""
-
-    @pytest.mark.asyncio
-    async def test_no_delivery_for_system_source(self, tmp_path):
-        """System source → no channel.send even with non-empty reply."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        response = _make_response(text="Done processing")
-
-        async def fake_loop(**kwargs):
-            return response
-
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="heartbeat", sender="system", source="system", deliver=False,
-            )
-
-        daemon.channel.send.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_delivery_for_http_source(self, tmp_path):
-        """HTTP source → no channel.send."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        response = _make_response(text="HTTP response")
-
-        async def fake_loop(**kwargs):
-            return response
-
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="query", sender="test", source="http", deliver=False,
-            )
-
-        daemon.channel.send.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_delivery_for_empty_reply(self, tmp_path):
-        """Empty reply → no channel.send even for telegram."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        response = _make_response(text="")
-
-        async def fake_loop(**kwargs):
-            return response
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
 
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
+                response_future=future,
             )
 
-        daemon.channel.send.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_delivery_for_cli_source(self, tmp_path):
-        """CLI source → channel.send called (not suppressed)."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        response = _make_response(text="reply")
-
-        async def fake_loop(**kwargs):
-            return response
-
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="hello", sender="user", source="cli",
-            )
-
-        daemon.channel.send.assert_called_once()
+        result = future.result()
+        assert result["reply"] == "Here's your answer!"
 
 
 class TestWarningInjection:
@@ -1089,16 +958,20 @@ class TestMemoryV2Wiring:
         async def fake_loop(**kwargs):
             return response
 
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             with patch("memory.get_session_start_context", side_effect=Exception("DB corrupt")):
                 with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
                     await daemon._process_message(
                         text="hello", sender="user", source="telegram",
+                        response_future=future,
                     )
 
         # Should complete without crashing and deliver reply
-        daemon.channel.send.assert_called_once()
-        assert daemon.channel.send.call_args[0][1] == "reply despite recall failure"
+        result = future.result()
+        assert result["reply"] == "reply despite recall failure"
 
     @pytest.mark.asyncio
     async def test_pre_compaction_consolidation_called(self, tmp_path):
@@ -1331,21 +1204,27 @@ class TestErrorRecoveryOrphanedMessages:
                 raise RuntimeError("First call fails")
             return response
 
+        loop = asyncio.get_running_loop()
+        future1 = loop.create_future()
+        future2 = loop.create_future()
+
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             # First message — error
             await daemon._process_message(
                 text="msg1", sender="user", source="telegram",
+                response_future=future1,
             )
             # Second message — should succeed
             await daemon._process_message(
                 text="msg2", sender="user", source="telegram",
+                response_future=future2,
             )
 
         # Second call completed (loop was called twice)
         assert call_count[0] == 2
-        # channel.send called twice: error message for msg1, reply for msg2
-        assert daemon.channel.send.call_count == 2
-        assert daemon.channel.send.call_args_list[1][0][1] == "recovered!"
+        # First call: error; second call: reply
+        assert "error" in future1.result()
+        assert future2.result()["reply"] == "recovered!"
 
 
 # ─── Defense: Consecutive User Message Merge ─────────────────────
@@ -2041,15 +1920,19 @@ class TestMessageLevelRetry:
                 raise InternalServerError("500")
             return response
 
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
+                response_future=future,
             )
 
         assert call_count[0] == 2
         # Reply delivered, not the error message
-        daemon.channel.send.assert_called_once()
-        assert daemon.channel.send.call_args[0][1] == "recovered!"
+        result = future.result()
+        assert result["reply"] == "recovered!"
 
     @pytest.mark.asyncio
     async def test_non_transient_error_does_not_retry(self, tmp_path):
@@ -2069,14 +1952,19 @@ class TestMessageLevelRetry:
             call_count[0] += 1
             raise AuthenticationError("bad key")
 
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
+                response_future=future,
             )
 
         assert call_count[0] == 1  # No retry
-        # Error message sent
-        daemon.channel.send.assert_called_once_with("user", "Something went wrong.")
+        # Error returned via future
+        result = future.result()
+        assert "error" in result
 
     @pytest.mark.asyncio
     async def test_exhausted_retries_sends_error(self, tmp_path):
@@ -2096,14 +1984,19 @@ class TestMessageLevelRetry:
             call_count[0] += 1
             raise InternalServerError("500 always")
 
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
         with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
+                response_future=future,
             )
 
         assert call_count[0] == 3  # 1 initial + 2 retries
-        # Error message sent, orphaned user message cleaned up
-        daemon.channel.send.assert_called_once_with("user", "Something went wrong.")
+        # Error returned via future, orphaned user message cleaned up
+        result = future.result()
+        assert "error" in result
         assert not session.messages or session.messages[-1].get("role") != "user"
 
     @pytest.mark.asyncio

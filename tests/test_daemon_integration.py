@@ -53,7 +53,6 @@ def _make_config(tmp_path, **overrides):
             "context": {"stable": ["SOUL.md"], "semi_stable": []},
             "skills": {"dir": "skills", "always_on": []},
         },
-        "channel": {"type": "cli", "debounce_ms": 500},
         "http": {
             "enabled": False, "host": "127.0.0.1", "port": 8100, "token_env": "",
             "download_dir": "/tmp/lucyd-http", "max_body_bytes": 10485760,
@@ -158,7 +157,6 @@ class TestBuildStatus:
         assert status["status"] == "ok"
         assert status["pid"] == os.getpid()
         assert isinstance(status["uptime_seconds"], int)
-        assert status["channel"] == "cli"
         assert status["model"] == "test-model"
         assert status["active_sessions"] == 2
         assert isinstance(status["today_cost"], float)
@@ -403,9 +401,6 @@ class TestResolveIntegration:
 
         daemon.tool_registry.get_schemas = MagicMock(return_value=[])
 
-        # Mock channel
-        daemon.channel = AsyncMock()
-
         return daemon, provider, session
 
     @pytest.mark.asyncio
@@ -518,184 +513,6 @@ class TestResolveIntegration:
         assert result["tokens"]["output"] == 200
 
 
-# ─── Channel Delivery Suppression ────────────────────────────────
-
-
-class TestChannelDeliverySuppression:
-    """Verify that system and HTTP sources suppress channel delivery."""
-
-    @pytest.fixture
-    def daemon_with_successful_response(self, tmp_path):
-        """Daemon rigged to return a successful non-silent response."""
-        config = _make_config(tmp_path)
-        daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
-
-        provider = MagicMock()
-        provider.format_system = MagicMock(return_value=[])
-        daemon.provider = provider
-        daemon._providers = {"primary": provider}
-
-        session = MagicMock()
-        session.id = "test-session"
-        session.messages = []
-        session.pending_system_warning = ""
-        session.last_input_tokens = 0
-        session.needs_compaction = MagicMock(return_value=False)
-        session.warned_about_compaction = False
-        session.add_user_message = MagicMock()
-        session.add_assistant_message = MagicMock()
-        session.add_tool_results = MagicMock()
-        session.save_state = MagicMock()
-
-        daemon.session_mgr = MagicMock()
-        daemon.session_mgr.get_or_create = MagicMock(return_value=session)
-        daemon.session_mgr.close_session = AsyncMock(return_value=True)
-
-        daemon.context_builder = MagicMock()
-        daemon.context_builder.build = MagicMock(return_value=[])
-
-        daemon.skill_loader = MagicMock()
-        daemon.skill_loader.build_index = MagicMock(return_value="")
-        daemon.skill_loader.get_bodies = MagicMock(return_value={})
-
-        daemon.tool_registry = MagicMock()
-
-        daemon.tool_registry.get_schemas = MagicMock(return_value=[])
-
-        daemon.channel = AsyncMock()
-
-        daemon.config = MagicMock()
-
-        daemon.config.model_config = MagicMock(return_value={
-            "model": "test", "cost_per_mtok": [1.0, 5.0, 0.1],
-        })
-        daemon.config.typing_indicators = True
-        daemon.config.max_turns = 10
-        daemon.config.agent_timeout = 30
-        daemon.config.silent_tokens = []
-        daemon.config.compaction_threshold = 150000
-        daemon.config.always_on_skills = []
-        daemon.config.error_message = "Error"
-        daemon.config.message_retries = 0
-        daemon.config.message_retry_base_delay = 0.01
-        daemon.config.raw = MagicMock(return_value=0.0)
-
-        usage = MagicMock()
-        usage.input_tokens = 1000
-        usage.output_tokens = 100
-        response = MagicMock()
-        response.text = "Test reply"
-        response.usage = usage
-
-        return daemon, response
-
-    @pytest.mark.asyncio
-    async def test_deliver_false_suppresses_typing(self, daemon_with_successful_response):
-        """deliver=False skips typing indicator."""
-        daemon, response = daemon_with_successful_response
-
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            await daemon._process_message(
-                text="heartbeat", sender="system", source="system", deliver=False,
-            )
-
-        daemon.channel.send_typing.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_deliver_false_suppresses_reply(self, daemon_with_successful_response):
-        """deliver=False doesn't deliver reply via channel."""
-        daemon, response = daemon_with_successful_response
-
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            await daemon._process_message(
-                text="heartbeat", sender="system", source="system", deliver=False,
-            )
-
-        daemon.channel.send.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_deliver_true_sends_typing(self, daemon_with_successful_response):
-        """deliver=True sends typing indicator."""
-        daemon, response = daemon_with_successful_response
-
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            await daemon._process_message(
-                text="hello", sender="user", source="system", deliver=True,
-            )
-
-        daemon.channel.send_typing.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_http_chat_suppresses_channel_reply(self, daemon_with_successful_response):
-        """HTTP /chat (deliver=False) doesn't deliver reply via channel.send."""
-        daemon, response = daemon_with_successful_response
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            await daemon._process_message(
-                text="api call", sender="http", source="http",
-                response_future=future, deliver=False,
-            )
-
-        daemon.channel.send.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_telegram_source_delivers_typing(self, daemon_with_successful_response):
-        """Telegram source sends typing indicator."""
-        daemon, response = daemon_with_successful_response
-
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            await daemon._process_message(
-                text="hello", sender="+431234567890", source="telegram",
-            )
-
-        daemon.channel.send_typing.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_telegram_source_delivers_reply(self, daemon_with_successful_response):
-        """Telegram source delivers reply via channel."""
-        daemon, response = daemon_with_successful_response
-
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            await daemon._process_message(
-                text="hello", sender="+431234567890", source="telegram",
-            )
-
-        daemon.channel.send.assert_called_once_with("+431234567890", "Test reply")
-
-    @pytest.mark.asyncio
-    async def test_system_source_suppresses_all_text(self, daemon_with_successful_response):
-        """System source doesn't deliver any text via channel."""
-        daemon, response = daemon_with_successful_response
-
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            await daemon._process_message(
-                text="heartbeat", sender="system", source="system", deliver=False,
-            )
-
-        daemon.channel.send.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_http_error_suppresses_channel_error_msg(self, daemon_with_successful_response):
-        """HTTP source doesn't send error message via channel on agentic loop failure."""
-        daemon, _ = daemon_with_successful_response
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-
-        with patch("lucyd.run_agentic_loop", side_effect=RuntimeError("fail")):
-            await daemon._process_message(
-                text="test", sender="http", source="http", deliver=False,
-                response_future=future,
-            )
-
-        daemon.channel.send.assert_not_called()
-        # But future should still be resolved
-        assert future.done()
-        assert "error" in future.result()
-
-
 # ─── Context Builder Source Integration ──────────────────────────
 
 
@@ -737,8 +554,6 @@ class TestContextBuilderSourcePassthrough:
         daemon.tool_registry = MagicMock()
 
         daemon.tool_registry.get_schemas = MagicMock(return_value=[])
-
-        daemon.channel = AsyncMock()
 
         daemon.config = MagicMock()
 
@@ -944,9 +759,6 @@ class TestProcessMessageIntegration:
 
         daemon.tool_registry.get_schemas = MagicMock(return_value=[])
 
-        # Mock channel
-        daemon.channel = AsyncMock()
-
         # Override config as MagicMock for controlled attribute access
         daemon.config = MagicMock()
 
@@ -999,10 +811,6 @@ class TestProcessMessageIntegration:
         assert "What is the weather?" in call_args[0][0]
         # Session state should be saved
         session.save_state.assert_called()
-        # Channel should deliver the reply (source=telegram not in deliver flag)
-        daemon.channel.send.assert_called_once_with(
-            "+431234567890", "Here is the answer to your question.",
-        )
 
     @pytest.mark.asyncio
     async def test_tool_use_response_persisted(self, full_daemon):
@@ -1050,20 +858,21 @@ class TestProcessMessageIntegration:
 
     @pytest.mark.asyncio
     async def test_agentic_loop_error_delivers_error_for_telegram(self, full_daemon):
-        """When agentic loop raises, error message is delivered via channel for telegram source."""
+        """When agentic loop raises, error is captured in the response future."""
         daemon, provider, session = full_daemon
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
 
         with patch("lucyd.run_agentic_loop", side_effect=RuntimeError("Provider timeout")):
             await daemon._process_message(
                 text="hello",
                 sender="+431234567890",
                 source="telegram",
+                response_future=future,
             )
 
-        # Channel should deliver error message (telegram not in deliver flag)
-        daemon.channel.send.assert_called_once_with(
-            "+431234567890", "Something went wrong.",
-        )
+        assert "error" in future.result()
 
     @pytest.mark.asyncio
     async def test_agentic_loop_error_resolves_future_for_http(self, full_daemon):
@@ -1086,8 +895,6 @@ class TestProcessMessageIntegration:
         assert "error" in result
         assert "Bad request" in result["error"]
         assert result["session_id"] == "integ-session-1"
-        # Channel should NOT deliver error (http in deliver flag)
-        daemon.channel.send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_image_attachment_adds_prefix_to_text(self, full_daemon, tmp_path):
@@ -1285,7 +1092,6 @@ class TestMessageLoopDebounce:
         daemon.tool_registry = MagicMock()
 
         daemon.tool_registry.get_schemas = MagicMock(return_value=[])
-        daemon.channel = AsyncMock()
 
         daemon.config = MagicMock()
 

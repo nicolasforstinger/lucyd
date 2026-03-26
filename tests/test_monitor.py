@@ -35,7 +35,6 @@ def _make_config(tmp_path, **overrides):
             "context": {"stable": ["SOUL.md"], "semi_stable": []},
             "skills": {"dir": "skills", "always_on": []},
         },
-        "channel": {"type": "cli", "debounce_ms": 500},
         "http": {
             "enabled": False, "host": "127.0.0.1", "port": 8100, "token_env": "",
             "download_dir": "/tmp/lucyd-http", "max_body_bytes": 10485760,
@@ -147,8 +146,6 @@ def _make_daemon_for_monitor(tmp_path):
     daemon.tool_registry = MagicMock()
     daemon.tool_registry.get_brief_descriptions = MagicMock(return_value=[])
     daemon.tool_registry.get_schemas = MagicMock(return_value=[])
-
-    daemon.channel = AsyncMock()
 
     daemon.config = MagicMock()
     daemon.config.state_dir = tmp_path / "state"

@@ -63,16 +63,6 @@ class TestMissingFields:
         with pytest.raises(ConfigError, match="primary"):
             Config(data)
 
-    def test_missing_channel_type_is_valid(self):
-        """Channel type is optional — empty means HTTP-only mode."""
-        data = {
-            "agent": {"name": "Test", "workspace": "/tmp"},
-            "channel": {},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
-        }
-        cfg = Config(data)
-        assert cfg.channel_type == ""
-
 class TestToolFiltering:
     def test_tools_enabled_list(self, minimal_toml_data):
         """Only tools in enabled list are returned."""
@@ -459,20 +449,6 @@ class TestFilesystemConfig:
         }
         cfg = Config(minimal_toml_data)
         assert cfg.filesystem_default_read_limit == 500
-
-
-class TestChannelRawConfig:
-    """Channel config is accessed via raw() — no typed properties."""
-
-    def test_telegram_raw_config(self, minimal_toml_data):
-        cfg = Config(minimal_toml_data)
-        tg = cfg.raw("channel", "telegram", default={})
-        assert isinstance(tg, dict)
-        assert tg.get("token_env") == "LUCYD_TELEGRAM_TOKEN"
-
-    def test_channel_type(self, minimal_toml_data):
-        cfg = Config(minimal_toml_data)
-        assert cfg.channel_type == "telegram"
 
 
 class TestCompactionPromptConfig:

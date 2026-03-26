@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lucyd — a daemon for persona-rich AI agents.
 
-Entry point. Wires config → channel → loop → tools → sessions.
+Entry point. Wires config → loop → tools → sessions.
 Handles PID file, HTTP API, Unix signals, and the main event loop.
 """
 
@@ -1374,7 +1374,6 @@ class LucydDaemon:
             "status": "ok",
             "pid": os.getpid(),
             "uptime_seconds": round(time.time() - self.start_time),
-            "channel": self.config.channel_type,
             "model": self.config.model_config("primary").get("model", ""),
             "active_sessions": active_sessions,
             "today_cost": round(today_cost, 4),
@@ -1809,16 +1808,10 @@ def main():
         default=os.environ.get("LUCYD_CONFIG", "./lucyd.toml"),
         help="Path to config file (default: $LUCYD_CONFIG or ./lucyd.toml)",
     )
-    parser.add_argument(
-        "--channel",
-        help="Override channel type (e.g., 'cli' for testing)",
-    )
     args = parser.parse_args()
 
     # Build overrides from CLI args
     overrides = {}
-    if args.channel:
-        overrides["channel.type"] = args.channel
 
     try:
         config = load_config(args.config, overrides=overrides)

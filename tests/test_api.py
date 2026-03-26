@@ -34,7 +34,6 @@ _FULL_CONFIG = {
         "context": {"stable": [], "semi_stable": []},
         "skills": {"dir": "skills", "always_on": []},
     },
-    "channel": {"type": "cli", "debounce_ms": 500},
     "http": {
         "enabled": False, "host": "127.0.0.1", "port": 8100, "token_env": "",
         "download_dir": "/tmp/lucyd-http", "max_body_bytes": 10485760,

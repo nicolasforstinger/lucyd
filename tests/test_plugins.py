@@ -20,7 +20,6 @@ def _make_config(tmp_path, enabled=None, plugins_dir="plugins.d"):
             "context": {"stable": ["SOUL.md"], "semi_stable": []},
             "skills": {"dir": "skills", "always_on": []},
         },
-        "channel": {"type": "cli", "debounce_ms": 500},
         "http": {
             "enabled": False, "host": "127.0.0.1", "port": 8100, "token_env": "",
             "download_dir": "/tmp/lucyd-http", "max_body_bytes": 10485760,
@@ -96,7 +95,6 @@ def _make_daemon(tmp_path, enabled=None, plugins_dir="plugins.d"):
     """Build a daemon with mocked deps for plugin testing."""
     config = _make_config(tmp_path, enabled=enabled, plugins_dir=plugins_dir)
     daemon = LucydDaemon(config)
-    daemon.channel = MagicMock()
     daemon.session_mgr = MagicMock()
     provider = MagicMock()
     provider.capabilities.max_context_tokens = 0
@@ -150,9 +148,9 @@ TOOLS = [
 MULTI_DEP_PLUGIN = '''\
 _received = {}
 
-def configure(config, channel, session_mgr):
+def configure(config, provider, session_mgr):
     global _received
-    _received = {"config": config, "channel": channel, "session_mgr": session_mgr}
+    _received = {"config": config, "provider": provider, "session_mgr": session_mgr}
 
 def multi_tool() -> str:
     return str(list(_received.keys()))
