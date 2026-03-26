@@ -108,9 +108,7 @@ rate_limit = 30              # Max requests per rate_window per sender (default:
 rate_window = 60             # Rate limit window in seconds (default: 60)
 status_rate_limit = 60       # Max /status requests per rate_window (default: 60)
 rate_limit_cleanup_threshold = 1000  # Evict stale rate limit entries above this count
-callback_max_failures = 10   # Disable webhook after this many consecutive failures (default: 10)
 max_attachment_bytes = 52428800  # Max size for base64-decoded attachments (default: 50 MB)
-webhook_secret = ""             # HMAC-SHA256 secret for verifying inbound webhook signatures (default: "" = disabled)
 ```
 
 Auth token is loaded from the environment variable named by `token_env` (default: `LUCYD_HTTP_TOKEN`). Webhook callback token is loaded from the env var named in `callback_token_env`. See [operations — HTTP API](operations.md#http-api) for endpoint details and [webhook callback](operations.md#webhook-callback) for the callback payload format.
@@ -206,7 +204,6 @@ db = "~/.lucyd/memory/main.sqlite"            # SQLite DB with FTS5 + embeddings
 search_top_k = 10                             # Default result limit for memory searches
 embedding_timeout = 15                        # Embedding API request timeout (seconds)
 vector_search_limit = 10000                   # Raw DB query cap for vector search
-fts_min_results = 3                           # FTS results threshold before vector fallback
 ```
 
 The memory DB is optional. If the path is empty or the file does not exist, memory tools are not registered.
@@ -263,7 +260,6 @@ decay_rate = 0.03                    # Time-decay factor for relevance scoring
 max_facts_in_context = 20            # Maximum facts injected into context
 max_dynamic_tokens = 1500            # Token budget for dynamic recall content (default: 0 = unlimited)
 max_episodes_at_start = 3            # Maximum episodes injected at session start
-archive_messages = 20                # Messages from last archived session included in recall (default: 20)
 ```
 
 Recall runs at session start and enriches `memory_search` results with structured data. Budget-aware: prioritizes commitments > vector > episodes > facts (under budget pressure, clinical facts drop first).

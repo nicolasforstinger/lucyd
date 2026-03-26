@@ -16,16 +16,16 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone p
 | `config.py` | TOML config loader with env overrides. Typed access, immutable after load. |
 | `context.py` | System prompt builder. Cache tiers (stable/semi-stable/dynamic). Token counting. |
 | `session.py` | Session manager. Dual storage: JSONL audit trail + atomic state snapshots. Compaction. |
-| `relay.py` | Outbound proxy. `RelayChannel` forwards send/typing/stream to bridge via HTTP. `Channel` protocol. |
+| `relay.py` | Outbound proxy. `RelayChannel` forwards send/typing/stream to bridge via HTTP. |
 | `memory.py` | Long-term memory. FTS5 keyword search + vector similarity. Structured recall (facts, episodes, commitments). |
 | `memory_schema.py` | SQLite schema for 11 memory tables. Safe to call on every startup. |
 | `consolidation.py` | Structured data extraction from sessions via LLM. Facts, episodes, commitments, aliases. |
-| `evolution.py` | Daily rewriting of workspace files (MEMORY.md, USER.md) using accumulated knowledge. |
+| ~~`evolution.py`~~ | Removed. Evolution is skill-driven via the agentic loop. State tracking inlined in `lucyd.py`. |
 | `skills.py` | Skill loader + `load_skill` tool. Markdown with YAML frontmatter. |
 | `metering.py` | Per-call cost recording to SQLite. Billing periods, EUR currency. |
-| `monitor.py` | Live agentic loop state tracking for `monitor.json`. |
+| ~~`monitor.py`~~ | Removed. `_MonitorWriter` in `lucyd.py` updates an in-memory dict read by `/api/v1/monitor`. |
 | `attachments.py` | Image fitting, document text extraction, audio STT. Pure functions. |
-| `models.py` | Shared data types: `Attachment`, `InboundMessage`. |
+| `models.py` | Shared data types: `Attachment`. |
 | `stt.py` | Speech-to-text dispatch (OpenAI Whisper or local whisper.cpp). |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
 | `async_utils.py` | `run_blocking()` for safe blocking I/O offload. |
@@ -94,7 +94,6 @@ The API is the single inbound boundary. All messages enter here.
 | `/api/v1/status` | GET | Health check + daemon stats (no auth) |
 | `/api/v1/sessions` | GET | List active sessions |
 | `/api/v1/cost` | GET | Cost breakdown by period |
-| `/api/v1/cost/export` | GET | Export cost data (CSV/JSON) |
 | `/api/v1/monitor` | GET | Live agentic loop state |
 | `/api/v1/sessions/reset` | POST | Reset sessions |
 | `/api/v1/sessions/{id}/history` | GET | Session event history |

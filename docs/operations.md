@@ -817,16 +817,11 @@ The daemon handles three Unix signals for runtime control:
 | Signal | Effect |
 |---|---|
 | `SIGUSR1` | Reload workspace files and rescan skills. Context is rebuilt on the next message. |
-| `SIGUSR2` | Write `status.json` to `~/.lucyd/` with PID, uptime, loaded tools, channel type, and model list. |
 | `SIGTERM` | Graceful shutdown. Finishes the current message, cleans up PID file, exits. |
 
 ```bash
 # Reload workspace after editing personality/skill files
 kill -USR1 $(cat ~/.lucyd/lucyd.pid)
-
-# Dump status
-kill -USR2 $(cat ~/.lucyd/lucyd.pid)
-cat ~/.lucyd/status.json
 
 # Graceful stop (equivalent to systemctl stop)
 kill -TERM $(cat ~/.lucyd/lucyd.pid)

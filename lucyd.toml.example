@@ -79,9 +79,7 @@ rate_limit = 30                                            # Max requests per ra
 rate_window = 60                                           # Rate limit window (seconds)
 status_rate_limit = 60                                     # Max /status requests per rate_window
 rate_limit_cleanup_threshold = 1000                        # Evict stale rate limit entries above this count
-# callback_max_failures = 10                                  # Max consecutive callback failures before disabling
 # max_attachment_bytes = 52428800                              # Max attachment size (50 MB)
-# webhook_secret = ""                                         # Webhook signature verification secret
 
 # ─── Memory ──────────────────────────────────────────────────────
 
@@ -90,7 +88,6 @@ db = "~/.lucyd/memory/main.sqlite"
 search_top_k = 10                                          # Default result limit for memory searches
 embedding_timeout = 15                                     # Embedding API request timeout (seconds)
 vector_search_limit = 10000                                # Raw DB query cap for vector search
-fts_min_results = 3                                        # FTS results threshold before vector fallback
 
 [memory.consolidation]
 enabled = true
@@ -110,7 +107,6 @@ decay_rate = 0.03                                          # Exponential decay f
 max_facts_in_context = 20                                  # Maximum facts injected into context
 max_dynamic_tokens = 1500                                  # Token budget for dynamic recall (0 = unlimited)
 max_episodes_at_start = 3                                  # Maximum episodes injected at session start
-archive_messages = 20                                      # Messages from last archived session included in recall
 
 # Recall personality — priority controls drop order (higher = kept longer under budget pressure)
 [memory.recall.personality]
