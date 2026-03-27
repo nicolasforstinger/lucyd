@@ -1744,6 +1744,201 @@ class TestDocumentExtractionIntegration:
         assert "[attachment: bad.txt, text/plain, saved:" in call_text
 
 
+# ─── PDF Page Rendering ──────────────────────────────────────────
+
+
+class TestRenderPdfPages:
+    """Unit tests for render_pdf_pages (pdftoppm wrapper)."""
+
+    def test_no_pdftoppm_returns_none(self):
+        """Missing pdftoppm → returns None gracefully."""
+        from attachments import render_pdf_pages
+
+        with patch("shutil.which", return_value=None):
+            assert render_pdf_pages("/fake/doc.pdf", max_pages=5, max_dimension=1568) is None
+
+    def test_subprocess_failure_returns_none(self, tmp_path):
+        """pdftoppm exits non-zero → returns None."""
+        from attachments import render_pdf_pages
+
+        f = tmp_path / "bad.pdf"
+        f.write_bytes(b"%PDF-1.4 fake")
+
+        with patch("shutil.which", return_value="/usr/bin/pdftoppm"):
+            with patch("subprocess.run", return_value=MagicMock(returncode=1, stderr=b"error")):
+                assert render_pdf_pages(str(f), max_pages=5, max_dimension=1568) is None
+
+    def test_timeout_returns_none(self, tmp_path):
+        """pdftoppm exceeds timeout → returns None."""
+        import subprocess as sp
+
+        from attachments import render_pdf_pages
+
+        f = tmp_path / "slow.pdf"
+        f.write_bytes(b"%PDF-1.4 fake")
+
+        with patch("shutil.which", return_value="/usr/bin/pdftoppm"):
+            with patch("subprocess.run", side_effect=sp.TimeoutExpired(cmd="pdftoppm", timeout=60)):
+                assert render_pdf_pages(str(f), max_pages=5, max_dimension=1568) is None
+
+
+class TestScannedPdfVisionFallback:
+    """Integration tests for scanned PDF → vision image fallback."""
+
+    @pytest.mark.asyncio
+    async def test_scanned_pdf_renders_images_for_vision(self, tmp_path):
+        """Empty-text PDF + vision-capable model → image blocks returned."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = True
+        daemon.config.documents_max_chars = 30000
+        daemon.config.documents_max_file_bytes = 10_000_000
+        daemon.config.documents_text_extensions = []
+        daemon.config.documents_pdf_max_render_pages = 5
+        daemon.config.vision_max_image_bytes = 5_000_000
+        daemon.config.vision_max_dimension = 1568
+        daemon.config.vision_jpeg_quality_steps = [85, 60, 40]
+        provider.capabilities.supports_vision = True
+
+        pdf_path = tmp_path / "scan.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="I can read this")
+
+        from attachments import Attachment
+        att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
+                         filename="scan.pdf", size=100)
+
+        # Mock: text extraction returns None (scanned), rendering returns JPEG bytes
+        fake_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 100  # minimal JPEG header
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("lucyd.extract_document_text", return_value=None):
+                with patch("lucyd.render_pdf_pages", return_value=[fake_jpeg]):
+                    with patch("lucyd.fit_image", return_value=fake_jpeg):
+                        await daemon._process_message(
+                            text="read this", sender="user", source="telegram",
+                            attachments=[att],
+                        )
+
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[scanned document: scan.pdf" in call_text
+        assert "1 page(s) as images" in call_text
+
+    @pytest.mark.asyncio
+    async def test_scanned_pdf_no_vision_falls_to_label(self, tmp_path):
+        """Empty-text PDF + no vision → plain attachment label, no render attempt."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = True
+        daemon.config.documents_max_chars = 30000
+        daemon.config.documents_max_file_bytes = 10_000_000
+        daemon.config.documents_text_extensions = []
+        provider.capabilities.supports_vision = False
+
+        pdf_path = tmp_path / "scan.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+
+        from attachments import Attachment
+        att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
+                         filename="scan.pdf", size=100)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("lucyd.extract_document_text", return_value=None):
+                with patch("lucyd.render_pdf_pages") as mock_render:
+                    await daemon._process_message(
+                        text="", sender="user", source="telegram",
+                        attachments=[att],
+                    )
+
+        mock_render.assert_not_called()
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[attachment: scan.pdf, application/pdf, saved:" in call_text
+
+    @pytest.mark.asyncio
+    async def test_text_pdf_no_fallback(self, tmp_path):
+        """PDF with text content → text extracted, render never called."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = True
+        daemon.config.documents_max_chars = 30000
+        daemon.config.documents_max_file_bytes = 10_000_000
+        daemon.config.documents_text_extensions = []
+        provider.capabilities.supports_vision = True
+
+        pdf_path = tmp_path / "text.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+
+        from attachments import Attachment
+        att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
+                         filename="text.pdf", size=100)
+
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("lucyd.extract_document_text", return_value="Page 1 content here"):
+                with patch("lucyd.render_pdf_pages") as mock_render:
+                    await daemon._process_message(
+                        text="", sender="user", source="telegram",
+                        attachments=[att],
+                    )
+
+        mock_render.assert_not_called()
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[document: text.pdf, saved:" in call_text
+        assert "Page 1 content here" in call_text
+
+    @pytest.mark.asyncio
+    async def test_all_pages_too_large_falls_to_label(self, tmp_path):
+        """render_pdf_pages returns images but fit_image fails on all → label fallback."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = True
+        daemon.config.documents_max_chars = 30000
+        daemon.config.documents_max_file_bytes = 10_000_000
+        daemon.config.documents_text_extensions = []
+        daemon.config.documents_pdf_max_render_pages = 5
+        daemon.config.vision_max_image_bytes = 5_000_000
+        daemon.config.vision_max_dimension = 1568
+        daemon.config.vision_jpeg_quality_steps = [85, 60, 40]
+        provider.capabilities.supports_vision = True
+
+        pdf_path = tmp_path / "huge_scan.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = MagicMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+
+        from attachments import Attachment, ImageTooLarge
+        att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
+                         filename="huge_scan.pdf", size=100)
+
+        fake_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+        with patch("lucyd.run_agentic_loop", return_value=response):
+            with patch("lucyd.extract_document_text", return_value=None):
+                with patch("lucyd.render_pdf_pages", return_value=[fake_jpeg, fake_jpeg]):
+                    with patch("lucyd.fit_image", side_effect=ImageTooLarge("50MB")):
+                        await daemon._process_message(
+                            text="", sender="user", source="telegram",
+                            attachments=[att],
+                        )
+
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[attachment: huge_scan.pdf, application/pdf, saved:" in call_text
+
+
 # ─── Image Dimension Check ───────────────────────────────────────
 
 

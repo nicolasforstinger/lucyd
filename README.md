@@ -92,6 +92,7 @@ All configuration lives in `lucyd.toml`. API keys go in `.env`. See [configurati
 | `python3` (>= 3.13) | Daemon runtime |
 | `python3-venv` | Virtual environment for pip deps |
 | `sqlite3` | Full SQLite with FTS5 (memory search, cost tracking) |
+| `poppler-utils` | PDF page rendering for scanned documents (`pdftoppm`) |
 
 ### Python packages
 

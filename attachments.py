@@ -111,3 +111,39 @@ def extract_document_text(path: str, content_type: str, filename: str,
         return "\n".join(parts) or None
 
     return None
+
+
+def render_pdf_pages(path: str, max_pages: int,
+                     max_dimension: int) -> list[bytes] | None:
+    """Render PDF pages as JPEG images using pdftoppm.
+
+    Returns list of JPEG bytes (one per page), or None if pdftoppm
+    is not installed or rendering fails.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if shutil.which("pdftoppm") is None:
+        log.debug("pdftoppm not available — skipping PDF page rendering")
+        return None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cmd = [
+            "pdftoppm", "-jpeg", "-r", "150",
+            "-l", str(max_pages),
+            "-scale-to", str(max_dimension),
+            "--", path, str(Path(tmpdir) / "page"),
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            log.warning("pdftoppm timed out rendering %s", path)
+            return None
+        if result.returncode != 0:
+            log.warning("pdftoppm failed for %s: %s", path,
+                        result.stderr.decode(errors="replace")[:200])
+            return None
+
+        pages = sorted(Path(tmpdir).glob("page-*.jpg"))
+        return [p.read_bytes() for p in pages] or None

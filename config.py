@@ -140,6 +140,7 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     "documents_max_chars":      (("documents", "max_chars"),      int,  30000),
     "documents_max_file_bytes": (("documents", "max_file_bytes"), int,  10485760),
     "documents_text_extensions":(("documents", "text_extensions"), list, []),
+    "documents_pdf_max_render_pages": (("documents", "pdf_max_render_pages"), int, 5),
 
     # ── Vision ───────────────────────────────────────────────────
     "vision_max_image_bytes":   (("vision", "max_image_bytes"),  int,  5242880),
@@ -278,6 +279,9 @@ class Config:
         threshold = _deep_get(self._data, "behavior", "compaction", "threshold_tokens")
         if threshold is not None and (not isinstance(threshold, (int, float)) or threshold < 1):
             errors.append("[behavior.compaction] threshold_tokens must be >= 1")
+        pdf_pages = _deep_get(self._data, "documents", "pdf_max_render_pages")
+        if pdf_pages is not None and (not isinstance(pdf_pages, int) or pdf_pages < 1):
+            errors.append("[documents] pdf_max_render_pages must be >= 1")
         # Vision quality steps — must be descending
         steps = _deep_get(self._data, "vision", "jpeg_quality_steps")
         if steps is not None and isinstance(steps, list) and steps != sorted(steps, reverse=True):

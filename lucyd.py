@@ -206,7 +206,7 @@ def _is_silent(text: str, tokens: list[str]) -> bool:
     return False
 
 
-from attachments import ImageTooLarge, extract_document_text, fit_image
+from attachments import ImageTooLarge, extract_document_text, fit_image, render_pdf_pages
 import metrics
 
 
@@ -650,7 +650,8 @@ class LucydDaemon:
                     if block:
                         image_blocks.append(block)
                 else:
-                    text = self._process_document(text, att)
+                    text, doc_blocks = self._process_document(text, att, supports_vision)
+                    image_blocks.extend(doc_blocks)
         return text, image_blocks
 
     def _process_image(self, text: str, att: Any, supports_vision: bool) -> tuple[str, dict[str, Any] | None]:
@@ -680,8 +681,9 @@ class LucydDaemon:
             log.error("Failed to read image %s: %s", att.local_path, e, exc_info=True)
             return _append(text, f"[{too_large_msg} — could not read file]"), None
 
-    def _process_document(self, text: str, att: Any) -> str:
-        """Process a single document/file attachment. Returns updated text."""
+    def _process_document(self, text: str, att: Any,
+                          supports_vision: bool) -> tuple[str, list[dict[str, Any]]]:
+        """Process a single document/file attachment. Returns (text, image_blocks)."""
         doc_text = None
         if self.config.documents_enabled:
             try:
@@ -695,8 +697,49 @@ class LucydDaemon:
                 log.error("Document extraction failed for %s: %s", _log_safe(att.filename), e, exc_info=True)
         if doc_text:
             label = att.filename or "document"
-            return _append(text, f"[document: {label}, saved: {att.local_path}]\n{doc_text}")
-        return _append(text, f"[attachment: {att.filename or 'file'}, {att.content_type}, saved: {att.local_path}]")
+            return _append(text, f"[document: {label}, saved: {att.local_path}]\n{doc_text}"), []
+
+        # Scanned PDF fallback — render pages as images for vision
+        is_pdf = (att.content_type == "application/pdf"
+                  or (att.filename or "").lower().endswith(".pdf"))
+        if is_pdf and supports_vision and self.config.documents_enabled:
+            blocks = self._render_pdf_as_images(att)
+            if blocks:
+                label = att.filename or "document"
+                return _append(text, f"[scanned document: {label}, "
+                               f"{len(blocks)} page(s) as images, "
+                               f"saved: {att.local_path}]"), blocks
+
+        return _append(text, f"[attachment: {att.filename or 'file'}, "
+                       f"{att.content_type}, saved: {att.local_path}]"), []
+
+    def _render_pdf_as_images(self, att: Any) -> list[dict[str, Any]]:
+        """Render PDF pages as images for vision. Returns image blocks."""
+        pages = render_pdf_pages(
+            att.local_path,
+            max_pages=self.config.documents_pdf_max_render_pages,
+            max_dimension=self.config.vision_max_dimension,
+        )
+        if not pages:
+            return []
+        blocks: list[dict[str, Any]] = []
+        for page_data in pages:
+            try:
+                page_data = fit_image(
+                    page_data, "image/jpeg",
+                    self.config.vision_max_image_bytes,
+                    self.config.vision_max_dimension,
+                    self.config.vision_jpeg_quality_steps,
+                    att.local_path,
+                )
+                blocks.append({
+                    "type": "image",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(page_data).decode("ascii"),
+                })
+            except ImageTooLarge:
+                log.warning("PDF page too large after compression, skipping")
+        return blocks
 
     async def _setup_session(self, ctx: _MessageState) -> None:
         """Set up session state: get/create, inject warnings, add user message."""

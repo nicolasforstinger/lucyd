@@ -162,6 +162,10 @@ text_extensions = [
     ".ini", ".cfg", ".log", ".sql", ".css",
 ]
 
+# Scanned PDF fallback — when text extraction yields nothing, render first N
+# pages as images for vision-capable models. Requires poppler-utils (pdftoppm).
+pdf_max_render_pages = 5
+
 # ─── Vision (OPTIONAL — entire section can be omitted) ──────────
 
 [vision]

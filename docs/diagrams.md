@@ -65,7 +65,7 @@ flowchart TD
 
     subgraph Process["_process_message"]
         PREPROC["_run_preprocessors"]
-        ATTACH["_process_attachments<br/>fit_image, extract_document_text"]
+        ATTACH["_process_attachments<br/>fit_image, extract_document_text,<br/>render_pdf_pages (scanned PDF fallback)"]
         SETUP["_setup_session<br/>key = channel_id:sender"]
         RECALL["_build_recall<br/>facts, episodes, commitments"]
         BUILD["_build_context<br/>stable + semi-stable + dynamic tiers"]

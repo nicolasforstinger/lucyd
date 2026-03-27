@@ -22,7 +22,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `skills.py` | Skill loader + `load_skill` tool. Markdown with YAML frontmatter. |
 | `metering.py` | Per-call cost recording to SQLite. Billing periods, EUR currency. |
 | `metrics.py` | Prometheus metrics. 21 metric families, graceful no-op if `prometheus_client` not installed. |
-| `attachments.py` | `Attachment` type, image fitting (`fit_image`), document text extraction (`extract_document_text`). Pure functions. |
+| `attachments.py` | `Attachment` type, image fitting (`fit_image`), document text extraction (`extract_document_text`), scanned PDF rendering (`render_pdf_pages`). Pure functions. |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
 | `async_utils.py` | `run_blocking()` for safe blocking I/O offload. |
 | `channels/telegram.py` | Telegram bridge. Polls getUpdates, POSTs to daemon, delivers replies. Standalone config: `telegram.toml`. |

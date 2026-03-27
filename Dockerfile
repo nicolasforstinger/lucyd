@@ -11,7 +11,7 @@ FROM python:3.13-slim
 # Uncomment ffmpeg line for local STT (whisper.cpp).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       cron at curl jq git file openssh-client procps \
+       cron at curl jq git file openssh-client procps poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 # RUN apt-get install -y --no-install-recommends ffmpeg
 

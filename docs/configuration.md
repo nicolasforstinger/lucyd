@@ -318,7 +318,7 @@ The local backend converts audio to WAV (16kHz mono) via ffmpeg before sending t
 
 ## [documents]
 
-Document attachment processing. Extracts text from attachments (PDF, text files) so the agent sees content, not just `[attachment: file, type]` labels. PDF support requires `pypdf`.
+Document attachment processing. Extracts text from attachments (PDF, text files) so the agent sees content, not just `[attachment: file, type]` labels. Text-layer PDF support requires `pypdf`. Scanned PDFs with no extractable text fall back to rendering pages as images for vision-capable models (requires `poppler-utils`).
 
 ```toml
 [documents]
@@ -330,9 +330,13 @@ text_extensions = [
     ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
     ".ini", ".cfg", ".log", ".sql", ".css",
 ]
+
+# Scanned PDF fallback — render first N pages as images for vision-capable models.
+# Requires poppler-utils (pdftoppm). Only triggers when text extraction yields nothing.
+pdf_max_render_pages = 5          # Max pages to render (default: 5)
 ```
 
-Files are matched by extension (for text) or MIME type (for PDF). Non-extractable formats fall through to label-only.
+Files are matched by extension (for text) or MIME type (for PDF). Non-extractable formats fall through to label-only. Scanned PDFs (no text layer) are rendered as images and injected into the vision pipeline when the model supports vision.
 
 ## [vision]
 
