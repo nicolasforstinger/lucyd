@@ -1624,7 +1624,7 @@ class TestHTTPAttachments:
         """POST /chat with attachments decodes and queues Attachment objects."""
         import base64
 
-        from models import Attachment
+        from attachments import Attachment
 
         data_b64 = base64.b64encode(b"fake pdf content").decode()
         app = _make_app(api_with_dl)
@@ -1663,7 +1663,7 @@ class TestHTTPAttachments:
         """POST /notify with attachments decodes and queues them."""
         import base64
 
-        from models import Attachment
+        from attachments import Attachment
 
         data_b64 = base64.b64encode(b"\x89PNG fake image").decode()
         app = _make_app(api_with_dl)

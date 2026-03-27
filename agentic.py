@@ -16,12 +16,13 @@ import logging
 import random
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import metrics
 
-from providers import LLMProvider, LLMResponse, StreamDelta, ToolCall, Usage
+from providers import CostContext, LLMProvider, LLMResponse, StreamDelta, ToolCall, Usage
 from tools import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -125,13 +126,12 @@ async def run_single_shot(
     tools: list[dict],  # ignored
     tool_executor: ToolRegistry,  # ignored
     config: LoopConfig | None = None,
-    cost: Any = None,
-    on_response: Any = None,
-    on_tool_results: Any = None,
-    on_stream_delta: Any = None,
+    cost: CostContext | None = None,
+    on_response: Callable | None = None,
+    on_tool_results: Callable | None = None,
+    on_stream_delta: Callable | None = None,
 ) -> LLMResponse:
     """Single model call, no tools. For constrained models or simple queries."""
-    from providers import CostContext
     cfg = config or LoopConfig()
     cc = cost if cost else CostContext.none()
     trace_id = cfg.trace_id or str(uuid.uuid4())
@@ -257,10 +257,10 @@ async def run_agentic_loop(
     tools: list[dict],
     tool_executor: ToolRegistry,
     config: LoopConfig | None = None,
-    cost: Any = None,
-    on_response: Any = None,
-    on_tool_results: Any = None,
-    on_stream_delta: Any = None,
+    cost: CostContext | None = None,
+    on_response: Callable | None = None,
+    on_tool_results: Callable | None = None,
+    on_stream_delta: Callable | None = None,
 ) -> LLMResponse:
     """Run the provider-agnostic agentic loop.
 
@@ -282,7 +282,6 @@ async def run_agentic_loop(
         calls is persisted to the session but not surfaced here —
         deliberate outbound messages go through the message tool.
     """
-    from providers import CostContext
     cfg = config or LoopConfig()
     cc = cost if cost else CostContext.none()
     trace_id = cfg.trace_id or str(uuid.uuid4())

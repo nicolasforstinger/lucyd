@@ -174,15 +174,17 @@ class Session:
         _atomic_write(self.state_path, json.dumps(state, ensure_ascii=False))
 
     def append_event(self, event: dict) -> None:
-        """Append event to dated JSONL audit trail with fsync."""
+        """Append event to dated JSONL audit trail.
+
+        No fsync — the JSONL is an audit trail, not the recovery mechanism.
+        The state file (_atomic_write) handles durability.
+        """
         event["timestamp"] = time.time()
         if self.trace_id:
             event["trace_id"] = self.trace_id
         path = self._dated_jsonl_path()
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
 
     def add_user_message(self, text: str, sender: str = "", source: str = "") -> None:
         """Add user message to session."""

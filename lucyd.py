@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import collections
 import contextlib
 import fcntl
 import logging
@@ -294,7 +293,6 @@ class _MessageState:
     msg_count_before: int = 0
     response: Any = None
     force_compact: bool = False
-    response_future: Any = None
 
 
 # ─── Daemon ──────────────────────────────────────────────────────
@@ -316,30 +314,17 @@ class LucydDaemon:
         self._http_api: Any = None
         self._memory_conn: Any = None
         self._current_session: Any = None  # Set per-message for status tool callback
-        self._session_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()  # sender → lock
+        self._session_locks: dict[str, asyncio.Lock] = {}  # sender → lock
         self.metering_db: Any = None
         self._error_counts: dict[str, int] = {}  # error_type → count, for /api/v1/errors
         self._monitor_state: dict = {"state": "idle"}
-
-    _MAX_SESSION_LOCKS = 1000  # Bound to prevent unbounded growth (P-018)
+        self._evolve_rollback_tag: str | None = None
 
     def _get_session_lock(self, sender: str) -> asyncio.Lock:
         """Get or create a per-sender lock for session mutation safety."""
-        if sender in self._session_locks:
-            self._session_locks.move_to_end(sender)
-            return self._session_locks[sender]
-        lock = asyncio.Lock()
-        self._session_locks[sender] = lock
-        # Evict oldest unlocked entries when over hard cap
-        while len(self._session_locks) > self._MAX_SESSION_LOCKS:
-            oldest_key = next(iter(self._session_locks))
-            oldest_lock = self._session_locks[oldest_key]
-            if oldest_lock.locked():
-                # Don't evict a lock that's actively held — skip it
-                self._session_locks.move_to_end(oldest_key)
-                break
-            self._session_locks.pop(oldest_key)
-        return lock
+        if sender not in self._session_locks:
+            self._session_locks[sender] = asyncio.Lock()
+        return self._session_locks[sender]
 
     def _setup_logging(self) -> None:
         """Configure logging to file + stderr.
@@ -489,7 +474,7 @@ class LucydDaemon:
                 embedding_timeout=self.config.embedding_timeout,
                 top_k=self.config.memory_top_k,
                 vector_search_limit=self.config.vector_search_limit,
-                fts_min_results=3,
+                fts_min_results=self.config.fts_min_results,
                 sqlite_timeout=self.config.sqlite_timeout,
             )
             # Wire metering for embedding cost tracking
@@ -1108,9 +1093,30 @@ class LucydDaemon:
             if reclaimed > 0:
                 metrics.COMPACTION_TOKENS_RECLAIMED.observe(reclaimed)
 
+    def _validate_evolution(self) -> bool:
+        """Validate workspace files after evolution. Returns True if valid."""
+        workspace = self.config.workspace
+        # Check that critical files still exist and are non-empty
+        for name in self.config.context_stable + self.config.context_semi_stable:
+            path = workspace / name
+            if not path.exists():
+                log.error("Evolution validation failed: %s missing", name)
+                return False
+            if path.stat().st_size == 0:
+                log.error("Evolution validation failed: %s is empty", name)
+                return False
+        return True
+
     async def _auto_close_if_ephemeral(self, ctx: _MessageState) -> None:
         """Auto-close ephemeral sessions (task_type 'task' or 'system')."""
         if ctx.task_type in ("task", "system") and not ctx.force_compact and not ctx.session_preexisted:
+            # Post-evolution validation and rollback
+            if ctx.sender == "evolution" and self._evolve_rollback_tag:
+                tag = self._evolve_rollback_tag
+                self._evolve_rollback_tag = None
+                if not self._validate_evolution():
+                    self._git_rollback(tag)
+                    log.error("Evolution rolled back to %s due to validation failure", tag)
             try:
                 await self.session_mgr.close_session(ctx.session_key)
                 log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
@@ -1179,7 +1185,6 @@ class LucydDaemon:
             provider_name=model_cfg.get("provider", ""),
             cost_rates=model_cfg.get("cost_per_mtok", []),
             force_compact=force_compact,
-            response_future=response_future,
         )
 
         # Session setup: get/create, inject warnings, add user message
@@ -1526,8 +1531,48 @@ class LucydDaemon:
             )
         return {"status": "completed", "session": session.id}
 
+    def _git_snapshot(self, label: str) -> str | None:
+        """Create a git checkpoint in the workspace. Returns tag name or None."""
+        import subprocess
+        workspace = str(self.config.workspace)
+        tag = f"pre-{label}-{int(time.time())}"
+        try:
+            subprocess.run(
+                ["git", "-C", workspace, "add", "-A"],
+                capture_output=True, timeout=30, check=False,
+            )
+            subprocess.run(
+                ["git", "-C", workspace, "commit", "--allow-empty",
+                 "-m", f"checkpoint: {label}"],
+                capture_output=True, timeout=30, check=False,
+            )
+            subprocess.run(
+                ["git", "-C", workspace, "tag", tag],
+                capture_output=True, timeout=30, check=True,
+            )
+            log.info("Git snapshot: %s", tag)
+            return tag
+        except Exception as e:
+            log.warning("Git snapshot failed: %s", e)
+            return None
+
+    def _git_rollback(self, tag: str) -> bool:
+        """Rollback workspace to a git tag."""
+        import subprocess
+        workspace = str(self.config.workspace)
+        try:
+            subprocess.run(
+                ["git", "-C", workspace, "reset", "--hard", tag],
+                capture_output=True, timeout=30, check=True,
+            )
+            log.warning("Rolled back workspace to %s", tag)
+            return True
+        except Exception as e:
+            log.error("Git rollback to %s failed: %s", tag, e)
+            return False
+
     async def _handle_evolve(self, *, force: bool = False) -> dict:
-        """Handle evolution request — push to queue for self-driven evolution.
+        """Handle evolution request — snapshot, push to queue, validate after.
 
         Args:
             force: Skip the pre-check for new daily logs.
@@ -1543,6 +1588,11 @@ class LucydDaemon:
                         return {"status": "skipped", "reason": f"no new daily logs since {since_date or 'ever'}"}
             except Exception:
                 log.warning("Evolution pre-check failed, proceeding anyway", exc_info=True)
+
+        # Snapshot workspace before evolution
+        tag = self._git_snapshot("evolve")
+        if tag:
+            self._evolve_rollback_tag = tag
 
         msg = {
             "type": "system",
@@ -1568,7 +1618,6 @@ class LucydDaemon:
             embed_batch_limit=self.config.indexer_embed_batch_limit,
             embedding_model=self.config.embedding_model,
             embedding_base_url=self.config.embedding_base_url,
-            embedding_provider=self.config.embedding_provider,
         )
 
         summary = await run_blocking(

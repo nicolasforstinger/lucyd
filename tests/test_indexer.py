@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -514,11 +514,11 @@ class TestEmbedBatch:
             ]
         }
 
-        class FakeResp:
-            def read(self):
-                return json.dumps(fake_response).encode()
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = fake_response
 
-        with patch("tools.indexer.urllib.request.urlopen", return_value=FakeResp()):
+        with patch("tools.indexer.httpx.post", return_value=mock_resp):
             result = embed_batch(["text a", "text b"], "fake-key",
                                  base_url="https://api.example.com/v1")
 

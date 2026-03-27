@@ -1173,7 +1173,7 @@ class TestErrorRecoveryOrphanedMessages:
         img_path = tmp_path / "test.jpg"
         img_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
 
-        from models import Attachment
+        from attachments import Attachment
         att = Attachment(
             content_type="image/jpeg",
             filename="test.jpg",
@@ -1606,7 +1606,7 @@ class TestDocumentExtractionIntegration:
 
         response = _make_response(text="Got it")
 
-        from models import Attachment
+        from attachments import Attachment
         att = Attachment(content_type="text/plain", local_path=str(doc_path),
                          filename="notes.txt", size=doc_path.stat().st_size)
 
@@ -1638,7 +1638,7 @@ class TestDocumentExtractionIntegration:
 
         response = _make_response(text="ok")
 
-        from models import Attachment
+        from attachments import Attachment
         att = Attachment(content_type="application/octet-stream", local_path=str(doc_path),
                          filename="design.psd", size=50)
 
@@ -1666,7 +1666,7 @@ class TestDocumentExtractionIntegration:
 
         response = _make_response(text="ok")
 
-        from models import Attachment
+        from attachments import Attachment
         att = Attachment(content_type="text/plain", local_path=str(doc_path),
                          filename="readme.txt", size=doc_path.stat().st_size)
 
@@ -1698,7 +1698,7 @@ class TestDocumentExtractionIntegration:
 
         response = _make_response(text="ok")
 
-        from models import Attachment
+        from attachments import Attachment
         att = Attachment(content_type="text/plain", local_path=str(doc_path),
                          filename="big.txt", size=200)
 
@@ -1729,7 +1729,7 @@ class TestDocumentExtractionIntegration:
 
         response = _make_response(text="ok")
 
-        from models import Attachment
+        from attachments import Attachment
         att = Attachment(content_type="text/plain", local_path=str(doc_path),
                          filename="bad.txt", size=7)
 
@@ -1883,7 +1883,7 @@ class TestImageFitting:
 
         response = _make_response(text="I see green")
 
-        from models import Attachment
+        from attachments import Attachment
         att = Attachment(content_type="image/jpeg", local_path=str(img_path),
                          filename="huge.jpg", size=img_path.stat().st_size)
 
@@ -2039,7 +2039,7 @@ class TestMessageLevelRetry:
         img = Image.new("RGB", (2, 2), color="red")
         img.save(str(img_path), format="PNG")
 
-        from models import Attachment
+        from attachments import Attachment
         att = Attachment(
             content_type="image/png",
             filename="test.png",

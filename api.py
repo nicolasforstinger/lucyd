@@ -3,17 +3,24 @@
 All messages enter via HTTP. Channel bridges, lucydctl, n8n, and scripts
 all talk to these endpoints. The API is always on.
 
-Endpoints:
-    POST /api/v1/chat         — Synchronous: send message, await response
-    POST /api/v1/message      — Fire-and-forget: queue user message, return 202
-    POST /api/v1/system       — Fire-and-forget: queue system event, return 202
-    POST /api/v1/notify       — Fire-and-forget: queue notification event, return 202
-    GET  /api/v1/status       — Health check + daemon stats
-    POST /api/v1/evolve       — Trigger memory evolution (rewrite understanding files)
-    POST /api/v1/index        — Run workspace indexing
-    GET  /api/v1/index/status — Workspace index status
-    POST /api/v1/consolidate  — Run memory consolidation (extract facts from workspace files)
-    POST /api/v1/maintain     — Run memory maintenance
+Endpoints (17 routes):
+    POST /api/v1/chat                       — Synchronous: send message, await response
+    POST /api/v1/chat/stream                — SSE: send message, stream response tokens
+    POST /api/v1/message                    — Fire-and-forget: queue user message (202)
+    POST /api/v1/notify                     — Fire-and-forget: queue notification (202)
+    GET  /api/v1/status                     — Health check + daemon stats
+    GET  /metrics                           — Prometheus metrics exposition
+    GET  /api/v1/sessions                   — List active sessions
+    GET  /api/v1/cost                       — Cost breakdown by billing period
+    GET  /api/v1/monitor                    — Live agentic loop state
+    POST /api/v1/sessions/reset             — Reset/archive sessions
+    GET  /api/v1/sessions/{id}/history      — Session transcript
+    POST /api/v1/evolve                     — Trigger memory evolution
+    POST /api/v1/compact                    — Force diary write + compaction
+    POST /api/v1/index                      — Run workspace indexing
+    GET  /api/v1/index/status               — Workspace index status
+    POST /api/v1/consolidate                — Run memory consolidation
+    POST /api/v1/maintain                   — Run memory maintenance
 """
 
 from __future__ import annotations
@@ -31,7 +38,7 @@ from typing import Any
 from aiohttp import web
 
 from log_utils import _log_safe
-from models import Attachment
+from attachments import Attachment
 
 log = logging.getLogger(__name__)
 
@@ -148,7 +155,6 @@ class HTTPApi:
         app.router.add_post("/api/v1/chat", self._handle_chat)
         app.router.add_post("/api/v1/chat/stream", self._handle_chat_stream)
         app.router.add_post("/api/v1/message", self._handle_message)
-        app.router.add_post("/api/v1/system", self._handle_system)
         app.router.add_post("/api/v1/notify", self._handle_notify)
         app.router.add_get("/api/v1/status", self._handle_status)
         app.router.add_get("/metrics", self._handle_metrics)
@@ -536,20 +542,6 @@ class HTTPApi:
         delivery is suppressed (system messages don't deliver).
         """
         return await self._parse_and_queue(request, msg_type="user")
-
-    async def _handle_system(self, request: web.Request) -> web.Response:
-        """POST /api/v1/system — DEPRECATED.
-
-        Use POST /api/v1/message with task_type: "system" instead.
-        Kept for backwards compatibility; logs a deprecation warning.
-        """
-        log.warning("DEPRECATED: POST /api/v1/system — use POST /api/v1/message with task_type: \"system\"")
-        return await self._parse_and_queue(
-            request, msg_type="system",
-            sender_default="system",
-            text_prefix="[AUTOMATED SYSTEM MESSAGE] ",
-            default_task_type="system",
-        )
 
     async def _handle_notify(self, request: web.Request) -> web.Response:
         """POST /api/v1/notify — fire-and-forget notification.

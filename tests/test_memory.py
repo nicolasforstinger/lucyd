@@ -3,6 +3,7 @@
 import json
 import sqlite3
 
+import httpx
 import pytest
 
 from memory import MemoryInterface, cosine_sim
@@ -208,18 +209,18 @@ class TestEmbedAPI:
 
     @pytest.mark.asyncio
     async def test_embed_calls_api_and_returns_embedding(self, memory_db):
-        """Mock urlopen returning valid embedding JSON; verify result."""
+        """Mock httpx.post returning valid embedding JSON; verify result."""
         from unittest.mock import MagicMock, patch
 
         fake_embedding = [0.1, 0.2, 0.3, 0.4, 0.5]
-        api_response = json.dumps({
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
             "data": [{"embedding": fake_embedding}],
             "model": "text-embedding-3-small",
             "usage": {"prompt_tokens": 5, "total_tokens": 5},
-        }).encode("utf-8")
-
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = api_response
+        }
 
         mem = MemoryInterface(
             db_path=memory_db,
@@ -229,16 +230,13 @@ class TestEmbedAPI:
             **_MEM_DEFAULTS,
         )
 
-        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        with patch("memory.httpx.post", return_value=mock_resp) as mock_post:
             result = await mem._embed("hello world")
 
         assert result == fake_embedding
-        # Verify urlopen was called with correct URL
-        call_args = mock_urlopen.call_args
-        req = call_args[0][0]
-        assert req.full_url == "https://api.example.com/v1/embeddings"
-        assert req.get_header("Authorization") == "Bearer test-key-123"
-        assert req.get_header("Content-type") == "application/json"
+        call_args = mock_post.call_args
+        assert call_args[0][0] == "https://api.example.com/v1/embeddings"
+        assert call_args[1]["headers"]["Authorization"] == "Bearer test-key-123"
 
     @pytest.mark.asyncio
     async def test_embed_caches_result_in_sqlite(self, memory_db):
@@ -247,12 +245,9 @@ class TestEmbedAPI:
         from unittest.mock import MagicMock, patch
 
         fake_embedding = [1.0, 2.0, 3.0]
-        api_response = json.dumps({
-            "data": [{"embedding": fake_embedding}],
-        }).encode("utf-8")
-
         mock_resp = MagicMock()
-        mock_resp.read.return_value = api_response
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"embedding": fake_embedding}]}
 
         mem = MemoryInterface(
             db_path=memory_db,
@@ -262,7 +257,7 @@ class TestEmbedAPI:
             **_MEM_DEFAULTS,
         )
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("memory.httpx.post", return_value=mock_resp):
             result = await mem._embed("test caching")
 
         assert result == fake_embedding
@@ -287,12 +282,9 @@ class TestEmbedAPI:
         from unittest.mock import MagicMock, patch
 
         fake_embedding = [0.5, 0.6, 0.7]
-        api_response = json.dumps({
-            "data": [{"embedding": fake_embedding}],
-        }).encode("utf-8")
-
         mock_resp = MagicMock()
-        mock_resp.read.return_value = api_response
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"embedding": fake_embedding}]}
 
         mem = MemoryInterface(
             db_path=memory_db,
@@ -302,20 +294,19 @@ class TestEmbedAPI:
             **_MEM_DEFAULTS,
         )
 
-        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        with patch("memory.httpx.post", return_value=mock_resp) as mock_post:
             first = await mem._embed("cache me")
             second = await mem._embed("cache me")
 
         assert first == fake_embedding
         assert second == fake_embedding
-        # urlopen should only be called once — second call hits cache
-        assert mock_urlopen.call_count == 1
+        # httpx.post should only be called once — second call hits cache
+        assert mock_post.call_count == 1
 
     @pytest.mark.asyncio
     async def test_embed_api_failure_returns_empty_list(self, memory_db):
-        """When urlopen raises, _embed returns [] gracefully."""
+        """When httpx.post raises, _embed returns [] gracefully."""
         from unittest.mock import patch
-        from urllib.error import URLError
 
         mem = MemoryInterface(
             db_path=memory_db,
@@ -325,14 +316,14 @@ class TestEmbedAPI:
             **_MEM_DEFAULTS,
         )
 
-        with patch("urllib.request.urlopen", side_effect=URLError("connection refused")):
+        with patch("memory.httpx.post", side_effect=httpx.ConnectError("connection refused")):
             result = await mem._embed("this will fail")
 
         assert result == []
 
     @pytest.mark.asyncio
     async def test_embed_timeout_returns_empty_list(self, memory_db):
-        """When urlopen times out, _embed returns [] gracefully."""
+        """When httpx.post times out, _embed returns [] gracefully."""
         from unittest.mock import patch
 
         mem = MemoryInterface(
@@ -343,15 +334,19 @@ class TestEmbedAPI:
             **_MEM_DEFAULTS,
         )
 
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        with patch("memory.httpx.post", side_effect=httpx.TimeoutException("timed out")):
             result = await mem._embed("this will timeout")
 
         assert result == []
 
     @pytest.mark.asyncio
     async def test_embed_no_api_key_returns_empty(self, memory_db):
-        """Without an API key, _embed returns [] (no API call attempted)."""
-        from unittest.mock import patch
+        """Without an API key, _embed still attempts (guard is at search level)."""
+        from unittest.mock import MagicMock, patch
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"embedding": [0.1]}]}
 
         mem = MemoryInterface(
             db_path=memory_db,
@@ -361,12 +356,9 @@ class TestEmbedAPI:
             **_MEM_DEFAULTS,
         )
 
-        with patch("urllib.request.urlopen"):
+        with patch("memory.httpx.post", return_value=mock_resp):
             result = await mem._embed("no key test")
 
-        # With no API key, the method still tries (the guard is at search level),
-        # but the auth header will be empty. The test verifies it doesn't crash.
-        # If the implementation guards on api_key, result is [].
         assert isinstance(result, list)
 
 

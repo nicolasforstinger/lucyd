@@ -11,8 +11,9 @@ import json
 import logging
 import sqlite3
 import time
-import urllib.request
 from pathlib import Path
+
+import httpx
 
 log = logging.getLogger(__name__)
 
@@ -21,8 +22,8 @@ log = logging.getLogger(__name__)
 CHUNK_SIZE_CHARS = 1600       # ~400 tokens at ~4 chars/token
 CHUNK_OVERLAP_CHARS = 320     # ~80 tokens overlap
 EMBEDDING_MODEL = ""
-EMBEDDING_PROVIDER = ""
 EMBEDDING_BASE_URL = ""
+EMBEDDING_PROVIDER = ""  # Used only for embedding_cache table provider column
 SOURCE = "memory"
 INCLUDE_PATTERNS = ["memory/*.md", "MEMORY.md"]
 EXCLUDE_DIRS = {"memory/cache"}
@@ -31,17 +32,15 @@ _EMBED_BATCH_LIMIT = 100
 
 def configure(chunk_size: int = 1600, chunk_overlap: int = 320,
               embed_batch_limit: int = 100,
-              embedding_model: str = "", embedding_base_url: str = "",
-              embedding_provider: str = "") -> None:
+              embedding_model: str = "", embedding_base_url: str = "") -> None:
     """Set indexer config from lucyd.toml values."""
     global CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, _EMBED_BATCH_LIMIT
-    global EMBEDDING_MODEL, EMBEDDING_BASE_URL, EMBEDDING_PROVIDER
+    global EMBEDDING_MODEL, EMBEDDING_BASE_URL
     CHUNK_SIZE_CHARS = chunk_size
     CHUNK_OVERLAP_CHARS = chunk_overlap
     _EMBED_BATCH_LIMIT = embed_batch_limit
     EMBEDDING_MODEL = embedding_model
     EMBEDDING_BASE_URL = embedding_base_url
-    EMBEDDING_PROVIDER = embedding_provider
 
 
 # ─── Pure Functions ──────────────────────────────────────────────
@@ -252,18 +251,12 @@ def embed_batch(
         batch = texts[batch_start:batch_start + _EMBED_BATCH_LIMIT]
 
         url = f"{base_url.rstrip('/')}/embeddings"
-        payload = json.dumps({
-            "model": model,
-            "input": batch,
-        }).encode("utf-8")
 
-        req = urllib.request.Request(url, data=payload, headers={  # noqa: S310 — base_url defaults to hardcoded https://api.openai.com/v1; not user-controlled
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        })
-
-        resp = urllib.request.urlopen(req, timeout=embedding_timeout)  # noqa: S310
-        data = json.loads(resp.read().decode("utf-8"))
+        resp = httpx.post(url, json={"model": model, "input": batch},
+                          headers={"Authorization": f"Bearer {api_key}"},
+                          timeout=embedding_timeout)
+        resp.raise_for_status()
+        data = resp.json()
 
         for item in data["data"]:
             all_embeddings.append((batch_start + item["index"], item["embedding"]))

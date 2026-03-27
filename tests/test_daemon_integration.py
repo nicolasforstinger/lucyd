@@ -910,7 +910,7 @@ class TestProcessMessageIntegration:
         img_path = tmp_path / "test.jpg"
         pil_img.save(str(img_path), format="JPEG")
 
-        from models import Attachment
+        from attachments import Attachment
         att = Attachment(
             content_type="image/jpeg",
             local_path=str(img_path),
@@ -955,7 +955,7 @@ class TestProcessMessageIntegration:
 
         from PIL import Image as PILImage
 
-        from models import Attachment
+        from attachments import Attachment
 
         img = PILImage.new("RGB", (200, 200), color="red")
         img_path = tmp_path / "big.png"
@@ -983,7 +983,7 @@ class TestProcessMessageIntegration:
             session.messages.append({"role": "user", "content": text})
         session.add_user_message = MagicMock(side_effect=fake_add_user)
 
-        from models import Attachment
+        from attachments import Attachment
 
         # Point to a file that doesn't exist
         att = Attachment(content_type="image/jpeg", local_path=str(tmp_path / "gone.jpg"),
@@ -1337,7 +1337,7 @@ class TestMessageLoopDebounce:
     async def test_attachments_preserved_through_processing(self, loop_daemon):
         """Message attachments pass through to _process_message."""
         daemon, session = loop_daemon
-        from models import Attachment
+        from attachments import Attachment
 
         att = Attachment(content_type="image/png", local_path="/tmp/a.png",
                          filename="a.png", size=100)

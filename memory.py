@@ -15,9 +15,10 @@ import logging
 import math
 import sqlite3
 import time
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+import httpx
 
 from async_utils import run_blocking
 from context import _estimate_tokens
@@ -106,7 +107,11 @@ class MemoryInterface:
         return " ".join(f'"{t}"' for t in tokens)
 
     async def _fts_search(self, query: str, top_k: int) -> list[dict]:
-        """Full-text search via FTS5."""
+        """Full-text search via FTS5.
+
+        FTS5 rank is negative (more negative = more relevant). We negate
+        so higher = better, matching cosine similarity's convention.
+        """
         safe_query = self._sanitize_fts5(query)
         if not safe_query:
             return []
@@ -127,7 +132,13 @@ class MemoryInterface:
                     """,
                     (safe_query, top_k),
                 ).fetchall()
-                return [dict(r) for r in rows]
+                results = [dict(r) for r in rows]
+                # Negate FTS5 rank: more negative → higher positive score.
+                # This puts FTS scores on a compatible scale with cosine
+                # similarity (0-1), where higher = more relevant.
+                for r in results:
+                    r["score"] = -r["score"]
+                return results
             except sqlite3.OperationalError as e:
                 log.debug("FTS query failed: %s", e)
                 return []
@@ -186,20 +197,21 @@ class MemoryInterface:
             return cached
 
         url = f"{self.base_url}/embeddings"
-        payload = json.dumps({
-            "model": self.model,
-            "input": text,
-        }).encode("utf-8")
-
-        req = urllib.request.Request(url, data=payload, headers={  # noqa: S310 — URL built from config base_url + "/embeddings"; not user-controlled
+        headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
-        })
+        }
+        payload = {"model": self.model, "input": text}
 
         t0 = time.time()
         try:
-            resp = await run_blocking(urllib.request.urlopen, req, timeout=self.embedding_timeout)
-            data = json.loads(resp.read().decode("utf-8"))
+            def _request():
+                resp = httpx.post(url, json=payload, headers=headers,
+                                  timeout=self.embedding_timeout)
+                resp.raise_for_status()
+                return resp.json()
+
+            data = await run_blocking(_request)
             embedding = data["data"][0]["embedding"]
             latency_ms = int((time.time() - t0) * 1000)
 

@@ -171,14 +171,6 @@ Fire-and-forget user message.
 
 ---
 
-### POST /api/v1/system
-
-Fire-and-forget system event. Text auto-prefixed with `[AUTOMATED SYSTEM MESSAGE]`. Default `task_type`: `"system"`.
-
-**Request:** Same fields as `/chat` (sender defaults to `"system"`). **Response (202):** `{"accepted": true, "queued_at": "ISO8601"}`.
-
----
-
 ### POST /api/v1/notify
 
 Fire-and-forget notification. Routes to operator's session via `notify_target`. Default `task_type`: `"system"`.

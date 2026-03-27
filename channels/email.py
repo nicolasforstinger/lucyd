@@ -96,49 +96,70 @@ def load_config():
     FROM_ADDR = os.environ.get("LUCYD_EMAIL_FROM", "") or USER
 
 
-def fetch_unread() -> list[dict]:
-    """Fetch unread emails via IMAP. Returns list of {uid, from, subject, body}."""
+def _imap_connect() -> imaplib.IMAP4_SSL:
+    """Open and authenticate an IMAP connection."""
+    imap = imaplib.IMAP4_SSL(IMAP_HOST)
+    imap.login(USER, PASSWORD)
+    imap.select(FOLDER)
+    return imap
+
+
+def fetch_and_mark(processed_uids: list[bytes]) -> list[dict]:
+    """Fetch unread emails and mark previously processed ones as read.
+
+    Uses a single IMAP connection for both operations.
+    Returns list of {uid, from, subject, body}.
+    """
     messages = []
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST)
-        imap.login(USER, PASSWORD)
-        imap.select(FOLDER)
-        _, data = imap.search(None, "UNSEEN")
-        uids = data[0].split()
+        imap = _imap_connect()
+        try:
+            # Mark previous batch as read
+            for uid in processed_uids:
+                try:
+                    imap.store(uid, "+FLAGS", "\\Seen")
+                except Exception as e:
+                    log.warning("Failed to mark %s as read: %s", uid, e)
 
-        for uid in uids:
-            _, msg_data = imap.fetch(uid, "(RFC822)")
-            if not msg_data or not msg_data[0]:
-                continue
-            raw = msg_data[0][1]
-            msg = email.message_from_bytes(raw)
+            # Fetch new unread
+            _, data = imap.search(None, "UNSEEN")
+            uids = data[0].split()
 
-            # Extract text body
-            body = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() == "text/plain":
-                        payload = part.get_payload(decode=True)
-                        if payload:
-                            body = payload.decode("utf-8", errors="replace")
-                        break
-            else:
-                payload = msg.get_payload(decode=True)
-                if payload:
-                    body = payload.decode("utf-8", errors="replace")
+            for uid in uids:
+                _, msg_data = imap.fetch(uid, "(RFC822)")
+                if not msg_data or not msg_data[0]:
+                    continue
+                raw = msg_data[0][1]
+                msg = email.message_from_bytes(raw)
 
-            from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
-            subject = msg.get("Subject", "(no subject)")
+                body = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() == "text/plain":
+                            payload = part.get_payload(decode=True)
+                            if payload:
+                                body = payload.decode("utf-8", errors="replace")
+                            break
+                else:
+                    payload = msg.get_payload(decode=True)
+                    if payload:
+                        body = payload.decode("utf-8", errors="replace")
 
-            messages.append({
-                "uid": uid,
-                "from": from_addr,
-                "subject": subject,
-                "body": body.strip(),
-            })
+                from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
+                subject = msg.get("Subject", "(no subject)")
 
-        imap.close()
-        imap.logout()
+                messages.append({
+                    "uid": uid,
+                    "from": from_addr,
+                    "subject": subject,
+                    "body": body.strip(),
+                })
+        finally:
+            try:
+                imap.close()
+                imap.logout()
+            except Exception:
+                pass
     except Exception as e:
         log.error("IMAP error: %s", e, exc_info=True)
 
@@ -162,31 +183,24 @@ def send_reply(to: str, subject: str, body: str) -> None:
         log.error("SMTP error: %s", e, exc_info=True)
 
 
-def mark_read(uid: bytes) -> None:
-    """Mark email as read via IMAP."""
-    try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST)
-        imap.login(USER, PASSWORD)
-        imap.select(FOLDER)
-        imap.store(uid, "+FLAGS", "\\Seen")
-        imap.close()
-        imap.logout()
-    except Exception as e:
-        log.warning("Failed to mark as read: %s", e, exc_info=True)
-
-
 async def poll_loop():
     """Main loop: fetch unread → POST to daemon → reply via SMTP."""
     log.info("Email bridge started: %s@%s → %s", USER, IMAP_HOST, URL)
 
     token = os.environ.get("LUCYD_HTTP_TOKEN", "")
     auth_headers = {"Authorization": f"Bearer {token}"} if token else {}
+    processed_uids: list[bytes] = []
+
     async with httpx.AsyncClient(timeout=300, headers=auth_headers) as client:
         while True:
-            emails = await asyncio.get_event_loop().run_in_executor(None, fetch_unread)
+            emails = await asyncio.get_event_loop().run_in_executor(
+                None, fetch_and_mark, processed_uids,
+            )
+            processed_uids = []
 
             for msg in emails:
                 if not msg["body"]:
+                    processed_uids.append(msg["uid"])
                     continue
 
                 log.info("Processing email from %s: %s", msg["from"], msg["subject"])
@@ -208,7 +222,7 @@ async def poll_loop():
                             None, send_reply, msg["from"], subject, reply,
                         )
 
-                    mark_read(msg["uid"])
+                    processed_uids.append(msg["uid"])
 
                 except Exception as e:
                     log.error("Failed to process email from %s: %s", msg["from"], e, exc_info=True)

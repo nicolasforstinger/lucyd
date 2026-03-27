@@ -22,8 +22,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `skills.py` | Skill loader + `load_skill` tool. Markdown with YAML frontmatter. |
 | `metering.py` | Per-call cost recording to SQLite. Billing periods, EUR currency. |
 | `metrics.py` | Prometheus metrics. 20 metric families, graceful no-op if `prometheus_client` not installed. |
-| `attachments.py` | Image fitting (`fit_image`), document text extraction (`extract_document_text`). Pure functions. |
-| `models.py` | Shared data types: `Attachment`. |
+| `attachments.py` | `Attachment` type, image fitting (`fit_image`), document text extraction (`extract_document_text`). Pure functions. |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
 | `async_utils.py` | `run_blocking()` for safe blocking I/O offload. |
 | `channels/telegram.py` | Telegram bridge. Polls getUpdates, POSTs to daemon, delivers replies. Standalone config: `telegram.toml`. |
@@ -90,6 +89,16 @@ _process_message(text, sender, source, channel_id, task_type, reply_to, ...)
 
 Metrics fire at: preprocessor execution, context utilization calculation, agentic loop (API calls, tokens, cost, latency), tool execution, message completion (count, duration, cost, turns), session close, compaction, errors.
 
+### Internal Message Format
+
+Messages are `list[dict]` throughout the pipeline — deliberately untyped. Three roles:
+
+- **user**: `{"role": "user", "content": str}` (content becomes `list[dict]` when images are attached, transiently)
+- **assistant**: `{"role": "assistant", "text": str, "tool_calls": [...], "usage": {...}}`
+- **tool_results**: `{"role": "tool_results", "results": [{"tool_call_id": str, "content": str}]}`
+
+This format mirrors the LLM API wire format (both Anthropic and OpenAI use JSON objects for messages). Provider `format_messages()` translates from internal dicts to provider-specific dicts — TypedDicts would add a construction step only to immediately destructure. The format is stable, exercised by 1265 tests, and validated on session load by `_validate_turn_structure()`. TypedDicts are deferred until mypy strict is enforced in CI — without static checking, they'd be typed comments.
+
 ## Daemon State Architecture
 
 `LucydDaemon` owns 18 `self.*` attributes and 58 methods. It is a composition root — the attributes are injected dependencies, not mutable shared state.
@@ -155,14 +164,13 @@ Every heavily-shared attribute has exactly one write site. After startup, no mut
 
 ## HTTP API
 
-18 endpoints. All registered in `api.py` lines 148-167.
+17 endpoints. All registered in `api.py` lines 147-165.
 
 | Endpoint | Method | Auth | Purpose |
 |---|---|---|---|
 | `/api/v1/chat` | POST | yes | Send message, await response |
 | `/api/v1/chat/stream` | POST | yes | Send message, stream response via SSE |
 | `/api/v1/message` | POST | yes | Fire-and-forget user message (202) |
-| `/api/v1/system` | POST | yes | Fire-and-forget system event (202) |
 | `/api/v1/notify` | POST | yes | Fire-and-forget notification (202) |
 | `/api/v1/status` | GET | no | Health check + daemon stats |
 | `/metrics` | GET | no | Prometheus metrics exposition |

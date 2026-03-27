@@ -1,4 +1,4 @@
-"""Attachment processing — image fitting, document text extraction.
+"""Attachment processing — types, image fitting, document text extraction.
 
 Pure functions that take config values as parameters and return results.
 No daemon state access.
@@ -7,10 +7,20 @@ No daemon state access.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class Attachment:
+    content_type: str    # "image/jpeg", "audio/ogg", etc.
+    local_path: str      # Absolute path on disk
+    filename: str        # Original filename or ""
+    size: int            # Bytes
+    is_voice: bool = False  # True = recorded voice message; False = audio file
 
 
 class ImageTooLarge(Exception):

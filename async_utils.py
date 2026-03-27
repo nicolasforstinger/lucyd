@@ -1,10 +1,8 @@
-"""Async helpers for offloading blocking work without the default executor.
+"""Async helpers for offloading blocking work.
 
-`asyncio.to_thread()` uses the event loop's shared default executor. In this
-environment that executor can hang at interpreter shutdown even after tests
-have finished, which stalls the audit suite. For Lucyd's short-lived blocking
-calls, a one-shot daemon thread avoids that teardown path and still gives us an
-`await`-able interface.
+Uses daemon threads with asyncio.Event signaling — no polling, no busy-wait.
+Avoids asyncio.to_thread() and the default executor to prevent shutdown hangs
+in containerized environments.
 """
 
 from __future__ import annotations
@@ -22,25 +20,23 @@ T = TypeVar("T")
 async def run_blocking(func, /, *args, **kwargs) -> T:
     """Run blocking work in a daemon thread and await the result."""
     call = partial(func, *args, **kwargs)
-    result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+    loop = asyncio.get_running_loop()
+    done = asyncio.Event()
+    result: list = []  # [ok: bool, value: T | BaseException]
 
     def _worker() -> None:
         try:
-            result_queue.put((True, call()))
-        except BaseException as exc:  # propagate to awaiter, including SDK-specific errors
-            result_queue.put((False, exc))
+            result.extend((True, call()))
+        except BaseException as exc:
+            result.extend((False, exc))
+        loop.call_soon_threadsafe(done.set)
 
     thread = threading.Thread(target=_worker, name="lucyd-blocking", daemon=True)
     thread.start()
-    while True:
-        try:
-            ok, value = result_queue.get_nowait()
-        except queue.Empty:
-            await asyncio.sleep(0.001)
-            continue
-        if ok:
-            return value  # type: ignore[return-value]
-        raise value  # type: ignore[misc]
+    await done.wait()
+    if result[0]:
+        return result[1]  # type: ignore[return-value]
+    raise result[1]  # type: ignore[misc]
 
 
 async def threaded_stream(sync_iterable_factory: Callable[[], object]) -> AsyncIterator:
