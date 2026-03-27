@@ -10,6 +10,8 @@ import logging
 import time
 from typing import Any
 
+from messages import Message
+
 log = logging.getLogger(__name__)
 
 # Set at daemon startup
@@ -35,7 +37,7 @@ _MEMORY_CONVENTIONS: list[str] = [
 
 def configure(config: Any = None, provider: Any = None, tool_registry: Any = None,
               session_manager: Any = None, get_provider: Any = None,
-              metering: Any = None, **_) -> None:
+              metering: Any = None, **_: Any) -> None:
     global _config, _provider, _get_provider, _tool_registry, _subagent_deny
     global _default_max_turns, _default_timeout, _metering
     if config is not None:
@@ -57,7 +59,7 @@ def configure(config: Any = None, provider: Any = None, tool_registry: Any = Non
 
 
 def _build_subagent_preamble(
-    scoped_tools: list[dict],
+    scoped_tools: list[dict[str, Any]],
     denied_names: list[str],
     max_turns: int,
 ) -> str:
@@ -163,7 +165,7 @@ async def tool_sessions_spawn(
     system_blocks = [{"text": system_text, "tier": "stable"}]
     fmt_system = provider.format_system(system_blocks)
 
-    messages = [{"role": "user", "content": prompt}]
+    messages: list[Message] = [{"role": "user", "content": prompt}]
 
     start_time = time.time()
 

@@ -17,9 +17,7 @@ Inbound message to response delivery. Source: `api.py` routes, `lucyd.py` `_mess
 | `POST /message` | `_handle_message` | No — 202 | Fire-and-forget. When `task_type: "system"`: auto-promotes to system behavior (prefix, sender default, delivery suppressed) |
 | `POST /notify` | `_handle_notify` | No — 202 | Fire-and-forget. Adds `[source]`/`[ref]` metadata. `notify` flag routes inbound message to operator session |
 
-`POST /system` is deprecated — use `POST /message` with `task_type: "system"`.
-
-All endpoints share `_extract_envelope()` (api.py:299): extracts `channel_id` (default `"http"`), `task_type` (validated), `reply_to` (optional).
+All endpoints share `_extract_envelope()`: extracts `channel_id` (default `"http"`), `task_type` (validated), `reply_to` (optional).
 
 ### Callers
 
@@ -112,9 +110,9 @@ flowchart TD
 
 `/chat` and `/chat/stream` both attach a `response_future` and go through `process_http_immediate` — the queue dispatch is identical. `/chat/stream` additionally attaches a `stream_queue`. Three conditional blocks in `_process_message` check `stream_queue is not None`:
 
-1. **Callback setup** (lucyd.py:1224): builds `_on_stream_delta`, passed through the agentic loop to `_call_provider_with_retry` (agentic.py:61), which selects `provider.stream()` vs `provider.complete()` based on callback presence.
-2. **Error path** (lucyd.py:1255): pushes error event + sentinel to terminate the SSE stream.
-3. **Non-streaming bridge** (lucyd.py:1267): if the provider didn't stream (no done event pushed via deltas), pushes the full reply as a single done event. Always pushes sentinel `None`.
+1. **Callback setup**: builds `_on_stream_delta`, passed through the agentic loop to `_call_provider_with_retry()`, which selects `provider.stream()` vs `provider.complete()` based on callback presence.
+2. **Error path**: pushes error event + sentinel to terminate the SSE stream.
+3. **Non-streaming bridge**: if the provider didn't stream (no done event pushed via deltas), pushes the full reply as a single done event. Always pushes sentinel `None`.
 
 The processing pipeline (`_run_agentic_with_retries`, `_finalize_response`) runs identically for both paths. No hidden conditional logic.
 
@@ -126,18 +124,18 @@ Fire at: `_run_preprocessors` (count, duration), `_build_context` (context utili
 
 ## 2. Agentic Loop
 
-The core thinking-acting cycle. Source: `lucyd.py` `_run_agentic_with_retries` (line 850), `agentic.py` `run_agentic_loop` (line 253).
+The core thinking-acting cycle. Source: `lucyd.py` `_run_agentic_with_retries()`, `agentic.py` `run_agentic_loop()`.
 
 ```mermaid
 flowchart TD
-    START["_run_agentic_with_retries<br/>(lucyd.py:850)"]
+    START["_run_agentic_with_retries"]
     DISPATCH{"_single_shot?"}
 
-    subgraph SingleShot["run_single_shot (agentic.py:121)"]
+    subgraph SingleShot["run_single_shot"]
         SS["format → call provider → record cost → return"]
     end
 
-    subgraph ToolUse["run_agentic_loop (agentic.py:253)"]
+    subgraph ToolUse["run_agentic_loop"]
         TRIM["Trim oldest turn groups<br/>if over context budget"]
         CALL["_call_provider_with_retry<br/>format → call → backoff on transient"]
         METER["Record cost to metering.db"]
@@ -153,7 +151,7 @@ flowchart TD
     RETURN["Return LLMResponse<br/>text + attachments + usage + turns"]
     MAX_TURNS["Append stop message<br/>+ fallback text"]
 
-    subgraph Retry["Message-level retry (lucyd.py:863)"]
+    subgraph Retry["Message-level retry"]
         ROLLBACK["Rollback session.messages<br/>to pre-attempt state"]
         BACKOFF["Exponential backoff + jitter"]
     end
@@ -175,7 +173,7 @@ flowchart TD
     START -.->|"transient error<br/>+ retries left"| ROLLBACK --> BACKOFF --> START
 ```
 
-### Key decision: stop vs continue (agentic.py:416)
+### Key decision: stop vs continue
 
 ```python
 if not response.tool_calls or response.stop_reason == "end_turn":
@@ -186,9 +184,9 @@ if not response.tool_calls or response.stop_reason == "end_turn":
 
 ### Truncation
 
-Happens inside `ToolRegistry.execute()` (tools/__init__.py:208), not as a step in the agentic loop. `_smart_truncate` applies per-tool limits: JSON arrays truncated by items, objects compacted, fallback to head+tail character cut.
+Happens inside `ToolRegistry.execute()`, not as a step in the agentic loop. `_smart_truncate` applies per-tool limits: JSON arrays truncated by items, objects compacted, fallback to head+tail character cut.
 
-### Message-level retry (lucyd.py:863)
+### Message-level retry
 
 `_run_agentic_with_retries` wraps the inner loop. On transient failure with retries remaining: roll back `session.messages` to the pre-attempt snapshot (strip partial turns), sleep with exponential backoff + jitter, and re-enter. Non-transient errors or exhausted retries propagate to `_handle_agentic_error`.
 
@@ -196,19 +194,19 @@ Happens inside `ToolRegistry.execute()` (tools/__init__.py:208), not as a step i
 
 ## 3. Context Building
 
-System prompt assembly, recall injection, and context budget. Source: `lucyd.py` `_build_context` (line 780), `context.py` `ContextBuilder.build()` (line 77).
+System prompt assembly, recall injection, and context budget. Source: `lucyd.py` `_build_context()`, `context.py` `ContextBuilder.build()`.
 
 ```mermaid
 flowchart TD
-    START["_build_context (lucyd.py:780)"]
+    START["_build_context"]
 
     subgraph Inputs["Gather inputs"]
         TOOLS_DESC["tool_registry.get_brief_descriptions()"]
         SKILLS["skill_loader.build_index()<br/>+ get_bodies(always_on)"]
-        RECALL["_build_recall (lucyd.py:757)<br/>SQL: facts, episodes, commitments<br/>→ recall text (or empty if not first msg)"]
+        RECALL["_build_recall<br/>SQL: facts, episodes, commitments<br/>→ recall text (or empty if not first msg)"]
     end
 
-    subgraph Builder["ContextBuilder.build() (context.py:77)"]
+    subgraph Builder["ContextBuilder.build()"]
         subgraph Stable["Stable Tier (cached)"]
             PERSONA["Personality files<br/>SOUL.md, AGENTS.md, etc."]
             TOOL_LIST["Tool descriptions<br/>name + description per tool"]
@@ -231,7 +229,7 @@ flowchart TD
 
     FORMAT["provider.format_system(blocks)"]
 
-    subgraph Budget["Context budget report (lucyd.py:807)"]
+    subgraph Budget["Context budget report"]
         ESTIMATE["Estimate: system + history +<br/>tool defs = used tokens"]
         METRIC["CONTEXT_UTILIZATION.observe(used / max)"]
     end
@@ -251,7 +249,7 @@ flowchart TD
     TOOL_GATE -->|no| NO_TOOLS
 ```
 
-### Task-type framing (context.py:232-256)
+### Task-type framing
 
 The dynamic tier includes session framing — 4 combinations based on `task_type` and `deliver`:
 
@@ -264,9 +262,9 @@ The dynamic tier includes session framing — 4 combinations based on `task_type
 
 ### Recall injection
 
-`_build_recall` (lucyd.py:757) only fires on the **first message** of a session (`len(session.messages) > 1` → skip). It calls `memory.get_session_start_context()` which queries structured memory: facts ordered by `accessed_at`, episodes by date, open commitments. The result is passed as `extra_dynamic` into `build()` and appended to the dynamic tier.
+`_build_recall` only fires on the **first message** of a session (`len(session.messages) > 1` → skip). It calls `memory.get_session_start_context()` which queries structured memory: facts ordered by `accessed_at`, episodes by date, open commitments. The result is passed as `extra_dynamic` into `build()` and appended to the dynamic tier.
 
-### Token cap enforcement (context.py:155)
+### Token cap enforcement
 
 When `max_system_tokens > 0`, blocks are trimmed in priority order: dynamic first, then semi-stable. Stable (persona + tool descriptions) is never trimmed. If stable alone exceeds the cap, an error is logged — persona is inviolable.
 
@@ -274,20 +272,20 @@ When `max_system_tokens > 0`, blocks are trimmed in priority order: dynamic firs
 
 ## 4. Session Start Recall
 
-How structured memory is injected at session start. Source: `lucyd.py` `_build_recall` (line 757), `memory.py` `get_session_start_context()` (line 613), `inject_recall()` (line 558).
+How structured memory is injected at session start. Source: `lucyd.py` `_build_recall()`, `memory.py` `get_session_start_context()`, `inject_recall()`.
 
 ```mermaid
 flowchart TD
     GUARD{"_build_recall<br/>first message?<br/>consolidation enabled?"}
     SKIP["Return empty string"]
 
-    subgraph Query["get_session_start_context (memory.py:613)"]
+    subgraph Query["get_session_start_context"]
         FACTS["SELECT facts<br/>WHERE invalidated_at IS NULL<br/>ORDER BY accessed_at DESC<br/>LIMIT max_facts"]
         EPISODES["SELECT episodes<br/>ORDER BY date DESC<br/>LIMIT max_episodes"]
         COMMITS["get_open_commitments()<br/>WHERE status = 'open'"]
     end
 
-    subgraph Budget["inject_recall (memory.py:558)"]
+    subgraph Budget["inject_recall"]
         SORT["Sort by priority DESC<br/>commitments (40) > episodes (25) > facts (15)"]
         ITER["Add blocks until<br/>max_dynamic_tokens exhausted"]
         DROP["Dropped sections noted<br/>in footer for agent"]
@@ -307,7 +305,7 @@ flowchart TD
     OUTPUT --> METRIC
 ```
 
-### Preconditions (lucyd.py:757)
+### Preconditions
 
 `_build_recall` only fires when:
 1. This is the **first message** in the session (`len(session.messages) > 1` → skip)
@@ -315,7 +313,7 @@ flowchart TD
 
 On failure, returns a fallback string directing the agent to use `memory_search` manually.
 
-### Priority budgeting (memory.py:558)
+### Priority budgeting
 
 `inject_recall` sorts blocks by priority (highest first), then iterates: each block is included if its estimated tokens fit the remaining budget. Blocks that don't fit are dropped and listed in the footer so the agent knows what's missing and can use `memory_search` to access it.
 
@@ -329,17 +327,17 @@ When `max_tokens` is 0, all blocks are included (unlimited budget).
 
 ### Runtime recall vs session start
 
-FTS5 keyword search and vector similarity (`memory_search` tool) use a separate path: `_build_recall_blocks` (memory.py:486) which adds a 4th block type — vector search results (priority 35) with exponential decay scoring. Session start recall is simpler: SQL lookups only, no FTS/vector.
+FTS5 keyword search and vector similarity (`memory_search` tool) use a separate path: `_build_recall_blocks()` which adds a 4th block type — vector search results (priority 35) with exponential decay scoring. Session start recall is simpler: SQL lookups only, no FTS/vector.
 
 ---
 
 ## 5. Provider Abstraction
 
-Source: `providers/__init__.py` protocol + factory, `agentic.py` `_call_provider_with_retry` (line 53).
+Source: `providers/__init__.py` protocol + factory, `agentic.py` `_call_provider_with_retry()`.
 
 ```mermaid
 flowchart TD
-    subgraph Retry["_call_provider_with_retry (agentic.py:53)"]
+    subgraph Retry["_call_provider_with_retry"]
         TIMEOUT["asyncio.wait_for(timeout)"]
         STREAM_Q{"on_stream_delta<br/>and supports_streaming?"}
         COMPLETE["provider.complete()"]
@@ -369,7 +367,7 @@ flowchart TD
     ERR -->|"no: 401, 400, 403, timeout"| RESP
 ```
 
-### LLMProvider protocol (providers/__init__.py:132)
+### LLMProvider protocol
 
 | Method | Purpose |
 |---|---|
@@ -382,15 +380,15 @@ flowchart TD
 
 ### Streaming path
 
-`_call_provider_with_retry` decides streaming at call time (agentic.py:70-73): if a `on_stream_delta` callback is provided AND `provider.capabilities.supports_streaming`, route to `_stream_to_response` (agentic.py:163). This function consumes `provider.stream()`, forwards each delta via callback (for SSE delivery), and assembles the final `LLMResponse` from accumulated text, tool call fragments, and usage.
+`_call_provider_with_retry` decides streaming at call time: if a `on_stream_delta` callback is provided AND `provider.capabilities.supports_streaming`, route to `_stream_to_response()`. This function consumes `provider.stream()`, forwards each delta via callback (for SSE delivery), and assembles the final `LLMResponse` from accumulated text, tool call fragments, and usage.
 
-All three providers implement `stream()` with a `stream_fallback` path: when the SDK client is `None` (no SDK installed), `stream_fallback` calls `complete()` and yields a single `StreamDelta` (providers/__init__.py:172).
+All three providers implement `stream()` with a `stream_fallback` path: when the SDK client is `None` (no SDK installed), `stream_fallback` calls `complete()` and yields a single `StreamDelta`.
 
-### Transient error classification (agentic.py:545)
+### Transient error classification
 
 Class-name-based matching — no SDK imports required. Retryable: `RateLimitError`, `InternalServerError`, `APIConnectionError`, `OverloadedError`, plus httpx transport/timeout errors and raw `ConnectionError`/`OSError`. Non-retryable: `AuthenticationError` (401), `BadRequestError` (400), `PermissionDeniedError` (403). `TimeoutError` from `asyncio.wait_for` raises immediately, no retry.
 
-### Factory (providers/__init__.py:203)
+### Factory
 
 `create_provider(model_config, api_key)` routes by `provider` field: `"anthropic-compat"`, `"openai-compat"`, `"smoke-local"`. Capabilities built from model config TOML via `_build_capabilities`. Provider name set on each instance for metrics labels.
 
@@ -398,7 +396,7 @@ Class-name-based matching — no SDK imports required. Retryable: `RateLimitErro
 
 ## 6. Session Persistence
 
-Dual storage with compaction and consolidation. Source: `session.py` `Session` + `SessionManager`, `lucyd.py` `_finalize_response` (line 959).
+Dual storage with compaction and consolidation. Source: `session.py` `Session` + `SessionManager`, `lucyd.py` `_finalize_response()`.
 
 ```mermaid
 flowchart TD
@@ -414,7 +412,7 @@ flowchart TD
         STATE[".state.json — save_state()<br/>atomic snapshot (tmp + rename)"]
     end
 
-    subgraph Finalize["_finalize_response (lucyd.py:959)"]
+    subgraph Finalize["_finalize_response"]
         PERSIST["_persist_response<br/>JSONL + state for new messages"]
         DELIVER["_deliver_reply"]
         WARN_CHECK{"input_tokens ><br/>80% of threshold?"}
@@ -425,7 +423,7 @@ flowchart TD
         AUTOCLOSE{"task_type ∈<br/>task, system?"}
     end
 
-    subgraph Close["close_session (session.py:336)"]
+    subgraph Close["close_session"]
         POP["Pop from _sessions + _index"]
         SAVE_IDX["Save index immediately"]
         CALLBACKS["Fire on_close callbacks<br/>(consolidation)"]
@@ -455,9 +453,9 @@ Every mutation writes to both stores:
 - **JSONL** (`{id}.{YYYY-MM-DD}.jsonl`): `append_event()` with `fsync`. Events: session creation, user messages, assistant messages, tool results, compaction. Daily-split for rotation.
 - **State** (`{id}.state.json`): `save_state()` via `_atomic_write` (temp + rename). Full snapshot: messages, token counts, compaction count, warning state.
 
-On load, `_validate_turn_structure` (session.py:41) fixes orphaned tool_calls (no matching tool_results) and orphaned tool_results (no preceding tool_calls) — data integrity after crashes or interrupted agentic loops.
+On load, `_validate_turn_structure()` fixes orphaned tool_calls (no matching tool_results) and orphaned tool_results (no preceding tool_calls) — data integrity after crashes or interrupted agentic loops.
 
-### Compaction (session.py:375)
+### Compaction
 
 Triggered in `_finalize_response` when `last_input_tokens > compaction_threshold`. Two phases:
 
@@ -466,7 +464,7 @@ Triggered in `_finalize_response` when `last_input_tokens > compaction_threshold
 
 A context warning is injected at 80% of threshold (`_check_compaction_warning`) to give the agent a chance to save important context to memory files.
 
-### Close sequence (session.py:336)
+### Close sequence
 
 1. Pop session from in-memory `_sessions` dict
 2. Pop contact from `_index`
@@ -478,11 +476,11 @@ A context warning is injected at 80% of threshold (`_check_compaction_warning`) 
 
 ## 7. Tool System
 
-Registration at startup, dispatch at runtime. Source: `tools/__init__.py` `ToolRegistry`, `lucyd.py` `_init_tools` (line 454).
+Registration at startup, dispatch at runtime. Source: `tools/__init__.py` `ToolRegistry`, `lucyd.py` `_init_tools()`.
 
 ```mermaid
 flowchart TD
-    subgraph Startup["_init_tools (lucyd.py:454)"]
+    subgraph Startup["_init_tools"]
         REGISTRY["Create ToolRegistry<br/>truncation_limit + max_result_tokens<br/>(25% of max_context_tokens)"]
         DEPS["Build dependency dict<br/>config, provider, session_mgr,<br/>memory, conn, metering, ..."]
 
@@ -502,7 +500,7 @@ flowchart TD
         end
     end
 
-    subgraph Runtime["ToolRegistry.execute (tools/__init__.py:144)"]
+    subgraph Runtime["ToolRegistry.execute()"]
         CALL["Tool call from LLM"]
         LOOKUP{"In registry?"}
         NOT_FOUND["Error: tool not available<br/>+ list available tools"]
@@ -537,9 +535,9 @@ flowchart TD
 
 ### Gating
 
-Built-in modules are **skipped entirely** if none of their tools appear in `[tools] enabled` (lucyd.py:536). Plugin `configure()` is **always called** if the module exports TOOLS or PREPROCESSORS — only tool registration is gated by the enabled list. Preprocessors register unconditionally.
+Built-in modules are **skipped entirely** if none of their tools appear in `[tools] enabled`. Plugin `configure()` is **always called** if the module exports TOOLS or PREPROCESSORS — only tool registration is gated by the enabled list. Preprocessors register unconditionally.
 
-### Truncation (tools/__init__.py:199-208)
+### Truncation
 
 Two limits compete:
 1. **Character limit**: per-tool `max_output` or registry-wide `truncation_limit` (default 30,000 chars)
@@ -581,7 +579,7 @@ Per tool call: `TOOL_CALLS_TOTAL{tool_name, status}` (success/error), `TOOL_DURA
 
 ## 8. HTTP Core + Bridge Pattern
 
-Source: `api.py` middleware + route registration (lines 145-167), `channels/*.py`, `bin/lucydctl`.
+Source: `api.py` middleware + route registration (lines 156-174), `channels/*.py`, `bin/lucydctl`.
 
 See diagram 1 for the full message lifecycle including caller → endpoint → queue → processing flow. This section covers the HTTP layer internals and bridge contract.
 
@@ -589,7 +587,7 @@ See diagram 1 for the full message lifecycle including caller → endpoint → q
 flowchart TD
     REQ["Inbound HTTP request"]
 
-    subgraph Middleware["api.py middleware (lines 193-235)"]
+    subgraph Middleware["api.py middleware"]
         AUTH{"_auth_middleware"}
         LOCALHOST["Localhost exempt<br/>(127.0.0.1, ::1)"]
         TOKEN["Bearer token<br/>hmac.compare_digest"]
@@ -623,9 +621,9 @@ flowchart TD
 
 Two middleware layers, applied in order:
 
-1. **`_auth_middleware`** (api.py:193): `/status` and `/metrics` are exempt. Localhost (`127.0.0.1`, `::1`) is trusted. All other requests require `Authorization: Bearer <token>` validated via `hmac.compare_digest` against `LUCYD_HTTP_TOKEN`. No token configured → 503.
+1. **`_auth_middleware`**: `/status` and `/metrics` are exempt. Localhost (`127.0.0.1`, `::1`) is trusted. All other requests require `Authorization: Bearer <token>` validated via `hmac.compare_digest` against `LUCYD_HTTP_TOKEN`. No token configured → 503.
 
-2. **`_rate_middleware`** (api.py:222): per-IP rate limiting. Read-only endpoints (`/status`, `/metrics`, `/sessions`, `GET /sessions/{id}/history`) use a separate `status_rate_limit`. All other endpoints use `rate_limit` / `rate_window`. Stale entries evicted above `rate_limit_cleanup_threshold`.
+2. **`_rate_middleware`**: per-IP rate limiting. Read-only endpoints (`/status`, `/metrics`, `/sessions`, `GET /sessions/{id}/history`) use a separate `status_rate_limit`. All other endpoints use `rate_limit` / `rate_window`. Stale entries evicted above `rate_limit_cleanup_threshold`.
 
 ### Bridge contract
 
@@ -648,7 +646,7 @@ No outbound push from daemon to bridges.
 
 ## 9. Data Directory Layout
 
-Source: `config.py` `_resolve_data_dir_paths()` (line 301), `session.py`, `metering.py`.
+Source: `config.py` `_resolve_data_dir_paths()`, `session.py`, `metering.py`.
 
 ```mermaid
 flowchart LR
@@ -674,7 +672,7 @@ flowchart LR
     MEMDB["[memory] db<br/>default: ~/.lucyd/memory/main.sqlite<br/>(configured independently)"]
 ```
 
-### Path resolution (config.py:301)
+### Path resolution
 
 `$DATA_DIR` source priority: `LUCYD_DATA_DIR` env var > `[paths] data_dir` in TOML > `/data`. All runtime paths derive from it unless explicitly overridden:
 
@@ -698,23 +696,23 @@ Per session UUID:
 - `{uuid}.state.json` — atomic snapshot (tmp + rename). Full messages array, token counts, compaction state.
 - `{uuid}.{YYYY-MM-DD}.jsonl` — append-only audit trail. One event per line, daily-split. Events: session creation, messages, tool results, compaction.
 - `sessions.json` — index mapping `channel_id:sender` to session UUIDs.
-- `.archive/` — closed sessions moved here by `close_session` (session.py:361).
+- `.archive/` — closed sessions moved here by `close_session()`.
 
 ### Monitor state
 
-In-memory only (`_monitor_state` dict, lucyd.py:322). Exposed via `GET /api/v1/monitor`. No file on disk.
+In-memory only (`_monitor_state` dict). Exposed via `GET /api/v1/monitor`. No file on disk.
 
 ---
 
 ## 10. Startup Sequence
 
-Source: `lucyd.py` `main()` (line 1922), `LucydDaemon.run()` (line 1820).
+Source: `lucyd.py` `main()`, `LucydDaemon.run()`.
 
 ```mermaid
 flowchart TD
     MAIN["main()<br/>argparse -c/--config<br/>load_config() → LucydDaemon<br/>asyncio.run(daemon.run())"]
 
-    subgraph Startup["run() — startup (lines 1825-1883)"]
+    subgraph Startup["run() — startup"]
         LOG["_setup_logging"]
         DATADIR["Validate data_dir<br/>mkdir + writable check"]
         PID["_acquire_pid_file"]
@@ -732,7 +730,7 @@ flowchart TD
 
     RUN["_message_loop()<br/>blocks until shutdown"]
 
-    subgraph Shutdown["run() — shutdown (lines 1891-1917)"]
+    subgraph Shutdown["run() — shutdown"]
         STOP_HTTP["_http_api.stop() (5s timeout)"]
         PERSIST["Persist all active sessions<br/>(save_state, NOT close_session)"]
         CLOSE_DB["Close metering_db + _memory_conn"]

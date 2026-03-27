@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import metrics
+from messages import Message, ToolResultsMessage
 
 from providers import CostContext, LLMProvider, LLMResponse, StreamDelta, ToolCall, Usage
 from tools import ToolRegistry
@@ -54,8 +55,8 @@ class LoopConfig:
 async def _call_provider_with_retry(
     provider: LLMProvider,
     system: Any,
-    fmt_messages: list[dict],
-    fmt_tools: list[dict],
+    fmt_messages: list[dict[str, Any]],
+    fmt_tools: list[dict[str, Any]],
     *,
     cfg: LoopConfig,
     trace_id: str,
@@ -116,20 +117,20 @@ async def _call_provider_with_retry(
             last_exc = exc
             await asyncio.sleep(delay)
 
-    raise last_exc  # type: ignore[misc]
+    raise last_exc  # type: ignore[misc]  # loop always runs ≥1 iteration; last_exc is set on retry path
 
 
 async def run_single_shot(
     provider: LLMProvider,
     system: Any,
-    messages: list[dict],
-    tools: list[dict],  # ignored
+    messages: list[Message],
+    tools: list[dict[str, Any]],  # ignored
     tool_executor: ToolRegistry,  # ignored
     config: LoopConfig | None = None,
     cost: CostContext | None = None,
-    on_response: Callable | None = None,
-    on_tool_results: Callable | None = None,
-    on_stream_delta: Callable | None = None,
+    on_response: Callable[..., Any] | None = None,
+    on_tool_results: Callable[..., Any] | None = None,
+    on_stream_delta: Callable[..., Any] | None = None,
 ) -> LLMResponse:
     """Single model call, no tools. For constrained models or simple queries."""
     cfg = config or LoopConfig()
@@ -161,13 +162,13 @@ async def run_single_shot(
 
 
 async def _stream_to_response(
-    provider: LLMProvider, system: Any, messages: list[dict],
-    tools: list[dict], on_delta: Any,
+    provider: LLMProvider, system: Any, messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]], on_delta: Any,
 ) -> LLMResponse:
     """Consume provider.stream(), call on_delta for each chunk, return aggregated LLMResponse."""
     text_parts: list[str] = []
     thinking_parts: list[str] = []
-    tool_calls_building: dict[int, dict] = {}  # index → {id, name, args_json}
+    tool_calls_building: dict[int, dict[str, Any]] = {}  # index → {id, name, args_json}
     stop_reason = "end_turn"
     usage = Usage()
     ttft: float | None = None
@@ -228,7 +229,7 @@ async def _stream_to_response(
     )
 
 
-def _turn_group_end(messages: list[dict], start: int) -> int:
+def _turn_group_end(messages: list[Message], start: int) -> int:
     """Return the exclusive end index of the turn group starting at `start`.
 
     A turn group is:
@@ -239,13 +240,11 @@ def _turn_group_end(messages: list[dict], start: int) -> int:
       are included in the group).  Stops at the next assistant turn
       to avoid consuming a later valid turn group.
     """
-    role = messages[start].get("role", "")
-    if role == "assistant" and messages[start].get("tool_calls"):
+    if messages[start]["role"] == "assistant" and messages[start].get("tool_calls"):
         for j in range(start + 1, len(messages)):
-            jr = messages[j].get("role", "")
-            if jr == "tool_results":
+            if messages[j]["role"] == "tool_results":
                 return j + 1
-            if jr == "assistant":
+            if messages[j]["role"] == "assistant":
                 break  # next assistant turn — don't consume it
     return start + 1
 
@@ -253,14 +252,14 @@ def _turn_group_end(messages: list[dict], start: int) -> int:
 async def run_agentic_loop(
     provider: LLMProvider,
     system: Any,
-    messages: list[dict],
-    tools: list[dict],
+    messages: list[Message],
+    tools: list[dict[str, Any]],
     tool_executor: ToolRegistry,
     config: LoopConfig | None = None,
     cost: CostContext | None = None,
-    on_response: Callable | None = None,
-    on_tool_results: Callable | None = None,
-    on_stream_delta: Callable | None = None,
+    on_response: Callable[..., Any] | None = None,
+    on_tool_results: Callable[..., Any] | None = None,
+    on_stream_delta: Callable[..., Any] | None = None,
 ) -> LLMResponse:
     """Run the provider-agnostic agentic loop.
 
@@ -443,7 +442,7 @@ async def run_agentic_loop(
                 on_stream_delta(status_delta)
 
         # Execute tool calls in parallel
-        async def _execute_tool(tc):
+        async def _execute_tool(tc: ToolCall) -> dict[str, Any]:
             log.info("[%s] Tool call: %s(%s)",
                      trace_id[:8], tc.name, _truncate_args(tc.arguments))
             tool_result = await tool_executor.execute(tc.name, tc.arguments)
@@ -487,7 +486,7 @@ async def run_agentic_loop(
                         )
                 final_results.append(result)
 
-        results_msg = {"role": "tool_results", "results": final_results}
+        results_msg: ToolResultsMessage = {"role": "tool_results", "results": final_results}
         messages.append(results_msg)
 
         # Inject concise thinking hint after tool results
@@ -532,8 +531,8 @@ async def run_agentic_loop(
         else:
             response.text = stop_msg
         response.attachments = all_attachments
-    response.turns = max_turns  # type: ignore[union-attr]
-    return response  # type: ignore[return-value]
+    response.turns = max_turns  # type: ignore[union-attr]  # response is always set when loop exits normally
+    return response  # type: ignore[return-value]  # same — mypy can't prove the loop body always executes
 
 
 def is_transient_error(exc: BaseException) -> bool:
@@ -594,7 +593,7 @@ def is_transient_error(exc: BaseException) -> bool:
 
 
 
-def _truncate_args(args: dict, max_len: int = 200) -> str:
+def _truncate_args(args: dict[str, Any], max_len: int = 200) -> str:
     """Truncate tool arguments for logging."""
     s = str(args)
     return s[:max_len] + "..." if len(s) > max_len else s

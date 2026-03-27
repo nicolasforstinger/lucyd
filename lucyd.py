@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from messages import Message
+
 # Add lucyd directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -61,7 +63,7 @@ _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 def get_evolution_state(
     file_path: str,
     conn: "sqlite3.Connection",
-) -> dict | None:
+) -> dict[str, Any] | None:
     """Return evolution state for *file_path*, or None if never evolved."""
     row = conn.execute(
         "SELECT last_evolved_at, content_hash, logs_through "
@@ -217,7 +219,7 @@ class _MonitorWriter:
     __slots__ = ("_state", "_contact", "_session_id", "_trace_id", "_model",
                  "_turn", "_turn_started_at", "_message_started_at", "_turns")
 
-    def __init__(self, state: dict, contact: str, session_id: str,
+    def __init__(self, state: dict[str, Any], contact: str, session_id: str,
                  trace_id: str, model: str):
         self._state = state
         self._contact = contact
@@ -227,7 +229,7 @@ class _MonitorWriter:
         self._turn = 1
         self._turn_started_at = time.time()
         self._message_started_at = self._turn_started_at
-        self._turns: list[dict] = []
+        self._turns: list[dict[str, Any]] = []
 
     def write(self, state: str, tools_in_flight: list[str] | None = None) -> None:
         self._state.update({
@@ -244,7 +246,7 @@ class _MonitorWriter:
             "updated_at": time.time(),
         })
 
-    def on_response(self, response) -> None:
+    def on_response(self, response: Any) -> None:
         duration_ms = int((time.time() - self._turn_started_at) * 1000)
         tool_names = [tc.name for tc in response.tool_calls] if response.tool_calls else []
         self._turns.append({
@@ -261,7 +263,7 @@ class _MonitorWriter:
         else:
             self.write("idle")
 
-    def on_tool_results(self, results_msg) -> None:
+    def on_tool_results(self, results_msg: Any) -> None:
         self._turn += 1
         self._turn_started_at = time.time()
         self.write("thinking")
@@ -280,16 +282,16 @@ class _MessageState:
     reply_to: str = ""                # Envelope: response routing ("" = caller, "silent", or sender name)
     session_key: str = ""             # channel_id:sender — computed in _process_message
     deliver: bool = True
-    image_blocks: list = field(default_factory=list)
+    image_blocks: list[dict[str, Any]] = field(default_factory=list)
     session: Any = None
     user_msg_idx: int = 0
     session_preexisted: bool = False
-    model_cfg: dict = field(default_factory=dict)
+    model_cfg: dict[str, Any] = field(default_factory=dict)
     model_name: str = ""
     provider_name: str = ""
-    cost_rates: list = field(default_factory=list)
+    cost_rates: list[float] = field(default_factory=list)
     fmt_system: Any = None
-    tools: list = field(default_factory=list)
+    tools: list[dict[str, Any]] = field(default_factory=list)
     msg_count_before: int = 0
     response: Any = None
     force_compact: bool = False
@@ -302,22 +304,22 @@ class LucydDaemon:
         self.config = config
         self.running = True
         self.start_time = time.time()
-        self.queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-        self._control_queue: asyncio.Queue = asyncio.Queue()
+        self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
+        self._control_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.provider: Any = None
         self._single_shot: bool = False
-        self.session_mgr: SessionManager | None = None
-        self._preprocessors: list[dict] = []
-        self.context_builder: ContextBuilder | None = None
+        self.session_mgr: SessionManager = None  # type: ignore[assignment]  # set in _init_sessions
+        self._preprocessors: list[dict[str, Any]] = []
+        self.context_builder: ContextBuilder = None  # type: ignore[assignment]  # set in _init_context
         self.skill_loader: SkillLoader | None = None
-        self.tool_registry: ToolRegistry | None = None
+        self.tool_registry: ToolRegistry = None  # type: ignore[assignment]  # set in _init_tools
         self._http_api: Any = None
         self._memory_conn: Any = None
         self._current_session: Any = None  # Set per-message for status tool callback
         self._session_locks: dict[str, asyncio.Lock] = {}  # sender → lock
         self.metering_db: Any = None
         self._error_counts: dict[str, int] = {}  # error_type → count, for /api/v1/errors
-        self._monitor_state: dict = {"state": "idle"}
+        self._monitor_state: dict[str, Any] = {"state": "idle"}
         self._evolve_rollback_tag: str | None = None
 
     def _get_session_lock(self, sender: str) -> asyncio.Lock:
@@ -338,7 +340,7 @@ class LucydDaemon:
         # JSON logging format for Docker (stdout → Docker log driver)
         if self.config.log_format == "json":
             from log_utils import StructuredJSONFormatter
-            fmt = StructuredJSONFormatter()
+            fmt: logging.Formatter = StructuredJSONFormatter()
         else:
             fmt = logging.Formatter(
                 "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -563,7 +565,7 @@ class LucydDaemon:
             log.info("Registered preprocessors: %s",
                      ", ".join(pp["name"] for pp in self._preprocessors))
 
-    def _get_memory_conn(self):
+    def _get_memory_conn(self) -> Any:
         """Get or create the memory DB connection.
 
         Connection is created once and reused for the daemon's lifetime.
@@ -609,7 +611,7 @@ class LucydDaemon:
 
 
 
-    async def _run_preprocessors(self, text: str, attachments: list | None) -> tuple[str, list | None]:
+    async def _run_preprocessors(self, text: str, attachments: list[Any] | None) -> tuple[str, list[Any] | None]:
         """Run registered preprocessors on inbound message.
 
         Each preprocessor receives (text, attachments, config) and returns
@@ -633,7 +635,7 @@ class LucydDaemon:
                 break
         return text, attachments or None
 
-    async def _process_attachments(self, text, attachments, provider):
+    async def _process_attachments(self, text: str, attachments: list[Any] | None, provider: Any) -> tuple[str, list[dict[str, Any]]]:
         """Process attachments into text descriptions + image blocks.
 
         Returns (text, image_blocks).
@@ -651,7 +653,7 @@ class LucydDaemon:
                     text = self._process_document(text, att)
         return text, image_blocks
 
-    def _process_image(self, text, att, supports_vision):
+    def _process_image(self, text: str, att: Any, supports_vision: bool) -> tuple[str, dict[str, Any] | None]:
         """Process a single image attachment. Returns (text, block_or_None)."""
         too_large_msg = "image too large to display"
         if not supports_vision:
@@ -678,7 +680,7 @@ class LucydDaemon:
             log.error("Failed to read image %s: %s", att.local_path, e, exc_info=True)
             return _append(text, f"[{too_large_msg} — could not read file]"), None
 
-    def _process_document(self, text, att):
+    def _process_document(self, text: str, att: Any) -> str:
         """Process a single document/file attachment. Returns updated text."""
         doc_text = None
         if self.config.documents_enabled:
@@ -728,18 +730,20 @@ class LucydDaemon:
         ctx.user_msg_idx = len(session.messages) - 1
 
         # Merge consecutive user messages (recovery from prior errors, JSONL rebuild)
-        while len(session.messages) >= 2 and session.messages[-2].get("role") == "user":
-            prev_text = _text_from_content(session.messages[-2].get("content", ""))
-            last_text = _text_from_content(session.messages[-1].get("content", ""))
-            session.messages[-2]["content"] = prev_text + "\n" + last_text
+        while len(session.messages) >= 2 and session.messages[-2]["role"] == "user":
+            last = session.messages[-1]
+            if last["role"] != "user":
+                break
+            prev = session.messages[-2]
+            prev["content"] = _text_from_content(prev["content"]) + "\n" + _text_from_content(last["content"])
             session.messages.pop()
             ctx.user_msg_idx = len(session.messages) - 1
             log.warning("Merged consecutive user messages in session %s", session.id)
 
         if ctx.image_blocks:
-            session.messages[ctx.user_msg_idx]["_image_blocks"] = ctx.image_blocks
+            session.messages[ctx.user_msg_idx]["_image_blocks"] = ctx.image_blocks  # type: ignore[typeddict-unknown-key]  # transient key, stripped before persistence
 
-    async def _build_recall(self, ctx: _MessageState, provider) -> str:
+    async def _build_recall(self, ctx: _MessageState, provider: Any) -> str:
         """Build recall text for fresh sessions via structured memory."""
         session = ctx.session
         if len(session.messages) > 1:
@@ -762,7 +766,7 @@ class LucydDaemon:
             log.exception("structured recall at session start failed")
             return "[Memory recall unavailable — use memory_search to access memory manually.]"
 
-    async def _build_context(self, ctx: _MessageState, provider) -> None:
+    async def _build_context(self, ctx: _MessageState, provider: Any) -> None:
         """Build system prompt, recall, and tools list."""
         session = ctx.session
         tool_descs = self.tool_registry.get_brief_descriptions()
@@ -793,10 +797,12 @@ class LucydDaemon:
         max_ctx = provider.capabilities.max_context_tokens
         if max_ctx > 0:
             sys_tokens = sum(_estimate_tokens(b.get("text", "")) for b in system_blocks)
-            history_tokens = sum(
-                _estimate_tokens(_text_from_content(m.get("text", "") or m.get("content", "")))
-                for m in session.messages
-            )
+            history_tokens = 0
+            for m in session.messages:
+                if m["role"] == "user":
+                    history_tokens += _estimate_tokens(m["content"])
+                elif m["role"] == "assistant":
+                    history_tokens += _estimate_tokens(m.get("text", ""))
             tool_def_tokens = sum(
                 _estimate_tokens(t["description"]) for t in self.tool_registry.get_schemas()
             ) if provider.capabilities.supports_tools else 0
@@ -825,9 +831,9 @@ class LucydDaemon:
         # Snapshot message count to track what the loop added
         ctx.msg_count_before = len(session.messages)
 
-    async def _run_agentic_with_retries(self, ctx: _MessageState, provider,
-                                         on_response, on_tool_results,
-                                         write_monitor, on_stream_delta=None) -> None:
+    async def _run_agentic_with_retries(self, ctx: _MessageState, provider: Any,
+                                         on_response: Any, on_tool_results: Any,
+                                         write_monitor: Any, on_stream_delta: Any = None) -> None:
         """Run the agentic loop with message-level retries. Sets ctx.response."""
         session = ctx.session
         message_retries = self.config.message_retries
@@ -908,7 +914,7 @@ class LucydDaemon:
 
                 write_monitor("thinking")
 
-    async def _handle_agentic_error(self, ctx: _MessageState, error, _resolve) -> None:
+    async def _handle_agentic_error(self, ctx: _MessageState, error: Any, _resolve: Any) -> None:
         """Handle agentic loop failure: cleanup, resolve future, deliver error."""
         session = ctx.session
         log.error("[%s] Agentic loop failed: %s", ctx.trace_id[:8], error)
@@ -924,7 +930,7 @@ class LucydDaemon:
         if len(session.messages) > ctx.msg_count_before:
             del session.messages[ctx.msg_count_before:]
         # Remove orphaned user message to prevent consecutive-user corruption
-        if session.messages and session.messages[-1].get("role") == "user":
+        if session.messages and session.messages[-1]["role"] == "user":
             session.messages.pop()
         self.session_mgr.save_state(session)
         _resolve({"error": str(error), "session_id": session.id})
@@ -940,7 +946,7 @@ class LucydDaemon:
                 log.warning("Auto-close failed for %s session %s",
                             ctx.task_type, ctx.sender, exc_info=True)
 
-    async def _finalize_response(self, ctx: _MessageState, _resolve) -> None:
+    async def _finalize_response(self, ctx: _MessageState, _resolve: Any) -> None:
         """Post-loop work: persist, deliver, compact."""
         self._persist_response(ctx)
         await self._deliver_reply(ctx, _resolve)
@@ -952,16 +958,15 @@ class LucydDaemon:
         """Persist new messages and restore text-only content."""
         session = ctx.session
         for msg in session.messages[ctx.msg_count_before:]:
-            role = msg.get("role", "")
-            if role == "assistant":
+            if msg["role"] == "assistant":
                 session.add_assistant_message(msg, persist_only=True)
-            elif role == "tool_results":
-                session.add_tool_results(msg.get("results", []), persist_only=True)
+            elif msg["role"] == "tool_results":
+                session.add_tool_results(msg["results"], persist_only=True)
         if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
             session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
         self.session_mgr.save_state(session)
 
-    async def _deliver_reply(self, ctx: _MessageState, _resolve) -> None:
+    async def _deliver_reply(self, ctx: _MessageState, _resolve: Any) -> None:
         """Resolve HTTP future with reply content.
 
         Routing via reply_to:
@@ -1131,8 +1136,8 @@ class LucydDaemon:
         text: str,
         sender: str,
         source: str,
-        attachments: list | None = None,
-        response_future: asyncio.Future | None = None,
+        attachments: list[Any] | None = None,
+        response_future: asyncio.Future[dict[str, Any]] | None = None,
         trace_id: str = "",
         force_compact: bool = False,
         stream_queue: Any = None,
@@ -1147,7 +1152,7 @@ class LucydDaemon:
         if not trace_id:
             trace_id = str(uuid.uuid4())
 
-        def _resolve(result: dict) -> None:
+        def _resolve(result: dict[str, Any]) -> None:
             """Safely resolve the HTTP response future."""
             if response_future is not None and not response_future.done():
                 response_future.set_result(result)
@@ -1217,7 +1222,7 @@ class LucydDaemon:
         stream_delta_cb = None
         _sse_done_sent = False
         if stream_queue is not None:
-            async def _on_stream_delta(delta):
+            async def _on_stream_delta(delta: Any) -> None:
                 nonlocal _sse_done_sent
                 event: dict[str, Any] = {}
                 if delta.text:
@@ -1295,7 +1300,7 @@ class LucydDaemon:
                             _cost += u.cache_read_tokens * ctx.cost_rates[2] / 1_000_000
                     metrics.MESSAGE_COST.labels(**_labels).observe(_cost)
 
-    async def _consolidate_on_close(self, session) -> None:
+    async def _consolidate_on_close(self, session: Any) -> None:
         """Consolidation callback fired before session archival."""
         try:
             import consolidation
@@ -1317,7 +1322,7 @@ class LucydDaemon:
         except Exception:
             log.exception("consolidation on close failed")
 
-    async def _reset_session(self, target: str, by_id: bool = False) -> dict:
+    async def _reset_session(self, target: str, by_id: bool = False) -> dict[str, Any]:
         """Reset session by target: 'all', session ID, or contact name.
 
         When by_id=True, target is treated as a session ID directly.
@@ -1360,7 +1365,7 @@ class LucydDaemon:
             return {"reset": True, "target": target, "type": "contact"}
         return {"reset": False, "reason": f"no session found for: {target}"}
 
-    async def _process_reset_item(self, item: dict) -> None:
+    async def _process_reset_item(self, item: dict[str, Any]) -> None:
         """Parse a reset queue item, execute reset, resolve future."""
         if item.get("all"):
             target, by_id = "all", False
@@ -1388,7 +1393,7 @@ class LucydDaemon:
             if item.get("type") == "reset":
                 await self._process_reset_item(item)
 
-    def _build_sessions(self) -> list[dict]:
+    def _build_sessions(self) -> list[dict[str, Any]]:
         """Build session list for HTTP /sessions."""
         from session import build_session_info
 
@@ -1433,11 +1438,11 @@ class LucydDaemon:
         if swept:
             log.info("Media sweep: deleted %d files older than 24h", swept)
 
-    def _build_monitor(self) -> dict:
+    def _build_monitor(self) -> dict[str, Any]:
         """Build monitor data for HTTP /monitor."""
         return dict(self._monitor_state)
 
-    def _build_history(self, target: str, full: bool = False) -> dict:
+    def _build_history(self, target: str, full: bool = False) -> dict[str, Any]:
         """Build session history for HTTP /sessions/{target}/history.
 
         Target can be a session UUID or a contact name (case-insensitive).
@@ -1462,7 +1467,7 @@ class LucydDaemon:
         events = read_history_events(self.session_mgr.dir, session_id, full=full)
         return {"session_id": session_id, "events": events}
 
-    def _build_status(self) -> dict:
+    def _build_status(self) -> dict[str, Any]:
         """Build status dict for HTTP /status."""
         from config import today_start_ts
 
@@ -1495,7 +1500,7 @@ class LucydDaemon:
             "error_counts": dict(self._error_counts),
         }
 
-    async def _handle_compact(self) -> dict:
+    async def _handle_compact(self) -> dict[str, Any]:
         """Force-compact the primary session after agent writes diary."""
         # Find primary session (longest active, non-automation sender)
         primary = None
@@ -1571,7 +1576,7 @@ class LucydDaemon:
             log.error("Git rollback to %s failed: %s", tag, e)
             return False
 
-    async def _handle_evolve(self, *, force: bool = False) -> dict:
+    async def _handle_evolve(self, *, force: bool = False) -> dict[str, Any]:
         """Handle evolution request — snapshot, push to queue, validate after.
 
         Args:
@@ -1606,7 +1611,7 @@ class LucydDaemon:
         await self.queue.put(msg)
         return {"status": "queued", "session": "evolution"}
 
-    async def _handle_index(self, full: bool = False) -> dict:
+    async def _handle_index(self, full: bool = False) -> dict[str, Any]:
         """Run workspace indexing in a blocking thread."""
         from async_utils import run_blocking
         from tools.indexer import configure as indexer_configure
@@ -1631,12 +1636,12 @@ class LucydDaemon:
         )
         return summary
 
-    async def _handle_index_status(self) -> dict:
+    async def _handle_index_status(self) -> dict[str, Any]:
         """Return workspace index status."""
         from tools.indexer import get_index_status
         return get_index_status(self.config.memory_db, self.config.workspace)
 
-    async def _handle_consolidate(self) -> dict:
+    async def _handle_consolidate(self) -> dict[str, Any]:
         """Run memory consolidation — extract facts from workspace files."""
         conn = self._get_memory_conn()
         from consolidation import extract_from_file
@@ -1674,17 +1679,17 @@ class LucydDaemon:
         return {"status": "completed", "facts": total_facts,
                 "files_scanned": len(file_list), "files_with_facts": files_with_facts}
 
-    async def _handle_maintain(self) -> dict:
+    async def _handle_maintain(self) -> dict[str, Any]:
         """Run memory maintenance + metering retention."""
         from async_utils import run_blocking
         from memory import run_maintenance
 
         conn = self._get_memory_conn()
 
-        def _run():
+        def _run() -> dict[str, Any]:
             return run_maintenance(conn, self.config.maintenance_stale_threshold_days)
 
-        stats = await run_blocking(_run)
+        stats: dict[str, Any] = await run_blocking(_run)
 
         # Metering retention — runs in async context (safe to use shared instance)
         if self.metering_db:
@@ -1698,9 +1703,9 @@ class LucydDaemon:
     async def _message_loop(self) -> None:
         """Main message processing loop — sequential."""
         debounce_s = self.config.debounce_ms / 1000.0
-        pending: dict[str, list] = {}  # sender → [messages]
+        pending: dict[str, list[dict[str, Any]]] = {}  # sender → [messages]
 
-        async def drain_pending(sender: str):
+        async def drain_pending(sender: str) -> None:
             msgs = pending.pop(sender, [])
             if not msgs:
                 return
@@ -1732,7 +1737,7 @@ class LucydDaemon:
                     reply_to=reply_to,
                 )
 
-        async def process_http_immediate(item: dict) -> None:
+        async def process_http_immediate(item: dict[str, Any]) -> None:
             """Process HTTP /chat messages immediately (no debounce).
 
             Each /chat request has its own Future — combining messages
@@ -1849,12 +1854,12 @@ class LucydDaemon:
 
     def _setup_signals(self, loop: asyncio.AbstractEventLoop) -> None:
         """Register Unix signal handlers."""
-        def handle_sigusr1():
+        def handle_sigusr1() -> None:
             log.info("SIGUSR1: reloading workspace files")
             if self.skill_loader:
                 self.skill_loader.scan()
 
-        def handle_sigterm():
+        def handle_sigterm() -> None:
             log.info("SIGTERM: shutting down gracefully")
             self.running = False
 
@@ -1968,7 +1973,7 @@ class LucydDaemon:
 
 # ─── CLI Entry Point ─────────────────────────────────────────────
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Lucyd — a daemon for persona-rich AI agents",
     )
@@ -1980,7 +1985,7 @@ def main():
     args = parser.parse_args()
 
     # Build overrides from CLI args
-    overrides = {}
+    overrides: dict[str, Any] = {}
 
     try:
         config = load_config(args.config, overrides=overrides)

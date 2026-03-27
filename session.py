@@ -15,6 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from messages import AssistantMessage, Message, ToolResultsMessage, UserMessage
+
 log = logging.getLogger(__name__)
 
 
@@ -38,7 +40,7 @@ def _text_from_content(content: Any) -> str:
     return ""
 
 
-def _validate_turn_structure(messages: list[dict]) -> None:
+def _validate_turn_structure(messages: list[Message]) -> None:
     """Fix orphaned tool_calls or tool_results in a message list (in-place).
 
     - Assistant messages with tool_calls that are not followed by a
@@ -49,32 +51,29 @@ def _validate_turn_structure(messages: list[dict]) -> None:
     i = len(messages) - 1
     while i >= 0:
         msg = messages[i]
-        role = msg.get("role", "")
-        if role == "assistant" and msg.get("tool_calls"):
+        if msg["role"] == "assistant" and msg.get("tool_calls"):
             # Check if followed by tool_results (possibly with user hints between)
             has_results = False
             for j in range(i + 1, len(messages)):
-                jr = messages[j].get("role", "")
-                if jr == "tool_results":
+                if messages[j]["role"] == "tool_results":
                     has_results = True
                     break
-                if jr == "assistant":
+                if messages[j]["role"] == "assistant":
                     break  # next assistant turn — no results for this one
             if not has_results:
                 msg.pop("tool_calls", None)
                 log.warning("Stripped orphaned tool_calls from assistant at index %d", i)
-        elif role == "tool_results":
+        elif msg["role"] == "tool_results":
             # Check if the immediately preceding assistant (skipping user
             # hints) has tool_calls.  Stop at any assistant or tool_results
             # — those are turn boundaries that break the pairing.
             has_call = False
             for j in range(i - 1, -1, -1):
-                jr = messages[j].get("role", "")
-                if jr == "assistant":
+                if messages[j]["role"] == "assistant":
                     if messages[j].get("tool_calls"):
                         has_call = True
                     break  # nearest assistant — stop regardless
-                if jr == "tool_results":
+                if messages[j]["role"] == "tool_results":
                     break  # previous tool_results — no call for this one
             if not has_call:
                 messages.pop(i)
@@ -92,7 +91,7 @@ def _atomic_write(path: Path, data: str) -> None:
     tmp.rename(path)
 
 
-def _context_tokens_from_usage(usage: dict) -> int:
+def _context_tokens_from_usage(usage: dict[str, Any]) -> int:
     """Extract context token count from a usage dict.
 
     Uses the normalized ``context_tokens`` field when present.
@@ -100,8 +99,8 @@ def _context_tokens_from_usage(usage: dict) -> int:
     stored before the field was added.
     """
     if "context_tokens" in usage:
-        return usage["context_tokens"]
-    return usage.get("input_tokens", 0) + usage.get("cache_read_tokens", 0)
+        return int(usage["context_tokens"])
+    return int(usage.get("input_tokens", 0)) + int(usage.get("cache_read_tokens", 0))
 
 
 class Session:
@@ -114,7 +113,7 @@ class Session:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.jsonl_path = self.dir / f"{session_id}.jsonl"
         self.state_path = self.dir / f"{session_id}.state.json"
-        self.messages: list[dict] = []
+        self.messages: list[Message] = []
         self.model = model
         self.contact = contact
         self.created_at = time.time()
@@ -173,7 +172,7 @@ class Session:
         }
         _atomic_write(self.state_path, json.dumps(state, ensure_ascii=False))
 
-    def append_event(self, event: dict) -> None:
+    def append_event(self, event: dict[str, Any]) -> None:
         """Append event to dated JSONL audit trail.
 
         No fsync — the JSONL is an audit trail, not the recovery mechanism.
@@ -188,15 +187,15 @@ class Session:
 
     def add_user_message(self, text: str, sender: str = "", source: str = "") -> None:
         """Add user message to session."""
-        msg = {"role": "user", "content": text}
-        self.messages.append(msg)
+        user_msg: UserMessage = {"role": "user", "content": text}
+        self.messages.append(user_msg)
         self.append_event({
             "type": "message", "role": "user", "content": text,
             "from": sender, "source": source,
         })
         self.save_state()
 
-    def add_assistant_message(self, msg: dict, persist_only: bool = False) -> None:
+    def add_assistant_message(self, msg: AssistantMessage, persist_only: bool = False) -> None:
         """Add assistant response (from LLMResponse.to_internal_message()).
 
         When persist_only=True, skip appending to self.messages (use when the
@@ -211,15 +210,15 @@ class Session:
         if not persist_only:
             self.save_state()
 
-    def add_tool_results(self, results: list[dict], persist_only: bool = False) -> None:
+    def add_tool_results(self, results: list[dict[str, Any]], persist_only: bool = False) -> None:
         """Add tool results to session.
 
         When persist_only=True, skip appending to self.messages (use when the
         agentic loop already appended to session.messages in-place).
         """
         if not persist_only:
-            msg = {"role": "tool_results", "results": results}
-            self.messages.append(msg)
+            tr_msg: ToolResultsMessage = {"role": "tool_results", "results": results}
+            self.messages.append(tr_msg)
         for r in results:
             self.append_event({
                 "type": "tool_result",
@@ -233,7 +232,7 @@ class Session:
     def last_input_tokens(self) -> int:
         """Total context tokens from most recent assistant message."""
         for msg in reversed(self.messages):
-            if msg.get("role") == "assistant":
+            if msg["role"] == "assistant":
                 return _context_tokens_from_usage(msg.get("usage", {}))
         return 0
 
@@ -250,9 +249,9 @@ class SessionManager:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.dir / "sessions.json"
         self.agent_name = agent_name
-        self._index: dict[str, dict] = {}
+        self._index: dict[str, dict[str, Any]] = {}
         self._sessions: dict[str, Session] = {}
-        self._on_close_callbacks: list = []
+        self._on_close_callbacks: list[Callable[..., Any]] = []
         self._load_index()
 
     def _load_index(self) -> None:
@@ -286,7 +285,7 @@ class SessionManager:
         """Number of indexed sessions."""
         return len(self._index)
 
-    def get_index(self) -> dict[str, dict]:
+    def get_index(self) -> dict[str, dict[str, Any]]:
         """Return a copy of the session index."""
         return dict(self._index)
 
@@ -328,7 +327,7 @@ class SessionManager:
         log.info("Created session %s for %s", session_id, contact)
         return session
 
-    def on_close(self, callback: Callable) -> None:
+    def on_close(self, callback: Callable[..., Any]) -> None:
         """Register a callback for session close.
 
         Callback signature: async def cb(session) or def cb(session).
@@ -388,7 +387,7 @@ class SessionManager:
         min_messages: int = 4,
         tool_result_max_chars: int = 2000,
         max_tokens: int = 0,
-        system_blocks: list[dict] | None = None,
+        system_blocks: list[dict[str, str]] | None = None,
         cost: Any = None,
     ) -> None:
         """Compact old messages using a summarization model."""
@@ -409,7 +408,7 @@ class SessionManager:
         # After compaction, the preceding message is a user (marker), so
         # any tool_results at the boundary would break the API contract.
         while (split_point < len(session.messages) - 1
-               and session.messages[split_point].get("role") == "tool_results"):
+               and session.messages[split_point]["role"] == "tool_results"):
             split_point += 1
 
         old_messages = session.messages[:split_point]
@@ -418,25 +417,28 @@ class SessionManager:
         # Build summary prompt — include tool calls and results for context
         conversation_text = ""
         for msg in old_messages:
-            role = msg.get("role", "")
-            text = _text_from_content(msg.get("content", msg.get("text", "")))
-            if role and text:
-                conversation_text += f"{role}: {text}\n\n"
-            # Include tool calls in compaction context
-            for tc in msg.get("tool_calls", []):
-                tc_name = tc.get("name", "unknown")
-                tc_args = str(tc.get("arguments", {}))[:tool_result_max_chars]
-                conversation_text += f"assistant [tool_call]: {tc_name}({tc_args})\n\n"
-            # Include tool results in compaction context
-            if role == "tool_results":
-                for r in msg.get("results", []):
+            if msg["role"] == "user":
+                text = msg["content"]
+                if text:
+                    conversation_text += f"user: {text}\n\n"
+            elif msg["role"] == "assistant":
+                text = msg.get("text", "")
+                if text:
+                    conversation_text += f"assistant: {text}\n\n"
+                # Include tool calls in compaction context
+                for tc in msg.get("tool_calls", []):
+                    tc_name = tc.get("name", "unknown")
+                    tc_args = str(tc.get("arguments", {}))[:tool_result_max_chars]
+                    conversation_text += f"assistant [tool_call]: {tc_name}({tc_args})\n\n"
+            elif msg["role"] == "tool_results":
+                for r in msg["results"]:
                     content = _text_from_content(r.get("content", ""))[:tool_result_max_chars]
                     conversation_text += f"tool_result: {content}\n\n"
 
         if not conversation_text.strip():
             return
 
-        summary_messages = [
+        summary_messages: list[Message] = [
             {"role": "user", "content": (
                 f"{compaction_prompt}\n\n---\n\n"
                 f"{conversation_text}"
@@ -476,24 +478,26 @@ class SessionManager:
             )
 
         # Replace old messages with summary + compaction marker
-        summary_msg = {
-            "role": "user",
-            "content": f"[Previous conversation summary]\n{summary}",
-        }
-        compaction_marker = {
-            "role": "user",
-            "content": (
-                "[system: This conversation was compacted. The summary above covers "
-                "earlier messages. Some details may be lost. Use memory_search or "
-                "memory_get to find specific information from before compaction.]"
-            ),
-        }
-        session.messages = [summary_msg, compaction_marker] + recent_messages
+        prefix: list[Message] = [
+            {
+                "role": "user",
+                "content": f"[Previous conversation summary]\n{summary}",
+            },
+            {
+                "role": "user",
+                "content": (
+                    "[system: This conversation was compacted. The summary above covers "
+                    "earlier messages. Some details may be lost. Use memory_search or "
+                    "memory_get to find specific information from before compaction.]"
+                ),
+            },
+        ]
+        session.messages = prefix + recent_messages
 
         # Invalidate stale usage — context_tokens no longer reflects
         # post-compaction state.  Accurate stats resume on next API call.
         for msg in session.messages:
-            if msg.get("role") == "assistant":
+            if msg["role"] == "assistant":
                 msg.pop("usage", None)
 
         session.compaction_count += 1
@@ -518,8 +522,8 @@ def build_session_info(
     session_id: str,
     session: Session | None = None,
     max_context_tokens: int = 0,
-    metering=None,
-) -> dict:
+    metering: Any = None,
+) -> dict[str, Any]:
     """Build enriched session info dict. Used by both CLI and HTTP API.
 
     Returns dict with: session_id, context_tokens, context_pct, cost,
@@ -528,7 +532,7 @@ def build_session_info(
     info: dict[str, Any] = {"session_id": session_id}
 
     # Load from live session or state file
-    messages: list[dict] = []
+    messages: list[Message] = []
     compaction_count = 0
     if session:
         messages = session.messages
@@ -550,7 +554,7 @@ def build_session_info(
     # Context tokens from last assistant message (normalized by provider)
     context_tokens = 0
     for msg in reversed(messages):
-        if msg.get("role") == "assistant":
+        if msg["role"] == "assistant":
             context_tokens = _context_tokens_from_usage(msg.get("usage", {}))
             break
     info["context_tokens"] = context_tokens
@@ -582,7 +586,7 @@ def read_history_events(
     sessions_dir: Path,
     session_id: str,
     full: bool = False,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Read session history from JSONL files.
 
     Globs active + archive directories. Deduplicates by timestamp.
@@ -603,7 +607,7 @@ def read_history_events(
         return []
 
     seen_ts: set[float] = set()
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
 
     for path in all_files:
         try:

@@ -25,7 +25,7 @@ CLI control client (`bin/lucydctl`). Thin HTTP wrapper — all commands go throu
 | Flag | Endpoint | Behavior |
 |---|---|---|
 | `-m, --message TEXT` | `POST /chat` | Synchronous — waits for response (300s timeout) |
-| `-s, --system TEXT` | `POST /system` | Fire-and-forget system event (202) |
+| `-s, --system TEXT` | `POST /message` | Fire-and-forget system event (task_type: "system", 202) |
 | `-n, --notify TEXT` | `POST /notify` | Fire-and-forget notification (202) |
 | `--evolve` | `POST /evolve` | Trigger memory evolution |
 | `--compact` | `POST /compact` | Force diary write + compaction |
@@ -87,7 +87,7 @@ CLI control client (`bin/lucydctl`). Thin HTTP wrapper — all commands go throu
 
 ## HTTP API
 
-18 endpoints registered in `api.py` (lines 148-167). Auth via Bearer token from `LUCYD_HTTP_TOKEN` env var.
+17 endpoints registered in `api.py` (lines 156-174). Auth via Bearer token from `LUCYD_HTTP_TOKEN` env var.
 
 ### Authentication
 
@@ -218,7 +218,7 @@ Side effect: updates Prometheus gauges (`uptime_seconds`, `active_sessions`, `qu
 
 Prometheus metrics in text exposition format. Auth-exempt. Returns `text/plain`. Returns a comment line if `prometheus_client` is not installed.
 
-See [architecture.md](architecture.md#metrics) for the full 20-family metric inventory.
+See [architecture.md](architecture.md#metrics) for the full 21-family metric inventory.
 
 ---
 
@@ -312,11 +312,11 @@ Reads from stdin, POSTs to `/api/v1/chat/stream`, streams the response via SSE. 
 
 ## Unix Signals
 
-| Signal | Effect | Source |
+| Signal | Effect | Handler |
 |---|---|---|
-| `SIGUSR1` | Reload workspace files (skill_loader.scan()) | lucyd.py:1816 |
-| `SIGTERM` | Graceful shutdown (running = False) | lucyd.py:1820 |
-| `SIGINT` | Same as SIGTERM | lucyd.py:1825 |
+| `SIGUSR1` | Reload workspace files (skill_loader.scan()) | `_setup_signals` |
+| `SIGTERM` | Graceful shutdown (running = False) | `_setup_signals` |
+| `SIGINT` | Same as SIGTERM | `_setup_signals` |
 
 ```bash
 kill -USR1 $(cat ~/.lucyd/lucyd.pid)   # reload
@@ -347,14 +347,26 @@ curl http://localhost:8100/metrics
 
 ## Cron Jobs
 
+### Framework cron (entrypoint.sh)
+
+These are installed automatically by the Docker entrypoint:
+
 | Schedule | Job | Command |
 |---|---|---|
-| `5 * * * *` | Git auto-commit | `cd workspace && git add -A && git commit -m "auto" && git push` |
-| `10 * * * *` | Memory indexer | `lucydctl --index` |
-| `15 * * * *` | Memory consolidation | `lucydctl --consolidate` |
-| `5 3 * * *` | Trash cleanup | `find .trash/ -mtime +30 -delete` |
-| `5 4 * * *` | Memory maintenance | `lucydctl --maintain` |
+| `10 * * * *` | Memory indexer | `lucyd-index` |
+| `15 * * * *` | Memory consolidation | `lucyd-consolidate` |
+| `50 3 * * *` | Diary write + compaction | `lucydctl --compact` |
+| `5 4 * * *` | Memory maintenance | `lucyd-consolidate --maintain` |
 | `20 4 * * *` | Memory evolution | `lucydctl --evolve` |
+
+### Suggested operator cron (not in entrypoint.sh)
+
+Optional jobs for production deployments — add to host or container crontab as needed:
+
+| Schedule | Job | Command |
+|---|---|---|
+| `5 * * * *` | Git auto-commit workspace | `cd workspace && git add -A && git commit -m "auto" && git push` |
+| `5 3 * * *` | Trash cleanup | `find .trash/ -mtime +30 -delete` |
 | `5 4 * * 0` | DB integrity check | `sqlite3 memory/main.sqlite "PRAGMA integrity_check"` |
 
 ## Troubleshooting

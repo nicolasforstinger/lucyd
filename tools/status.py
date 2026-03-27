@@ -22,7 +22,7 @@ def configure(session_manager: Any = None,
               start_time: float = 0.0, max_context_tokens: int = 0,
               sqlite_timeout: int = 30, session_getter: Any = None,
               config: Any = None, provider: Any = None,
-              metering: Any = None, **_) -> None:
+              metering: Any = None, **_: Any) -> None:
     global _session_manager, _metering, _daemon_start_time
     global MAX_CONTEXT_TOKENS, _sqlite_timeout, _session_getter
     if session_manager is not None:

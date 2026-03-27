@@ -97,11 +97,11 @@ class ToolRegistry:
     """Registers tool functions and dispatches calls from the agentic loop."""
 
     def __init__(self, truncation_limit: int = 30000, max_result_tokens: int = 0):
-        self._tools: dict[str, dict] = {}
+        self._tools: dict[str, dict[str, Any]] = {}
         self.truncation_limit = truncation_limit
         self.max_result_tokens = max_result_tokens  # 0 = use char limit only
 
-    def register(self, name: str, description: str, input_schema: dict,
+    def register(self, name: str, description: str, input_schema: dict[str, Any],
                  func: Callable[..., Any], max_output: int = 0) -> None:
         """Register a tool function.
 
@@ -115,7 +115,7 @@ class ToolRegistry:
             "max_output": max_output,
         }
 
-    def register_many(self, tools: list[dict]) -> None:
+    def register_many(self, tools: list[dict[str, Any]]) -> None:
         """Register multiple tools from a TOOLS list."""
         for t in tools:
             self.register(
@@ -126,7 +126,7 @@ class ToolRegistry:
                 max_output=t.get("max_output", 0),
             )
 
-    def get_schemas(self) -> list[dict]:
+    def get_schemas(self) -> list[dict[str, Any]]:
         """Return tool schemas for LLM (without function references)."""
         return [
             {
@@ -141,7 +141,7 @@ class ToolRegistry:
         """Return (name, description) pairs for context builder."""
         return [(t["name"], t["description"]) for t in self._tools.values()]
 
-    async def execute(self, name: str, arguments: dict) -> dict:
+    async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a tool call with error isolation and smart truncation.
 
         Returns {"text": str, "attachments": list[str]}.

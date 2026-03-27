@@ -17,6 +17,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from messages import Message
 from session import _text_from_content
 
 log = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ MAX_EXTRACTION_CHARS = 50_000  # ~12k tokens; configurable via [memory.consolida
 
 def get_unprocessed_range(
     session_id: str,
-    messages: list,
+    messages: list[Message],
     compaction_count: int,
     conn: sqlite3.Connection,
 ) -> tuple[int, int]:
@@ -84,7 +85,7 @@ def update_consolidation_state(
 # ─── Message Serializer ─────────────────────────────────────────
 
 def serialize_messages(
-    messages: list[dict],
+    messages: list[Message],
     start_idx: int,
     end_idx: int,
     max_tool_output: int = 2000,
@@ -100,20 +101,19 @@ def serialize_messages(
 
     parts = []
     for msg in messages[start_idx:end_idx]:
-        role = msg.get("role", "")
-        if role == "user":
-            content = _text_from_content(msg.get("content", ""))
+        if msg["role"] == "user":
+            content = _text_from_content(msg["content"])
             parts.append(f"Human: {content}")
-        elif role == "assistant":
-            text = msg.get("text", msg.get("content", ""))
+        elif msg["role"] == "assistant":
+            text = msg.get("text", "")
             if text:
                 parts.append(f"Assistant: {text}")
             for tc in msg.get("tool_calls", []):
                 tc_name = tc.get("name", "unknown")
                 tc_args = str(tc.get("arguments", {}))[:max_tool_output]
                 parts.append(f"Tool call: {tc_name}({tc_args})")
-        elif role == "tool_results":
-            for r in msg.get("results", []):
+        elif msg["role"] == "tool_results":
+            for r in msg["results"]:
                 content = r.get("content", "")[:max_tool_output]
                 parts.append(f"Tool result: {content}")
 
@@ -188,7 +188,7 @@ def _strip_json_fences(text: str) -> str:
 
 
 def _store_facts(
-    data: dict,
+    data: dict[str, Any],
     session_id: str,
     conn: sqlite3.Connection,
     confidence_threshold: float,
@@ -231,7 +231,7 @@ def _store_facts(
 
 
 def _store_episode(
-    data: dict,
+    data: dict[str, Any],
     session_id: str,
     conn: sqlite3.Connection,
 ) -> int | None:
@@ -321,11 +321,11 @@ Rules:
 
 
 async def _llm_extract_json(
-    provider,
-    system_blocks: list[dict],
+    provider: Any,
+    system_blocks: list[dict[str, str]],
     prompt_text: str,
     label: str = "extraction",
-) -> tuple[dict | None, Any]:
+) -> tuple[dict[str, Any] | None, Any]:
     """Shared helper: format -> call -> strip fences -> parse JSON.
 
     Returns (parsed_dict_or_None, usage_or_None).
@@ -356,7 +356,7 @@ async def _llm_extract_json(
 async def extract_facts(
     text: str,
     session_id: str,
-    provider,
+    provider: Any,
     conn: sqlite3.Connection,
     confidence_threshold: float = 0.6,
 ) -> tuple[int, Any]:
@@ -419,8 +419,8 @@ If the conversation was trivial or purely mechanical, return empty facts/aliases
 async def extract_structured_data(
     text: str,
     session_id: str,
-    provider,
-    system_blocks: list[dict],
+    provider: Any,
+    system_blocks: list[dict[str, str]],
     conn: sqlite3.Connection,
     confidence_threshold: float = 0.6,
 ) -> tuple[int, int | None, Any]:
@@ -450,9 +450,9 @@ async def extract_structured_data(
 # ─── Cost Recording ──────────────────────────────────────────────
 
 def _record_extraction_cost(
-    usage,
+    usage: Any,
     *,
-    metering=None,
+    metering: Any = None,
     session_id: str = "",
     model_name: str = "",
     cost_rates: list[float] | None = None,
@@ -474,15 +474,15 @@ def _record_extraction_cost(
 
 async def consolidate_session(
     session_id: str,
-    messages: list[dict],
+    messages: list[Message],
     compaction_count: int,
-    config,
-    provider,
-    context_builder,
+    config: Any,
+    provider: Any,
+    context_builder: Any,
     conn: sqlite3.Connection,
     trace_id: str = "",
-    metering=None,
-) -> dict:
+    metering: Any = None,
+) -> dict[str, Any]:
     """Run full consolidation on a session's messages.
 
     Uses a single LLM call to extract both facts and episode.
@@ -537,12 +537,12 @@ async def consolidate_session(
 
 async def extract_from_file(
     file_path: str,
-    provider,
+    provider: Any,
     conn: sqlite3.Connection,
     confidence_threshold: float = 0.6,
     model_name: str = "",
     cost_rates: list[float] | None = None,
-    metering=None,
+    metering: Any = None,
 ) -> int:
     """Extract facts from a workspace markdown file.
 

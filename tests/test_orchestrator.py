@@ -2024,10 +2024,10 @@ class TestMessageLevelRetry:
 
         async def fake_loop(**kwargs):
             call_count[0] += 1
-            # Capture what the message content looks like at API call time
+            # Capture whether _image_blocks are present at API call time
             user_msgs = [m for m in kwargs["messages"] if m.get("role") == "user"]
             if user_msgs:
-                content_snapshots.append(type(user_msgs[-1]["content"]))
+                content_snapshots.append("_image_blocks" in user_msgs[-1])
             if call_count[0] == 1:
                 raise InternalServerError("500")
             return response
@@ -2054,12 +2054,13 @@ class TestMessageLevelRetry:
             )
 
         assert call_count[0] == 2
-        # Both attempts should have seen list content (image blocks injected)
-        assert all(t is list for t in content_snapshots)
-        # After completion, content should be restored to text
+        # Both attempts should have had _image_blocks injected on the user message
+        assert all(content_snapshots), f"Expected _image_blocks on both attempts: {content_snapshots}"
+        # After completion, _image_blocks should be stripped and content remains str
         user_msgs = [m for m in session.messages if m.get("role") == "user"]
         if user_msgs:
             assert isinstance(user_msgs[-1]["content"], str)
+            assert "_image_blocks" not in user_msgs[-1]
 
 
 # ─── Auto-close system sessions ─────────────────────────────────

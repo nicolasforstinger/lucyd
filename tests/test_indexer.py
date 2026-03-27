@@ -1,7 +1,12 @@
 """Tests for tools/indexer.py — memory indexer."""
 
+from __future__ import annotations
+
+import hashlib
 import json
 import sqlite3
+from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,7 +31,7 @@ from tools.indexer import (
 # ─── Fixtures ────────────────────────────────────────────────────
 
 @pytest.fixture
-def index_db(tmp_path):
+def index_db(tmp_path: Path) -> Path:
     """Fresh SQLite DB with production schema."""
     from memory_schema import ensure_schema
 
@@ -38,7 +43,7 @@ def index_db(tmp_path):
 
 
 @pytest.fixture
-def tmp_memory_workspace(tmp_path):
+def tmp_memory_workspace(tmp_path: Path) -> Path:
     """Workspace with sample memory files and a cache dir to exclude."""
     ws = tmp_path / "workspace"
     ws.mkdir()
@@ -72,12 +77,15 @@ def tmp_memory_workspace(tmp_path):
     return ws
 
 
-def _fake_embeddings(texts, api_key="", base_url="", model="", **kwargs):
+def _fake_embeddings(
+    texts: list[str], api_key: str = "", base_url: str = "",
+    model: str = "", **kwargs: Any,
+) -> list[list[float]]:
     """Generate deterministic fake embeddings for testing.
 
     Matches embed_batch(texts, api_key, base_url, model) signature.
     """
-    result = []
+    result: list[list[float]] = []
     for text in texts:
         h = hash(text)
         emb = [(h + j) % 100 / 100.0 for j in range(10)]
@@ -88,32 +96,32 @@ def _fake_embeddings(texts, api_key="", base_url="", model="", **kwargs):
 # ─── TestComputeHashes ───────────────────────────────────────────
 
 class TestComputeHashes:
-    def test_file_hash_deterministic(self):
+    def test_file_hash_deterministic(self) -> None:
         h1 = compute_file_hash("hello world")
         h2 = compute_file_hash("hello world")
         assert h1 == h2
 
-    def test_file_hash_changes_with_content(self):
+    def test_file_hash_changes_with_content(self) -> None:
         h1 = compute_file_hash("hello")
         h2 = compute_file_hash("world")
         assert h1 != h2
 
-    def test_file_hash_is_hex_sha256(self):
+    def test_file_hash_is_hex_sha256(self) -> None:
         h = compute_file_hash("test")
         assert len(h) == 64
         assert all(c in "0123456789abcdef" for c in h)
 
-    def test_chunk_id_includes_path(self):
+    def test_chunk_id_includes_path(self) -> None:
         id1 = compute_chunk_id("memory/a.md", "same text")
         id2 = compute_chunk_id("memory/b.md", "same text")
         assert id1 != id2
 
-    def test_chunk_id_deterministic(self):
+    def test_chunk_id_deterministic(self) -> None:
         id1 = compute_chunk_id("p.md", "text")
         id2 = compute_chunk_id("p.md", "text")
         assert id1 == id2
 
-    def test_chunk_id_changes_with_text(self):
+    def test_chunk_id_changes_with_text(self) -> None:
         id1 = compute_chunk_id("p.md", "text a")
         id2 = compute_chunk_id("p.md", "text b")
         assert id1 != id2
@@ -122,10 +130,10 @@ class TestComputeHashes:
 # ─── TestChunkFile ───────────────────────────────────────────────
 
 class TestChunkFile:
-    def test_empty_input(self):
+    def test_empty_input(self) -> None:
         assert chunk_file([]) == []
 
-    def test_single_chunk(self):
+    def test_single_chunk(self) -> None:
         lines = ["line one", "line two", "line three"]
         chunks = chunk_file(lines, chunk_size=1000, overlap=100)
         assert len(chunks) == 1
@@ -133,7 +141,7 @@ class TestChunkFile:
         assert chunks[0]["start_line"] == 1
         assert chunks[0]["end_line"] == 3
 
-    def test_multiple_chunks(self):
+    def test_multiple_chunks(self) -> None:
         # Each line ~20 chars, chunk_size=50 → ~2 lines per chunk
         lines = [f"line number {i:04d} here" for i in range(10)]
         chunks = chunk_file(lines, chunk_size=50, overlap=0)
@@ -142,23 +150,23 @@ class TestChunkFile:
         all_start_lines = {c["start_line"] for c in chunks}
         assert 1 in all_start_lines
 
-    def test_one_indexed_lines(self):
+    def test_one_indexed_lines(self) -> None:
         lines = ["a", "b", "c"]
         chunks = chunk_file(lines, chunk_size=1000)
         assert chunks[0]["start_line"] == 1
         assert chunks[0]["end_line"] == 3
 
-    def test_end_line_inclusive(self):
+    def test_end_line_inclusive(self) -> None:
         lines = ["a", "b"]
         chunks = chunk_file(lines, chunk_size=1000)
         assert chunks[0]["end_line"] == 2
 
-    def test_text_matches_newline_join(self):
+    def test_text_matches_newline_join(self) -> None:
         lines = ["alpha", "beta", "gamma"]
         chunks = chunk_file(lines, chunk_size=1000)
         assert chunks[0]["text"] == "\n".join(lines)
 
-    def test_overlap_shares_lines(self):
+    def test_overlap_shares_lines(self) -> None:
         # Lines of ~30 chars each, chunk_size=70, overlap=35
         lines = [f"this is line number {i:02d} text" for i in range(6)]
         chunks = chunk_file(lines, chunk_size=70, overlap=35)
@@ -167,7 +175,7 @@ class TestChunkFile:
         for i in range(len(chunks) - 1):
             assert chunks[i + 1]["start_line"] <= chunks[i]["end_line"]
 
-    def test_forward_progress_on_huge_line(self):
+    def test_forward_progress_on_huge_line(self) -> None:
         # One line that exceeds chunk_size — should still make progress
         lines = ["x" * 5000, "short"]
         chunks = chunk_file(lines, chunk_size=100, overlap=50)
@@ -178,29 +186,29 @@ class TestChunkFile:
         assert chunks[1]["start_line"] == 2
         assert chunks[1]["end_line"] == 2
 
-    def test_no_empty_chunks(self):
+    def test_no_empty_chunks(self) -> None:
         lines = [f"line {i}" for i in range(20)]
         chunks = chunk_file(lines, chunk_size=30, overlap=10)
         for c in chunks:
             assert c["text"], "chunk text must not be empty"
 
-    def test_all_lines_covered(self):
+    def test_all_lines_covered(self) -> None:
         """Every source line appears in at least one chunk."""
         lines = [f"line {i}" for i in range(15)]
         chunks = chunk_file(lines, chunk_size=40, overlap=15)
-        covered = set()
+        covered: set[int] = set()
         for c in chunks:
             for ln in range(c["start_line"], c["end_line"] + 1):
                 covered.add(ln)
         expected = set(range(1, 16))
         assert covered == expected
 
-    def test_character_count_respects_chunk_size(self):
+    def test_character_count_respects_chunk_size(self) -> None:
         """Each chunk's text length should be <= chunk_size (unless single line)."""
         lines = [f"line {i:03d}" for i in range(50)]
         chunks = chunk_file(lines, chunk_size=60, overlap=20)
         for c in chunks:
-            text = c["text"]
+            text: str = c["text"]
             # Single-line chunks may exceed chunk_size (guaranteed at least 1 line)
             if "\n" in text:
                 assert len(text) <= 60 + max(len(line) for line in lines) + 1
@@ -209,34 +217,34 @@ class TestChunkFile:
 # ─── TestScanWorkspace ───────────────────────────────────────────
 
 class TestScanWorkspace:
-    def test_finds_daily_logs(self, tmp_memory_workspace):
+    def test_finds_daily_logs(self, tmp_memory_workspace: Path) -> None:
         results = scan_workspace(tmp_memory_workspace)
         paths = [r[0] for r in results]
         assert "memory/2026-02-15.md" in paths
         assert "memory/2026-02-16.md" in paths
 
-    def test_finds_memory_md(self, tmp_memory_workspace):
+    def test_finds_memory_md(self, tmp_memory_workspace: Path) -> None:
         results = scan_workspace(tmp_memory_workspace)
         paths = [r[0] for r in results]
         assert "MEMORY.md" in paths
 
-    def test_excludes_cache_dir(self, tmp_memory_workspace):
+    def test_excludes_cache_dir(self, tmp_memory_workspace: Path) -> None:
         results = scan_workspace(tmp_memory_workspace)
         paths = [r[0] for r in results]
         assert not any("cache" in p for p in paths)
 
-    def test_returns_relative_paths(self, tmp_memory_workspace):
+    def test_returns_relative_paths(self, tmp_memory_workspace: Path) -> None:
         results = scan_workspace(tmp_memory_workspace)
         for rel, abs_path in results:
             assert not rel.startswith("/")
             assert abs_path.is_absolute()
 
-    def test_returns_sorted(self, tmp_memory_workspace):
+    def test_returns_sorted(self, tmp_memory_workspace: Path) -> None:
         results = scan_workspace(tmp_memory_workspace)
         paths = [r[0] for r in results]
         assert paths == sorted(paths)
 
-    def test_empty_workspace(self, tmp_path):
+    def test_empty_workspace(self, tmp_path: Path) -> None:
         ws = tmp_path / "empty"
         ws.mkdir()
         results = scan_workspace(ws)
@@ -246,12 +254,12 @@ class TestScanWorkspace:
 # ─── TestGetIndexedFiles ─────────────────────────────────────────
 
 class TestGetIndexedFiles:
-    def test_empty_db(self, index_db):
+    def test_empty_db(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         assert get_indexed_files(conn) == {}
         conn.close()
 
-    def test_returns_path_hash_map(self, index_db):
+    def test_returns_path_hash_map(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         conn.execute(
             "INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)",
@@ -266,7 +274,7 @@ class TestGetIndexedFiles:
 # ─── TestUpdateChunks ────────────────────────────────────────────
 
 class TestUpdateChunks:
-    def test_inserts_chunks(self, index_db):
+    def test_inserts_chunks(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         chunks = [
             {"text": "chunk one", "start_line": 1, "end_line": 5,
@@ -285,7 +293,7 @@ class TestUpdateChunks:
         assert rows[0][2] == "chunk one"
         conn.close()
 
-    def test_reindex_replaces_old_chunks(self, index_db):
+    def test_reindex_replaces_old_chunks(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         # First index
         chunks_v1 = [
@@ -313,7 +321,7 @@ class TestUpdateChunks:
         assert rows[0][0] == "new content"
         conn.close()
 
-    def test_file_record_updated(self, index_db):
+    def test_file_record_updated(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         chunks = [{"text": "text", "start_line": 1, "end_line": 1,
                     "embedding": [0.1]}]
@@ -336,7 +344,7 @@ class TestUpdateChunks:
 # ─── TestRebuildFts ──────────────────────────────────────────────
 
 class TestRebuildFts:
-    def test_fts_rowids_match_chunks(self, index_db):
+    def test_fts_rowids_match_chunks(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         # Insert some chunks
         for i in range(3):
@@ -356,7 +364,7 @@ class TestRebuildFts:
         assert fts_count == chunk_count
         conn.close()
 
-    def test_fts_searchable_after_rebuild(self, index_db):
+    def test_fts_searchable_after_rebuild(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         conn.execute(
             "INSERT INTO chunks (id, path, source, start_line, end_line, "
@@ -375,7 +383,7 @@ class TestRebuildFts:
         assert rows[0][0] == "id1"
         conn.close()
 
-    def test_fts_count_equals_chunk_count(self, index_db):
+    def test_fts_count_equals_chunk_count(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         for i in range(5):
             conn.execute(
@@ -396,7 +404,7 @@ class TestRebuildFts:
 # ─── TestRemoveStale ─────────────────────────────────────────────
 
 class TestRemoveStale:
-    def test_removes_chunks_and_file_record(self, index_db):
+    def test_removes_chunks_and_file_record(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         # Insert a file + chunk
         conn.execute(
@@ -421,7 +429,7 @@ class TestRemoveStale:
         assert conn.execute("SELECT COUNT(*) FROM files WHERE path = 'old.md'").fetchone()[0] == 0
         conn.close()
 
-    def test_keeps_non_stale_files(self, index_db):
+    def test_keeps_non_stale_files(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         conn.execute(
             "INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)",
@@ -443,7 +451,7 @@ class TestRemoveStale:
 # ─── TestFtsIntegrity ────────────────────────────────────────────
 
 class TestFtsIntegrity:
-    def test_join_works_after_update_and_rebuild(self, index_db):
+    def test_join_works_after_update_and_rebuild(self, index_db: Path) -> None:
         """Verify the exact JOIN that memory.py uses works correctly."""
         conn = sqlite3.connect(str(index_db))
 
@@ -475,7 +483,7 @@ class TestFtsIntegrity:
         assert rows[0][1] == "memory/test.md"
         conn.close()
 
-    def test_all_chunks_joinable(self, index_db):
+    def test_all_chunks_joinable(self, index_db: Path) -> None:
         """Every chunk has a matching FTS entry via rowid JOIN."""
         conn = sqlite3.connect(str(index_db))
 
@@ -501,11 +509,11 @@ class TestFtsIntegrity:
 # ─── TestEmbedBatch ──────────────────────────────────────────────
 
 class TestEmbedBatch:
-    def test_empty_input(self):
+    def test_empty_input(self) -> None:
         result = embed_batch([], "fake-key")
         assert result == []
 
-    def test_calls_api_and_returns_ordered(self):
+    def test_calls_api_and_returns_ordered(self) -> None:
         """Mock the API call and verify ordering."""
         fake_response = {
             "data": [
@@ -531,7 +539,7 @@ class TestEmbedBatch:
 # ─── TestCacheEmbeddings ────────────────────────────────────────
 
 class TestCacheEmbeddings:
-    def test_populates_cache(self, index_db):
+    def test_populates_cache(self, index_db: Path) -> None:
         conn = sqlite3.connect(str(index_db))
         texts = ["hello world", "test text"]
         embeddings = [[0.1, 0.2], [0.3, 0.4]]
@@ -550,9 +558,8 @@ class TestCacheEmbeddings:
             assert row[3] == 2   # dims
         conn.close()
 
-    def test_cache_lookup_compatible_with_memory_py(self, index_db):
+    def test_cache_lookup_compatible_with_memory_py(self, index_db: Path) -> None:
         """Verify our cache entries match memory.py's lookup pattern."""
-        import hashlib
         conn = sqlite3.connect(str(index_db))
 
         text = "test lookup"
@@ -571,11 +578,63 @@ class TestCacheEmbeddings:
         assert json.loads(row[0]) == emb
         conn.close()
 
+    def test_cache_upsert_replaces_embedding(self, index_db: Path) -> None:
+        """INSERT OR REPLACE updates existing entry, no duplicates."""
+        conn = sqlite3.connect(str(index_db))
+        text = "same text"
+
+        cache_embeddings(conn, [text], [[0.1, 0.2]])
+        conn.commit()
+
+        # Re-cache with different embedding
+        cache_embeddings(conn, [text], [[0.9, 0.8]])
+        conn.commit()
+
+        rows = conn.execute("SELECT embedding FROM embedding_cache").fetchall()
+        assert len(rows) == 1
+        assert json.loads(rows[0][0]) == [0.9, 0.8]
+        conn.close()
+
+    def test_cache_with_explicit_model_and_provider(self, index_db: Path) -> None:
+        """Explicit model/provider args override module globals."""
+        conn = sqlite3.connect(str(index_db))
+        cache_embeddings(
+            conn, ["text"], [[0.1]],
+            model="custom-model", provider="custom-provider",
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT provider, model FROM embedding_cache"
+        ).fetchone()
+        assert row == ("custom-provider", "custom-model")
+        conn.close()
+
+    def test_cache_hash_unique_per_text(self, index_db: Path) -> None:
+        """Different texts produce different cache entries."""
+        conn = sqlite3.connect(str(index_db))
+        cache_embeddings(conn, ["alpha", "beta"], [[0.1], [0.2]])
+        conn.commit()
+
+        rows = conn.execute(
+            "SELECT hash FROM embedding_cache ORDER BY hash"
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0][0] != rows[1][0]
+        conn.close()
+
+    def test_cache_mismatched_lengths_raises(self, index_db: Path) -> None:
+        """Mismatched text/embedding list lengths raises ValueError."""
+        conn = sqlite3.connect(str(index_db))
+        with pytest.raises(ValueError):
+            cache_embeddings(conn, ["one", "two"], [[0.1]])
+        conn.close()
+
 
 # ─── TestIndexWorkspace (Integration) ────────────────────────────
 
 class TestIndexWorkspace:
-    def test_full_flow(self, index_db, tmp_memory_workspace):
+    def test_full_flow(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         """Full index with mocked embeddings."""
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
             summary = index_workspace(
@@ -590,7 +649,7 @@ class TestIndexWorkspace:
         assert summary["total_files"] == 3
         assert summary["total_chunks"] > 0
 
-    def test_skip_unchanged(self, index_db, tmp_memory_workspace):
+    def test_skip_unchanged(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         """Second run skips unchanged files."""
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings) as mock_embed:
             index_workspace(tmp_memory_workspace, index_db, "fake-key")
@@ -603,7 +662,7 @@ class TestIndexWorkspace:
         assert len(summary["indexed"]) == 0
         assert second_calls == first_calls  # No new embedding calls
 
-    def test_reindex_changed_file(self, index_db, tmp_memory_workspace):
+    def test_reindex_changed_file(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         """Changed file gets re-indexed."""
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
             index_workspace(tmp_memory_workspace, index_db, "fake-key")
@@ -619,7 +678,7 @@ class TestIndexWorkspace:
         assert summary["indexed"][0][0] == "memory/2026-02-15.md"
         assert summary["skipped"] == 2
 
-    def test_remove_deleted_file(self, index_db, tmp_memory_workspace):
+    def test_remove_deleted_file(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         """Deleted file gets removed from DB."""
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
             index_workspace(tmp_memory_workspace, index_db, "fake-key")
@@ -632,7 +691,7 @@ class TestIndexWorkspace:
         assert "memory/2026-02-16.md" in summary["removed"]
         assert summary["total_files"] == 2
 
-    def test_fts_searchable_for_all_content(self, index_db, tmp_memory_workspace):
+    def test_fts_searchable_for_all_content(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         """FTS can find content from all indexed files."""
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
             index_workspace(tmp_memory_workspace, index_db, "fake-key")
@@ -657,7 +716,7 @@ class TestIndexWorkspace:
         assert rows[0][0] == "MEMORY.md"
         conn.close()
 
-    def test_summary_correct(self, index_db, tmp_memory_workspace):
+    def test_summary_correct(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
             summary = index_workspace(tmp_memory_workspace, index_db, "fake-key")
 
@@ -672,7 +731,7 @@ class TestIndexWorkspace:
         assert summary["total_files"] == db_files
         assert db_fts == db_chunks  # FTS matches chunks
 
-    def test_force_reindexes_all(self, index_db, tmp_memory_workspace):
+    def test_force_reindexes_all(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         """--full flag re-indexes even unchanged files."""
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
             index_workspace(tmp_memory_workspace, index_db, "fake-key")
@@ -684,15 +743,68 @@ class TestIndexWorkspace:
         assert len(summary["indexed"]) == 3
         assert summary["skipped"] == 0
 
-    def test_missing_api_key_raises(self, index_db, tmp_memory_workspace):
+    def test_cache_populated_after_indexing(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+        """index_workspace populates embedding_cache for every chunk."""
+        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
+            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+
+        conn = sqlite3.connect(str(index_db))
+
+        # Cache entry count matches chunk count
+        cache_count = conn.execute(
+            "SELECT COUNT(*) FROM embedding_cache"
+        ).fetchone()[0]
+        chunk_count = conn.execute(
+            "SELECT COUNT(*) FROM chunks"
+        ).fetchone()[0]
+        assert cache_count > 0
+        assert cache_count == chunk_count
+
+        # Each chunk's text hash resolves to a cache entry with matching dims
+        chunks = conn.execute("SELECT text FROM chunks").fetchall()
+        for (chunk_text,) in chunks:
+            text_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+            row = conn.execute(
+                "SELECT embedding, dims FROM embedding_cache WHERE hash = ?",
+                (text_hash,),
+            ).fetchone()
+            assert row is not None
+            emb = json.loads(row[0])
+            assert len(emb) == row[1]  # dims matches actual embedding length
+
+        conn.close()
+
+    def test_cache_no_duplicates_on_force_reindex(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+        """Force re-index upserts cache entries, no duplicates."""
+        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
+            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+
+        conn = sqlite3.connect(str(index_db))
+        count_first = conn.execute(
+            "SELECT COUNT(*) FROM embedding_cache"
+        ).fetchone()[0]
+        conn.close()
+
+        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
+            index_workspace(tmp_memory_workspace, index_db, "fake-key", force=True)
+
+        conn = sqlite3.connect(str(index_db))
+        count_second = conn.execute(
+            "SELECT COUNT(*) FROM embedding_cache"
+        ).fetchone()[0]
+        conn.close()
+
+        assert count_first == count_second
+
+    def test_missing_api_key_raises(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         with pytest.raises(ValueError, match="API key"):
             index_workspace(tmp_memory_workspace, index_db, "")
 
-    def test_embedding_error_skips_file(self, index_db, tmp_memory_workspace):
+    def test_embedding_error_skips_file(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         """Embedding failure for one file doesn't block others."""
         call_count = [0]
 
-        def failing_embed(texts, *args, **kwargs):
+        def failing_embed(texts: list[str], *args: Any, **kwargs: Any) -> list[list[float]]:
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ConnectionError("API down")
@@ -709,7 +821,7 @@ class TestIndexWorkspace:
 # ─── TestIdempotency ─────────────────────────────────────────────
 
 class TestIdempotency:
-    def test_double_run_same_result(self, index_db, tmp_memory_workspace):
+    def test_double_run_same_result(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         """Running twice produces identical DB state."""
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
             index_workspace(tmp_memory_workspace, index_db, "fake-key")
@@ -738,7 +850,7 @@ class TestIdempotency:
         assert chunks_after_first == chunks_after_second
         assert fts_after_first == fts_after_second
 
-    def test_no_embedding_calls_on_second_run(self, index_db, tmp_memory_workspace):
+    def test_no_embedding_calls_on_second_run(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings) as mock:
             index_workspace(tmp_memory_workspace, index_db, "fake-key")
             calls_after_first = mock.call_count
@@ -752,16 +864,16 @@ class TestIdempotency:
 # ─── TestGetIndexStatus ──────────────────────────────────────────
 
 class TestGetIndexStatus:
-    def test_nonexistent_db(self, tmp_path):
+    def test_nonexistent_db(self, tmp_path: Path) -> None:
         status = get_index_status(tmp_path / "no.db", tmp_path)
         assert status["db_exists"] is False
         assert status["indexed_files"] == 0
 
-    def test_pending_files_detected(self, index_db, tmp_memory_workspace):
+    def test_pending_files_detected(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         status = get_index_status(index_db, tmp_memory_workspace)
         assert len(status["pending_files"]) == 3  # All files are pending
 
-    def test_no_pending_after_index(self, index_db, tmp_memory_workspace):
+    def test_no_pending_after_index(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
             index_workspace(tmp_memory_workspace, index_db, "fake-key")
 
@@ -770,7 +882,7 @@ class TestGetIndexStatus:
         assert status["indexed_files"] == 3
         assert status["total_chunks"] > 0
 
-    def test_stale_files_detected(self, index_db, tmp_memory_workspace):
+    def test_stale_files_detected(self, index_db: Path, tmp_memory_workspace: Path) -> None:
         with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
             index_workspace(tmp_memory_workspace, index_db, "fake-key")
 

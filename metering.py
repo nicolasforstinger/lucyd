@@ -142,11 +142,11 @@ class MeteringDB:
         except Exception as e:
             log.warning("Failed to record cost: %s", e, exc_info=True)
 
-        return cost_val
+        return float(cost_val)
 
     # ── Queries ───────────────────────────────────────────────────
 
-    def query(self, sql: str, params: tuple = ()) -> list:
+    def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[Any]:
         """Read-only query.  Returns [] on error or missing DB."""
         if not Path(self._path).exists():
             return []
@@ -169,7 +169,7 @@ class MeteringDB:
 
     # ── Records ─────────────────────────────────────────────────────
 
-    def get_records(self, billing_period: str = "") -> dict:
+    def get_records(self, billing_period: str = "") -> dict[str, Any]:
         """Return raw cost records for a billing period.
 
         No aggregation — consumers (jq, Grafana, scripts) do that.

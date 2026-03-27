@@ -13,7 +13,7 @@ _default_read_limit: int = 2000
 
 def configure(allowed_paths: list[str] | None = None,
               default_read_limit: int | None = None,
-              config: Any = None, **_) -> None:
+              config: Any = None, **_: Any) -> None:
     global _PATH_ALLOW, _default_read_limit
     if config is not None and allowed_paths is None:
         allowed_paths = config.filesystem_allowed_paths
@@ -139,7 +139,7 @@ def tool_edit(file_path: str, old_string: str, new_string: str,
     return f"Edited {file_path}"
 
 
-TOOLS = [
+TOOLS: list[dict[str, Any]] = [
     {
         "name": "read",
         "description": (

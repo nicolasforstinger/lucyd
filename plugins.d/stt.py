@@ -16,7 +16,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-_stt_config: dict = {}
+_stt_config: dict[str, Any] = {}
 _stt_backend: str = ""
 
 
@@ -31,7 +31,7 @@ def configure(config: Any) -> None:
 # ─── Transcription backends ──────────────────────────────────────
 
 
-async def transcribe(config: dict, file_path: str, content_type: str) -> str:
+async def transcribe(config: dict[str, Any], file_path: str, content_type: str) -> str:
     """Transcribe audio file using the configured STT backend.
 
     Args:
@@ -55,7 +55,7 @@ async def transcribe(config: dict, file_path: str, content_type: str) -> str:
 
 
 async def _transcribe_openai(
-    openai_cfg: dict, stt_cfg: dict, file_path: str, content_type: str,
+    openai_cfg: dict[str, Any], stt_cfg: dict[str, Any], file_path: str, content_type: str,
 ) -> str:
     """Transcribe audio via OpenAI-compatible Whisper API."""
     import httpx
@@ -87,7 +87,7 @@ async def _transcribe_openai(
                     data={"model": model},
                 )
                 resp.raise_for_status()
-                text = resp.json().get("text", "").strip()
+                text = str(resp.json().get("text", "")).strip()
                 if not text:
                     raise RuntimeError("Whisper returned empty transcription")
                 return text
@@ -101,7 +101,7 @@ async def _transcribe_openai(
                     log.warning("STT retry %d/%d: %s — waiting %.0fs",
                                 attempt + 1, retries, e, delay)
                     await asyncio.sleep(delay)
-        raise last_err  # type: ignore[misc]
+        raise last_err  # type: ignore[misc]  # loop always runs ≥1 iteration; last_err is set on retry path
 
 
 def validate_ffmpeg() -> None:
@@ -114,7 +114,7 @@ def validate_ffmpeg() -> None:
         )
 
 
-async def _transcribe_local(local_cfg: dict, file_path: str, *, whisper_url: str = "") -> str:
+async def _transcribe_local(local_cfg: dict[str, Any], file_path: str, *, whisper_url: str = "") -> str:
     """Transcribe audio via local whisper.cpp server.
 
     Converts audio to WAV (16kHz mono) via ffmpeg, then POSTs
@@ -153,7 +153,7 @@ async def _transcribe_local(local_cfg: dict, file_path: str, *, whisper_url: str
                     data={"response_format": "json", "language": language},
                 )
             resp.raise_for_status()
-            text = resp.json().get("text", "").strip()
+            text = str(resp.json().get("text", "")).strip()
             if not text:
                 raise RuntimeError("Whisper returned empty transcription")
             return text
@@ -166,8 +166,8 @@ async def _transcribe_local(local_cfg: dict, file_path: str, *, whisper_url: str
 
 
 async def preprocess_audio(
-    text: str, attachments: list, _config: Any,
-) -> tuple[str, list]:
+    text: str, attachments: list[Any], _config: Any,
+) -> tuple[str, list[Any]]:
     """Transcribe audio attachments and append transcriptions to text.
 
     Claims audio/* attachments. Non-audio attachments pass through unchanged.

@@ -20,6 +20,8 @@ import os
 import smtplib
 import sys
 from email.mime.text import MIMEText
+from email.parser import BytesParser
+from typing import Any
 
 import httpx
 
@@ -39,7 +41,7 @@ POLL_INTERVAL = 60
 FROM_ADDR = ""
 
 
-def load_config():
+def load_config() -> None:
     """Load bridge config from standalone email.toml.
 
     Search order: LUCYD_EMAIL_CONFIG env var, email.toml, /config/email.toml.
@@ -104,7 +106,7 @@ def _imap_connect() -> imaplib.IMAP4_SSL:
     return imap
 
 
-def fetch_and_mark(processed_uids: list[bytes]) -> list[dict]:
+def fetch_and_mark(processed_uids: list[bytes]) -> list[dict[str, Any]]:
     """Fetch unread emails and mark previously processed ones as read.
 
     Uses a single IMAP connection for both operations.
@@ -117,7 +119,7 @@ def fetch_and_mark(processed_uids: list[bytes]) -> list[dict]:
             # Mark previous batch as read
             for uid in processed_uids:
                 try:
-                    imap.store(uid, "+FLAGS", "\\Seen")
+                    imap.store(uid.decode(), "+FLAGS", "\\Seen")
                 except Exception as e:
                     log.warning("Failed to mark %s as read: %s", uid, e)
 
@@ -130,19 +132,20 @@ def fetch_and_mark(processed_uids: list[bytes]) -> list[dict]:
                 if not msg_data or not msg_data[0]:
                     continue
                 raw = msg_data[0][1]
-                msg = email.message_from_bytes(raw)
+                assert isinstance(raw, bytes)
+                msg = BytesParser().parsebytes(raw)
 
                 body = ""
                 if msg.is_multipart():
                     for part in msg.walk():
                         if part.get_content_type() == "text/plain":
                             payload = part.get_payload(decode=True)
-                            if payload:
+                            if isinstance(payload, bytes):
                                 body = payload.decode("utf-8", errors="replace")
                             break
                 else:
                     payload = msg.get_payload(decode=True)
-                    if payload:
+                    if isinstance(payload, bytes):
                         body = payload.decode("utf-8", errors="replace")
 
                 from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
@@ -183,7 +186,7 @@ def send_reply(to: str, subject: str, body: str) -> None:
         log.error("SMTP error: %s", e, exc_info=True)
 
 
-async def poll_loop():
+async def poll_loop() -> None:
     """Main loop: fetch unread → POST to daemon → reply via SMTP."""
     log.info("Email bridge started: %s@%s → %s", USER, IMAP_HOST, URL)
 
@@ -230,7 +233,7 @@ async def poll_loop():
             await asyncio.sleep(POLL_INTERVAL)
 
 
-async def main():
+async def main() -> None:
     load_config()
     if not all([IMAP_HOST, SMTP_HOST, USER, PASSWORD]):
         sys.exit("Email bridge requires imap_host, smtp_host, user, and password. "

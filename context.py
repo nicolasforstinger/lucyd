@@ -51,7 +51,7 @@ def _load_tiktoken() -> None:
 
 
 def _tiktoken_count(text: str) -> int:
-    return len(_tiktoken_enc.encode(text))  # type: ignore[union-attr]
+    return len(_tiktoken_enc.encode(text))  # type: ignore[union-attr]  # only called when tiktoken imported successfully
 
 
 def _byte_estimate(text: str) -> int:
@@ -89,7 +89,7 @@ class ContextBuilder:
         compaction_threshold: int = 0,
         has_images: bool = False,
         sender: str = "",
-    ) -> list[dict]:
+    ) -> list[dict[str, str]]:
         """Build system prompt blocks.
 
         Returns list of {"text": str, "tier": "stable"|"semi_stable"|"dynamic"}
@@ -152,7 +152,7 @@ class ContextBuilder:
 
         return blocks
 
-    def _enforce_token_cap(self, blocks: list[dict]) -> list[dict]:
+    def _enforce_token_cap(self, blocks: list[dict[str, str]]) -> list[dict[str, str]]:
         """Enforce max_system_tokens cap by trimming lower-priority tiers.
 
         Priority: stable (never trimmed) > semi_stable > dynamic.
@@ -188,7 +188,7 @@ class ContextBuilder:
             )
         return blocks
 
-    def _log_budget(self, blocks: list[dict]) -> None:
+    def _log_budget(self, blocks: list[dict[str, str]]) -> None:
         """Log per-tier token breakdown for context budget visibility."""
         by_tier: dict[str, int] = {}
         for b in blocks:
@@ -303,7 +303,7 @@ class ContextBuilder:
             parts.append(extra)
         return "\n".join(parts)
 
-    def build_stable(self) -> list[dict]:
+    def build_stable(self) -> list[dict[str, str]]:
         """Return only the stable context blocks (persona/identity).
 
         Used by consolidation for persona-aware extraction.

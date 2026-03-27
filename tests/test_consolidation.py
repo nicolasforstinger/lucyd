@@ -134,7 +134,7 @@ class TestSerializeMessages:
     def test_basic_serialization(self):
         messages = [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "world"},
+            {"role": "assistant", "text": "world"},
         ]
         result = serialize_messages(messages, 0, 2)
         assert "Human: hello" in result

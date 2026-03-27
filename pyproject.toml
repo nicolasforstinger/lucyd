@@ -1,3 +1,44 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lucyd"
+version = "0.1.0"
+description = "Single-tenant AI agent daemon with agentic tool-use, persistent sessions, and structured memory"
+readme = "README.md"
+requires-python = ">=3.13"
+license = {text = "MIT"}
+authors = [{name = "Nicolas A. Forstinger"}]
+dependencies = [
+    "aiohttp>=3.9,<4",
+    "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.45,<1"]
+openai = ["openai>=2.0,<3"]
+tiktoken = ["tiktoken>=0.7,<1"]
+vision = ["Pillow~=12.0"]
+documents = ["pypdf~=6.7.5"]
+metrics = ["prometheus_client"]
+all = [
+    "anthropic>=0.45,<1",
+    "openai>=2.0,<3",
+    "tiktoken>=0.7,<1",
+    "Pillow~=12.0",
+    "pypdf~=6.7.5",
+    "prometheus_client",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+
+[project.urls]
+Repository = "https://github.com/nicolasforstinger/lucyd"
+
 [tool.mutmut]
 paths_to_mutate = ["tools/"]
 tests_dir = [
@@ -19,7 +60,25 @@ debug = false
 
 [tool.mypy]
 python_version = "3.13"
-strict = false
+strict = true
+
+[[tool.mypy.overrides]]
+module = [
+    "anthropic",
+    "anthropic.*",
+    "openai",
+    "openai.*",
+    "PIL",
+    "PIL.*",
+    "pypdf",
+    "pypdf.*",
+    "prometheus_client",
+    "prometheus_client.*",
+    "tiktoken",
+    "tiktoken.*",
+    "aiohttp",
+    "aiohttp.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

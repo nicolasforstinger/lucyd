@@ -11,12 +11,14 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from messages import AssistantMessage, Message
+
 
 @dataclass
 class ToolCall:
     id: str
     name: str
-    arguments: dict
+    arguments: dict[str, Any]
 
 
 @dataclass
@@ -78,7 +80,7 @@ class LLMResponse:
     thinking: str | None = None
     raw: Any = None
     # Full thinking block with signature for Anthropic tool-use continuity
-    _thinking_block: dict | None = field(default=None, repr=False)
+    _thinking_block: dict[str, Any] | None = field(default=None, repr=False)
     # Set by agentic loop when per-message cost limit is exceeded
     cost_limited: bool = False
     # File paths produced by tools during the agentic loop
@@ -86,9 +88,9 @@ class LLMResponse:
     # Agentic loop turn count (set by run_agentic_loop)
     turns: int = 0
 
-    def to_internal_message(self) -> dict:
+    def to_internal_message(self) -> AssistantMessage:
         """Convert to internal message format for session storage."""
-        msg: dict[str, Any] = {"role": "assistant"}
+        msg: AssistantMessage = {"role": "assistant"}
         if self.text:
             msg["text"] = self.text
         if self.tool_calls:
@@ -137,26 +139,26 @@ class LLMProvider(Protocol):
         """Structured capability declaration for this provider/model."""
         ...
 
-    def format_tools(self, tools: list[dict]) -> list[dict]:
+    def format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert generic tool schemas to provider-specific format."""
         ...
 
-    def format_system(self, blocks: list[dict]) -> Any:
+    def format_system(self, blocks: list[dict[str, str]]) -> Any:
         """Convert system prompt blocks to provider format."""
         ...
 
-    def format_messages(self, messages: list[dict]) -> list[dict]:
+    def format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Convert internal message format to provider's API format."""
         ...
 
     async def complete(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
+        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> LLMResponse:
         """Send to LLM, return normalized response."""
         ...
 
     def stream(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
+        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from LLM.
 
@@ -170,8 +172,8 @@ class LLMProvider(Protocol):
 
 
 async def stream_fallback(
-    provider: LLMProvider, system: Any, messages: list[dict],
-    tools: list[dict], **kwargs,
+    provider: LLMProvider, system: Any, messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]], **kwargs: Any,
 ) -> AsyncIterator[StreamDelta]:
     """Non-streaming fallback: call complete() and yield one StreamDelta."""
     response = await provider.complete(system, messages, tools, **kwargs)
@@ -183,7 +185,7 @@ async def stream_fallback(
     )
 
 
-def _build_capabilities(model_config: dict) -> ModelCapabilities:
+def _build_capabilities(model_config: dict[str, Any]) -> ModelCapabilities:
     """Extract ModelCapabilities from a model config dict."""
     thinking = model_config.get("thinking_enabled", False)
     if not thinking and model_config.get("thinking_mode", "") in ("adaptive", "budgeted"):
@@ -200,7 +202,7 @@ def _build_capabilities(model_config: dict) -> ModelCapabilities:
     )
 
 
-def create_provider(model_config: dict, api_key: str = "") -> LLMProvider:
+def create_provider(model_config: dict[str, Any], api_key: str = "") -> LLMProvider:
     """Factory: create provider from model config section."""
     provider_type = model_config.get("provider", "")
     caps = _build_capabilities(model_config)
@@ -223,9 +225,9 @@ def create_provider(model_config: dict, api_key: str = "") -> LLMProvider:
         )
         p.provider_name = provider_type
         return p
-    if provider_type == "anthropic-compat":
+    elif provider_type == "anthropic-compat":
         from .anthropic_compat import AnthropicCompatProvider
-        p = AnthropicCompatProvider(
+        ap = AnthropicCompatProvider(
             api_key=api_key,
             model=model_config["model"],
             max_tokens=model_config.get("max_tokens", 4096),
@@ -237,11 +239,11 @@ def create_provider(model_config: dict, api_key: str = "") -> LLMProvider:
             thinking_mode=model_config.get("thinking_mode", ""),
             capabilities=caps,
         )
-        p.provider_name = provider_type
-        return p
-    if provider_type == "openai-compat":
+        ap.provider_name = provider_type
+        return ap
+    elif provider_type == "openai-compat":
         from .openai_compat import OpenAICompatProvider
-        p = OpenAICompatProvider(
+        op = OpenAICompatProvider(
             api_key=api_key,
             model=model_config["model"],
             max_tokens=model_config.get("max_tokens", 4096),
@@ -250,6 +252,7 @@ def create_provider(model_config: dict, api_key: str = "") -> LLMProvider:
             slot_id=model_config.get("slot_id", -1),
             capabilities=caps,
         )
-        p.provider_name = provider_type
-        return p
-    raise ValueError(f"Unknown provider type: {provider_type!r}")
+        op.provider_name = provider_type
+        return op
+    else:
+        raise ValueError(f"Unknown provider type: {provider_type!r}")

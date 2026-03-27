@@ -10,9 +10,9 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 
 | File | Purpose |
 |---|---|
-| `lucyd.py` | Daemon entry point. Lifecycle, message loop, signal handlers. 58 methods across 5 attribute clusters. |
+| `lucyd.py` | Daemon entry point. Lifecycle, message loop, signal handlers. Hub-and-spoke across 5 attribute clusters. |
 | `agentic.py` | Provider-agnostic tool-use loop. Multi-turn or single-shot dispatch. Collects tool attachments. |
-| `api.py` | HTTP API server. 18 endpoints. Envelope extraction, auth, rate limiting. |
+| `api.py` | HTTP API server. 17 endpoints. Envelope extraction, auth, rate limiting. |
 | `config.py` | TOML config loader with env overrides. `_SCHEMA`-based typed properties + `raw()` for plugin config. |
 | `context.py` | System prompt builder. Three cache tiers (stable/semi-stable/dynamic). Token budget enforcement. |
 | `session.py` | Session manager. Dual storage: JSONL audit trail + atomic state snapshots. Compaction via LLM. |
@@ -21,7 +21,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `consolidation.py` | Structured data extraction from sessions via LLM. Facts, episodes, commitments, aliases. |
 | `skills.py` | Skill loader + `load_skill` tool. Markdown with YAML frontmatter. |
 | `metering.py` | Per-call cost recording to SQLite. Billing periods, EUR currency. |
-| `metrics.py` | Prometheus metrics. 20 metric families, graceful no-op if `prometheus_client` not installed. |
+| `metrics.py` | Prometheus metrics. 21 metric families, graceful no-op if `prometheus_client` not installed. |
 | `attachments.py` | `Attachment` type, image fitting (`fit_image`), document text extraction (`extract_document_text`). Pure functions. |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
 | `async_utils.py` | `run_blocking()` for safe blocking I/O offload. |
@@ -38,6 +38,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `tools/web.py` | `web_search`, `web_fetch`. SSRF protection, DNS pinning. |
 | `tools/memory_read.py` | `memory_search`, `memory_get`. FTS5 + vector + structured recall. |
 | `tools/memory_write.py` | `memory_write`, `memory_forget`, `commitment_update`. |
+| `messages.py` | TypedDict message types (`UserMessage`, `AssistantMessage`, `ToolResultsMessage`, `Message` union). |
 | `tools/agents.py` | `sessions_spawn`. Sub-agent with scoped tools and deny-list. |
 | `tools/status.py` | `session_status`. Context utilization, uptime, cost. |
 | `tools/indexer.py` | Workspace file indexer for memory. Used by `POST /api/v1/index`. |
@@ -60,7 +61,7 @@ asyncio.Queue (maxsize=1000)
   v
 _message_loop (lucyd.py)
   | /chat items: process_http_immediate (no debounce, Future attached)
-  | /message /system /notify items: debounce per sender, then drain_pending
+  | /message /notify items: debounce per sender, then drain_pending
   v
 _process_message(text, sender, source, channel_id, task_type, reply_to, ...)
   |
@@ -91,17 +92,17 @@ Metrics fire at: preprocessor execution, context utilization calculation, agenti
 
 ### Internal Message Format
 
-Messages are `list[dict]` throughout the pipeline — deliberately untyped. Three roles:
+Messages are typed via `messages.py` — three TypedDicts discriminated by `role`:
 
-- **user**: `{"role": "user", "content": str}` (content becomes `list[dict]` when images are attached, transiently)
-- **assistant**: `{"role": "assistant", "text": str, "tool_calls": [...], "usage": {...}}`
-- **tool_results**: `{"role": "tool_results", "results": [{"tool_call_id": str, "content": str}]}`
+- **`UserMessage`**: `{"role": "user", "content": str}` — content is always `str` at rest. Transient `_image_blocks` key added during image processing, stripped before persistence.
+- **`AssistantMessage`**: `{"role": "assistant", "text": ..., "tool_calls": [...], "usage": {...}}` — all fields except `role` are `NotRequired`. `usage` stripped during compaction.
+- **`ToolResultsMessage`**: `{"role": "tool_results", "results": [{"tool_call_id": str, "content": str}]}`
 
-This format mirrors the LLM API wire format (both Anthropic and OpenAI use JSON objects for messages). Provider `format_messages()` translates from internal dicts to provider-specific dicts — TypedDicts would add a construction step only to immediately destructure. The format is stable, exercised by 1265 tests, and validated on session load by `_validate_turn_structure()`. TypedDicts are deferred until mypy strict is enforced in CI — without static checking, they'd be typed comments.
+The union `Message = UserMessage | AssistantMessage | ToolResultsMessage` is used throughout the pipeline (`session.messages`, agentic loop params, consolidation). mypy narrows via `msg["role"] == "user"` checks. Provider `format_messages(messages: list[Message]) -> list[dict[str, Any]]` is the boundary between internal and provider-specific formats. TypedDicts are plain dicts at runtime — no serialization change, no wire format change.
 
 ## Daemon State Architecture
 
-`LucydDaemon` owns 18 `self.*` attributes and 58 methods. It is a composition root — the attributes are injected dependencies, not mutable shared state.
+`LucydDaemon` is a composition root — the attributes are injected dependencies, not mutable shared state.
 
 ### Hub-and-Spoke Model
 
@@ -164,7 +165,7 @@ Every heavily-shared attribute has exactly one write site. After startup, no mut
 
 ## HTTP API
 
-17 endpoints. All registered in `api.py` lines 147-165.
+17 endpoints. All registered in `api.py` lines 156-174.
 
 | Endpoint | Method | Auth | Purpose |
 |---|---|---|---|
@@ -190,7 +191,7 @@ Auth: Bearer token from `LUCYD_HTTP_TOKEN` env var. Auth-exempt paths: `/api/v1/
 
 ### Message Envelope
 
-All inbound message endpoints (`/chat`, `/chat/stream`, `/message`, `/system`, `/notify`) accept envelope fields extracted by `_extract_envelope()` (api.py:299):
+All inbound message endpoints (`/chat`, `/chat/stream`, `/message`, `/notify`) accept envelope fields extracted by `_extract_envelope()` (api.py):
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
@@ -204,13 +205,13 @@ For `/chat`: an `asyncio.Future` is attached to the queue item. `_process_messag
 
 For `/chat/stream`: an `asyncio.Queue` is attached instead. `_on_stream_delta` pushes SSE events as the provider streams. The HTTP handler reads the queue and writes SSE frames.
 
-For `/message`, `/system`, `/notify`: fire-and-forget. No Future. Returns 202 immediately.
+For `/message`, `/notify`: fire-and-forget. No Future. Returns 202 immediately.
 
 ## Plugin System
 
 Plugins are Python files in `plugins.d/`. They export `TOOLS` (tool definitions) and/or `PREPROCESSORS` (attachment transformers). Tools are gated by `[tools] enabled`. Preprocessors register unconditionally when the plugin loads.
 
-At startup, `_init_tools()` (lucyd.py:454) scans `plugins.d/*.py`, loads each via `importlib.util`, calls `configure()` with inspect-based dependency injection, then registers tools and preprocessors.
+At startup, `_init_tools()` scans `plugins.d/*.py`, loads each via `importlib.util`, calls `configure()` with inspect-based dependency injection, then registers tools and preprocessors.
 
 Core never imports from `plugins.d/`. Plugins access their config via `config.raw()` and validate their own dependencies in `configure()`.
 
@@ -225,11 +226,11 @@ Dual-format persistence in `$DATA_DIR/sessions/`:
 | JSONL | `{id}.{YYYY-MM-DD}.jsonl` | Append-only audit trail (daily-split) |
 | State | `{id}.state.json` | Atomic snapshot for fast resume |
 
-Sessions are keyed by `channel_id:sender` (e.g., `telegram:Nicolas`, `http:n8n-daily`). The key is computed in `_process_message` as `f"{channel_id}:{sender}"` (lucyd.py:1183) and passed to `session_mgr.get_or_create()`.
+Sessions are keyed by `channel_id:sender` (e.g., `telegram:Nicolas`, `http:n8n-daily`). The key is computed in `_process_message` as `f"{channel_id}:{sender}"` and passed to `session_mgr.get_or_create()`.
 
-Ephemeral sessions (`task_type` "task" or "system") auto-close after processing via `_auto_close_if_ephemeral` (lucyd.py:1125). Pre-existing sessions are never auto-closed.
+Ephemeral sessions (`task_type` "task" or "system") auto-close after processing via `_auto_close_if_ephemeral`. Pre-existing sessions are never auto-closed.
 
-Compaction triggers when `input_tokens` exceeds `compaction.threshold_tokens`: oldest messages are summarized via LLM, keeping the newest `keep_recent_pct` fraction verbatim (session.py:375).
+Compaction triggers when `input_tokens` exceeds `compaction.threshold_tokens`: oldest messages are summarized via LLM, keeping the newest `keep_recent_pct` fraction verbatim (`session:compact_session()`).
 
 On close, `on_close` callbacks fire (consolidation extracts facts/episodes), then session files are archived to `.archive/`.
 
@@ -243,7 +244,7 @@ System prompt assembled in `ContextBuilder.build()` (context.py) across three ca
 | semi-stable | MEMORY.md, always-on skill bodies, skill index | Shorter TTL |
 | dynamic | Date/time, sender, task-type framing, memory recall, limits | Never cached |
 
-Task-type framing (context.py:232-256) tells the agent what kind of session it's in:
+Task-type framing (`ContextBuilder._build_dynamic()`) tells the agent what kind of session it's in:
 
 | task_type + deliver | Framing |
 |---|---|
@@ -260,7 +261,7 @@ SQLite FTS5 + vector similarity at `$DATA_DIR/memory/main.sqlite`.
 
 **Structured memory:** Facts (entity-attribute-value), episodes (session summaries), commitments (trackable promises). Extracted on session close via `consolidation.py` and written directly by agent tools (`memory_write`, `commitment_update`).
 
-**Recall:** At session start, `_build_recall` (lucyd.py:757) injects relevant facts, episodes, and open commitments into the dynamic context tier. Priority: commitments > vector > episodes > facts. Budget-aware.
+**Recall:** At session start, `_build_recall` injects relevant facts, episodes, and open commitments into the dynamic context tier. Priority: commitments > vector > episodes > facts. Budget-aware.
 
 ## Provider Abstraction
 
@@ -275,7 +276,7 @@ Three implementations: Anthropic (prompt caching, extended thinking), OpenAI-com
 
 ## Metrics
 
-20 Prometheus metric families (metrics.py). Graceful no-op when `prometheus_client` is not installed. Exposed at `GET /metrics`.
+21 Prometheus metric families (metrics.py). Graceful no-op when `prometheus_client` is not installed. Exposed at `GET /metrics`.
 
 | Scope | Metrics | Labels |
 |---|---|---|

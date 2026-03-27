@@ -37,7 +37,7 @@ _PROVIDER_URLS: dict[str, str] = {
 
 def configure(api_key: str = "", provider: str = "brave",
               search_timeout: int = 15, fetch_timeout: int = 15,
-              config: Any = None, **_) -> None:
+              config: Any = None, **_: Any) -> None:
     global _search_api_key, _search_provider, _search_api_url, _search_timeout, _fetch_timeout
     if config is not None:
         _search_api_key = config.web_search_api_key
@@ -102,10 +102,10 @@ def _validate_url(url: str) -> tuple[str | None, str | None]:
     resolved_ip = None
     for _family, _type, _proto, _canonname, sockaddr in addrinfos:
         ip_str = sockaddr[0]
-        if _is_private_ip(ip_str):
+        if _is_private_ip(str(ip_str)):
             return f"Blocked: {hostname} resolves to private/loopback address {ip_str}", None
         if resolved_ip is None:
-            resolved_ip = ip_str
+            resolved_ip = str(ip_str)
 
     return None, resolved_ip
 
@@ -140,16 +140,16 @@ def _extract_port(host_str: str) -> int | None:
 class _IPPinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS connection to a pre-resolved IP with correct TLS SNI."""
 
-    def __init__(self, resolved_ip: str, original_hostname: str, **kwargs):
+    def __init__(self, resolved_ip: str, original_hostname: str, **kwargs: Any):
         super().__init__(resolved_ip, **kwargs)
         self._sni_hostname = original_hostname
 
-    def connect(self):
+    def connect(self) -> None:
         # TCP connect to the resolved IP
         http.client.HTTPConnection.connect(self)
         # TLS handshake with the original hostname for SNI + cert verification
-        server_hostname = self._tunnel_host if self._tunnel_host else self._sni_hostname
-        self.sock = self._context.wrap_socket(
+        server_hostname = self._tunnel_host if self._tunnel_host else self._sni_hostname  # type: ignore[attr-defined]  # CPython internal
+        self.sock = self._context.wrap_socket(  # type: ignore[attr-defined]  # CPython internal
             self.sock, server_hostname=server_hostname,
         )
 
@@ -157,7 +157,7 @@ class _IPPinnedHTTPSConnection(http.client.HTTPSConnection):
 class _IPPinnedHTTPHandler(urllib.request.HTTPHandler):
     """HTTP handler that connects to the pre-resolved IP on the request."""
 
-    def http_open(self, req):
+    def http_open(self, req: urllib.request.Request) -> Any:
         resolved_ip = getattr(req, _REQ_RESOLVED_IP, None)
         if not resolved_ip:
             return super().http_open(req)
@@ -172,7 +172,7 @@ class _IPPinnedHTTPHandler(urllib.request.HTTPHandler):
 class _IPPinnedHTTPSHandler(urllib.request.HTTPSHandler):
     """HTTPS handler that connects to the pre-resolved IP on the request."""
 
-    def https_open(self, req):
+    def https_open(self, req: urllib.request.Request) -> Any:
         resolved_ip = getattr(req, _REQ_RESOLVED_IP, None)
         original_hostname = getattr(req, _REQ_ORIGINAL_HOST, None)
         if not resolved_ip or not original_hostname:
@@ -189,7 +189,7 @@ class _IPPinnedHTTPSHandler(urllib.request.HTTPSHandler):
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Redirect handler that validates each hop for SSRF and pins the new IP."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> urllib.request.Request | None:
         error, resolved_ip = _validate_url(newurl)
         if error:
             raise urllib.error.URLError(f"Redirect blocked: {error}")
@@ -234,7 +234,7 @@ async def tool_web_search(query: str, count: int = 10) -> str:
         })
 
     try:
-        resp = await run_blocking(_safe_opener.open, req, timeout=_search_timeout)
+        resp: Any = await run_blocking(_safe_opener.open, req, timeout=_search_timeout)
         body = resp.read()
         # Handle gzip
         if resp.headers.get("Content-Encoding") == "gzip":
@@ -260,13 +260,13 @@ async def tool_web_search(query: str, count: int = 10) -> str:
 class _HTMLToText(HTMLParser):
     """Simple HTML→text converter preserving structure."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._result: list[str] = []
         self._skip = False
         self._in_pre = False
 
-    def handle_starttag(self, tag: str, attrs: list) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in ("script", "style", "noscript"):
             self._skip = True
         elif tag in ("p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"):
@@ -317,7 +317,7 @@ async def tool_web_fetch(url: str, max_chars: int = 50000) -> str:
         parsed = urllib.parse.urlparse(url)
         setattr(req, _REQ_RESOLVED_IP, resolved_ip)
         setattr(req, _REQ_ORIGINAL_HOST, parsed.hostname)
-        resp = await run_blocking(_safe_opener.open, req, timeout=_fetch_timeout)
+        resp: Any = await run_blocking(_safe_opener.open, req, timeout=_fetch_timeout)
         content_type = resp.headers.get("Content-Type", "")
         body = resp.read()
 
@@ -337,7 +337,7 @@ async def tool_web_fetch(url: str, max_chars: int = 50000) -> str:
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n[truncated at {max_chars} chars]"
 
-        return text
+        return str(text)
     except Exception as e:
         return f"Error fetching {url}: {e}"
 

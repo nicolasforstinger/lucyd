@@ -17,6 +17,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -69,7 +70,7 @@ class MemoryInterface:
         if not Path(db_path).exists():
             log.warning("Memory DB not found: %s", db_path)
 
-    async def search(self, query: str, top_k: int | None = None) -> list[dict]:
+    async def search(self, query: str, top_k: int | None = None) -> list[dict[str, Any]]:
         """Search memory: FTS first, vector fallback."""
         k = top_k or self.top_k
 
@@ -106,7 +107,7 @@ class MemoryInterface:
             return ""
         return " ".join(f'"{t}"' for t in tokens)
 
-    async def _fts_search(self, query: str, top_k: int) -> list[dict]:
+    async def _fts_search(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """Full-text search via FTS5.
 
         FTS5 rank is negative (more negative = more relevant). We negate
@@ -116,7 +117,7 @@ class MemoryInterface:
         if not safe_query:
             return []
 
-        def _query():
+        def _query() -> list[dict[str, Any]]:
             conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             conn.row_factory = sqlite3.Row
             try:
@@ -147,13 +148,13 @@ class MemoryInterface:
 
         return await run_blocking(_query)
 
-    async def _vector_search(self, query: str, top_k: int) -> list[dict]:
+    async def _vector_search(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """Embed query, compute cosine similarity against stored embeddings."""
         query_embedding = await self._embed(query)
         if not query_embedding:
             return []
 
-        def _search():
+        def _search() -> list[dict[str, Any]]:
             conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             conn.row_factory = sqlite3.Row
             try:
@@ -205,13 +206,13 @@ class MemoryInterface:
 
         t0 = time.time()
         try:
-            def _request():
+            def _request() -> dict[str, Any]:
                 resp = httpx.post(url, json=payload, headers=headers,
                                   timeout=self.embedding_timeout)
                 resp.raise_for_status()
-                return resp.json()
+                return resp.json()  # type: ignore[no-any-return]  # httpx.Response.json() returns Any
 
-            data = await run_blocking(_request)
+            data: dict[str, Any] = await run_blocking(_request)
             embedding = data["data"][0]["embedding"]
             latency_ms = int((time.time() - t0) * 1000)
 
@@ -231,7 +232,7 @@ class MemoryInterface:
 
             # Cache it
             await self._cache_embedding(text, embedding)
-            return embedding
+            return list(embedding)
         except Exception as e:
             log.error("Embedding failed: %s", e, exc_info=True)
             return []
@@ -240,7 +241,7 @@ class MemoryInterface:
         """Check embedding cache."""
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-        def _query():
+        def _query() -> list[float]:
             conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             try:
                 row = conn.execute(
@@ -248,7 +249,7 @@ class MemoryInterface:
                     (text_hash, self.model),
                 ).fetchone()
                 if row:
-                    return json.loads(row[0])
+                    return list(json.loads(row[0]))
             except Exception as e:
                 log.warning("Embedding cache lookup failed: %s", e, exc_info=True)
             finally:
@@ -261,7 +262,7 @@ class MemoryInterface:
         """Store embedding in cache."""
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-        def _store():
+        def _store() -> None:
             conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             try:
                 conn.execute(
@@ -282,7 +283,7 @@ class MemoryInterface:
     async def get_file_snippet(self, file_path: str,
                                start_line: int = 0, end_line: int = 50) -> str:
         """Retrieve file content from chunks by path and line range."""
-        def _query():
+        def _query() -> str:
             conn = sqlite3.connect(self.db_path, timeout=self.sqlite_timeout)
             try:
                 # Overlap detection: find chunks that intersect the requested range
@@ -321,7 +322,7 @@ class RecallBlock:
     est_tokens: int # from context._estimate_tokens()
 
 
-def _format_fact(f, fmt: str = "natural") -> str:
+def _format_fact(f: Any, fmt: str = "natural") -> str:
     """Format a fact from a sqlite3.Row (dict-like), tuple, or dict.
 
     Normalizes input to (entity, attribute, value) then formats.
@@ -358,7 +359,7 @@ def _build_commitment_block(
     )
 
 
-def _format_episode(e, show_tone: bool = True) -> str:
+def _format_episode(e: Any, show_tone: bool = True) -> str:
     """Format an episode for recall display.
 
     Accepts sqlite3.Row (dict-like) or tuple (date, summary, emotional_tone).
@@ -459,7 +460,7 @@ def search_episodes(
 ) -> list[sqlite3.Row]:
     """Search episodes by topic keywords and optional date range."""
     conditions: list[str] = []
-    params: list = []
+    params: list[Any] = []
 
     if days_back:
         conditions.append("date >= date('now', ?)")
@@ -497,7 +498,7 @@ async def recall(
     query: str,
     conn: sqlite3.Connection,
     memory_interface: MemoryInterface,
-    config,
+    config: Any,
     top_k: int = 5,
 ) -> list[RecallBlock]:
     """Three-stage recall: facts -> episodes -> vector fallback.
@@ -625,7 +626,7 @@ EMPTY_RECALL_FALLBACK = (
 
 def get_session_start_context(
     conn: sqlite3.Connection,
-    config=None,
+    config: Any = None,
     max_facts: int = 20,
     max_episodes: int = 3,
     max_tokens: int = 0,
@@ -678,7 +679,7 @@ def get_session_start_context(
     return inject_recall(blocks, max_tokens)
 
 
-def run_maintenance(conn: sqlite3.Connection, stale_threshold_days: int) -> dict:
+def run_maintenance(conn: sqlite3.Connection, stale_threshold_days: int) -> dict[str, Any]:
     """Run memory maintenance: stale facts, expired commitments, conflict detection.
 
     Returns a stats dict with counts for facts, episodes, open_commitments,

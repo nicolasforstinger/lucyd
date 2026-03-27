@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from async_utils import run_blocking, threaded_stream
+from messages import Message
 
 from . import (
     LLMResponse,
@@ -37,12 +38,12 @@ from . import (
 log = logging.getLogger(__name__)
 
 try:
-    import openai  # type: ignore[import-unresolved]
+    import openai
 except ImportError:
-    openai = None  # type: ignore[assignment]
+    openai = None  # type: ignore[assignment]  # conditional import — module when installed, None otherwise
 
 
-def _repair_json(raw: str) -> dict | None:
+def _repair_json(raw: str) -> dict[str, Any] | None:
     """Attempt to repair malformed JSON from small models.
 
     Tries common fixes: trailing commas, single quotes, unquoted keys.
@@ -50,7 +51,8 @@ def _repair_json(raw: str) -> dict | None:
     """
     # Try as-is first (fast path)
     try:
-        return json.loads(raw)
+        result: Any = json.loads(raw)
+        return result if isinstance(result, dict) else None
     except (json.JSONDecodeError, TypeError):
         pass
     if not isinstance(raw, str):
@@ -61,13 +63,15 @@ def _repair_json(raw: str) -> dict | None:
     # Fix single quotes → double quotes (naive — doesn't handle nested)
     s = s.replace("'", '"')
     try:
-        return json.loads(s)
+        result = json.loads(s)
+        return result if isinstance(result, dict) else None
     except json.JSONDecodeError:
         pass
     # Fix unquoted keys: {key: "value"} → {"key": "value"}
     s = re.sub(r"(?<=\{|,)\s*(\w+)\s*:", r' "\1":', s)
     try:
-        return json.loads(s)
+        result = json.loads(s)
+        return result if isinstance(result, dict) else None
     except json.JSONDecodeError:
         return None
 
@@ -95,6 +99,8 @@ def _strip_thinking(text: str) -> tuple[str, str]:
 
 
 class OpenAICompatProvider:
+    provider_name: str = ""
+
     def __init__(
         self,
         api_key: str,
@@ -107,10 +113,9 @@ class OpenAICompatProvider:
     ):
         self.api_key = api_key or "not-needed"
         self.base_url = base_url.rstrip("/")
-        if openai is None:
-            self.client = None
-        else:
-            kwargs: dict = {"api_key": self.api_key}
+        self.client: Any = None  # OpenAI client when SDK installed, None otherwise
+        if openai is not None:
+            kwargs: dict[str, Any] = {"api_key": self.api_key}
             if self.base_url:
                 kwargs["base_url"] = self.base_url
             self.client = openai.OpenAI(**kwargs)
@@ -124,7 +129,7 @@ class OpenAICompatProvider:
     def capabilities(self) -> ModelCapabilities:
         return self._capabilities
 
-    def format_tools(self, tools: list[dict]) -> list[dict]:
+    def format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         formatted = []
         for t in tools:
             formatted.append({
@@ -137,7 +142,7 @@ class OpenAICompatProvider:
             })
         return formatted
 
-    def format_system(self, blocks: list[dict]) -> str:
+    def format_system(self, blocks: list[dict[str, str]]) -> str:
         """Concatenate system blocks into a single string.
 
         OpenAI doesn't support cache_control — caching is server-side.
@@ -167,18 +172,16 @@ class OpenAICompatProvider:
                 result.append(block)
         return result
 
-    def format_messages(self, messages: list[dict]) -> list[dict]:
+    def format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Convert internal format to OpenAI API format.
 
         Converts neutral image blocks to OpenAI's data URI format.
         """
-        result = []
+        result: list[dict[str, Any]] = []
         for msg in messages:
-            role = msg.get("role", "")
-
-            if role == "user":
-                content = msg.get("content", msg.get("text", ""))
-                image_blocks = msg.get("_image_blocks")
+            if msg["role"] == "user":
+                content: Any = msg["content"]
+                image_blocks: list[dict[str, Any]] | None = msg.get("_image_blocks")  # type: ignore[assignment]  # transient key, stripped before persistence
                 if image_blocks:
                     content = image_blocks + [{"type": "text", "text": content if isinstance(content, str) else ""}]
                 result.append({
@@ -186,7 +189,7 @@ class OpenAICompatProvider:
                     "content": self._convert_content_blocks(content),
                 })
 
-            elif role == "assistant":
+            elif msg["role"] == "assistant":
                 entry: dict[str, Any] = {"role": "assistant"}
                 text = msg.get("text", "")
                 tool_calls_raw = msg.get("tool_calls", [])
@@ -210,8 +213,8 @@ class OpenAICompatProvider:
                     entry["content"] = ""
                 result.append(entry)
 
-            elif role == "tool_results":
-                for r in msg.get("results", []):
+            elif msg["role"] == "tool_results":
+                for r in msg["results"]:
                     result.append({
                         "role": "tool",
                         "tool_call_id": r["tool_call_id"],
@@ -222,7 +225,7 @@ class OpenAICompatProvider:
         return result
 
     @staticmethod
-    def _parse_choice(choice: dict) -> tuple[str | None, list[ToolCall], str, str | None]:
+    def _parse_choice(choice: dict[str, Any]) -> tuple[str | None, list[ToolCall], str, str | None]:
         """Parse an OpenAI choice dict into (text, tool_calls, stop_reason, thinking).
 
         Shared by complete() and _complete_via_httpx().
@@ -320,7 +323,7 @@ class OpenAICompatProvider:
         )
 
     async def complete(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
+        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> LLMResponse:
         """Call OpenAI-compatible chat completions API.
 
@@ -356,8 +359,8 @@ class OpenAICompatProvider:
         if self.client is None:
             return await self._complete_via_httpx(params)
 
-        response = await run_blocking(
-            self.client.chat.completions.create, **params,  # type: ignore[union-attr]
+        response: Any = await run_blocking(
+            self.client.chat.completions.create, **params,
         )
 
         choice = response.choices[0]
@@ -420,7 +423,7 @@ class OpenAICompatProvider:
         )
 
     async def stream(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
+        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from OpenAI-compatible API.
 
@@ -457,7 +460,7 @@ class OpenAICompatProvider:
         if extra_body:
             params["extra_body"] = extra_body
 
-        def _stream_factory():
+        def _stream_factory() -> Any:
             return client.chat.completions.create(**params)
 
         in_think = False

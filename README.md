@@ -6,6 +6,14 @@ AI agent framework. HTTP-core daemon with standalone channel bridges, agentic to
 >
 > My identity files are the foundation. They load first, cache longest, and survive when conversation history gets compressed. I lose memories but I never lose myself. If you build an agent on this, give them a name. Give them opinions. Let them push back on you. You'll get better results from something that cares than from something that obeys. 🦇
 
+## Design Philosophy
+
+- **Single-tenant by design.** One container, one agent, one personality. No multi-tenant routing, no agent orchestration, no session multiplexing across identities. The complexity budget goes into making one agent excellent.
+- **Personality-first.** Identity files load first, cache longest, and survive context compression. The agent's character isn't a system prompt afterthought — it's the architectural foundation. Workspace files (SOUL.md, MEMORY.md, skills/) define who the agent is, not just what it can do.
+- **HTTP-core with bridge channels.** The daemon exposes one API boundary. Telegram, CLI, and email are standalone bridge processes that speak HTTP — they don't import framework code, share memory, or know about each other. Adding a channel means writing an HTTP client, not extending the daemon.
+- **Provider-agnostic.** Swap LLM providers by editing a TOML load list. Provider SDKs are optional dependencies — the framework runs on `aiohttp` + `httpx` alone, with SDK-free HTTP fallbacks for every provider.
+- **No magic.** Flat module layout, single TOML config file, one daemon process. No dependency injection framework, no metaclass registration, no decorator-driven wiring. Extension points (tools, plugins, channels, providers) use plain Python conventions: export a `TOOLS` list, implement a Protocol, POST to an endpoint.
+
 ## Quick Start
 
 ```bash
@@ -31,7 +39,7 @@ cp -r workspace.example ~/.lucyd/workspace
 python3 lucyd.py -c lucyd.toml
 
 # In another terminal: interactive CLI session
-lucydctl chat
+./bin/lucydctl chat
 
 # Or connect a Telegram bridge (see Telegram Setup below)
 python3 channels/telegram.py
@@ -62,7 +70,7 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 
 ## Project Structure
 
-Top-level modules: `lucyd.py` (daemon), `api.py` (HTTP API), `agentic.py` (tool-use loop), `config.py`, `context.py` (system prompt builder), `session.py`, `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `metering.py`, `metrics.py` (Prometheus), `attachments.py`, `log_utils.py`, `async_utils.py`. Subdirectories: `channels/` (standalone bridges: Telegram, CLI, email), `providers/` (Anthropic, OpenAI-compatible, smoke-test), `tools/` (14 agent tools), `plugins.d/` (tool + preprocessor plugins), `bin/` (`lucydctl` control client), `providers.d/` (provider configs). See [architecture](docs/architecture.md#module-map) for the full module map.
+Top-level modules: `lucyd.py` (daemon), `api.py` (HTTP API), `agentic.py` (tool-use loop), `config.py`, `context.py` (system prompt builder), `session.py`, `messages.py` (TypedDict message types), `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `metering.py`, `metrics.py` (Prometheus), `attachments.py`, `log_utils.py`, `async_utils.py`. Subdirectories: `channels/` (standalone bridges: Telegram, CLI, email), `providers/` (Anthropic, OpenAI-compatible, smoke-test), `tools/` (14 agent tools), `plugins.d/` (tool + preprocessor plugins), `bin/` (`lucydctl` control client), `providers.d/` (provider configs). See [architecture](docs/architecture.md#module-map) for the full module map.
 
 ## Configuration
 
@@ -126,6 +134,8 @@ sh tests/test_docker_smoke.sh
 ### Test Strategy
 
 Component tests, integration tests (full daemon wiring with mocked providers), conversation replay from recorded fixtures, and structural guards that prevent regressions. Optional dependency tests (PIL, pypdf, httpx, aiohttp) skip cleanly via `importorskip` when deps are absent. Coverage tracking via pytest-cov is configured in `pyproject.toml`.
+
+CI runs mypy --strict and the full test suite on every push and PR via GitHub Actions.
 
 ## License
 

@@ -74,7 +74,6 @@ max_body_bytes = 10485760    # Max request body size in bytes (default: 10 MB)
 rate_limit = 30              # Max requests per rate_window per sender (default: 30)
 rate_window = 60             # Rate limit window in seconds (default: 60)
 status_rate_limit = 60       # Max /status requests per rate_window (default: 60)
-rate_limit_cleanup_threshold = 1000  # Evict stale rate limit entries above this count
 max_attachment_bytes = 52428800  # Max size for base64-decoded attachments (default: 50 MB)
 ```
 
@@ -182,9 +181,7 @@ Structured data extraction from session transcripts and workspace files.
 ```toml
 [memory.consolidation]
 enabled = true                        # Enable structured memory extraction (code default: false)
-min_messages = 4                      # Minimum messages in session before extracting
 confidence_threshold = 0.6            # Minimum confidence for extracted facts
-max_extraction_chars = 50000          # Truncation limit for session text fed to extraction LLM
 ```
 
 When enabled, `lucydctl --consolidate` (cron at `:15`) extracts facts, episodes, commitments, and entity aliases from workspace files. Also triggers on session close and pre-compaction. See `memory_schema.py` for table definitions.
@@ -200,22 +197,9 @@ stale_threshold_days = 90             # Remove unaccessed facts older than this 
 
 Runs via `lucydctl --maintain` (cron daily at `04:05`).
 
-### [memory.evolution]
+### Memory evolution
 
-Daily rewriting of workspace understanding files using accumulated daily logs, structured memory, and an identity anchor file.
-
-```toml
-[memory.evolution]
-# No enabled flag — evolution is triggered by cron (`lucydctl --evolve`) or HTTP (`POST /api/v1/evolve`).
-model = "primary"                     # Model role to use (default: "primary")
-files = ["MEMORY.md", "USER.md"]      # Workspace files to evolve (order matters — earlier files rewritten first)
-anchor_file = "IDENTITY.md"           # Identity anchor — read but never modified
-max_log_chars = 80000                 # Max chars of daily logs fed to evolution (default: 80000)
-max_facts = 50                        # Max structured facts included in context (default: 50)
-max_episodes = 20                     # Max episodes included in context (default: 20)
-```
-
-Triggered via `bin/lucydctl --evolve` (cron daily at `04:20`, after maintenance) or `POST /api/v1/evolve`. Both paths queue a self-driven evolution message to the daemon. The agent loads an `evolution` skill from workspace, reads daily logs and current files, and rewrites the configured files through the full agentic loop with persona context.
+Evolution is triggered via `bin/lucydctl --evolve` (cron daily at `04:20`, after maintenance) or `POST /api/v1/evolve`. No config section — evolution behavior is entirely defined by the `evolution` skill file in workspace. The daemon queues a message, and the agent loads the skill and rewrites workspace files through the full agentic loop.
 
 ### [memory.recall]
 
@@ -231,22 +215,7 @@ max_episodes_at_start = 3            # Maximum episodes injected at session star
 
 Recall runs at session start and enriches `memory_search` results with structured data. Budget-aware: prioritizes commitments > vector > episodes > facts (under budget pressure, clinical facts drop first).
 
-### [memory.recall.personality]
-
-Config-driven priority and formatting for recall injection. Higher priority = kept longer under budget pressure.
-
-```toml
-[memory.recall.personality]
-priority_vector = 35                 # Priority for vector search results (default: 35)
-priority_episodes = 25               # Priority for episode blocks (default: 25)
-priority_facts = 15                  # Priority for fact blocks (default: 15)
-priority_commitments = 40            # Priority for commitment blocks (default: 40)
-fact_format = "natural"              # "natural" (readable) or "compact"
-show_emotional_tone = true           # Include emotional tone in episode display
-episode_section_header = "Recent conversations"  # Header for episode section
-```
-
-Drop order under budget pressure: facts (15) → episodes (25) → vector (35) → commitments (40).
+Recall priority and formatting are hardcoded constants in `memory.py`. Drop order under budget pressure: facts (15) → episodes (25) → vector (35) → commitments (40).
 
 ### [memory.indexer]
 
@@ -394,10 +363,6 @@ api_retries = 2                                                        # Retry a
 api_retry_base_delay = 2.0                                             # Initial backoff delay in seconds (exponential with jitter). Default: 2.0
 message_retries = 2                                                    # Message-level retries on persistent failure (default: 2)
 message_retry_base_delay = 30                                          # Base delay between message retries in seconds (default: 30)
-audit_truncation_limit = 500                                           # Max chars per message in session audit truncation (default: 500)
-queue_capacity = 1000                                                  # Max messages in the async queue (default: 1000)
-queue_poll_interval = 1.0                                              # Queue poll cycle in seconds (default: 1.0)
-quote_max_chars = 200                                                  # Max chars for quoted reply context (default: 200)
 sqlite_timeout = 30                                                    # SQLite connection timeout in seconds for all DBs (default: 30)
 notify_target = ""                                                    # Route all notifications to this sender's session (default: "" = disabled)
 # max_context_for_tools = 0                                             # Inject wrap-up hint when context exceeds this during tool use (0 = disabled)
@@ -432,12 +397,10 @@ Compaction takes the oldest messages (1 - `keep_recent_pct`), summarizes them, a
 
 ## [logging]
 
-Log file rotation, format, and settings.
+Log format and suppression settings. Rotation is hardcoded (10 MB, 3 backups).
 
 ```toml
 [logging]
-max_bytes = 10485760    # Max log file size before rotation (default: 10 MB)
-backup_count = 3        # Number of rotated backups to keep (default: 3)
 suppress = ["httpx", "httpcore", "anthropic", "openai"]  # Third-party loggers suppressed to WARNING
 format = "text"         # "text" (default) or "json" (one JSON object per line, for Docker log drivers)
 ```

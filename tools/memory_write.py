@@ -10,6 +10,7 @@ import metrics
 
 import logging
 import sqlite3
+from typing import Any
 
 from consolidation import _normalize_entity as _normalize
 from consolidation import upsert_fact
@@ -19,7 +20,7 @@ log = logging.getLogger(__name__)
 _conn: sqlite3.Connection | None = None
 
 
-def configure(conn: sqlite3.Connection | None = None, **_) -> None:
+def configure(conn: sqlite3.Connection | None = None, **_: Any) -> None:
     global _conn
     _conn = conn
 

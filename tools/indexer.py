@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -59,7 +60,7 @@ def chunk_file(
     lines: list[str],
     chunk_size: int | None = None,
     overlap: int | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Split lines into overlapping chunks by character count.
 
     Returns [{"text": str, "start_line": int, "end_line": int}].
@@ -79,7 +80,7 @@ def chunk_file(
 
     while start_idx < len(lines):
         # Build chunk: add lines until chunk_size exceeded
-        chunk_lines = []
+        chunk_lines: list[str] = []
         char_count = 0
         end_idx = start_idx
 
@@ -159,7 +160,7 @@ def update_chunks(
     conn: sqlite3.Connection,
     path: str,
     source: str,
-    chunks: list[dict],
+    chunks: list[dict[str, Any]],
     model: str,
     file_hash: str,
     file_mtime: int,
@@ -299,7 +300,7 @@ def index_workspace(
     force: bool = False,
     embedding_timeout: int = 15,
     sqlite_timeout: int = 30,
-) -> dict:
+) -> dict[str, Any]:
     """Scan workspace, chunk changed files, embed, and write to DB.
 
     All DB operations happen in one transaction — atomic commit.
@@ -327,7 +328,7 @@ def index_workspace(
         # 3. Get current index state
         indexed = get_indexed_files(conn)
 
-        summary = {
+        summary: dict[str, Any] = {
             "indexed": [],      # [(path, chunk_count)]
             "skipped": 0,
             "removed": [],
@@ -408,9 +409,9 @@ def index_workspace(
         conn.close()
 
 
-def get_index_status(db_path: Path, workspace: Path) -> dict:
+def get_index_status(db_path: Path, workspace: Path) -> dict[str, Any]:
     """Get current index status without modifying anything."""
-    status = {
+    status: dict[str, Any] = {
         "db_exists": db_path.exists(),
         "indexed_files": 0,
         "total_chunks": 0,

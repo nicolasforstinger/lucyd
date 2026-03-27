@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import httpx
 
 from async_utils import run_blocking, threaded_stream
+from messages import Message
 
 from . import (
     LLMResponse,
@@ -32,8 +33,8 @@ try:
     import anthropic
     from anthropic._exceptions import OverloadedError as _OverloadedError
 except ImportError:
-    anthropic = None  # type: ignore[assignment]
-    _OverloadedError = None  # type: ignore[assignment,misc]
+    anthropic = None  # type: ignore[assignment]  # conditional import — module when installed, None otherwise
+    _OverloadedError = None  # type: ignore[assignment,misc]  # conditional import fallback
 
 
 _DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
@@ -58,7 +59,7 @@ class APITimeoutError(Exception):
     """Raised when the direct HTTP fallback times out."""
 
 
-def _safe_parse_args(raw: Any) -> dict:
+def _safe_parse_args(raw: Any) -> dict[str, Any]:
     """Parse tool input, handling both dict and string forms.
 
     Anthropic usually returns a dict, but may return a string in edge cases.
@@ -67,12 +68,15 @@ def _safe_parse_args(raw: Any) -> dict:
     if isinstance(raw, dict):
         return raw
     try:
-        return json.loads(raw)
+        result: Any = json.loads(raw)
+        return result if isinstance(result, dict) else {"raw": raw}
     except (json.JSONDecodeError, TypeError):
         return {"raw": raw}
 
 
 class AnthropicCompatProvider:
+    provider_name: str = ""
+
     def __init__(
         self,
         api_key: str,
@@ -88,12 +92,12 @@ class AnthropicCompatProvider:
     ):
         self.api_key = api_key or "not-needed"
         self.base_url = base_url.rstrip("/")
-        if anthropic is None:
-            self.client = None
-        elif self.base_url:
-            self.client = anthropic.Anthropic(api_key=self.api_key, base_url=self.base_url)
-        else:
-            self.client = anthropic.Anthropic(api_key=self.api_key)
+        self.client: Any = None  # Anthropic client when SDK installed, None otherwise
+        if anthropic is not None:
+            if self.base_url:
+                self.client = anthropic.Anthropic(api_key=self.api_key, base_url=self.base_url)
+            else:
+                self.client = anthropic.Anthropic(api_key=self.api_key)
         self.model = model
         self.max_tokens = max_tokens
         self.cache_control = cache_control
@@ -108,7 +112,7 @@ class AnthropicCompatProvider:
     def capabilities(self) -> ModelCapabilities:
         return self._capabilities
 
-    def format_tools(self, tools: list[dict]) -> list[dict]:
+    def format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         formatted = []
         for t in tools:
             formatted.append({
@@ -118,7 +122,7 @@ class AnthropicCompatProvider:
             })
         return formatted
 
-    def format_system(self, blocks: list[dict]) -> list[dict]:
+    def format_system(self, blocks: list[dict[str, str]]) -> list[dict[str, Any]]:
         """Convert cache-tier blocks to Anthropic system format.
 
         Each block: {"text": str, "tier": "stable"|"semi_stable"|"dynamic"}
@@ -156,25 +160,23 @@ class AnthropicCompatProvider:
                 result.append(block)
         return result
 
-    def format_messages(self, messages: list[dict]) -> list[dict]:
+    def format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Convert internal format to Anthropic API format.
 
         Preserves thinking blocks with signatures for tool-use continuity.
         Converts neutral image blocks to Anthropic's nested source format.
         """
-        result = []
+        result: list[dict[str, Any]] = []
         for msg in messages:
-            role = msg.get("role", "")
-
-            if role == "user":
-                content = msg.get("content", msg.get("text", ""))
-                image_blocks = msg.get("_image_blocks")
+            if msg["role"] == "user":
+                content: Any = msg["content"]
+                image_blocks: list[dict[str, Any]] | None = msg.get("_image_blocks")  # type: ignore[assignment]  # transient key, stripped before persistence
                 if image_blocks:
                     content = image_blocks + [{"type": "text", "text": content if isinstance(content, str) else ""}]
                 result.append({"role": "user", "content": self._convert_content_blocks(content)})
 
-            elif role == "assistant":
-                content_blocks = []
+            elif msg["role"] == "assistant":
+                content_blocks: list[dict[str, Any]] = []
                 # Preserve thinking blocks with signature for API continuity
                 if msg.get("thinking_block"):
                     content_blocks.append(msg["thinking_block"])
@@ -198,9 +200,9 @@ class AnthropicCompatProvider:
                 if content_blocks:
                     result.append({"role": "assistant", "content": content_blocks})
 
-            elif role == "tool_results":
-                tool_content = []
-                for r in msg.get("results", []):
+            elif msg["role"] == "tool_results":
+                tool_content: list[dict[str, Any]] = []
+                for r in msg["results"]:
                     tool_content.append({
                         "type": "tool_result",
                         "tool_use_id": r["tool_call_id"],
@@ -212,7 +214,7 @@ class AnthropicCompatProvider:
 
         return result
 
-    def _build_thinking_param(self) -> dict | None:
+    def _build_thinking_param(self) -> dict[str, Any] | None:
         """Build the thinking parameter based on config."""
         # Explicit thinking_mode takes precedence
         if self.thinking_mode == "disabled":
@@ -255,7 +257,7 @@ class AnthropicCompatProvider:
         return f"{base}/v1/messages"
 
     @staticmethod
-    def _sdk_response_to_dict(response) -> dict[str, Any]:
+    def _sdk_response_to_dict(response: Any) -> dict[str, Any]:
         """Convert an Anthropic SDK Message object to a plain dict
         compatible with _response_to_llm()."""
         content = []
@@ -381,7 +383,7 @@ class AnthropicCompatProvider:
         return self._response_to_llm(response.json())
 
     async def complete(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
+        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> LLMResponse:
         """Call Anthropic Messages API."""
         params: dict[str, Any] = {
@@ -403,12 +405,13 @@ class AnthropicCompatProvider:
         if thinking_param:
             # Streaming required when thinking is enabled — SDK enforces this
             # to avoid HTTP timeouts on long reasoning chains.
-            def _stream_to_message():
+            def _stream_to_message() -> Any:
+                assert self.client is not None
                 with self.client.messages.stream(**params) as stream:
                     return stream.get_final_message()
 
             try:
-                response = await run_blocking(_stream_to_message)
+                response: Any = await run_blocking(_stream_to_message)
             except anthropic.APIStatusError as e:
                 # HOTFIX(2026-02-27): Anthropic SDK mid-stream SSE error misclassification.
                 # SDK bug (v0.81.0, github.com/anthropics/anthropic-sdk-python#688):
@@ -451,7 +454,7 @@ class AnthropicCompatProvider:
         return result
 
     async def stream(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
+        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from Anthropic Messages API.
 
@@ -476,7 +479,8 @@ class AnthropicCompatProvider:
         if thinking_param:
             params["thinking"] = thinking_param
 
-        def _stream_factory():
+        def _stream_factory() -> Iterator[Any]:
+            assert self.client is not None
             with self.client.messages.stream(**params) as stream:
                 yield from stream
                 # Final message for usage

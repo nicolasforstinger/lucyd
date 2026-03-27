@@ -33,6 +33,7 @@ import logging
 import time
 from collections import defaultdict
 from pathlib import Path
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from aiohttp import web
@@ -81,7 +82,7 @@ class HTTPApi:
 
     def __init__(
         self,
-        queue: asyncio.Queue,
+        queue: asyncio.Queue[dict[str, Any]],
         host: str,
         port: int,
         auth_token: str,
@@ -105,7 +106,7 @@ class HTTPApi:
         status_rate_limit: int,
         rate_cleanup_threshold: int,
         agent_name: str = "",
-        control_queue: asyncio.Queue | None = None,
+        control_queue: asyncio.Queue[dict[str, Any]] | None = None,
     ):
         self.queue = queue
         self._control_queue = control_queue or queue
@@ -135,7 +136,7 @@ class HTTPApi:
 
     # ─── Response Helper ─────────────────────────────────────────
 
-    def _json_response(self, data: dict, status: int = 200) -> web.Response:
+    def _json_response(self, data: dict[str, Any], status: int = 200) -> web.Response:
         """Wrap web.json_response with agent identity injection."""
         if self.agent_name:
             data["agent"] = self.agent_name
@@ -196,15 +197,17 @@ class HTTPApi:
     # ─── Auth Middleware ──────────────────────────────────────────
 
     @web.middleware
-    async def _auth_middleware(self, request: web.Request, handler):
+    async def _auth_middleware(self, request: web.Request, handler: Callable[[web.Request], Any]) -> web.StreamResponse:
         # Health check endpoints are always open
         if request.path in self._AUTH_EXEMPT_PATHS:
-            return await handler(request)
+            r: web.StreamResponse = await handler(request)
+            return r
 
         # Localhost is trusted (agent's own environment — at jobs, lucydctl, etc.)
         remote = request.remote or ""
         if remote in ("127.0.0.1", "::1"):
-            return await handler(request)
+            r = await handler(request)
+            return r
 
         # No token configured = service misconfigured, deny all protected endpoints
         if not self.auth_token:
@@ -220,12 +223,13 @@ class HTTPApi:
             return self._json_response(
                 {"error": "unauthorized"}, status=401,
             )
-        return await handler(request)
+        resp: web.StreamResponse = await handler(request)
+        return resp
 
     # ─── Rate Limit Middleware ────────────────────────────────────
 
     @web.middleware
-    async def _rate_middleware(self, request: web.Request, handler):
+    async def _rate_middleware(self, request: web.Request, handler: Callable[[web.Request], Any]) -> web.StreamResponse:
         client_ip = request.remote or "unknown"
         if request.path in self._READ_ONLY_PATHS or (
             request.path.startswith("/api/v1/sessions/")
@@ -238,18 +242,19 @@ class HTTPApi:
             return self._json_response(
                 {"error": "rate limit exceeded"}, status=429,
             )
-        return await handler(request)
+        resp: web.StreamResponse = await handler(request)
+        return resp
 
     # ─── Attachment Decoding ─────────────────────────────────────
 
-    def _extract_attachments(self, body: dict) -> list[Attachment] | None:
+    def _extract_attachments(self, body: dict[str, Any]) -> list[Attachment] | None:
         """Extract and decode attachments from an HTTP request body."""
         raw = body.get("attachments")
         if raw and isinstance(raw, list):
             return self._decode_attachments(raw) or None
         return None
 
-    def _decode_attachments(self, raw: list[dict]) -> list[Attachment]:
+    def _decode_attachments(self, raw: list[dict[str, Any]]) -> list[Attachment]:
         """Decode base64 attachments from HTTP body, save to disk.
 
         Each item must have 'content_type' and 'data' (base64-encoded).
@@ -302,7 +307,7 @@ class HTTPApi:
 
     _VALID_TASK_TYPES = frozenset(("conversational", "task", "system"))
 
-    def _extract_envelope(self, body: dict, default_task_type: str = "conversational") -> dict:
+    def _extract_envelope(self, body: dict[str, Any], default_task_type: str = "conversational") -> dict[str, str]:
         """Extract message envelope fields from request body.
 
         All fields are optional — missing fields get safe defaults.
@@ -328,7 +333,7 @@ class HTTPApi:
         msg_type: str,
         sender_default: str = "default",
         text_prefix: str = "",
-        extra_fields: dict | None = None,
+        extra_fields: dict[str, Any] | None = None,
         default_task_type: str = "conversational",
     ) -> web.Response:
         """Shared parse body -> validate -> build queue item -> queue -> 202 response.
@@ -419,7 +424,7 @@ class HTTPApi:
 
         # Create Future for response capture
         loop = asyncio.get_running_loop()
-        future: asyncio.Future = loop.create_future()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
 
         attachments = self._extract_attachments(body)
 
@@ -476,10 +481,10 @@ class HTTPApi:
         await resp.prepare(request)
 
         loop = asyncio.get_running_loop()
-        future: asyncio.Future = loop.create_future()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
 
         # Stream delta queue — daemon pushes deltas, we send as SSE
-        delta_queue: asyncio.Queue = asyncio.Queue()
+        delta_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
         attachments = self._extract_attachments(body)
         queue_item: dict[str, Any] = {
@@ -604,14 +609,14 @@ class HTTPApi:
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         """GET /metrics — Prometheus text format."""
         import metrics as m
-        if not m.ENABLED or m.generate_latest is None:
+        if not m.ENABLED or m.generate_latest is None:  # type: ignore[attr-defined]  # conditional export from try/except
             return web.Response(text="# prometheus_client not installed\n",
                                 content_type="text/plain")
         # Update gauges that are only refreshed on scrape
         if self._get_status:
             self._get_status()  # triggers gauge updates in _build_status
-        body = m.generate_latest()
-        return web.Response(body=body, content_type=m.CONTENT_TYPE_LATEST)
+        body = m.generate_latest()  # type: ignore[attr-defined]  # conditional export from try/except
+        return web.Response(body=body, content_type=m.CONTENT_TYPE_LATEST)  # type: ignore[attr-defined]  # conditional export from try/except
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         """GET /api/v1/status — health check + stats."""
@@ -662,7 +667,7 @@ class HTTPApi:
 
         # Route through control queue (priority over messages)
         loop = asyncio.get_running_loop()
-        future: asyncio.Future = loop.create_future()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
         reset_msg: dict[str, Any] = {
             "type": "reset",
             "sender": target,
@@ -728,7 +733,7 @@ class HTTPApi:
         Routes through the message queue to serialize with message processing.
         """
         loop = asyncio.get_running_loop()
-        future: asyncio.Future = loop.create_future()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
 
         await self.queue.put({
             "type": "compact",

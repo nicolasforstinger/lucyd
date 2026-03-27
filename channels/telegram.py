@@ -19,6 +19,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -69,7 +70,7 @@ async def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def tg_api(method: str, **params) -> dict:
+async def tg_api(method: str, **params: Any) -> Any:
     """Call Telegram Bot API method."""
     client = await _get_client()
     files = params.pop("_files", None)
@@ -93,7 +94,7 @@ def extract_links(text: str) -> tuple[str, list[tuple[str, str]]]:
     links: list[tuple[str, str]] = []
     counter = 0
 
-    def _replace(m: re.Match) -> str:
+    def _replace(m: re.Match[str]) -> str:
         nonlocal counter
         counter += 1
         links.append((m.group(1), m.group(2)))
@@ -102,11 +103,11 @@ def extract_links(text: str) -> tuple[str, list[tuple[str, str]]]:
     return _MD_LINK_RE.sub(_replace, text), links
 
 
-def build_keyboard(links: list[tuple[str, str]]) -> dict | None:
+def build_keyboard(links: list[tuple[str, str]]) -> dict[str, Any] | None:
     if not links:
         return None
-    rows: list[list[dict]] = []
-    row: list[dict] = []
+    rows: list[list[dict[str, str]]] = []
+    row: list[dict[str, str]] = []
     for i, (_label, url) in enumerate(links, 1):
         row.append({"text": str(i), "url": url})
         if len(row) == 4:
@@ -145,7 +146,7 @@ async def send_text(chat_id: int, text: str) -> None:
     keyboard = build_keyboard(links)
     chunks = chunk_text(cleaned)
     for i, chunk in enumerate(chunks):
-        params: dict = {"chat_id": chat_id, "text": chunk}
+        params: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
         if keyboard and i == len(chunks) - 1:
             params["reply_markup"] = keyboard
         await tg_api("sendMessage", **params)
@@ -171,14 +172,14 @@ async def send_attachment(chat_id: int, path: str) -> None:
 # ─── Inbound: Parse Messages ─────────────────────────────────────
 
 
-def extract_quote(message: dict) -> str | None:
+def extract_quote(message: dict[str, Any]) -> str | None:
     reply = message.get("reply_to_message")
     if not reply:
         return None
     tg_quote = message.get("quote")
     if tg_quote and tg_quote.get("text"):
-        return tg_quote["text"]
-    return reply.get("text", "") or reply.get("caption", "") or None
+        return str(tg_quote["text"])
+    return str(reply.get("text", "") or reply.get("caption", "")) or None
 
 
 async def download_file(file_id: str, download_dir: Path) -> tuple[str, str, int] | None:
@@ -211,12 +212,14 @@ async def download_file(file_id: str, download_dir: Path) -> tuple[str, str, int
         return None
 
 
-async def extract_attachments(message: dict, download_dir: Path) -> list[dict]:
+async def extract_attachments(message: dict[str, Any], download_dir: Path) -> list[dict[str, Any]]:
     """Extract and download attachments. Returns list of base64-encoded dicts for HTTP API."""
-    attachments = []
+    attachments: list[dict[str, Any]] = []
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    media_types = [
+    from collections.abc import Callable
+    Extractor = Callable[[dict[str, Any]], Any]
+    media_types: list[tuple[str, Extractor, str | None]] = [
         ("photo", lambda m: m.get("photo", [])[-1] if m.get("photo") else None, "image/jpeg"),
         ("voice", lambda m: m.get("voice"), None),
         ("document", lambda m: m.get("document"), None),
@@ -254,7 +257,7 @@ async def extract_attachments(message: dict, download_dir: Path) -> list[dict]:
 # ─── Inbound: Poll Loop ──────────────────────────────────────────
 
 
-async def inbound_loop():
+async def inbound_loop() -> None:
     """Poll Telegram → POST to daemon → deliver response."""
     global _bot_id, _offset
 
@@ -267,7 +270,7 @@ async def inbound_loop():
     backoff = RECONNECT_INITIAL
 
     # Media group buffering
-    pending_groups: dict[str, list[dict]] = {}
+    pending_groups: dict[str, list[dict[str, Any]]] = {}
     pending_since: dict[str, float] = {}
 
     while True:
@@ -323,8 +326,8 @@ async def inbound_loop():
             backoff = min(backoff * RECONNECT_FACTOR, RECONNECT_MAX)
 
 
-async def process_message(message: dict, download_dir: Path,
-                          pre_attachments: list[dict] | None = None) -> None:
+async def process_message(message: dict[str, Any], download_dir: Path,
+                          pre_attachments: list[dict[str, Any]] | None = None) -> None:
     """Process a single Telegram message → POST to daemon → deliver reply."""
     from_user = message.get("from", {})
     user_id = from_user.get("id", 0)
@@ -362,7 +365,7 @@ async def process_message(message: dict, download_dir: Path,
         pass
 
     # POST to daemon
-    body: dict = {"message": text, "sender": sender, "channel_id": "telegram"}
+    body: dict[str, Any] = {"message": text, "sender": sender, "channel_id": "telegram"}
     if attachments:
         body["attachments"] = attachments
 
@@ -382,7 +385,7 @@ async def process_message(message: dict, download_dir: Path,
 # ─── Config Loading ──────────────────────────────────────────────
 
 
-def load_config():
+def load_config() -> None:
     """Load bridge config from standalone telegram.toml.
 
     Search order:
@@ -463,7 +466,7 @@ def load_config():
 # ─── Main ─────────────────────────────────────────────────────────
 
 
-async def main():
+async def main() -> None:
     if not TOKEN:
         sys.exit("LUCYD_TELEGRAM_TOKEN not set")
 

@@ -10,19 +10,19 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from functools import partial
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 T = TypeVar("T")
 
 
-async def run_blocking(func, /, *args, **kwargs) -> T:
+async def run_blocking(func: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
     """Run blocking work in a daemon thread and await the result."""
     call = partial(func, *args, **kwargs)
     loop = asyncio.get_running_loop()
     done = asyncio.Event()
-    result: list = []  # [ok: bool, value: T | BaseException]
+    result: list[Any] = []  # [ok: bool, value: T | BaseException]
 
     def _worker() -> None:
         try:
@@ -35,18 +35,18 @@ async def run_blocking(func, /, *args, **kwargs) -> T:
     thread.start()
     await done.wait()
     if result[0]:
-        return result[1]  # type: ignore[return-value]
-    raise result[1]  # type: ignore[misc]
+        return cast(T, result[1])
+    raise result[1]
 
 
-async def threaded_stream(sync_iterable_factory: Callable[[], object]) -> AsyncIterator:
+async def threaded_stream(sync_iterable_factory: Callable[[], Iterable[Any]]) -> AsyncIterator[Any]:
     """Run a synchronous iterable in a daemon thread, yield items async.
 
     sync_iterable_factory is a callable that returns an iterable (e.g. an SDK
     stream context manager body).  Items are forwarded through a queue;
     exceptions raised inside the factory propagate to the caller.
     """
-    q: queue.Queue = queue.Queue()
+    q: queue.Queue[Any] = queue.Queue()
     sentinel = object()
 
     def _run() -> None:
@@ -62,7 +62,7 @@ async def threaded_stream(sync_iterable_factory: Callable[[], object]) -> AsyncI
     thread.start()
     try:
         while True:
-            item = await run_blocking(q.get)
+            item: Any = await run_blocking(q.get)
             if item is sentinel:
                 break
             if isinstance(item, Exception):

@@ -7,14 +7,17 @@ checks where the daemon must complete a full message cycle autonomously.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 from context import _estimate_tokens
+from messages import Message
 
 from . import LLMResponse, ModelCapabilities, StreamDelta, Usage, stream_fallback
 
 
 class SmokeLocalProvider:
+    provider_name: str = ""
+
     def __init__(
         self,
         model: str,
@@ -35,17 +38,17 @@ class SmokeLocalProvider:
     def capabilities(self) -> ModelCapabilities:
         return self._capabilities
 
-    def format_tools(self, tools: list[dict]) -> list[dict]:
+    def format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return []
 
-    def format_system(self, blocks: list[dict]) -> str:
+    def format_system(self, blocks: list[dict[str, Any]]) -> str:
         return "\n\n".join(b.get("text", "") for b in blocks)
 
-    def format_messages(self, messages: list[dict]) -> list[dict]:
-        return messages
+    def format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
+        return cast(list[dict[str, Any]], messages)  # passthrough — TypedDicts are dicts at runtime
 
     async def complete(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
+        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> LLMResponse:
         usage = Usage(
             input_tokens=max(
@@ -67,7 +70,7 @@ class SmokeLocalProvider:
         )
 
     async def stream(
-        self, system: Any, messages: list[dict], tools: list[dict], **kwargs,
+        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         async for delta in stream_fallback(self, system, messages, tools, **kwargs):
             yield delta

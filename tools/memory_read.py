@@ -22,7 +22,7 @@ _config: Any = None
 
 
 def configure(memory: Any = None, conn: sqlite3.Connection | None = None,
-              config: Any = None, **_) -> None:
+              config: Any = None, **_: Any) -> None:
     """Configure memory tools. Called once at init."""
     global _memory, _conn, _config
     if memory is not None:
@@ -79,7 +79,7 @@ async def tool_memory_get(file_path: str, start_line: int = 0,
     if _memory is None:
         return "Error: Memory not configured in this deployment. This tool is unavailable."
     try:
-        return await _memory.get_file_snippet(file_path, start_line, end_line)
+        return str(await _memory.get_file_snippet(file_path, start_line, end_line))
     except Exception as e:
         return f"Error retrieving memory: {e}"
 

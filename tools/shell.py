@@ -19,7 +19,7 @@ _SECRET_SUFFIXES = ("_KEY", "_KEY_ID", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDE
 
 
 def configure(default_timeout: int | None = None, max_timeout: int | None = None,
-              config: Any = None, **_) -> None:
+              config: Any = None, **_: Any) -> None:
     global _DEFAULT_TIMEOUT, _MAX_TIMEOUT
     if config is not None:
         if default_timeout is None:

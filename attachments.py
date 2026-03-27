@@ -35,11 +35,11 @@ def fit_image(data: bytes, content_type: str, max_bytes: int,
     Strategy: (1) shrink to max_dimension per side, (2) step down JPEG quality.
     Raises ImageTooLarge if nothing works.
     """
-    from PIL import Image, ImageOps  # type: ignore[import-unresolved]
+    from PIL import Image, ImageOps
 
     is_jpeg = content_type == "image/jpeg"
     img = Image.open(BytesIO(data))
-    img = ImageOps.exif_transpose(img)
+    img = ImageOps.exif_transpose(img)  # type: ignore[assignment]  # returns Image, Pillow stubs say ImageFile
 
     # Step 1: scale dimensions if any side exceeds max_dimension
     if max(img.size) > max_dimension:
@@ -94,7 +94,7 @@ def extract_document_text(path: str, content_type: str, filename: str,
     # PDF
     if content_type == "application/pdf" or ext == ".pdf":
         try:
-            from pypdf import PdfReader  # type: ignore[import-unresolved]
+            from pypdf import PdfReader
         except ImportError:
             return None
         reader = PdfReader(path)

@@ -33,7 +33,7 @@ class ConfigError(Exception):
 # ─── Helpers ─────────────────────────────────────────────────────
 
 
-def _deep_get(d: dict, *keys: str, default: Any = None) -> Any:
+def _deep_get(d: dict[str, Any], *keys: str, default: Any = None) -> Any:
     for key in keys:
         if not isinstance(d, dict):
             return default
@@ -70,7 +70,7 @@ def _resolve_path(p: str) -> Path:
 #   5. Feature-gated sections (stt, vision, etc.) don't need special handling:
 #      missing sections silently use defaults
 
-_SCHEMA: dict[str, tuple] = {
+_SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     # ── Agent ────────────────────────────────────────────────────
     "context_stable":       (("agent", "context", "stable"),       list,  []),
     "context_semi_stable":  (("agent", "context", "semi_stable"),  list,  []),
@@ -202,7 +202,7 @@ class Config:
     cross-field fallbacks) and take precedence over __getattr__.
     """
 
-    def __init__(self, data: dict, config_dir: Path | None = None):
+    def __init__(self, data: dict[str, Any], config_dir: Path | None = None):
         self._data = data
         self._config_dir = config_dir or Path.cwd()
         self._load_providers()
@@ -210,7 +210,7 @@ class Config:
         self._explicit_keys: set[str] = set()
         self._validate()
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Any:
         """Schema-driven attribute access for _SCHEMA entries."""
         try:
             return self._values[name]
@@ -219,7 +219,7 @@ class Config:
 
     # ── Schema Resolution ────────────────────────────────────────
 
-    def _validate(self):
+    def _validate(self) -> None:
         """Validate core requirements, resolve schema, check ranges.
 
         All errors are collected and reported at once — no one-at-a-time
@@ -324,7 +324,7 @@ class Config:
 
     # ── Provider Loading ──────────────────────────────────────────
 
-    def _load_providers(self):
+    def _load_providers(self) -> None:
         """Load provider files from providers.d/ directory.
 
         Each provider file defines connection details (type, api_key_env,
@@ -379,7 +379,7 @@ class Config:
 
     @property
     def agent_name(self) -> str:
-        return self._data["agent"]["name"]
+        return str(self._data["agent"]["name"])
 
     @property
     def workspace(self) -> Path:
@@ -409,20 +409,20 @@ class Config:
     def embedding_model(self) -> str:
         """Read from [models.embeddings] (provider file) or [memory] override. Empty = not configured."""
         if "embeddings" in self._data.get("models", {}):
-            return self.model_config("embeddings").get("model", "")
-        return _deep_get(self._data, "memory", "embedding_model", default="")
+            return str(self.model_config("embeddings").get("model", ""))
+        return str(_deep_get(self._data, "memory", "embedding_model", default=""))
 
     @property
     def embedding_base_url(self) -> str:
         if "embeddings" in self._data.get("models", {}):
-            return self.model_config("embeddings").get("base_url", "")
-        return _deep_get(self._data, "memory", "embedding_base_url", default="")
+            return str(self.model_config("embeddings").get("base_url", ""))
+        return str(_deep_get(self._data, "memory", "embedding_base_url", default=""))
 
     @property
     def embedding_provider(self) -> str:
         if "embeddings" in self._data.get("models", {}):
-            return self.model_config("embeddings").get("provider", "")
-        return _deep_get(self._data, "memory", "embedding_provider", default="")
+            return str(self.model_config("embeddings").get("provider", ""))
+        return str(_deep_get(self._data, "memory", "embedding_provider", default=""))
 
     @property
     def embedding_api_key(self) -> str:
@@ -458,15 +458,15 @@ class Config:
             val = 0.5 if max_ctx and max_ctx <= 32768 else 0.3
         keep_min = _deep_get(self._data, "behavior", "compaction", "keep_recent_pct_min", default=0.05)
         keep_max = _deep_get(self._data, "behavior", "compaction", "keep_recent_pct_max", default=0.9)
-        return max(keep_min, min(keep_max, val))
+        return float(max(keep_min, min(keep_max, val)))
 
     # ── Sub-agents (cross-field fallback) ────────────────────────
 
     @property
     def subagent_max_turns(self) -> int:
         """Max turns for sub-agents. 0 = use max_turns_per_message."""
-        val = _deep_get(self._data, "tools", "subagent_max_turns", default=0)
-        return val if val > 0 else self.max_turns
+        val = int(_deep_get(self._data, "tools", "subagent_max_turns", default=0))
+        return val if val > 0 else int(self.max_turns)
 
     @property
     def subagent_timeout(self) -> float:
@@ -476,11 +476,11 @@ class Config:
 
     # ── Methods ──────────────────────────────────────────────────
 
-    def model_config(self, name: str) -> dict:
+    def model_config(self, name: str) -> dict[str, Any]:
         cfg = _deep_get(self._data, "models", name, default={})
         if not cfg:
             raise ValueError(f"No model config for '{name}'")
-        return cfg
+        return dict(cfg)
 
     def raw(self, *keys: str, default: Any = None) -> Any:
         return _deep_get(self._data, *keys, default=default)
@@ -512,7 +512,7 @@ def _load_dotenv(toml_path: Path) -> None:
         raise ConfigError(f"Failed to read .env file ({env_file}): {e}") from e
 
 
-def load_config(path: str | Path, overrides: dict | None = None) -> Config:
+def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> Config:
     """Load and validate config from a TOML file.
 
     Args:
