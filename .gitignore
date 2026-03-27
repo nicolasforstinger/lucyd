@@ -22,6 +22,8 @@ providers.d/*.toml
 # Plugins
 plugins.d/*
 !plugins.d/.gitkeep
+!plugins.d/stt.py
+!plugins.d/tts.py
 
 # Testing
 .coverage
