@@ -301,12 +301,7 @@ async def run_agentic_loop(
     all_attachments: list[str] = []
 
     # Pre-compute context budget for message trimming
-    try:
-        max_ctx = provider.capabilities.max_context_tokens
-        if not isinstance(max_ctx, int):
-            max_ctx = 0
-    except (AttributeError, TypeError):
-        max_ctx = 0
+    max_ctx = provider.capabilities.max_context_tokens
     from context import _estimate_tokens as _est_tok
 
     response = None

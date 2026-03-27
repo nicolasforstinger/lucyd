@@ -51,10 +51,21 @@ _bot_id: int = 0
 _offset: int = 0
 
 
+def _daemon_auth_headers() -> dict[str, str]:
+    """Build auth headers for daemon HTTP API."""
+    token = os.environ.get("LUCYD_HTTP_TOKEN", "")
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
 async def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT, connect=CONNECT_TIMEOUT))
+        _client = httpx.AsyncClient(
+            timeout=httpx.Timeout(HTTP_TIMEOUT, connect=CONNECT_TIMEOUT),
+            headers=_daemon_auth_headers(),
+        )
     return _client
 
 

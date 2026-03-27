@@ -327,3 +327,26 @@ async def test_reply_to_redirect(tmp_path):
     assert redirected_item["type"] == "system"
     assert redirected_item["task_type"] == "system"
     assert "Acknowledged" in redirected_item["text"]
+
+
+# ─── system convention via /message ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_message_with_system_task_type(tmp_path):
+    """task_type 'system' via /message auto-closes like the old /system endpoint."""
+    daemon = await _boot_daemon(tmp_path)
+
+    result = await _send_and_process(daemon, {
+        "text": "system event via /message",
+        "sender": "system-user",
+        "source": "http",
+        "channel_id": "test",
+        "task_type": "system",
+    })
+
+    assert "Acknowledged" in result.get("reply", "")
+
+    # Session should have been auto-closed (same as old /system behavior)
+    contacts = daemon.session_mgr.list_contacts()
+    assert "test:system-user" not in contacts

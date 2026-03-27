@@ -805,10 +805,7 @@ class LucydDaemon:
         ctx.fmt_system = provider.format_system(system_blocks)
 
         # Runtime context budget report
-        try:
-            max_ctx = provider.capabilities.max_context_tokens
-        except (AttributeError, TypeError):
-            max_ctx = 0
+        max_ctx = provider.capabilities.max_context_tokens
         if max_ctx > 0:
             sys_tokens = sum(_estimate_tokens(b.get("text", "")) for b in system_blocks)
             history_tokens = sum(
@@ -835,11 +832,7 @@ class LucydDaemon:
 
         # Run agentic loop — it appends to session.messages in place
         # If model doesn't support tools, degrade gracefully (no tools sent)
-        try:
-            supports_tools = provider.capabilities.supports_tools
-        except (AttributeError, TypeError):
-            supports_tools = True  # default to true for mock/legacy providers
-        if supports_tools:
+        if provider.capabilities.supports_tools:
             ctx.tools = self.tool_registry.get_schemas()
         else:
             ctx.tools = []
@@ -1047,10 +1040,7 @@ class LucydDaemon:
             already_warned=session.warned_about_compaction,
             warning_pct=0.8,
         ):
-            try:
-                max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
-            except (AttributeError, TypeError):
-                max_ctx = 0
+            max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
             pct = session.last_input_tokens * 100 // max_ctx if max_ctx > 0 else 0
             session.pending_system_warning = (
                 f"[system: context at {session.last_input_tokens:,} tokens "
@@ -1910,13 +1900,13 @@ class LucydDaemon:
             # Does NOT call close_session() (which triggers LLM consolidation
             # callbacks and archival — wrong during shutdown). Sessions resume
             # from state files on next startup via get_or_create().
-            if hasattr(self, "session_mgr") and self.session_mgr:
+            if self.session_mgr:
                 for session in self.session_mgr.list_sessions():
                     with contextlib.suppress(Exception):  # session state persist on shutdown; failure is benign
                         self.session_mgr.save_state(session)
 
             # Close metering DB connection
-            if hasattr(self, "metering_db") and self.metering_db:
+            if self.metering_db:
                 with contextlib.suppress(Exception):  # DB close on shutdown; failure is benign
                     self.metering_db.close()
             # Close memory DB connection

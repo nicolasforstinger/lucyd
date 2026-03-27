@@ -221,9 +221,8 @@ Secrets are never in the TOML file — only env var *names* that point to secret
 |---|---|---|---|
 | **Telegram** | `channels/telegram.py` | `telegram.toml` | Full-featured: long polling, reconnect backoff, media groups, photo albums, contacts |
 | **Email** | `channels/email.py` | `email.toml` | IMAP polling + SMTP reply |
-| **CLI** | `channels/cli.py` | env var only | Minimal: stdin/stdout + SSE streaming. No config file needed. |
 
-Start with CLI for the simplest example. Use Telegram as the reference for production patterns (error handling, reconnection, config structure).
+`lucydctl chat` provides interactive CLI chat via SSE streaming — it's part of `bin/lucydctl`, not a separate channel bridge. Use Telegram as the reference for production channel patterns (error handling, reconnection, config structure).
 
 ## Custom Metrics
 

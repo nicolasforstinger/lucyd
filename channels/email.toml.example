@@ -7,6 +7,7 @@
 
 [daemon]
 url = "http://127.0.0.1:8100"           # Daemon HTTP API
+token_env = "LUCYD_HTTP_TOKEN"          # Env var for bearer token (optional, localhost exempt)
 
 # ─── Email ──────────────────────────────────────────────────────────
 # IMAP for receiving, SMTP for sending. Both use SSL.

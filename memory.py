@@ -558,13 +558,14 @@ async def recall(
 def inject_recall(blocks: list[RecallBlock], max_tokens: int) -> str:
     """Apply token budget to recall blocks.
 
-    Blocks arrive sorted by priority (highest first). Adds blocks
+    Sorts blocks by priority (highest first), then adds blocks
     until budget exhausted, dropping lowest-priority blocks.
     Appends a footer showing what was loaded vs. budget, plus
     any dropped sections so the agent knows what it's missing.
 
     When max_tokens is 0, all blocks are included (unlimited budget).
     """
+    blocks = sorted(blocks, key=lambda b: b.priority, reverse=True)
     unlimited = max_tokens == 0
     result = []
     included_sections = []

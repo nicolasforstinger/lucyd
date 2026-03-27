@@ -3,10 +3,14 @@
 
 Thin HTTP client — all commands go through the daemon's HTTP API.
 
+Chat:
+    lucydctl chat                                 # Interactive streaming conversation
+    lucydctl chat --from Claudio                  # Chat as named sender
+
 Send:
     lucydctl --message "Hello"                    # User message (sync)
     lucydctl --message "Question" --from Claudio  # Message from named sender
-    lucydctl --system "Run diagnostics"           # System event
+    lucydctl --system "Run diagnostics"           # System event (via /message with task_type: system)
     lucydctl --notify "Invoice ready" --source n8n --ref INV-42
     lucydctl --evolve                             # Trigger memory evolution
     lucydctl --compact                            # Force diary + compaction
@@ -30,6 +34,7 @@ Reset:
 """
 
 import argparse
+import asyncio
 import base64
 import json
 import mimetypes
@@ -38,6 +43,9 @@ import sys
 from pathlib import Path
 
 import httpx
+
+
+_CHANNEL_ID = "lucydctl"
 
 
 # ─── HTTP Transport ──────────────────────────────────────────────
@@ -96,6 +104,52 @@ def _encode_attachments(paths: list[str]) -> list[dict]:
     return result
 
 
+# ─── Interactive Chat ────────────────────────────────────────────
+
+
+async def _chat(sender: str) -> None:
+    """Interactive streaming conversation via SSE."""
+    url = _url()
+    headers = _auth()
+    async with httpx.AsyncClient(timeout=300, headers=headers) as client:
+        while True:
+            try:
+                text = await asyncio.get_event_loop().run_in_executor(None, input, "You> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+
+            text = text.strip()
+            if not text:
+                continue
+
+            body = {"message": text, "sender": sender, "channel_id": _CHANNEL_ID}
+
+            try:
+                async with client.stream(
+                    "POST", f"{url}/api/v1/chat/stream", json=body,
+                ) as resp:
+                    sys.stdout.write("Agent> ")
+                    sys.stdout.flush()
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        try:
+                            event = json.loads(line[6:])
+                        except json.JSONDecodeError:
+                            continue
+                        if event.get("text"):
+                            sys.stdout.write(event["text"])
+                            sys.stdout.flush()
+                        if event.get("done"):
+                            break
+                    print()
+            except httpx.ConnectError:
+                print("Error: cannot connect to daemon. Is it running?", file=sys.stderr)
+            except Exception as e:
+                print(f"Error: {e}", file=sys.stderr)
+
+
 # ─── Main ─────────────────────────────────────────────────────────
 
 
@@ -104,6 +158,12 @@ def main():
         prog="lucydctl",
         description="Lucyd daemon CLI — all commands via HTTP API",
     )
+
+    # Subcommand: chat
+    sub = parser.add_subparsers(dest="subcommand")
+    chat_parser = sub.add_parser("chat", help="Interactive streaming conversation")
+    chat_parser.add_argument("--from", dest="sender", metavar="NAME",
+                             default="cli", help="Sender name (default: 'cli')")
 
     send = parser.add_argument_group("Send")
     send.add_argument("-m", "--message", metavar="TEXT", help="User message (sync — waits for response)")
@@ -142,6 +202,15 @@ def main():
                       help="Attach file(s) (repeatable)")
 
     args = parser.parse_args()
+
+    # ── Chat subcommand ────────────────────────────────────────────
+    if args.subcommand == "chat":
+        try:
+            asyncio.run(_chat(args.sender))
+        except httpx.ConnectError:
+            print("Error: cannot connect to daemon. Is it running?", file=sys.stderr)
+            sys.exit(1)
+        return
 
     # ── Validate ──────────────────────────────────────────────────
     if args.attach and not (args.message or args.system or args.notify):
@@ -216,7 +285,7 @@ def main():
         attachments = _encode_attachments(args.attach) if args.attach else None
 
         if args.message:
-            body: dict = {"message": args.message}
+            body: dict = {"message": args.message, "channel_id": _CHANNEL_ID}
             if args.sender:
                 body["sender"] = args.sender
             if attachments:
@@ -224,15 +293,15 @@ def main():
             _output(_http_post("chat", body))
 
         elif args.system:
-            body = {"message": args.system}
+            body = {"message": args.system, "task_type": "system", "channel_id": _CHANNEL_ID}
             if args.sender:
                 body["sender"] = args.sender
             if attachments:
                 body["attachments"] = attachments
-            _output(_http_post("system", body))
+            _output(_http_post("message", body))
 
         elif args.notify:
-            body = {"message": args.notify}
+            body = {"message": args.notify, "channel_id": _CHANNEL_ID}
             if args.sender:
                 body["sender"] = args.sender
             if args.source:

@@ -534,8 +534,9 @@ class TestGetSessionStartContext:
         result = get_session_start_context(
             populated_conn, config=FakeConfig(), max_facts=1
         )
-        # Natural format uses " — " not "."
-        facts_section = result.split("[Recent conversations]")[0]
+        # Facts section follows [Known facts] header (lowest priority, last in output)
+        assert "[Known facts]" in result
+        facts_section = result.split("[Known facts]")[1].split("[Memory loaded")[0]
         fact_lines = [
             line for line in facts_section.split("\n")
             if line.strip() and " — " in line
@@ -546,7 +547,9 @@ class TestGetSessionStartContext:
         result = get_session_start_context(
             populated_conn, config=FakeConfig(), max_episodes=1
         )
-        episode_section = result.split("[Recent conversations]")[1].split("[Open commitments]")[0]
+        # Episodes section follows [Recent conversations] header
+        assert "[Recent conversations]" in result
+        episode_section = result.split("[Recent conversations]")[1].split("[Known facts]")[0]
         episode_lines = [
             line for line in episode_section.split("\n")
             if line.strip() and line.strip().startswith("[")
@@ -573,8 +576,9 @@ class TestGetSessionStartContext:
         result = get_session_start_context(
             populated_conn, config=FakeConfig()
         )
-        # Natural format uses em-dashes
-        assert " — " in result.split("[Recent conversations]")[0]
+        # Natural format uses em-dashes in the facts section
+        facts_section = result.split("[Known facts]")[1].split("[Memory loaded")[0]
+        assert " — " in facts_section
 
     def test_episode_tone_in_output(self, populated_conn):
         result = get_session_start_context(populated_conn, config=FakeConfig())

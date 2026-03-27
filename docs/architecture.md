@@ -27,7 +27,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
 | `async_utils.py` | `run_blocking()` for safe blocking I/O offload. |
 | `channels/telegram.py` | Telegram bridge. Polls getUpdates, POSTs to daemon, delivers replies. Standalone config: `telegram.toml`. |
-| `channels/cli.py` | CLI bridge. stdin/stdout with SSE streaming via `/chat/stream`. |
+| `bin/lucydctl` | CLI control client. HTTP wrapper for daemon endpoints. `lucydctl chat` for interactive SSE streaming. |
 | `channels/email.py` | Email bridge. IMAP polling, SMTP replies. Standalone config: `email.toml`. |
 | `providers/__init__.py` | `LLMProvider` protocol, data types (`LLMResponse`, `StreamDelta`, `Usage`, `ModelCapabilities`), factory. |
 | `providers/anthropic_compat.py` | Anthropic provider. Prompt caching, extended thinking, SDK or HTTP fallback. |
@@ -44,7 +44,6 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `tools/indexer.py` | Workspace file indexer for memory. Used by `POST /api/v1/index`. |
 | `plugins.d/stt.py` | STT preprocessor plugin. Transcription backends (OpenAI Whisper, local whisper.cpp), ffmpeg validation, audio attachment preprocessing. |
 | `plugins.d/tts.py` | TTS tool plugin. ElevenLabs API, returns audio as attachment. |
-| `bin/lucydctl` | CLI control client. HTTP wrapper for daemon endpoints. |
 | `providers.d/*.toml` | Provider config files. Connection type, API key, model sections. |
 
 ## Message Flow

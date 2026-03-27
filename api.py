@@ -327,7 +327,11 @@ class HTTPApi:
     ) -> web.Response:
         """Shared parse body -> validate -> build queue item -> queue -> 202 response.
 
-        Used by _handle_message, _handle_system, _handle_notify.
+        Used by _handle_message and _handle_notify.
+
+        System convention: when task_type resolves to "system" and msg_type
+        is "user", auto-applies system defaults (msg_type="system",
+        sender="http-system", text prefix "[AUTOMATED SYSTEM MESSAGE] ").
         """
         try:
             body = await request.json()
@@ -344,6 +348,17 @@ class HTTPApi:
                 {"error": "\"message\" field is required"}, status=400,
             )
 
+        # Extract envelope first — task_type may override defaults
+        envelope = self._extract_envelope(body, default_task_type=default_task_type)
+
+        # System convention: task_type "system" promotes to system behavior
+        if envelope["task_type"] == "system" and msg_type == "user":
+            msg_type = "system"
+            if sender_default == "default":
+                sender_default = "system"
+            if not text_prefix:
+                text_prefix = "[AUTOMATED SYSTEM MESSAGE] "
+
         sender = f"http-{body.get('sender', sender_default)}"
         text = f"{text_prefix}{message}" if text_prefix else message
 
@@ -353,7 +368,7 @@ class HTTPApi:
             "sender": sender,
             "type": msg_type,
             "text": text,
-            **self._extract_envelope(body, default_task_type=default_task_type),
+            **envelope,
         }
         if attachments:
             queue_item["attachments"] = attachments
@@ -511,21 +526,24 @@ class HTTPApi:
         return resp
 
     async def _handle_message(self, request: web.Request) -> web.Response:
-        """POST /api/v1/message — fire-and-forget user message.
+        """POST /api/v1/message — fire-and-forget message.
 
-        Body: message (required), sender (optional, default "http-default").
-        Queues a user message without waiting for the agent's response.
-        CLI equivalent: lucydctl --message "text"
+        Body: message (required), sender (optional), task_type (optional).
+        Queues a message without waiting for the agent's response.
+
+        When task_type is "system": sender defaults to "http-system",
+        text is prefixed with "[AUTOMATED SYSTEM MESSAGE] ", and reply
+        delivery is suppressed (system messages don't deliver).
         """
         return await self._parse_and_queue(request, msg_type="user")
 
     async def _handle_system(self, request: web.Request) -> web.Response:
-        """POST /api/v1/system — fire-and-forget system event.
+        """POST /api/v1/system — DEPRECATED.
 
-        Body: message (required), sender (optional, default "http-system").
-        Queues a system event without waiting for the agent's response.
-        CLI equivalent: lucydctl --system "text"
+        Use POST /api/v1/message with task_type: "system" instead.
+        Kept for backwards compatibility; logs a deprecation warning.
         """
+        log.warning("DEPRECATED: POST /api/v1/system — use POST /api/v1/message with task_type: \"system\"")
         return await self._parse_and_queue(
             request, msg_type="system",
             sender_default="system",

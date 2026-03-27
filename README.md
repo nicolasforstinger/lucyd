@@ -31,7 +31,7 @@ cp -r workspace.example ~/.lucyd/workspace
 python3 lucyd.py -c lucyd.toml
 
 # In another terminal: interactive CLI session
-python3 channels/cli.py
+lucydctl chat
 
 # Or connect a Telegram bridge (see Telegram Setup below)
 python3 channels/telegram.py

@@ -310,13 +310,13 @@ Run memory maintenance. **Response:** 200 (results), 503 (not configured), 500 (
 
 ## CLI Mode
 
-Interactive testing via the CLI bridge against a running daemon:
+Interactive chat against a running daemon:
 
 ```bash
-python3 channels/cli.py
+lucydctl chat
 ```
 
-Reads from stdin, POSTs to `/api/v1/chat/stream`, streams the response via SSE. Set `LUCYD_URL` to override the daemon address (default: `http://127.0.0.1:8100`).
+Reads from stdin, POSTs to `/api/v1/chat/stream`, streams the response via SSE. Set `LUCYD_URL` to override the daemon address (default: `http://127.0.0.1:8100`). Use `--from NAME` to override the sender.
 
 ## Unix Signals
 

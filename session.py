@@ -138,6 +138,7 @@ class Session:
             with self.state_path.open(encoding="utf-8") as f:
                 state = json.load(f)
             self.messages = state.get("messages", [])
+            _validate_turn_structure(self.messages)
             self.model = state.get("model", self.model)
             self.contact = state.get("contact", self.contact)
             self.created_at = state.get("created_at", self.created_at)
@@ -394,7 +395,7 @@ class SessionManager:
             metering = cost.metering
             model_name = cost.model_name
             cost_rates = cost.cost_rates
-            provider_name = getattr(cost, "provider_name", "")
+            provider_name = cost.provider_name
         if len(session.messages) < min_messages:
             return
 

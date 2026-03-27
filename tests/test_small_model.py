@@ -12,7 +12,7 @@ import pytest
 
 from config import Config
 from context import ContextBuilder, _estimate_tokens
-from providers import LLMResponse, ToolCall, Usage
+from providers import LLMResponse, ModelCapabilities, ToolCall, Usage
 from providers.openai_compat import _repair_json, _strip_thinking
 from tools import _smart_truncate
 
@@ -267,6 +267,7 @@ class TestAgenticLoopEfficiency:
         from agentic import LoopConfig, run_agentic_loop
 
         mock_provider = MagicMock()
+        mock_provider.capabilities = ModelCapabilities(max_context_tokens=200000)
 
         # First call: returns tool call with high context
         resp1 = LLMResponse(
@@ -319,6 +320,7 @@ class TestAgenticLoopEfficiency:
         from agentic import LoopConfig, run_agentic_loop
 
         mock_provider = MagicMock()
+        mock_provider.capabilities = ModelCapabilities(max_context_tokens=200000)
 
         # First call: returns tool call
         resp1 = LLMResponse(

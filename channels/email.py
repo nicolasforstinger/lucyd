@@ -62,6 +62,11 @@ def load_config():
 
             daemon = data.get("daemon", {})
             URL = daemon.get("url", URL)
+            daemon_token_env = daemon.get("token_env", "")
+            if daemon_token_env:
+                token = os.environ.get(daemon_token_env, "")
+                if token:
+                    os.environ.setdefault("LUCYD_HTTP_TOKEN", token)
 
             em = data.get("email", {})
             IMAP_HOST = em.get("imap_host", IMAP_HOST)
@@ -174,7 +179,9 @@ async def poll_loop():
     """Main loop: fetch unread → POST to daemon → reply via SMTP."""
     log.info("Email bridge started: %s@%s → %s", USER, IMAP_HOST, URL)
 
-    async with httpx.AsyncClient(timeout=300) as client:
+    token = os.environ.get("LUCYD_HTTP_TOKEN", "")
+    auth_headers = {"Authorization": f"Bearer {token}"} if token else {}
+    async with httpx.AsyncClient(timeout=300, headers=auth_headers) as client:
         while True:
             emails = await asyncio.get_event_loop().run_in_executor(None, fetch_unread)
 

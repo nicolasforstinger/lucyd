@@ -215,15 +215,17 @@ def create_provider(model_config: dict, api_key: str = "") -> LLMProvider:
             max_context_tokens=model_config.get("max_context_tokens", 8192),
             supports_thinking=False,
         )
-        return SmokeLocalProvider(
+        p = SmokeLocalProvider(
             model=model_config["model"],
             reply_text=model_config.get("reply_text", "SMOKE_TEST_OK"),
             max_tokens=model_config.get("max_tokens", 64),
             capabilities=smoke_caps,
         )
+        p.provider_name = provider_type
+        return p
     if provider_type == "anthropic-compat":
         from .anthropic_compat import AnthropicCompatProvider
-        return AnthropicCompatProvider(
+        p = AnthropicCompatProvider(
             api_key=api_key,
             model=model_config["model"],
             max_tokens=model_config.get("max_tokens", 4096),
@@ -235,9 +237,11 @@ def create_provider(model_config: dict, api_key: str = "") -> LLMProvider:
             thinking_mode=model_config.get("thinking_mode", ""),
             capabilities=caps,
         )
+        p.provider_name = provider_type
+        return p
     if provider_type == "openai-compat":
         from .openai_compat import OpenAICompatProvider
-        return OpenAICompatProvider(
+        p = OpenAICompatProvider(
             api_key=api_key,
             model=model_config["model"],
             max_tokens=model_config.get("max_tokens", 4096),
@@ -246,4 +250,6 @@ def create_provider(model_config: dict, api_key: str = "") -> LLMProvider:
             slot_id=model_config.get("slot_id", -1),
             capabilities=caps,
         )
+        p.provider_name = provider_type
+        return p
     raise ValueError(f"Unknown provider type: {provider_type!r}")
