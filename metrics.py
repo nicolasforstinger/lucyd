@@ -159,5 +159,5 @@ try:
 
 except ImportError:
     ENABLED = False
-    generate_latest = None  # type: ignore[assignment]  # conditional export — function when prometheus_client installed, None otherwise
+    generate_latest = None  # type: ignore[assignment,unused-ignore]
     CONTENT_TYPE_LATEST = "text/plain"
