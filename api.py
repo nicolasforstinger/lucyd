@@ -354,7 +354,8 @@ class HTTPApi:
             )
 
         message = body.get("message", "").strip()
-        if not message:
+        attachments = self._extract_attachments(body)
+        if not message and not attachments:
             return self._json_response(
                 {"error": "\"message\" field is required"}, status=400,
             )
@@ -372,8 +373,6 @@ class HTTPApi:
 
         sender = f"http-{body.get('sender', sender_default)}"
         text = f"{text_prefix}{message}" if text_prefix else message
-
-        attachments = self._extract_attachments(body)
 
         queue_item: dict[str, Any] = {
             "sender": sender,
@@ -411,7 +410,8 @@ class HTTPApi:
             )
 
         message = body.get("message", "").strip()
-        if not message:
+        attachments = self._extract_attachments(body)
+        if not message and not attachments:
             return self._json_response(
                 {"error": "\"message\" field is required"}, status=400,
             )
@@ -425,8 +425,6 @@ class HTTPApi:
         # Create Future for response capture
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
-
-        attachments = self._extract_attachments(body)
 
         queue_item = {
             "sender": sender,
@@ -461,7 +459,8 @@ class HTTPApi:
             return self._json_response({"error": "invalid JSON body"}, status=400)
 
         message = body.get("message", "").strip()
-        if not message:
+        attachments = self._extract_attachments(body)
+        if not message and not attachments:
             return self._json_response({"error": "\"message\" field is required"}, status=400)
 
         sender = f"http-{body.get('sender', 'default')}"
@@ -485,8 +484,6 @@ class HTTPApi:
 
         # Stream delta queue — daemon pushes deltas, we send as SSE
         delta_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        attachments = self._extract_attachments(body)
         queue_item: dict[str, Any] = {
             "sender": sender,
             "type": "http",
