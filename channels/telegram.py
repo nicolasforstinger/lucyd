@@ -467,10 +467,10 @@ def load_config() -> None:
 
 
 async def main() -> None:
+    load_config()
+
     if not TOKEN:
         sys.exit("LUCYD_TELEGRAM_TOKEN not set")
-
-    load_config()
 
     await inbound_loop()
 
