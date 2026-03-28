@@ -10,3 +10,4 @@ aiohttp>=3.9,<4      # HTTP API server
 # Optional — install if using these features
 Pillow~=12.0         # Required if [vision] enabled (image processing)
 pypdf~=6.7.5         # Required if [documents] enabled (PDF text extraction). >=6.7.5 for CVE-2026-28804 fix.
+prometheus_client>=0.21,<1  # Required for Prometheus /metrics endpoint

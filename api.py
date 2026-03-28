@@ -613,7 +613,8 @@ class HTTPApi:
         if self._get_status:
             self._get_status()  # triggers gauge updates in _build_status
         body = m.generate_latest()  # type: ignore[attr-defined]  # conditional export from try/except
-        return web.Response(body=body, content_type=m.CONTENT_TYPE_LATEST)  # type: ignore[attr-defined]  # conditional export from try/except
+        return web.Response(body=body, content_type="text/plain",
+                            charset="utf-8")
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         """GET /api/v1/status — health check + stats."""
