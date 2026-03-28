@@ -1645,6 +1645,7 @@ class LucydDaemon:
         msg = {
             "type": "system",
             "sender": "evolution",
+            "task_type": "system",
             "text": (
                 "[AUTOMATED SYSTEM MESSAGE] "
                 "Load the evolution skill and evolve your memory files. "
