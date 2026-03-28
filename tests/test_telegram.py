@@ -635,13 +635,16 @@ def _msg(
     return m
 
 
-def _daemon_response(reply: str = "OK", attachments: list[str] | None = None) -> MagicMock:
+def _daemon_response(reply: str = "OK", attachments: list[str] | None = None,
+                     status_code: int = 200) -> MagicMock:
     """Build a mock httpx response for the daemon POST."""
     resp = MagicMock()
+    resp.status_code = status_code
     body: dict[str, Any] = {"reply": reply}
     if attachments is not None:
         body["attachments"] = attachments
     resp.json.return_value = body
+    resp.text = json.dumps(body)
     return resp
 
 
@@ -824,6 +827,57 @@ class TestProcessMessage:
 
         posted_body = mock_client.post.call_args.kwargs["json"]
         assert posted_body["sender"] == "Alice"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6b. Send retry + client lifecycle
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class TestSendWithRetry:
+    @pytest.mark.asyncio
+    async def test_succeeds_first_attempt(self) -> None:
+        """No retry needed — send_fn called once."""
+        mock_fn = AsyncMock()
+        await tg._send_with_retry(mock_fn, 123, "hello", retries=2, delay=0.0)
+        mock_fn.assert_called_once_with(123, "hello")
+
+    @pytest.mark.asyncio
+    async def test_retries_on_connect_error(self) -> None:
+        """ConnectError → client reset + retry → success on second attempt."""
+        mock_fn = AsyncMock(side_effect=[httpx.ConnectError("stale"), None])
+        with patch.object(tg, "_reset_client", new_callable=AsyncMock) as mock_reset:
+            await tg._send_with_retry(mock_fn, 123, "hello", retries=2, delay=0.0)
+        assert mock_fn.call_count == 2
+        mock_reset.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_exhausts_retries(self) -> None:
+        """All attempts fail → error logged, no exception raised."""
+        mock_fn = AsyncMock(side_effect=httpx.ConnectError("down"))
+        with patch.object(tg, "_reset_client", new_callable=AsyncMock):
+            await tg._send_with_retry(mock_fn, 123, "hello", retries=2, delay=0.0)
+        assert mock_fn.call_count == 3  # 1 + 2 retries
+
+    @pytest.mark.asyncio
+    async def test_daemon_non_200_no_send(self, tmp_path: Path) -> None:
+        """Daemon returns 500 → error logged, no Telegram send attempted."""
+        tg.ALLOW_FROM = set()
+        tg._bot_id = 0
+        tg.DAEMON_URL = "http://daemon:8100"
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = _daemon_response("error", status_code=500)
+
+        with (
+            patch.object(tg, "_get_client", return_value=mock_client),
+            patch.object(tg, "tg_api", new_callable=AsyncMock),
+            patch.object(tg, "send_text", new_callable=AsyncMock) as mock_send,
+            patch.object(tg, "extract_attachments", new_callable=AsyncMock, return_value=[]),
+        ):
+            await tg.process_message(_msg(), tmp_path)
+
+        mock_send.assert_not_called()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

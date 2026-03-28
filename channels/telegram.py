@@ -18,6 +18,7 @@ import random
 import re
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,14 @@ async def _get_client() -> httpx.AsyncClient:
             headers=_daemon_auth_headers(),
         )
     return _client
+
+
+async def _reset_client() -> None:
+    """Close and recreate the httpx client on connection failure."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
 
 
 async def tg_api(method: str, **params: Any) -> Any:
@@ -167,6 +176,33 @@ async def send_attachment(chat_id: int, path: str) -> None:
     else:
         with p.open("rb") as f:
             await tg_api("sendDocument", chat_id=chat_id, _files={"document": (p.name, f, "application/octet-stream")})
+
+
+async def _send_with_retry(send_fn: Callable[[int, str], Awaitable[None]],
+                           chat_id: int, payload: str, *,
+                           retries: int = 2, delay: float = 1.0) -> None:
+    """Call a Telegram send function with retry on transient failures."""
+    for attempt in range(1 + retries):
+        try:
+            await send_fn(chat_id, payload)
+            return
+        except httpx.ConnectError:
+            await _reset_client()
+            if attempt < retries:
+                log.warning("Telegram send ConnectError (attempt %d/%d), client reset",
+                            attempt + 1, 1 + retries)
+                await asyncio.sleep(delay * (attempt + 1))
+            else:
+                log.error("Telegram send failed after %d attempts (ConnectError)",
+                          1 + retries, exc_info=True)
+        except Exception:
+            if attempt < retries:
+                log.warning("Telegram send failed (attempt %d/%d)",
+                            attempt + 1, 1 + retries, exc_info=True)
+                await asyncio.sleep(delay * (attempt + 1))
+            else:
+                log.error("Telegram send failed after %d attempts",
+                          1 + retries, exc_info=True)
 
 
 # ─── Inbound: Parse Messages ─────────────────────────────────────
@@ -369,17 +405,27 @@ async def process_message(message: dict[str, Any], download_dir: Path,
     if attachments:
         body["attachments"] = attachments
 
+    # POST to daemon
     try:
         client = await _get_client()
         resp = await client.post(f"{DAEMON_URL}/api/v1/chat", json=body, timeout=300)
-        data = resp.json()
-        reply = data.get("reply", "")
-        if reply:
-            await send_text(chat_id, reply)
-        for att_path in data.get("attachments", []):
-            await send_attachment(chat_id, att_path)
     except Exception as e:
-        log.error("Daemon request failed: %s", e, exc_info=True)
+        log.error("Daemon POST failed for %s: %s", sender, e, exc_info=True)
+        return
+
+    if resp.status_code != 200:
+        log.error("Daemon returned %d for %s: %s", resp.status_code, sender,
+                  resp.text[:200])
+        return
+
+    data = resp.json()
+    reply = data.get("reply", "")
+
+    # Deliver to Telegram (with retry + client reset on ConnectError)
+    if reply:
+        await _send_with_retry(send_text, chat_id, reply)
+    for att_path in data.get("attachments", []):
+        await _send_with_retry(send_attachment, chat_id, att_path)
 
 
 # ─── Config Loading ──────────────────────────────────────────────
