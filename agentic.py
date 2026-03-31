@@ -588,6 +588,15 @@ def is_transient_error(exc: BaseException) -> bool:
     if cls_name in _httpx_transient:
         return True
 
+    # Mistral SDK exceptions — status_code attribute, no named subclasses
+    if cls_name in ("MistralError", "SDKError", "HTTPValidationError"):
+        status = getattr(exc, "status_code", None)
+        if status is not None:
+            if status in (400, 401, 403, 404, 422):
+                return False
+            return status >= 429
+        return False
+
     # Connection-level errors
     return isinstance(exc, (ConnectionError, OSError))
 

@@ -794,6 +794,36 @@ class TestIsTransientError:
             status_code = 401
         assert is_transient_error(APIStatusError("unauthorized")) is False
 
+    def test_mistral_error_429_is_transient(self):
+        class MistralError(Exception):
+            status_code = 429
+        assert is_transient_error(MistralError("rate limited")) is True
+
+    def test_mistral_error_500_is_transient(self):
+        class MistralError(Exception):
+            status_code = 500
+        assert is_transient_error(MistralError("server error")) is True
+
+    def test_mistral_error_401_not_transient(self):
+        class MistralError(Exception):
+            status_code = 401
+        assert is_transient_error(MistralError("unauthorized")) is False
+
+    def test_mistral_error_400_not_transient(self):
+        class MistralError(Exception):
+            status_code = 400
+        assert is_transient_error(MistralError("bad request")) is False
+
+    def test_mistral_sdk_error_503_is_transient(self):
+        class SDKError(Exception):
+            status_code = 503
+        assert is_transient_error(SDKError("service unavailable")) is True
+
+    def test_mistral_error_no_status_not_transient(self):
+        class MistralError(Exception):
+            pass
+        assert is_transient_error(MistralError("unknown")) is False
+
 
 class TestRetryLogic:
     """Provider retry in agentic loop."""
