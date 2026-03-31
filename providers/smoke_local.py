@@ -16,15 +16,15 @@ from . import LLMResponse, ModelCapabilities, StreamDelta, Usage, stream_fallbac
 
 
 class SmokeLocalProvider:
-    provider_name: str = ""
-
     def __init__(
         self,
         model: str,
         reply_text: str = "SMOKE_TEST_OK",
         max_tokens: int = 64,
         capabilities: ModelCapabilities | None = None,
+        provider_name: str = "",
     ):
+        self.provider_name = provider_name
         self.model = model
         self.reply_text = reply_text
         self.max_tokens = max_tokens

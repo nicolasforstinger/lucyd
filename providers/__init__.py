@@ -252,17 +252,16 @@ def create_provider(model_config: dict[str, Any], api_key: str = "") -> LLMProvi
             max_context_tokens=model_config.get("max_context_tokens", 8192),
             supports_thinking=False,
         )
-        p = SmokeLocalProvider(
+        return SmokeLocalProvider(
             model=model_config["model"],
             reply_text=model_config.get("reply_text", "SMOKE_TEST_OK"),
             max_tokens=model_config.get("max_tokens", 64),
             capabilities=smoke_caps,
+            provider_name=provider_type,
         )
-        p.provider_name = provider_type
-        return p
     elif provider_type == "anthropic":
         from .anthropic import AnthropicProvider
-        ap = AnthropicProvider(
+        return AnthropicProvider(
             api_key=api_key,
             model=model_config["model"],
             max_tokens=model_config.get("max_tokens", 4096),
@@ -273,12 +272,11 @@ def create_provider(model_config: dict[str, Any], api_key: str = "") -> LLMProvi
             thinking_effort=model_config.get("thinking_effort", ""),
             thinking_mode=model_config.get("thinking_mode", ""),
             capabilities=caps,
+            provider_name=provider_type,
         )
-        ap.provider_name = provider_type
-        return ap
     elif provider_type == "openai":
         from .openai import OpenAIProvider
-        op = OpenAIProvider(
+        return OpenAIProvider(
             api_key=api_key,
             model=model_config["model"],
             max_tokens=model_config.get("max_tokens", 4096),
@@ -286,8 +284,7 @@ def create_provider(model_config: dict[str, Any], api_key: str = "") -> LLMProvi
             thinking_budget=model_config.get("thinking_budget", 0),
             slot_id=model_config.get("slot_id", -1),
             capabilities=caps,
+            provider_name=provider_type,
         )
-        op.provider_name = provider_type
-        return op
     else:
         raise ValueError(f"Unknown provider type: {provider_type!r}")

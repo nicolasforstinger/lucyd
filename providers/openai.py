@@ -67,8 +67,6 @@ def _strip_thinking(text: str) -> tuple[str, str]:
 
 
 class OpenAIProvider:
-    provider_name: str = ""
-
     def __init__(
         self,
         api_key: str,
@@ -78,7 +76,9 @@ class OpenAIProvider:
         thinking_budget: int = 0,
         slot_id: int = -1,
         capabilities: ModelCapabilities | None = None,
+        provider_name: str = "",
     ):
+        self.provider_name = provider_name
         self.api_key = api_key or "not-needed"
         self.base_url = base_url.rstrip("/")
         self.client: Any = None  # OpenAI client when SDK installed, None otherwise

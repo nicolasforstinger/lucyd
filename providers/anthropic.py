@@ -75,8 +75,6 @@ def _safe_parse_args(raw: Any) -> dict[str, Any]:
 
 
 class AnthropicProvider:
-    provider_name: str = ""
-
     def __init__(
         self,
         api_key: str,
@@ -89,7 +87,9 @@ class AnthropicProvider:
         thinking_effort: str = "",
         thinking_mode: str = "",
         capabilities: ModelCapabilities | None = None,
+        provider_name: str = "",
     ):
+        self.provider_name = provider_name
         self.api_key = api_key or "not-needed"
         self.base_url = base_url.rstrip("/")
         self.client: Any = None  # Anthropic client when SDK installed, None otherwise
