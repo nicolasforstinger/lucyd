@@ -12,8 +12,8 @@ import pytest
 
 from config import Config
 from context import ContextBuilder, _estimate_tokens
-from providers import LLMResponse, ModelCapabilities, ToolCall, Usage
-from providers.openai import _repair_json, _strip_thinking
+from providers import LLMResponse, ModelCapabilities, ToolCall, Usage, _repair_json
+from providers.openai import _strip_thinking
 from tools import _smart_truncate
 
 

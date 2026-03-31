@@ -7,6 +7,8 @@ implementations, not in the interface.
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -183,6 +185,39 @@ async def stream_fallback(
         stop_reason=response.stop_reason,
         usage=response.usage,
     )
+
+
+def _repair_json(raw: str) -> dict[str, Any] | None:
+    """Attempt to repair malformed JSON from small models.
+
+    Tries common fixes: trailing commas, single quotes, unquoted keys.
+    Returns parsed dict on success, None on failure.
+    """
+    # Try as-is first (fast path)
+    try:
+        result: Any = json.loads(raw)
+        return result if isinstance(result, dict) else None
+    except (json.JSONDecodeError, TypeError):
+        pass
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    # Fix trailing commas before } or ]
+    s = re.sub(r",\s*([}\]])", r"\1", s)
+    # Fix single quotes → double quotes (naive — doesn't handle nested)
+    s = s.replace("'", '"')
+    try:
+        result = json.loads(s)
+        return result if isinstance(result, dict) else None
+    except json.JSONDecodeError:
+        pass
+    # Fix unquoted keys: {key: "value"} → {"key": "value"}
+    s = re.sub(r"(?<=\{|,)\s*(\w+)\s*:", r' "\1":', s)
+    try:
+        result = json.loads(s)
+        return result if isinstance(result, dict) else None
+    except json.JSONDecodeError:
+        return None
 
 
 def _build_capabilities(model_config: dict[str, Any]) -> ModelCapabilities:
