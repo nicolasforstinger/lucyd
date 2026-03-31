@@ -183,7 +183,7 @@ class TestMonitorWriter:
     """_MonitorWriter: write, on_response, on_tool_results."""
 
     def _make_writer(self):
-        from lucyd import _MonitorWriter
+        from pipeline import _MonitorWriter
         state = {}
         return _MonitorWriter(
             state=state,

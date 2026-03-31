@@ -17,7 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from async_utils import run_blocking
-from lucyd import LucydDaemon, _is_silent
+from lucyd import LucydDaemon
+from pipeline import _is_silent
 from metering import MeteringDB
 
 
@@ -432,7 +433,7 @@ class TestResolveIntegration:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=RuntimeError("API down")):
+        with patch("pipeline.run_agentic_loop", side_effect=RuntimeError("API down")):
             await daemon._process_message(
                 text="test",
                 sender="http-test",
@@ -472,7 +473,7 @@ class TestResolveIntegration:
         # Mock the agentic loop to return a silent reply
         response = _mock_response(text="HEARTBEAT_OK")
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="heartbeat trigger",
                 sender="http-test",
@@ -510,7 +511,7 @@ class TestResolveIntegration:
 
         response = _mock_response(text="Here is my answer.", input_tokens=5000, output_tokens=200)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="test question",
                 sender="http-test",
@@ -591,7 +592,7 @@ class TestContextBuilderSourcePassthrough:
     async def test_system_task_type_passed_to_context(self, daemon_for_context_test):
         daemon, resp = daemon_for_context_test
 
-        with patch("lucyd.run_agentic_loop", return_value=resp):
+        with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
                 text="test", sender="system", source="system", deliver=False,
                 task_type="system",
@@ -607,7 +608,7 @@ class TestContextBuilderSourcePassthrough:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", return_value=resp):
+        with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
                 text="test", sender="http", source="http", deliver=False,
                 response_future=future,
@@ -621,7 +622,7 @@ class TestContextBuilderSourcePassthrough:
     async def test_task_type_passed_to_context(self, daemon_for_context_test):
         daemon, resp = daemon_for_context_test
 
-        with patch("lucyd.run_agentic_loop", return_value=resp):
+        with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
                 text="hello", sender="+431234567890", source="telegram",
                 task_type="task",
@@ -805,7 +806,7 @@ class TestProcessMessageIntegration:
 
         response = _mock_response(text="Here is the answer to your question.")
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="What is the weather?",
                 sender="+431234567890",
@@ -836,7 +837,7 @@ class TestProcessMessageIntegration:
 
             return _mock_response(text="Here is the result.", input_tokens=4000, output_tokens=300)
 
-        with patch("lucyd.run_agentic_loop", side_effect=mock_agentic_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=mock_agentic_loop):
             await daemon._process_message(
                 text="Run the status tool",
                 sender="+431234567890",
@@ -866,7 +867,7 @@ class TestProcessMessageIntegration:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=RuntimeError("Provider timeout")):
+        with patch("pipeline.run_agentic_loop", side_effect=RuntimeError("Provider timeout")):
             await daemon._process_message(
                 text="hello",
                 sender="+431234567890",
@@ -884,7 +885,7 @@ class TestProcessMessageIntegration:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=ValueError("Bad request")):
+        with patch("pipeline.run_agentic_loop", side_effect=ValueError("Bad request")):
             await daemon._process_message(
                 text="bad request",
                 sender="http",
@@ -926,7 +927,7 @@ class TestProcessMessageIntegration:
             session.messages.append({"role": "user", "content": text})
         session.add_user_message = MagicMock(side_effect=fake_add_user)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="What is in this picture?",
                 sender="+431234567890",
@@ -963,7 +964,7 @@ class TestProcessMessageIntegration:
         att = Attachment(content_type="image/png", local_path=str(img_path),
                          filename="big.png", size=img_path.stat().st_size)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="look", sender="+431234567890", source="telegram",
                 attachments=[att],
@@ -989,7 +990,7 @@ class TestProcessMessageIntegration:
         att = Attachment(content_type="image/jpeg", local_path=str(tmp_path / "gone.jpg"),
                          filename="gone.jpg", size=1000)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="check this", sender="+431234567890", source="telegram",
                 attachments=[att],
@@ -1009,7 +1010,7 @@ class TestProcessMessageIntegration:
 
         response = _mock_response(text="Done.")
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="Continue working",
                 sender="+431234567890",
@@ -1125,7 +1126,7 @@ class TestMessageLoopDebounce:
         await daemon.queue.put(msg2)
         await daemon.queue.put(None)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._message_loop()
 
         # Each message is processed individually (one per loop iteration)
@@ -1196,7 +1197,7 @@ class TestMessageLoopDebounce:
         await daemon.queue.put(http_item)
         await daemon.queue.put(None)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._message_loop()
 
         # Future should be resolved
@@ -1213,7 +1214,7 @@ class TestMessageLoopDebounce:
         await daemon.queue.put(msg)
         await daemon.queue.put(None)
 
-        with patch("lucyd.run_agentic_loop") as mock_loop:
+        with patch("pipeline.run_agentic_loop") as mock_loop:
             await daemon._message_loop()
 
         # _process_message should NOT have been called (empty text, no attachments)
@@ -1242,8 +1243,8 @@ class TestMessageLoopDebounce:
             # Yield to let queue.get pick up msg2
             await original_sleep(0)
 
-        with patch("lucyd.asyncio.sleep", side_effect=fake_sleep):
-            with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.asyncio.sleep", side_effect=fake_sleep):
+            with patch("pipeline.run_agentic_loop", return_value=response):
                 await daemon.queue.put(None)
                 await daemon._message_loop()
 
@@ -1263,7 +1264,7 @@ class TestMessageLoopDebounce:
 
         response = _mock_response(text="ok", input_tokens=100, output_tokens=50)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._message_loop()
 
         # Both senders should have been processed
@@ -1284,7 +1285,7 @@ class TestMessageLoopDebounce:
 
         response = _mock_response(text="ok", input_tokens=100, output_tokens=50)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._message_loop()
 
         call_text = session.add_user_message.call_args[0][0]
@@ -1386,7 +1387,7 @@ class TestMessageLoopDebounce:
         await daemon.queue.put("stray string")
         await daemon.queue.put(None)
 
-        with patch("lucyd.run_agentic_loop") as mock_loop:
+        with patch("pipeline.run_agentic_loop") as mock_loop:
             await daemon._message_loop()
 
         # Nothing was processed
@@ -1624,11 +1625,12 @@ class TestBuildMonitor:
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
 
-        daemon._monitor_state = {
+        daemon._ensure_pipeline()
+        daemon.pipeline._monitor_state.update({
             "state": "thinking",
             "contact": "alice",
             "turn": 3,
-        }
+        })
 
         result = daemon._build_monitor()
         assert result["state"] == "thinking"
@@ -1644,10 +1646,11 @@ class TestBuildMonitor:
     def test_returns_copy_not_reference(self, tmp_path):
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
+        daemon._ensure_pipeline()
 
         result = daemon._build_monitor()
         result["state"] = "corrupted"
-        assert daemon._monitor_state["state"] == "idle"
+        assert daemon.pipeline.monitor_state["state"] == "idle"
 
 
 # ─── _build_history Tests ────────────────────────────────────────

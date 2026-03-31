@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import contextlib
 import fcntl
 import logging
@@ -21,24 +20,18 @@ import sqlite3
 import sys
 import time
 import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-from messages import Message
 
 # Add lucyd directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-import random
-
-from agentic import is_transient_error, run_agentic_loop, run_single_shot
 from config import Config, ConfigError, load_config
-from context import ContextBuilder, _estimate_tokens
+from context import ContextBuilder
 from log_utils import _log_safe
 from metering import MeteringDB
 from providers import create_provider
-from session import SessionManager, _text_from_content
+from session import SessionManager
 from skills import SkillLoader
 from tools import ToolRegistry
 
@@ -53,60 +46,6 @@ _UUID_RE = re.compile(
 
 def _is_uuid(s: str) -> bool:
     return bool(_UUID_RE.match(s))
-
-
-# ─── Evolution helpers ────────────────────────────────────────────
-
-_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
-
-
-def get_evolution_state(
-    file_path: str,
-    conn: "sqlite3.Connection",
-) -> dict[str, Any] | None:
-    """Return evolution state for *file_path*, or None if never evolved."""
-    row = conn.execute(
-        "SELECT last_evolved_at, content_hash, logs_through "
-        "FROM evolution_state WHERE file_path = ?",
-        (file_path,),
-    ).fetchone()
-    if row is None:
-        return None
-    return {
-        "last_evolved_at": row[0],
-        "content_hash": row[1],
-        "logs_through": row[2],
-    }
-
-
-def check_new_logs_exist(
-    workspace: Path,
-    conn: "sqlite3.Connection",
-    reference_file: str = "MEMORY.md",
-) -> tuple[bool, str]:
-    """Check whether new daily logs exist since the last evolution.
-
-    Uses the *reference_file* (default ``MEMORY.md``) to determine the
-    ``logs_through`` date from the ``evolution_state`` table.
-
-    Returns ``(has_new_logs, since_date)`` where *since_date* is the
-    ``logs_through`` value (empty string if never evolved).
-    """
-    state = get_evolution_state(reference_file, conn)
-    since_date = state["logs_through"] if state else ""
-
-    memory_dir = workspace / "memory"
-    if not memory_dir.is_dir():
-        return False, since_date
-
-    for entry in memory_dir.iterdir():
-        if not entry.is_file() or entry.suffix != ".md":
-            continue
-        m = _DATE_RE.search(entry.stem)
-        if m and (not since_date or m.group(1) > since_date):
-            return True, since_date
-
-    return False, since_date
 
 
 # ─── PID File ────────────────────────────────────────────────────
@@ -149,152 +88,7 @@ def _release_pid_file(path: Path) -> None:
 
 
 
-# ─── Silent Token Check ─────────────────────────────────────────
-
-def _should_warn_context(
-    input_tokens: int,
-    compaction_threshold: int,
-    needs_compaction: bool,
-    already_warned: bool,
-    warning_pct: float = 0.8,
-) -> bool:
-    """Decide whether to set a compaction warning on the session.
-
-    Warns at 80% of compaction threshold, but only if not already
-    at hard threshold and not already warned this session.
-    """
-    warning_threshold = int(compaction_threshold * warning_pct)
-    return (
-        input_tokens > warning_threshold
-        and not needs_compaction
-        and not already_warned
-    )
-
-
-
-
-def _inject_warning(text: str, warning: str) -> tuple[str, bool]:
-    """Prepend pending system warning to user text.
-
-    Returns (modified_text, was_warning_consumed).
-    """
-    if warning:
-        return f"[system: {warning}]\n\n{text}", True
-    return text, False
-
-
-def _append(text: str, suffix: str) -> str:
-    """Append suffix to text with newline separator."""
-    return f"{text}\n{suffix}" if text else suffix
-
-
-def _is_silent(text: str, tokens: list[str]) -> bool:
-    """Check if reply starts or ends with a silent token.
-
-    Tokens should be word-character strings (letters, digits, underscores).
-    """
-    if not text or not tokens:
-        return False
-    text = text.strip()
-    for token in tokens:
-        # Starts with token
-        if re.match(rf"^\s*{re.escape(token)}(?=$|\W)", text):
-            return True
-        # Ends with token
-        if re.search(rf"\b{re.escape(token)}\b\W*$", text):
-            return True
-    return False
-
-
-from attachments import ImageTooLarge, extract_document_text, fit_image, render_pdf_pages
 import metrics
-
-
-class _MonitorWriter:
-    """In-memory monitor state tracker for the /api/v1/monitor endpoint.
-
-    Updates a shared dict on the daemon instead of writing JSON to disk.
-    """
-
-    __slots__ = ("_state", "_contact", "_session_id", "_trace_id", "_model",
-                 "_turn", "_turn_started_at", "_message_started_at", "_turns")
-
-    def __init__(self, state: dict[str, Any], contact: str, session_id: str,
-                 trace_id: str, model: str):
-        self._state = state
-        self._contact = contact
-        self._session_id = session_id
-        self._trace_id = trace_id
-        self._model = model
-        self._turn = 1
-        self._turn_started_at = time.time()
-        self._message_started_at = self._turn_started_at
-        self._turns: list[dict[str, Any]] = []
-
-    def write(self, state: str, tools_in_flight: list[str] | None = None) -> None:
-        self._state.update({
-            "state": state,
-            "contact": self._contact,
-            "session_id": self._session_id,
-            "trace_id": self._trace_id,
-            "model": self._model,
-            "turn": self._turn,
-            "message_started_at": self._message_started_at,
-            "turn_started_at": self._turn_started_at,
-            "tools_in_flight": tools_in_flight or [],
-            "turns": self._turns,
-            "updated_at": time.time(),
-        })
-
-    def on_response(self, response: Any) -> None:
-        duration_ms = int((time.time() - self._turn_started_at) * 1000)
-        tool_names = [tc.name for tc in response.tool_calls] if response.tool_calls else []
-        self._turns.append({
-            "duration_ms": duration_ms,
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-            "cache_read_tokens": response.usage.cache_read_tokens,
-            "cache_write_tokens": response.usage.cache_write_tokens,
-            "stop_reason": response.stop_reason,
-            "tools": tool_names,
-        })
-        if response.stop_reason == "tool_use" and response.tool_calls:
-            self.write("tools", tools_in_flight=tool_names)
-        else:
-            self.write("idle")
-
-    def on_tool_results(self, results_msg: Any) -> None:
-        self._turn += 1
-        self._turn_started_at = time.time()
-        self.write("thinking")
-
-
-
-@dataclass
-class _MessageState:
-    """Internal state bag for _process_message phases."""
-    text: str
-    sender: str
-    source: str           # Message origin (channel name, "http", or "system")
-    trace_id: str
-    channel_id: str = "http"          # Envelope: which channel sent this
-    task_type: str = "conversational"  # Envelope: session lifecycle intent
-    reply_to: str = ""                # Envelope: response routing ("" = caller, "silent", or sender name)
-    session_key: str = ""             # channel_id:sender — computed in _process_message
-    deliver: bool = True
-    image_blocks: list[dict[str, Any]] = field(default_factory=list)
-    session: Any = None
-    user_msg_idx: int = 0
-    session_preexisted: bool = False
-    model_cfg: dict[str, Any] = field(default_factory=dict)
-    model_name: str = ""
-    provider_name: str = ""
-    cost_rates: list[float] = field(default_factory=list)
-    fmt_system: Any = None
-    tools: list[dict[str, Any]] = field(default_factory=list)
-    msg_count_before: int = 0
-    response: Any = None
-    force_compact: bool = False
 
 
 # ─── Daemon ──────────────────────────────────────────────────────
@@ -315,18 +109,9 @@ class LucydDaemon:
         self.tool_registry: ToolRegistry = None  # type: ignore[assignment]  # set in _init_tools
         self._http_api: Any = None
         self._memory_conn: Any = None
-        self._current_session: Any = None  # Set per-message for status tool callback
-        self._session_locks: dict[str, asyncio.Lock] = {}  # sender → lock
         self.metering_db: Any = None
-        self._error_counts: dict[str, int] = {}  # error_type → count, for /api/v1/errors
-        self._monitor_state: dict[str, Any] = {"state": "idle"}
         self._evolve_rollback_tag: str | None = None
-
-    def _get_session_lock(self, sender: str) -> asyncio.Lock:
-        """Get or create a per-sender lock for session mutation safety."""
-        if sender not in self._session_locks:
-            self._session_locks[sender] = asyncio.Lock()
-        return self._session_locks[sender]
+        self.pipeline: Any = None  # MessagePipeline, set in run()
 
     def _setup_logging(self) -> None:
         """Configure logging to file + stderr.
@@ -496,7 +281,7 @@ class LucydDaemon:
             "memory": memory,
             "conn": conn,
             "get_provider": self.get_provider,
-            "session_getter": lambda: self._current_session,
+            "session_getter": lambda: self.pipeline.current_session if self.pipeline else None,
             "start_time": self.start_time,
             "metering": self.metering_db,
         }
@@ -609,761 +394,65 @@ class LucydDaemon:
         )
 
 
+    # ── Pipeline delegation ─────────────────────────────────────────
 
+    def _ensure_pipeline(self) -> None:
+        """Create pipeline from current daemon state if not yet created.
 
-    async def _run_preprocessors(self, text: str, attachments: list[Any] | None) -> tuple[str, list[Any] | None]:
-        """Run registered preprocessors on inbound message.
-
-        Each preprocessor receives (text, attachments, config) and returns
-        (text, attachments). Preprocessors run in registration order.
-        A preprocessor claims attachments it handles and passes the rest through.
+        Called lazily by _process_message — allows test fixtures to wire
+        daemon attributes before the pipeline is built.
         """
-        if not self._preprocessors or not attachments:
-            return text, attachments
-        for pp in self._preprocessors:
-            _pp_start = time.time()
-            try:
-                text, attachments = await pp["fn"](text, attachments, self.config)
-                if metrics.ENABLED:
-                    metrics.PREPROCESSOR_TOTAL.labels(name=pp["name"], status="success").inc()
-                    metrics.PREPROCESSOR_DURATION.labels(name=pp["name"]).observe(time.time() - _pp_start)
-            except Exception:
-                log.exception("Preprocessor %s failed", pp["name"])
-                if metrics.ENABLED:
-                    metrics.PREPROCESSOR_TOTAL.labels(name=pp["name"], status="error").inc()
-            if not attachments:
-                break
-        return text, attachments or None
+        if self.pipeline is not None:
+            return
+        from pipeline import MessagePipeline
+        self.pipeline = MessagePipeline(
+            config=self.config,
+            provider=self.provider,
+            get_provider=self.get_provider,
+            session_mgr=self.session_mgr,
+            context_builder=self.context_builder,
+            tool_registry=self.tool_registry,
+            skill_loader=self.skill_loader,
+            metering_db=self.metering_db,
+            get_memory_conn=self._get_memory_conn,
+            preprocessors=self._preprocessors,
+            queue=self.queue,
+            on_pre_close=self._pre_close_hook,
+        )
 
-    async def _process_attachments(self, text: str, attachments: list[Any] | None, provider: Any) -> tuple[str, list[dict[str, Any]]]:
-        """Process attachments into text descriptions + image blocks.
+    async def _process_message(self, **kwargs: Any) -> None:
+        """Delegate to pipeline.process_message.
 
-        Returns (text, image_blocks).
-        Audio is handled by preprocessor plugins before this runs.
+        Thin forwarder that keeps daemon as the entry point for
+        tests and internal callers.
         """
-        image_blocks = []
-        if attachments:
-            supports_vision = provider.capabilities.supports_vision
-            for att in attachments:
-                if att.content_type.startswith("image/"):
-                    text, block = self._process_image(text, att, supports_vision)
-                    if block:
-                        image_blocks.append(block)
-                else:
-                    text, doc_blocks = self._process_document(text, att, supports_vision)
-                    image_blocks.extend(doc_blocks)
-        return text, image_blocks
+        self._ensure_pipeline()
+        await self.pipeline.process_message(**kwargs)
 
-    def _process_image(self, text: str, att: Any, supports_vision: bool) -> tuple[str, dict[str, Any] | None]:
-        """Process a single image attachment. Returns (text, block_or_None)."""
-        too_large_msg = "image too large to display"
-        if not supports_vision:
-            return _append(text, "[image received — vision not available with current provider]"), None
-        try:
-            img_data = Path(att.local_path).read_bytes()
-            try:
-                img_data = fit_image(img_data, att.content_type,
-                                     self.config.vision_max_image_bytes,
-                                     self.config.vision_max_dimension,
-                                     self.config.vision_jpeg_quality_steps,
-                                     att.local_path)
-            except ImageTooLarge as exc:
-                return _append(text, f"[{too_large_msg} — {exc}]"), None
-            block = {
-                "type": "image",
-                "media_type": att.content_type,
-                "data": base64.b64encode(img_data).decode("ascii"),
-            }
-            prefix = f"[image, saved: {att.local_path}]"
-            text = f"{prefix} {text}" if text else prefix
-            return text, block
-        except Exception as e:
-            log.error("Failed to read image %s: %s", att.local_path, e, exc_info=True)
-            return _append(text, f"[{too_large_msg} — could not read file]"), None
+    # ── Pre-close hook (evolution validation) ──────────────────────
 
-    def _process_document(self, text: str, att: Any,
-                          supports_vision: bool) -> tuple[str, list[dict[str, Any]]]:
-        """Process a single document/file attachment. Returns (text, image_blocks)."""
-        doc_text = None
-        if self.config.documents_enabled:
-            try:
-                doc_text = extract_document_text(
-                    att.local_path, att.content_type, att.filename or "",
-                    max_chars=self.config.documents_max_chars,
-                    max_bytes=self.config.documents_max_file_bytes,
-                    text_extensions=self.config.documents_text_extensions,
-                )
-            except Exception as e:
-                log.error("Document extraction failed for %s: %s", _log_safe(att.filename), e, exc_info=True)
-        if doc_text:
-            label = att.filename or "document"
-            return _append(text, f"[document: {label}, saved: {att.local_path}]\n{doc_text}"), []
+    def _pre_close_hook(self, sender: str) -> None:
+        """Called by the pipeline before closing ephemeral sessions.
 
-        # Scanned PDF fallback — render pages as images for vision
-        is_pdf = (att.content_type == "application/pdf"
-                  or (att.filename or "").lower().endswith(".pdf"))
-        if is_pdf and supports_vision and self.config.documents_enabled:
-            blocks = self._render_pdf_as_images(att)
-            if blocks:
-                label = att.filename or "document"
-                return _append(text, f"[scanned document: {label}, "
-                               f"{len(blocks)} page(s) as images, "
-                               f"saved: {att.local_path}]"), blocks
-
-        return _append(text, f"[attachment: {att.filename or 'file'}, "
-                       f"{att.content_type}, saved: {att.local_path}]"), []
-
-    def _render_pdf_as_images(self, att: Any) -> list[dict[str, Any]]:
-        """Render PDF pages as images for vision. Returns image blocks."""
-        pages = render_pdf_pages(
-            att.local_path,
-            max_pages=self.config.documents_pdf_max_render_pages,
-            max_dimension=self.config.vision_max_dimension,
-        )
-        if not pages:
-            return []
-        blocks: list[dict[str, Any]] = []
-        for page_data in pages:
-            try:
-                page_data = fit_image(
-                    page_data, "image/jpeg",
-                    self.config.vision_max_image_bytes,
-                    self.config.vision_max_dimension,
-                    self.config.vision_jpeg_quality_steps,
-                    att.local_path,
-                )
-                blocks.append({
-                    "type": "image",
-                    "media_type": "image/jpeg",
-                    "data": base64.b64encode(page_data).decode("ascii"),
-                })
-            except ImageTooLarge:
-                log.warning("PDF page too large after compression, skipping")
-        return blocks
-
-    async def _setup_session(self, ctx: _MessageState) -> None:
-        """Set up session state: get/create, inject warnings, add user message."""
-        # Track whether session pre-existed (for auto-close decision).
-        # Notifications routed to the primary session must not close it.
-        ctx.session_preexisted = (
-            self.session_mgr.has_session(ctx.session_key)
-        )
-
-        # Get or create session (keyed by channel_id:sender)
-        session = self.session_mgr.get_or_create(ctx.session_key)
-        ctx.session = session
-
-        # Status tool reads session via callback (configured in _init_tools)
-        self._current_session = session
-
-        # Inject pending compaction warning from previous turn
-        ctx.text, warning_consumed = _inject_warning(ctx.text, session.pending_system_warning)
-        if warning_consumed:
-            session.pending_system_warning = ""
-            self.session_mgr.save_state(session)  # Persist cleared warning before agentic loop
-
-        # Inject timestamp so the agent always knows the current time
-        timestamp = time.strftime("[%a, %d. %b %Y - %H:%M %Z]")
-        ctx.text = f"{timestamp}\n{ctx.text}"
-
-        session.trace_id = ctx.trace_id
-        session.add_user_message(ctx.text, sender=ctx.sender, source=ctx.source)
-
-        # Transiently inject image content blocks for the API call
-        ctx.user_msg_idx = len(session.messages) - 1
-
-        # Merge consecutive user messages (recovery from prior errors, JSONL rebuild)
-        while len(session.messages) >= 2 and session.messages[-2]["role"] == "user":
-            last = session.messages[-1]
-            if last["role"] != "user":
-                break
-            prev = session.messages[-2]
-            prev["content"] = _text_from_content(prev["content"]) + "\n" + _text_from_content(last["content"])
-            session.messages.pop()
-            ctx.user_msg_idx = len(session.messages) - 1
-            log.warning("Merged consecutive user messages in session %s", session.id)
-
-        if ctx.image_blocks:
-            session.messages[ctx.user_msg_idx]["_image_blocks"] = ctx.image_blocks  # type: ignore[typeddict-unknown-key]  # transient key, stripped before persistence
-
-    async def _build_recall(self, ctx: _MessageState, provider: Any) -> str:
-        """Build recall text for fresh sessions via structured memory."""
-        session = ctx.session
-        if len(session.messages) > 1:
-            return ""
-        if not self.config.consolidation_enabled:
-            return ""
-        try:
-            from memory import get_session_start_context
-            conn = self._get_memory_conn()
-            result = get_session_start_context(
-                conn=conn, config=self.config,
-                max_facts=self.config.recall_max_facts,
-                max_episodes=self.config.recall_max_episodes_at_start,
-                max_tokens=self.config.recall_max_dynamic_tokens,
-            ) or ""
-            if result and metrics.ENABLED:
-                metrics.MEMORY_OPS_TOTAL.labels(operation="recall_triggered").inc()
-            return result
-        except Exception:
-            log.exception("structured recall at session start failed")
-            return "[Memory recall unavailable — use memory_search to access memory manually.]"
-
-    async def _build_context(self, ctx: _MessageState, provider: Any) -> None:
-        """Build system prompt, recall, and tools list."""
-        session = ctx.session
-        tool_descs = self.tool_registry.get_brief_descriptions()
-        skill_index = self.skill_loader.build_index() if self.skill_loader else ""
-        always_on = self.config.always_on_skills
-        skill_bodies = self.skill_loader.get_bodies(always_on) if self.skill_loader else {}
-
-        recall_text = await self._build_recall(ctx, provider)
-
-        system_blocks = self.context_builder.build(
-            task_type=ctx.task_type,
-            deliver=ctx.deliver,
-            tool_descriptions=tool_descs,
-            skill_index=skill_index,
-            always_on_skills=always_on,
-            skill_bodies=skill_bodies,
-            extra_dynamic=recall_text,
-            silent_tokens=self.config.silent_tokens,
-            max_turns=self.config.max_turns,
-            max_cost=self.config.max_cost_per_message,
-            compaction_threshold=self.config.compaction_threshold,
-            has_images=bool(ctx.image_blocks),
-            sender=ctx.sender,
-        )
-        ctx.fmt_system = provider.format_system(system_blocks)
-
-        # Runtime context budget report
-        max_ctx = provider.capabilities.max_context_tokens
-        if max_ctx > 0:
-            sys_tokens = sum(_estimate_tokens(b.get("text", "")) for b in system_blocks)
-            history_tokens = 0
-            for m in session.messages:
-                if m["role"] == "user":
-                    history_tokens += _estimate_tokens(m["content"])
-                elif m["role"] == "assistant":
-                    history_tokens += _estimate_tokens(m.get("text", ""))
-            tool_def_tokens = sum(
-                _estimate_tokens(t["description"]) for t in self.tool_registry.get_schemas()
-            ) if provider.capabilities.supports_tools else 0
-            used = sys_tokens + history_tokens + tool_def_tokens
-            remaining = max_ctx - used
-            log.debug(
-                "Context budget [%s]: total=%d | system=%d | history=%d (%d msgs) "
-                "| tools=%d | used=%d | remaining=%d",
-                ctx.trace_id[:8], max_ctx, sys_tokens, history_tokens,
-                len(session.messages), tool_def_tokens, used, remaining,
-            )
-            if metrics.ENABLED:
-                metrics.CONTEXT_UTILIZATION.labels(
-                    channel_id=ctx.channel_id, task_type=ctx.task_type,
-                    session_id=session.id if session else "",
-                    sender=ctx.sender,
-                ).observe(used / max_ctx if max_ctx > 0 else 0)
-
-        # Run agentic loop — it appends to session.messages in place
-        # If model doesn't support tools, degrade gracefully (no tools sent)
-        if provider.capabilities.supports_tools:
-            ctx.tools = self.tool_registry.get_schemas()
-        else:
-            ctx.tools = []
-
-        # Snapshot message count to track what the loop added
-        ctx.msg_count_before = len(session.messages)
-
-    async def _run_agentic_with_retries(self, ctx: _MessageState, provider: Any,
-                                         on_response: Any, on_tool_results: Any,
-                                         write_monitor: Any, on_stream_delta: Any = None) -> None:
-        """Run the agentic loop with message-level retries. Sets ctx.response."""
-        session = ctx.session
-        message_retries = self.config.message_retries
-        message_retry_delay = self.config.message_retry_base_delay
-
-        # Snapshot message count so retries can restore to a clean state.
-        # The agentic loop mutates session.messages in-place; on failure
-        # those partial turns must be stripped before the next attempt.
-        pre_attempt_len = len(session.messages)
-
-        for msg_attempt in range(1 + message_retries):
-            try:
-                max_cost = self.config.max_cost_per_message
-                from providers import CostContext
-                cost_ctx = CostContext(
-                    metering=self.metering_db,
-                    session_id=session.id,
-                    model_name=ctx.model_name,
-                    cost_rates=ctx.cost_rates,
-                    provider_name=ctx.provider_name,
-                )
-                from agentic import LoopConfig
-                loop_cfg = LoopConfig(
-                    max_turns=self.config.max_turns,
-                    timeout=self.config.agent_timeout,
-                    api_retries=self.config.api_retries,
-                    api_retry_base_delay=self.config.api_retry_base_delay,
-                    sqlite_timeout=self.config.sqlite_timeout,
-                    max_cost=float(max_cost),
-                    max_context_for_tools=self.config.max_context_for_tools,
-                    tool_call_retry=self.config.tool_call_retry,
-                    tool_success_warn_threshold=0.5,
-                    thinking_concise_hint=False,
-                    trace_id=ctx.trace_id,
-                )
-                if self._single_shot:
-                    ctx.response = await run_single_shot(
-                        provider=provider,
-                        system=ctx.fmt_system,
-                        messages=session.messages,
-                        tools=ctx.tools,
-                        tool_executor=self.tool_registry,
-                        config=loop_cfg,
-                        cost=cost_ctx,
-                        on_response=on_response,
-                        on_tool_results=on_tool_results,
-                        on_stream_delta=on_stream_delta,
-                    )
-                else:
-                    ctx.response = await run_agentic_loop(
-                        provider=provider,
-                        system=ctx.fmt_system,
-                        messages=session.messages,
-                        tools=ctx.tools,
-                        tool_executor=self.tool_registry,
-                        config=loop_cfg,
-                        cost=cost_ctx,
-                        on_response=on_response,
-                        on_tool_results=on_tool_results,
-                        on_stream_delta=on_stream_delta,
-                    )
-                return  # Success
-            except Exception as e:
-                if not is_transient_error(e) or msg_attempt >= message_retries:
-                    raise  # Non-transient or exhausted — propagate
-
-                # Roll back messages added by the failed attempt
-                if len(session.messages) > pre_attempt_len:
-                    del session.messages[pre_attempt_len:]
-
-                delay = message_retry_delay * (2 ** msg_attempt) * (0.5 + random.random())  # noqa: S311
-                log.warning(
-                    "[%s] Message retry (%d/%d) for %s: %s — waiting %.0fs",
-                    ctx.trace_id[:8], msg_attempt + 1, message_retries, ctx.sender, e, delay,
-                )
-                write_monitor("retry_wait")
-                await asyncio.sleep(delay)
-
-                write_monitor("thinking")
-
-    async def _handle_agentic_error(self, ctx: _MessageState, error: Any, _resolve: Any) -> None:
-        """Handle agentic loop failure: cleanup, resolve future, deliver error."""
-        session = ctx.session
-        log.error("[%s] Agentic loop failed: %s", ctx.trace_id[:8], error)
-        err_type = type(error).__name__ if isinstance(error, BaseException) else "unknown"
-        self._error_counts[err_type] = self._error_counts.get(err_type, 0) + 1
-        if metrics.ENABLED:
-            metrics.ERRORS_TOTAL.labels(error_type=err_type).inc()
-        # Strip transient image metadata before returning
-        if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
-            session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
-        # Roll back all messages the agentic loop added (assistant, tool_results,
-        # system hints) so the session stays in a valid pre-loop state.
-        if len(session.messages) > ctx.msg_count_before:
-            del session.messages[ctx.msg_count_before:]
-        # Remove orphaned user message to prevent consecutive-user corruption
-        if session.messages and session.messages[-1]["role"] == "user":
-            session.messages.pop()
-        self.session_mgr.save_state(session)
-        _resolve({"error": str(error), "session_id": session.id})
-        # Auto-close ephemeral sessions even on error — but only if the
-        # session was created by this event (not a pre-existing session).
-        if ctx.task_type in ("task", "system") and not ctx.session_preexisted:
-            try:
-                await self.session_mgr.close_session(ctx.session_key)
-                log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
-                if metrics.ENABLED:
-                    metrics.SESSION_CLOSE_TOTAL.labels(reason=f"auto_{ctx.task_type}").inc()
-            except Exception:
-                log.warning("Auto-close failed for %s session %s",
-                            ctx.task_type, ctx.sender, exc_info=True)
-
-    async def _finalize_response(self, ctx: _MessageState, _resolve: Any) -> None:
-        """Post-loop work: persist, deliver, compact."""
-        self._persist_response(ctx)
-        await self._deliver_reply(ctx, _resolve)
-        self._check_compaction_warning(ctx)
-        await self._run_compaction_if_needed(ctx)
-        await self._auto_close_if_ephemeral(ctx)
-
-    def _persist_response(self, ctx: _MessageState) -> None:
-        """Persist new messages and restore text-only content."""
-        session = ctx.session
-        for msg in session.messages[ctx.msg_count_before:]:
-            if msg["role"] == "assistant":
-                session.add_assistant_message(msg, persist_only=True)
-            elif msg["role"] == "tool_results":
-                session.add_tool_results(msg["results"], persist_only=True)
-        if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
-            session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
-        self.session_mgr.save_state(session)
-
-    async def _deliver_reply(self, ctx: _MessageState, _resolve: Any) -> None:
-        """Resolve HTTP future with reply content.
-
-        Routing via reply_to:
-        - "" (default): resolve the caller's HTTP future with the reply
-        - "silent": process and persist, but mark reply as silent (log only)
-        - "<sender>": resolve caller's future AND enqueue reply as system
-          message into <sender>'s session through the normal pipeline
+        Handles evolution-specific validation and rollback.
         """
-        session = ctx.session
-        response = ctx.response
-        reply = response.text or ""
-        if response.cost_limited and not reply.strip():
-            reply = ("[cost limit reached — max_cost_per_message in lucyd.toml. "
-                     "raise or set to 0 to disable.]")
-        silent = _is_silent(reply, self.config.silent_tokens)
-        token_info = {
-            "input": response.usage.input_tokens,
-            "output": response.usage.output_tokens,
-        }
-        reply_attachments = response.attachments or []
-
-        # Route: silent — suppress delivery
-        if ctx.reply_to == "silent":
-            log.info("[%s] reply_to=silent — reply logged, not delivered", ctx.trace_id[:8])
-            _resolve({"reply": reply, "silent": True, "session_id": session.id,
-                       "tokens": token_info, "attachments": reply_attachments})
-            return
-
-        # Route: redirect — resolve caller AND enqueue reply into target session
-        if ctx.reply_to:
-            log.info("[%s] reply_to=%s — redirecting reply", ctx.trace_id[:8], _log_safe(ctx.reply_to))
-            _resolve({"reply": reply, "session_id": session.id,
-                       "tokens": token_info, "attachments": reply_attachments,
-                       "redirected_to": ctx.reply_to})
-            if reply.strip():
-                await self.queue.put({
-                    "text": reply,
-                    "sender": ctx.reply_to,
-                    "type": "system",
-                    "channel_id": ctx.channel_id,
-                    "task_type": "system",
-                })
-            return
-
-        # Route: default — resolve HTTP future
-        if silent:
-            log.info("Silent reply suppressed: %s", _log_safe(reply[:100]))
-            _resolve({"reply": reply, "silent": True, "session_id": session.id,
-                       "tokens": token_info, "attachments": reply_attachments})
-        else:
-            _resolve({"reply": reply, "session_id": session.id,
-                       "tokens": token_info, "attachments": reply_attachments})
-
-    def _check_compaction_warning(self, ctx: _MessageState) -> None:
-        """Inject context-pressure warning at 80% threshold."""
-        session = ctx.session
-        if _should_warn_context(
-            input_tokens=session.last_input_tokens,
-            compaction_threshold=self.config.compaction_threshold,
-            needs_compaction=session.needs_compaction(self.config.compaction_threshold),
-            already_warned=session.warned_about_compaction,
-            warning_pct=0.8,
-        ):
-            max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
-            pct = session.last_input_tokens * 100 // max_ctx if max_ctx > 0 else 0
-            session.pending_system_warning = (
-                f"[system: context at {session.last_input_tokens:,} tokens "
-                f"({pct}% of capacity). compaction will summarize older messages "
-                f"at {self.config.compaction_threshold:,}. save anything important "
-                f"to memory files, then continue the conversation normally.]"
-            )
-            session.warned_about_compaction = True
-            self.session_mgr.save_state(session)
-            log.info("Compaction warning set for session %s at %d tokens",
-                     session.id, session.last_input_tokens)
-
-    async def _run_compaction_if_needed(self, ctx: _MessageState) -> None:
-        """Run consolidation + compaction if threshold is exceeded."""
-        session = ctx.session
-        _needs_compact = ctx.force_compact or session.needs_compaction(
-            self.config.compaction_threshold)
-        if not _needs_compact:
-            return
-        if self.config.consolidation_enabled:
-            try:
-                import consolidation
-                conn = self._get_memory_conn()
-                result = await consolidation.consolidate_session(
-                    session_id=session.id,
-                    messages=session.messages,
-                    compaction_count=session.compaction_count,
-                    config=self.config,
-                    provider=self.get_provider("consolidation"),
-                    context_builder=self.context_builder,
-                    conn=conn,
-                    metering=self.metering_db,
-                    trace_id=ctx.trace_id,
-                )
-                if result["facts_added"] or result.get("episode_id"):
-                    log.info("consolidation: %d facts, episode=%s",
-                             result["facts_added"], result.get("episode_id"))
-            except Exception:
-                log.exception("consolidation failed, continuing without")
-        prompt = self.config.compaction_prompt.replace(
-            "{agent_name}", self.config.agent_name,
-        ).replace("{max_tokens}", str(self.config.compaction_max_tokens))
-        from providers import CostContext
-        cost_ctx = CostContext(
-            metering=self.metering_db,
-            session_id=session.id,
-            model_name=ctx.model_name,
-            cost_rates=ctx.cost_rates,
-            provider_name=ctx.provider_name,
-        )
-        _pre_tokens = session.last_input_tokens
-        await self.session_mgr.compact_session(
-            session, self.get_provider("compaction"), prompt,
-            trace_id=ctx.trace_id,
-            system_blocks=self.context_builder.build_stable(),
-            cost=cost_ctx,
-            keep_recent_pct=self.config.compaction_keep_pct,
-            min_messages=4,
-            tool_result_max_chars=2000,
-            max_tokens=self.config.compaction_max_tokens,
-        )
-        if metrics.ENABLED:
-            metrics.COMPACTION_TOTAL.inc()
-            reclaimed = max(0, _pre_tokens - (session.last_input_tokens or 0))
-            if reclaimed > 0:
-                metrics.COMPACTION_TOKENS_RECLAIMED.observe(reclaimed)
+        if sender == "evolution" and self._evolve_rollback_tag:
+            tag = self._evolve_rollback_tag
+            self._evolve_rollback_tag = None
+            if not self._validate_evolution():
+                self._git_rollback(tag)
+                log.error("Evolution rolled back to %s due to validation failure", tag)
 
     def _validate_evolution(self) -> bool:
-        """Validate workspace files after evolution. Returns True if valid."""
-        workspace = self.config.workspace
-        # Check that critical files still exist and are non-empty
-        for name in self.config.context_stable + self.config.context_semi_stable:
-            path = workspace / name
-            if not path.exists():
-                log.error("Evolution validation failed: %s missing", name)
-                return False
-            if path.stat().st_size == 0:
-                log.error("Evolution validation failed: %s is empty", name)
-                return False
-        return True
-
-    async def _auto_close_if_ephemeral(self, ctx: _MessageState) -> None:
-        """Auto-close ephemeral sessions (task_type 'task' or 'system')."""
-        if ctx.task_type in ("task", "system") and not ctx.force_compact and not ctx.session_preexisted:
-            # Post-evolution validation and rollback
-            if ctx.sender == "evolution" and self._evolve_rollback_tag:
-                tag = self._evolve_rollback_tag
-                self._evolve_rollback_tag = None
-                if not self._validate_evolution():
-                    self._git_rollback(tag)
-                    log.error("Evolution rolled back to %s due to validation failure", tag)
-            try:
-                await self.session_mgr.close_session(ctx.session_key)
-                log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
-                if metrics.ENABLED:
-                    metrics.SESSION_CLOSE_TOTAL.labels(reason=f"auto_{ctx.task_type}").inc()
-            except Exception:
-                log.warning("Auto-close failed for %s session %s",
-                            ctx.task_type, ctx.sender, exc_info=True)
-
-    async def _process_message(
-        self,
-        text: str,
-        sender: str,
-        source: str,
-        attachments: list[Any] | None = None,
-        response_future: asyncio.Future[dict[str, Any]] | None = None,
-        trace_id: str = "",
-        force_compact: bool = False,
-        stream_queue: Any = None,
-        deliver: bool = True,
-        channel_id: str = "http",
-        task_type: str = "conversational",
-        reply_to: str = "",
-        session_key: str = "",
-    ) -> None:
-        """Process a single message through the agentic loop."""
-        _msg_start = time.time()
-        if not trace_id:
-            trace_id = str(uuid.uuid4())
-
-        def _resolve(result: dict[str, Any]) -> None:
-            """Safely resolve the HTTP response future."""
-            if response_future is not None and not response_future.done():
-                response_future.set_result(result)
-
-        provider = self.provider
-        if provider is None:
-            log.error("[%s] No provider configured", trace_id[:8])
-            _resolve({"error": "no provider configured"})
-            return
-
-        model_cfg = self.config.model_config("primary")
-
-        # Run preprocessors before core attachment handling
-        text, attachments = await self._run_preprocessors(text, attachments)
-
-        # Process remaining attachments into text descriptions + image blocks
-        text, image_blocks = await self._process_attachments(
-            text, attachments, provider,
-        )
-
-        # Build context bag
-        ctx = _MessageState(
-            text=text,
-            sender=sender,
-            source=source,
-            trace_id=trace_id,
-            channel_id=channel_id,
-            task_type=task_type,
-            reply_to=reply_to,
-            session_key=session_key or f"{channel_id}:{sender}",
-            deliver=deliver,
-            image_blocks=image_blocks,
-            model_cfg=model_cfg,
-            model_name=model_cfg.get("model", ""),
-            provider_name=model_cfg.get("provider", ""),
-            cost_rates=model_cfg.get("cost_per_mtok", []),
-            force_compact=force_compact,
-        )
-
-        # Session setup: get/create, inject warnings, add user message
-        await self._setup_session(ctx)
-
-        # Set structured log context for this message cycle
-        from log_utils import set_log_context
-        set_log_context(
-            agent_id=self.config.agent_id or self.config.agent_name,
-            session_id=ctx.session.id if ctx.session else "",
-            trace_id=trace_id,
-        )
-
-        # Build system prompt, recall, tools
-        await self._build_context(ctx, provider)
-
-        session = ctx.session
-
-        # ── Monitor ──────────────────────────────────────────────
-        monitor = _MonitorWriter(
-            state=self._monitor_state,
-            contact=sender,
-            session_id=session.id,
-            trace_id=trace_id,
-            model=ctx.model_name,
-        )
-        monitor.write("thinking")
-
-        # Build SSE streaming callback
-        stream_delta_cb = None
-        _sse_done_sent = False
-        if stream_queue is not None:
-            async def _on_stream_delta(delta: Any) -> None:
-                nonlocal _sse_done_sent
-                event: dict[str, Any] = {}
-                if delta.text:
-                    event["text"] = delta.text
-                if delta.thinking:
-                    event["thinking"] = delta.thinking
-                if delta.status:
-                    event["status"] = delta.status
-                if delta.stop_reason:
-                    event["done"] = True
-                    event["stop_reason"] = delta.stop_reason
-                if delta.usage:
-                    event["usage"] = {
-                        "input_tokens": delta.usage.input_tokens,
-                        "output_tokens": delta.usage.output_tokens,
-                    }
-                if event:
-                    await stream_queue.put(event)
-                    if event.get("done"):
-                        _sse_done_sent = True
-            stream_delta_cb = _on_stream_delta
-
-        try:
-            await self._run_agentic_with_retries(
-                ctx, provider, monitor.on_response, monitor.on_tool_results, monitor.write,
-                on_stream_delta=stream_delta_cb,
-            )
-        except Exception as e:
-            await self._handle_agentic_error(ctx, e, _resolve)
-            if stream_queue is not None:
-                # Emit SSE error event before closing the stream
-                await stream_queue.put({"error": str(e), "done": True})
-                await stream_queue.put(None)  # sentinel
-            return
-        finally:
-            monitor.write("idle")
-
-        # Bridge non-streaming responses into SSE: only when the provider
-        # didn't stream (no done event was pushed via deltas).  If the
-        # provider already streamed text + done, skip to avoid duplicating
-        # the reply.
-        if stream_queue is not None:
-            if not _sse_done_sent:
-                reply_text = ctx.response.text if ctx.response else ""
-                if reply_text:
-                    await stream_queue.put({
-                        "text": reply_text,
-                        "done": True,
-                        "stop_reason": ctx.response.stop_reason if ctx.response else "end_turn",
-                    })
-            await stream_queue.put(None)  # sentinel
-
-        await self._finalize_response(ctx, _resolve)
-
-        # ── Prometheus metrics ────────────────────────────────────────
-        if metrics.ENABLED:
-            _sid = ctx.session.id if ctx.session else ""
-            _labels = {
-                "channel_id": ctx.channel_id, "task_type": ctx.task_type,
-                "session_id": _sid, "sender": ctx.sender,
-            }
-            metrics.MESSAGES_TOTAL.labels(**_labels).inc()
-            metrics.MESSAGE_DURATION.labels(**_labels).observe(time.time() - _msg_start)
-            if ctx.response:
-                turns = ctx.response.turns
-                if turns > 0:
-                    metrics.AGENTIC_TURNS.labels(**_labels).observe(turns)
-                u = ctx.response.usage
-                if u:
-                    _cost = 0.0
-                    if ctx.cost_rates and len(ctx.cost_rates) >= 2:
-                        _cost = (u.input_tokens * ctx.cost_rates[0]
-                                 + u.output_tokens * ctx.cost_rates[1]) / 1_000_000
-                        if len(ctx.cost_rates) >= 3:
-                            _cost += u.cache_read_tokens * ctx.cost_rates[2] / 1_000_000
-                    metrics.MESSAGE_COST.labels(**_labels).observe(_cost)
+        import operations as ops
+        return ops.validate_evolution(self.config)
 
     async def _consolidate_on_close(self, session: Any) -> None:
-        """Consolidation callback fired before session archival."""
-        try:
-            import consolidation
-            conn = self._get_memory_conn()
-            start_idx, end_idx = consolidation.get_unprocessed_range(
-                session.id, session.messages, session.compaction_count, conn,
-            )
-            if end_idx > start_idx:
-                await consolidation.consolidate_session(
-                    session_id=session.id,
-                    messages=session.messages,
-                    compaction_count=session.compaction_count,
-                    config=self.config,
-                    provider=self.get_provider("consolidation"),
-                    context_builder=self.context_builder,
-                    conn=conn,
-                    metering=self.metering_db,
-                )
-        except Exception:
-            log.exception("consolidation on close failed")
+        import operations as ops
+        await ops.consolidate_on_close(
+            session, self.config, self._get_memory_conn,
+            self.get_provider, self.context_builder, self.metering_db,
+        )
 
     async def _reset_session(self, target: str, by_id: bool = False) -> dict[str, Any]:
         """Reset session by target: 'all', session ID, or contact name.
@@ -1483,7 +572,7 @@ class LucydDaemon:
 
     def _build_monitor(self) -> dict[str, Any]:
         """Build monitor data for HTTP /monitor."""
-        return dict(self._monitor_state)
+        return dict(self.pipeline.monitor_state) if self.pipeline else {"state": "idle"}
 
     def _build_history(self, target: str, full: bool = False) -> dict[str, Any]:
         """Build session history for HTTP /sessions/{target}/history.
@@ -1540,212 +629,61 @@ class LucydDaemon:
             "active_sessions": active_sessions,
             "today_cost": round(today_cost, 4),
             "queue_depth": self.queue.qsize(),
-            "error_counts": dict(self._error_counts),
+            "error_counts": dict(self.pipeline.error_counts) if self.pipeline else {},
         }
 
     async def _handle_compact(self) -> dict[str, Any]:
-        """Force-compact the primary session after agent writes diary."""
-        # Find primary session (longest active, non-automation sender)
-        primary = None
-        for contact in self.session_mgr.list_contacts():
-            # Skip HTTP API senders (system tasks, automations, webhooks)
-            if contact.startswith("http:"):
-                continue
-            session = self.session_mgr.get_or_create(contact)
-            if primary is None or len(session.messages) > len(primary[1].messages):
-                primary = (contact, session)
-
-        if not primary:
-            return {"status": "skipped", "reason": "no active session"}
-
-        contact, session = primary
-        today = time.strftime("%Y-%m-%d")
-        diary_text = self.config.diary_prompt.replace("{date}", today)
-
-        tid = str(uuid.uuid4())
-        log.info("[%s] Forced compact: diary + compaction for session %s (%s)",
-                 tid[:8], session.id, contact)
-
-        async with self._get_session_lock(contact):
-            await self._process_message(
-                text=diary_text,
-                sender=contact,
-                source="system",
-                deliver=False,
-                trace_id=tid,
-                force_compact=True,
-                task_type="system",
-                session_key=contact,  # already a session key from list_contacts
-            )
-        return {"status": "completed", "session": session.id}
+        import operations as ops
+        self._ensure_pipeline()
+        return await ops.handle_compact(
+            self.config, self.session_mgr,
+            self._process_message, self.pipeline.get_session_lock,
+        )
 
     def _git_snapshot(self, label: str) -> str | None:
-        """Create a git checkpoint in the workspace. Returns tag name or None."""
-        import subprocess
-        workspace = str(self.config.workspace)
-        tag = f"pre-{label}-{int(time.time())}"
-        try:
-            subprocess.run(
-                ["git", "-C", workspace, "add", "-A"],
-                capture_output=True, timeout=30, check=False,
-            )
-            subprocess.run(
-                ["git", "-C", workspace, "commit", "--allow-empty",
-                 "-m", f"checkpoint: {label}"],
-                capture_output=True, timeout=30, check=False,
-            )
-            subprocess.run(
-                ["git", "-C", workspace, "tag", tag],
-                capture_output=True, timeout=30, check=True,
-            )
-            log.info("Git snapshot: %s", tag)
-            return tag
-        except Exception as e:
-            log.warning("Git snapshot failed: %s", e)
-            return None
+        import operations as ops
+        return ops.git_snapshot(self.config.workspace, label)
 
     def _git_rollback(self, tag: str) -> bool:
-        """Rollback workspace to a git tag."""
-        import subprocess
-        workspace = str(self.config.workspace)
-        try:
-            subprocess.run(
-                ["git", "-C", workspace, "reset", "--hard", tag],
-                capture_output=True, timeout=30, check=True,
-            )
-            log.warning("Rolled back workspace to %s", tag)
-            return True
-        except Exception as e:
-            log.error("Git rollback to %s failed: %s", tag, e)
-            return False
+        import operations as ops
+        return ops.git_rollback(self.config.workspace, tag)
 
     async def _handle_evolve(self, *, force: bool = False) -> dict[str, Any]:
-        """Handle evolution request — snapshot, push to queue, validate after.
+        import operations as ops
 
-        Args:
-            force: Skip the pre-check for new daily logs.
-        """
-        if not force:
-            try:
-                db_path = self.config.memory_db
-                workspace = self.config.workspace
-                if db_path and Path(db_path).exists():
-                    conn = self._get_memory_conn()
-                    has_new, since_date = check_new_logs_exist(workspace, conn)
-                    if not has_new:
-                        return {"status": "skipped", "reason": f"no new daily logs since {since_date or 'ever'}"}
-            except Exception:
-                log.warning("Evolution pre-check failed, proceeding anyway", exc_info=True)
-
-        # Snapshot workspace before evolution
-        tag = self._git_snapshot("evolve")
-        if tag:
+        def _set_tag(tag: str) -> None:
             self._evolve_rollback_tag = tag
 
-        msg = {
-            "type": "system",
-            "sender": "evolution",
-            "task_type": "system",
-            "text": (
-                "[AUTOMATED SYSTEM MESSAGE] "
-                "Load the evolution skill and evolve your memory files. "
-                "New daily logs are available."
-            ),
-        }
-        await self.queue.put(msg)
-        return {"status": "queued", "session": "evolution"}
+        return await ops.handle_evolve(
+            force=force, config=self.config,
+            get_memory_conn=self._get_memory_conn,
+            queue=self.queue, set_rollback_tag=_set_tag,
+        )
 
     async def _handle_index(self, full: bool = False) -> dict[str, Any]:
-        """Run workspace indexing in a blocking thread."""
-        from async_utils import run_blocking
-        from tools.indexer import configure as indexer_configure
-        from tools.indexer import index_workspace
-
-        indexer_configure(
-            chunk_size=self.config.indexer_chunk_size,
-            chunk_overlap=self.config.indexer_chunk_overlap,
-            embed_batch_limit=self.config.indexer_embed_batch_limit,
-            embedding_model=self.config.embedding_model,
-            embedding_base_url=self.config.embedding_base_url,
-        )
-
-        summary = await run_blocking(
-            index_workspace,
-            workspace=self.config.workspace,
-            db_path=self.config.memory_db,
-            api_key=self.config.embedding_api_key,
-            force=full,
-            embedding_timeout=self.config.embedding_timeout,
-            sqlite_timeout=self.config.sqlite_timeout,
-        )
-        return summary
+        import operations as ops
+        return await ops.handle_index(self.config, full=full)
 
     async def _handle_index_status(self) -> dict[str, Any]:
-        """Return workspace index status."""
-        from tools.indexer import get_index_status
-        return get_index_status(self.config.memory_db, self.config.workspace)
+        import operations as ops
+        return ops.handle_index_status(self.config)
 
     async def _handle_consolidate(self) -> dict[str, Any]:
-        """Run memory consolidation — extract facts from workspace files."""
-        conn = self._get_memory_conn()
-        from consolidation import extract_from_file
-        from tools.indexer import scan_workspace
-
-        provider = self.get_provider("consolidation")
-        fact_model_cfg = self.config.model_config("primary") if hasattr(self.config, "model_config") else {}
-        model_name = fact_model_cfg.get("model", "primary")
-        cost_rates = fact_model_cfg.get("cost_per_mtok", [])
-
-        file_list = scan_workspace(
-            self.config.workspace,
-            include_patterns=self.config.indexer_include_patterns,
-            exclude_dirs=set(self.config.indexer_exclude_dirs),
+        import operations as ops
+        return await ops.handle_consolidate(
+            self.config, self._get_memory_conn,
+            self.get_provider, self.metering_db,
         )
 
-        total_facts = 0
-        files_with_facts = 0
-        for rel_path, abs_path in file_list:
-            try:
-                count = await extract_from_file(
-                    str(abs_path), provider, conn,
-                    self.config.consolidation_confidence_threshold,
-                    model_name=model_name,
-                    cost_rates=cost_rates,
-                    metering=self.metering_db,
-                )
-                if count:
-                    files_with_facts += 1
-                    log.info("Extracted %d facts from %s", count, rel_path)
-                total_facts += count
-            except Exception:
-                log.exception("Failed to process %s", rel_path)
-
-        return {"status": "completed", "facts": total_facts,
-                "files_scanned": len(file_list), "files_with_facts": files_with_facts}
-
     async def _handle_maintain(self) -> dict[str, Any]:
-        """Run memory maintenance + metering retention."""
-        from async_utils import run_blocking
-        from memory import run_maintenance
-
-        conn = self._get_memory_conn()
-
-        def _run() -> dict[str, Any]:
-            return run_maintenance(conn, self.config.maintenance_stale_threshold_days)
-
-        stats: dict[str, Any] = await run_blocking(_run)
-
-        # Metering retention — runs in async context (safe to use shared instance)
-        if self.metering_db:
-            stats["metering_deleted"] = self.metering_db.enforce_retention(12)
-        else:
-            stats["metering_deleted"] = 0
-
-        log.info("Maintenance stats: %s", stats)
-        return stats
+        import operations as ops
+        return await ops.handle_maintain(
+            self.config, self._get_memory_conn, self.metering_db,
+        )
 
     async def _message_loop(self) -> None:
         """Main message processing loop — sequential."""
+        self._ensure_pipeline()
         debounce_s = self.config.debounce_ms / 1000.0
         pending: dict[str, list[dict[str, Any]]] = {}  # sender → [messages]
 
@@ -1770,9 +708,9 @@ class LucydDaemon:
             sk = f"{channel_id}:{sender}"
             log.info("[%s] Processing message from %s (source=%s channel=%s)",
                      tid[:8], _log_safe(sender), _log_safe(source), channel_id)
-            async with self._get_session_lock(sk):
+            async with self.pipeline.get_session_lock(sk):
                 await self._process_message(
-                    combined_text, sender, source,
+                    text=combined_text, sender=sender, source=source,
                     attachments=combined_attachments or None,
                     trace_id=tid,
                     deliver=deliver,
@@ -1795,7 +733,7 @@ class LucydDaemon:
             sk = f"{channel_id}:{http_sender}"
             log.info("[%s] Processing HTTP message from %s (channel=%s)",
                      tid[:8], _log_safe(http_sender), channel_id)
-            async with self._get_session_lock(sk):
+            async with self.pipeline.get_session_lock(sk):
                 await self._process_message(
                     text=item.get("text", ""),
                     sender=http_sender,
@@ -1939,6 +877,28 @@ class LucydDaemon:
             self._init_context()
             self._init_metering()
             self._init_tools()
+
+            # Create message pipeline — the core runtime path
+            from pipeline import MessagePipeline
+            self.pipeline = MessagePipeline(
+                config=cfg,
+                provider=self.provider,
+                get_provider=self.get_provider,
+                session_mgr=self.session_mgr,
+                context_builder=self.context_builder,
+                tool_registry=self.tool_registry,
+                skill_loader=self.skill_loader,
+                metering_db=self.metering_db,
+                get_memory_conn=self._get_memory_conn,
+                preprocessors=self._preprocessors,
+                queue=self.queue,
+                on_pre_close=self._pre_close_hook,
+            )
+
+            # Patch session_getter to point at pipeline's current_session
+            # (tool deps were wired before pipeline existed)
+            import tools.status as _status_mod
+            _status_mod._session_getter = lambda: self.pipeline.current_session
 
             # Sweep expired media downloads
             self._sweep_expired_media()

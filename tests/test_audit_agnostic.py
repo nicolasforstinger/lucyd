@@ -419,10 +419,10 @@ class TestSingleProviderArchitecture:
         )
 
     def test_process_message_no_tier_or_model_override(self):
-        """_process_message() must not accept tier or model_override params."""
-        from lucyd import LucydDaemon
+        """process_message() must not accept tier or model_override params."""
+        from pipeline import MessagePipeline
 
-        sig = inspect.signature(LucydDaemon._process_message)
+        sig = inspect.signature(MessagePipeline.process_message)
         params = set(sig.parameters.keys())
         assert "tier" not in params, (
             "_process_message has 'tier' parameter (AI-005)"

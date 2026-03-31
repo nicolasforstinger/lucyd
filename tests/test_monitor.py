@@ -1,7 +1,7 @@
 """Tests for the in-memory monitor state feature.
 
 Tests cover _MonitorWriter callbacks (write, on_response, on_tool_results)
-wired in _process_message, updating daemon._monitor_state in memory.
+wired in _process_message, updating daemon.pipeline.monitor_state in memory.
 """
 
 import time
@@ -109,7 +109,7 @@ def _make_daemon_for_monitor(tmp_path):
     """Build a daemon rigged for monitor testing.
 
     Returns (daemon, provider, session).
-    Monitor state lives in daemon._monitor_state (in-memory dict).
+    Monitor state lives in daemon.pipeline.monitor_state (in-memory dict).
     """
     config = _make_config(tmp_path)
     daemon = LucydDaemon(config)
@@ -166,11 +166,13 @@ def _make_daemon_for_monitor(tmp_path):
     daemon.config.error_message = "Error"
     daemon.config.message_retries = 0
     daemon.config.message_retry_base_delay = 0.01
+    daemon.config.consolidation_enabled = False
     daemon.config.raw = MagicMock(return_value=0.0)
 
     from metering import MeteringDB
     daemon.metering_db = MeteringDB(str(tmp_path / "metering.db"))
 
+    daemon._ensure_pipeline()
     return daemon, provider, session
 
 
@@ -208,7 +210,7 @@ def _make_tool_call(name, call_id="tc-1"):
 
 class TestMonitorCallbacksWiring:
     """Verify that _process_message wires on_response and on_tool_results
-    callbacks into run_agentic_loop and updates daemon._monitor_state."""
+    callbacks into run_agentic_loop and updates daemon.pipeline.monitor_state."""
 
     @pytest.mark.asyncio
     async def test_monitor_state_set_on_entry(self, tmp_path):
@@ -218,14 +220,14 @@ class TestMonitorCallbacksWiring:
         response = _make_response()
 
         async def fake_loop(**kwargs):
-            data = daemon._monitor_state
+            data = daemon.pipeline.monitor_state
             assert data["state"] == "thinking"
             assert data["turn"] == 1
             assert data["contact"] == "TestUser"
             assert data["session_id"] == "mon-test-session"
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello",
                 sender="TestUser",
@@ -244,7 +246,7 @@ class TestMonitorCallbacksWiring:
             captured_kwargs.update(kwargs)
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
@@ -264,10 +266,10 @@ class TestMonitorCallbacksWiring:
         async def fake_loop(**kwargs):
             on_resp = kwargs["on_response"]
             on_resp(response)
-            assert daemon._monitor_state["state"] == "idle"
+            assert daemon.pipeline.monitor_state["state"] == "idle"
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
@@ -284,12 +286,12 @@ class TestMonitorCallbacksWiring:
         async def fake_loop(**kwargs):
             on_resp = kwargs["on_response"]
             on_resp(response)
-            data = daemon._monitor_state
+            data = daemon.pipeline.monitor_state
             assert data["state"] == "tools"
             assert data["tools_in_flight"] == ["memory_search", "read"]
             return _make_response()  # final response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
@@ -310,14 +312,14 @@ class TestMonitorCallbacksWiring:
             on_resp(tool_response)
             # Tool execution completes
             on_tool({"role": "tool_results", "results": []})
-            data = daemon._monitor_state
+            data = daemon.pipeline.monitor_state
             assert data["state"] == "thinking"
             assert data["turn"] == 2
             # Turn 2: Final response
             on_resp(final_response)
             return final_response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
@@ -340,7 +342,7 @@ class TestMonitorCallbacksWiring:
             on_tool({"role": "tool_results", "results": []})
             on_resp(resp2)
 
-            data = daemon._monitor_state
+            data = daemon.pipeline.monitor_state
             assert len(data["turns"]) == 2
 
             # Turn 1
@@ -361,7 +363,7 @@ class TestMonitorCallbacksWiring:
 
             return resp2
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
@@ -374,13 +376,13 @@ class TestMonitorCallbacksWiring:
         async def fake_loop(**kwargs):
             raise RuntimeError("API down")
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
 
         # After the error, finally block should have written idle
-        assert daemon._monitor_state["state"] == "idle"
+        assert daemon.pipeline.monitor_state["state"] == "idle"
 
     @pytest.mark.asyncio
     async def test_monitor_records_model_from_config(self, tmp_path):
@@ -390,10 +392,10 @@ class TestMonitorCallbacksWiring:
         response = _make_response()
 
         async def fake_loop(**kwargs):
-            assert daemon._monitor_state["model"] == "test-model"
+            assert daemon.pipeline.monitor_state["model"] == "test-model"
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
@@ -406,10 +408,10 @@ class TestMonitorCallbacksWiring:
         response = _make_response()
 
         async def fake_loop(**kwargs):
-            assert daemon._monitor_state["contact"] == "Nicolas"
+            assert daemon.pipeline.monitor_state["contact"] == "Nicolas"
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="Nicolas", source="telegram",
             )
@@ -422,10 +424,10 @@ class TestMonitorCallbacksWiring:
         response = _make_response()
 
         async def fake_loop(**kwargs):
-            assert daemon._monitor_state["session_id"] == "mon-test-session"
+            assert daemon.pipeline.monitor_state["session_id"] == "mon-test-session"
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
@@ -441,13 +443,13 @@ class TestMonitorCallbacksWiring:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
 
         after = time.time()
-        data = daemon._monitor_state
+        data = daemon.pipeline.monitor_state
         assert data["updated_at"] >= before
         assert data["updated_at"] <= after
 
@@ -461,20 +463,20 @@ class TestMonitorCallbacksWiring:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
 
         snapshot = daemon._build_monitor()
         snapshot["state"] = "corrupted"
-        assert daemon._monitor_state["state"] == "idle"
+        assert daemon.pipeline.monitor_state["state"] == "idle"
 
     @pytest.mark.asyncio
     async def test_initial_monitor_state_is_idle(self, tmp_path):
         """Before any message, monitor state is idle."""
         daemon, provider, session = _make_daemon_for_monitor(tmp_path)
-        assert daemon._monitor_state == {"state": "idle"}
+        assert daemon.pipeline.monitor_state == {"state": "idle"}
 
     @pytest.mark.asyncio
     async def test_on_response_no_tool_calls_empty_tools_list(self, tmp_path):
@@ -486,12 +488,12 @@ class TestMonitorCallbacksWiring:
         async def fake_loop(**kwargs):
             on_resp = kwargs["on_response"]
             on_resp(response)
-            data = daemon._monitor_state
+            data = daemon.pipeline.monitor_state
             assert data["turns"][0]["tools"] == []
             assert data["tools_in_flight"] == []
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
@@ -515,29 +517,29 @@ class TestMonitorCallbacksWiring:
 
             # Turn 1
             on_resp(resp1)
-            states_seen.append(daemon._monitor_state["state"])
+            states_seen.append(daemon.pipeline.monitor_state["state"])
 
             on_tool({"role": "tool_results", "results": []})
-            data = daemon._monitor_state
+            data = daemon.pipeline.monitor_state
             states_seen.append(data["state"])
             assert data["turn"] == 2
 
             # Turn 2
             on_resp(resp2)
-            states_seen.append(daemon._monitor_state["state"])
+            states_seen.append(daemon.pipeline.monitor_state["state"])
 
             on_tool({"role": "tool_results", "results": []})
-            data = daemon._monitor_state
+            data = daemon.pipeline.monitor_state
             states_seen.append(data["state"])
             assert data["turn"] == 3
 
             # Turn 3
             on_resp(resp3)
-            states_seen.append(daemon._monitor_state["state"])
+            states_seen.append(daemon.pipeline.monitor_state["state"])
 
             return resp3
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="TestUser", source="telegram",
             )
@@ -545,6 +547,6 @@ class TestMonitorCallbacksWiring:
         assert states_seen == ["tools", "thinking", "tools", "thinking", "idle"]
 
         # Check final state after finally block
-        data = daemon._monitor_state
+        data = daemon.pipeline.monitor_state
         assert data["state"] == "idle"
         assert len(data["turns"]) == 3

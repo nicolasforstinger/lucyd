@@ -16,11 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lucyd import (
-    LucydDaemon,
-    _inject_warning,
-    _should_warn_context,
-)
+from lucyd import LucydDaemon
+from pipeline import _inject_warning, _should_warn_context
 
 _TEST_DAEMONS: list[LucydDaemon] = []
 
@@ -367,7 +364,7 @@ class TestBasicMessageFlow:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hi", sender="Nicolas", source="telegram",
                 response_future=future,
@@ -385,7 +382,7 @@ class TestBasicMessageFlow:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="alice", source="telegram",
             )
@@ -403,7 +400,7 @@ class TestBasicMessageFlow:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -429,7 +426,7 @@ class TestProviderErrorHandling:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
                 response_future=future,
@@ -446,7 +443,7 @@ class TestProviderErrorHandling:
         async def fake_loop(**kwargs):
             raise ValueError("bad input")
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             # Should not raise
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
@@ -460,7 +457,7 @@ class TestProviderErrorHandling:
         async def fake_loop(**kwargs):
             raise RuntimeError("API down")
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="heartbeat", sender="system", source="system", deliver=False,
             )
@@ -472,7 +469,7 @@ class TestProviderErrorHandling:
         daemon.provider = None
         daemon._providers = {}
 
-        with patch("lucyd.run_agentic_loop") as mock_loop:
+        with patch("pipeline.run_agentic_loop") as mock_loop:
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -496,7 +493,7 @@ class TestSilentTokenSuppression:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="run heartbeat", sender="user", source="telegram",
                 response_future=future,
@@ -518,7 +515,7 @@ class TestSilentTokenSuppression:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
                 response_future=future,
@@ -541,7 +538,7 @@ class TestWarningInjection:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -570,7 +567,7 @@ class TestWarningInjection:
             call_order.append("agentic_loop")
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -592,7 +589,7 @@ class TestWarningInjection:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -616,7 +613,7 @@ class TestCompactionWarning:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("tools.status.MAX_CONTEXT_TOKENS", 200000):
                 await daemon._process_message(
                     text="hello", sender="user", source="telegram",
@@ -639,7 +636,7 @@ class TestCompactionWarning:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -658,7 +655,7 @@ class TestCompactionWarning:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -678,7 +675,7 @@ class TestCompactionWarning:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("tools.status.MAX_CONTEXT_TOKENS", 0):
                 await daemon._process_message(
                     text="hello", sender="user", source="telegram",
@@ -703,7 +700,7 @@ class TestHardCompaction:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -725,7 +722,7 @@ class TestHardCompaction:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -746,7 +743,7 @@ class TestHTTPFutureResolution:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="question", sender="api", source="http", deliver=False,
                 response_future=future,
@@ -768,7 +765,7 @@ class TestHTTPFutureResolution:
         async def fake_loop(**kwargs):
             raise RuntimeError("API exploded")
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="question", sender="api", source="http", deliver=False,
                 response_future=future,
@@ -789,7 +786,7 @@ class TestHTTPFutureResolution:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="heartbeat", sender="system", source="http", deliver=False,
                 response_future=future,
@@ -808,7 +805,7 @@ class TestHTTPFutureResolution:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
                 response_future=None,
@@ -829,7 +826,7 @@ class TestMessagePersistence:
             kwargs["messages"].append({"role": "assistant", "content": "reply"})
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -852,7 +849,7 @@ class TestMessagePersistence:
             kwargs["messages"].append({"role": "assistant", "content": "reply"})
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -870,7 +867,7 @@ class TestMessagePersistence:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -898,8 +895,8 @@ class TestMemoryV2Wiring:
 
         mock_context = "Facts:\n- nicolas — lives in: Austria"
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            with patch("memory.get_session_start_context", return_value=mock_context) as mock_gsc:
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
+            with patch("pipeline.get_session_start_context", return_value=mock_context) as mock_gsc:
                 with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
                     await daemon._process_message(
                         text="hello", sender="user", source="telegram",
@@ -924,8 +921,8 @@ class TestMemoryV2Wiring:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            with patch("memory.get_session_start_context") as mock_gsc:
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
+            with patch("pipeline.get_session_start_context") as mock_gsc:
                 await daemon._process_message(
                     text="hello", sender="user", source="telegram",
                 )
@@ -944,8 +941,8 @@ class TestMemoryV2Wiring:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            with patch("memory.get_session_start_context") as mock_gsc:
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
+            with patch("pipeline.get_session_start_context") as mock_gsc:
                 await daemon._process_message(
                     text="hello", sender="user", source="telegram",
                 )
@@ -966,8 +963,8 @@ class TestMemoryV2Wiring:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
-            with patch("memory.get_session_start_context", side_effect=Exception("DB corrupt")):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
+            with patch("pipeline.get_session_start_context", side_effect=Exception("DB corrupt")):
                 with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
                     await daemon._process_message(
                         text="hello", sender="user", source="telegram",
@@ -995,7 +992,7 @@ class TestMemoryV2Wiring:
 
         mock_result = {"facts_added": 3, "episode_id": "ep-1"}
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock, return_value=mock_result) as mock_consol:
                 with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
                     await daemon._process_message(
@@ -1021,7 +1018,7 @@ class TestMemoryV2Wiring:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock, side_effect=Exception("LLM timeout")):
                 with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
                     await daemon._process_message(
@@ -1045,7 +1042,7 @@ class TestMemoryV2Wiring:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock) as mock_consol:
                 await daemon._process_message(
                     text="hello", sender="user", source="telegram",
@@ -1118,7 +1115,7 @@ class TestErrorRecoveryOrphanedMessages:
         async def fake_loop(**kwargs):
             raise RuntimeError("API returned 400")
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -1146,7 +1143,7 @@ class TestErrorRecoveryOrphanedMessages:
         async def fake_loop(**kwargs):
             raise RuntimeError("API error")
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="second", sender="user", source="telegram",
             )
@@ -1181,7 +1178,7 @@ class TestErrorRecoveryOrphanedMessages:
             size=104,
         )
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="look at this", sender="user", source="telegram",
                 attachments=[att],
@@ -1213,7 +1210,7 @@ class TestErrorRecoveryOrphanedMessages:
         future1 = loop.create_future()
         future2 = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             # First message — error
             await daemon._process_message(
                 text="msg1", sender="user", source="telegram",
@@ -1258,7 +1255,7 @@ class TestConsecutiveUserMessageMerge:
             captured_messages.extend([m.copy() for m in kwargs["messages"]])
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="new message", sender="user", source="telegram",
             )
@@ -1291,7 +1288,7 @@ class TestConsecutiveUserMessageMerge:
             captured_messages.extend([m.copy() for m in kwargs["messages"]])
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="second", sender="user", source="telegram",
             )
@@ -1315,7 +1312,7 @@ class TestConsecutiveUserMessageMerge:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
             )
@@ -1349,7 +1346,7 @@ class TestConsecutiveUserMessageMerge:
             captured_messages.extend([m.copy() for m in kwargs["messages"]])
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="follow up", sender="user", source="telegram",
             )
@@ -1385,7 +1382,7 @@ class TestConsecutiveUserMessageMerge:
             captured_messages.extend([m.copy() for m in kwargs["messages"]])
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="recovery msg", sender="user", source="telegram",
             )
@@ -1610,7 +1607,7 @@ class TestDocumentExtractionIntegration:
         att = Attachment(content_type="text/plain", local_path=str(doc_path),
                          filename="notes.txt", size=doc_path.stat().st_size)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="check this", sender="user", source="telegram",
                 attachments=[att],
@@ -1642,7 +1639,7 @@ class TestDocumentExtractionIntegration:
         att = Attachment(content_type="application/octet-stream", local_path=str(doc_path),
                          filename="design.psd", size=50)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="", sender="user", source="telegram",
                 attachments=[att],
@@ -1670,7 +1667,7 @@ class TestDocumentExtractionIntegration:
         att = Attachment(content_type="text/plain", local_path=str(doc_path),
                          filename="readme.txt", size=doc_path.stat().st_size)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="", sender="user", source="telegram",
                 attachments=[att],
@@ -1702,7 +1699,7 @@ class TestDocumentExtractionIntegration:
         att = Attachment(content_type="text/plain", local_path=str(doc_path),
                          filename="big.txt", size=200)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="", sender="user", source="telegram",
                 attachments=[att],
@@ -1733,8 +1730,8 @@ class TestDocumentExtractionIntegration:
         att = Attachment(content_type="text/plain", local_path=str(doc_path),
                          filename="bad.txt", size=7)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            with patch("lucyd.extract_document_text", side_effect=OSError("disk error")):
+        with patch("pipeline.run_agentic_loop", return_value=response):
+            with patch("pipeline.extract_document_text", side_effect=OSError("disk error")):
                 await daemon._process_message(
                     text="", sender="user", source="telegram",
                     attachments=[att],
@@ -1814,10 +1811,10 @@ class TestScannedPdfVisionFallback:
 
         # Mock: text extraction returns None (scanned), rendering returns JPEG bytes
         fake_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 100  # minimal JPEG header
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            with patch("lucyd.extract_document_text", return_value=None):
-                with patch("lucyd.render_pdf_pages", return_value=[fake_jpeg]):
-                    with patch("lucyd.fit_image", return_value=fake_jpeg):
+        with patch("pipeline.run_agentic_loop", return_value=response):
+            with patch("pipeline.extract_document_text", return_value=None):
+                with patch("pipeline.render_pdf_pages", return_value=[fake_jpeg]):
+                    with patch("pipeline.fit_image", return_value=fake_jpeg):
                         await daemon._process_message(
                             text="read this", sender="user", source="telegram",
                             attachments=[att],
@@ -1850,9 +1847,9 @@ class TestScannedPdfVisionFallback:
         att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
                          filename="scan.pdf", size=100)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            with patch("lucyd.extract_document_text", return_value=None):
-                with patch("lucyd.render_pdf_pages") as mock_render:
+        with patch("pipeline.run_agentic_loop", return_value=response):
+            with patch("pipeline.extract_document_text", return_value=None):
+                with patch("pipeline.render_pdf_pages") as mock_render:
                     await daemon._process_message(
                         text="", sender="user", source="telegram",
                         attachments=[att],
@@ -1885,9 +1882,9 @@ class TestScannedPdfVisionFallback:
         att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
                          filename="text.pdf", size=100)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            with patch("lucyd.extract_document_text", return_value="Page 1 content here"):
-                with patch("lucyd.render_pdf_pages") as mock_render:
+        with patch("pipeline.run_agentic_loop", return_value=response):
+            with patch("pipeline.extract_document_text", return_value="Page 1 content here"):
+                with patch("pipeline.render_pdf_pages") as mock_render:
                     await daemon._process_message(
                         text="", sender="user", source="telegram",
                         attachments=[att],
@@ -1926,10 +1923,10 @@ class TestScannedPdfVisionFallback:
                          filename="huge_scan.pdf", size=100)
 
         fake_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 100
-        with patch("lucyd.run_agentic_loop", return_value=response):
-            with patch("lucyd.extract_document_text", return_value=None):
-                with patch("lucyd.render_pdf_pages", return_value=[fake_jpeg, fake_jpeg]):
-                    with patch("lucyd.fit_image", side_effect=ImageTooLarge("50MB")):
+        with patch("pipeline.run_agentic_loop", return_value=response):
+            with patch("pipeline.extract_document_text", return_value=None):
+                with patch("pipeline.render_pdf_pages", return_value=[fake_jpeg, fake_jpeg]):
+                    with patch("pipeline.fit_image", side_effect=ImageTooLarge("50MB")):
                         await daemon._process_message(
                             text="", sender="user", source="telegram",
                             attachments=[att],
@@ -2082,7 +2079,7 @@ class TestImageFitting:
         att = Attachment(content_type="image/jpeg", local_path=str(img_path),
                          filename="huge.jpg", size=img_path.stat().st_size)
 
-        with patch("lucyd.run_agentic_loop", return_value=response):
+        with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="look", sender="user", source="telegram",
                 attachments=[att],
@@ -2123,7 +2120,7 @@ class TestMessageLevelRetry:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
                 response_future=future,
@@ -2155,7 +2152,7 @@ class TestMessageLevelRetry:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
                 response_future=future,
@@ -2187,7 +2184,7 @@ class TestMessageLevelRetry:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="user", source="telegram",
                 response_future=future,
@@ -2242,7 +2239,7 @@ class TestMessageLevelRetry:
             size=img_path.stat().st_size,
         )
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="look at this", sender="user", source="telegram",
                 attachments=[att],
@@ -2274,7 +2271,7 @@ class TestAutoCloseSystemSessions:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="evolve", sender="evolution", source="system", deliver=False,
                 task_type="system",
@@ -2292,7 +2289,7 @@ class TestAutoCloseSystemSessions:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hi", sender="Nicolas", source="telegram",
             )
@@ -2309,7 +2306,7 @@ class TestAutoCloseSystemSessions:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="check", sender="http-n8n", source="http", deliver=False,
             )
@@ -2326,7 +2323,7 @@ class TestAutoCloseSystemSessions:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hello", sender="Claudio", source="cli",
             )
@@ -2342,7 +2339,7 @@ class TestAutoCloseSystemSessions:
         async def fake_loop(**kwargs):
             raise RuntimeError("API down")
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="evolve", sender="evolution", source="system", deliver=False,
                 task_type="system",
@@ -2376,7 +2373,7 @@ class TestPrimarySenderRouting:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="[AUTOMATED SYSTEM MESSAGE] New tweet",
                 sender="Nicolas", source="system", deliver=False,
@@ -2397,7 +2394,7 @@ class TestPrimarySenderRouting:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="evolve", sender="evolution", source="system", deliver=False,
                 task_type="system",
@@ -2420,7 +2417,7 @@ class TestPrimarySenderRouting:
         async def fake_loop(**kwargs):
             raise RuntimeError("API down")
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="[AUTOMATED SYSTEM MESSAGE] notification",
                 sender="Nicolas", source="system", deliver=False,
@@ -2439,7 +2436,7 @@ class TestPrimarySenderRouting:
         async def fake_loop(**kwargs):
             raise RuntimeError("API down")
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="evolve", sender="evolution", source="system", deliver=False,
                 task_type="system",
@@ -2458,7 +2455,7 @@ class TestPrimarySenderRouting:
         async def fake_loop(**kwargs):
             return response
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="hi", sender="Nicolas", source="telegram",
             )
@@ -2561,7 +2558,7 @@ class TestForcedCompact:
         daemon.config.compaction_prompt = "Compact for {agent_name}, limit {max_tokens}."
         daemon.config.compaction_max_tokens = 2048
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="Write diary", sender="Nicolas", source="system", deliver=False,
                 force_compact=True,
@@ -2590,7 +2587,7 @@ class TestForcedCompact:
 
         daemon.session_mgr.compact_session = AsyncMock()
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop):
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
                 text="compact diary", sender="Nicolas", source="system", deliver=False,
                 force_compact=True,
@@ -2630,7 +2627,7 @@ class TestForcedCompact:
             consolidation_called.append(True)
             return {"facts_added": 0, "episode_id": None}
 
-        with patch("lucyd.run_agentic_loop", side_effect=fake_loop), \
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop), \
              patch("consolidation.consolidate_session", side_effect=fake_consolidate):
             await daemon._process_message(
                 text="compact diary", sender="Nicolas", source="system", deliver=False,

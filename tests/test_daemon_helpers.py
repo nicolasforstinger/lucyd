@@ -4,7 +4,8 @@ import os
 
 import pytest
 
-from lucyd import _acquire_pid_file, _is_silent, _release_pid_file
+from lucyd import _acquire_pid_file, _release_pid_file
+from pipeline import _is_silent
 
 
 # ─── _is_silent ──────────────────────────────────────────────────
