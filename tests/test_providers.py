@@ -10,10 +10,31 @@ import json
 import httpx
 import pytest
 
+from typing import Any
+
 from providers import (
     LLMResponse, ModelCapabilities, StreamDelta, ToolCall, Usage,
-    create_provider, stream_fallback,
+    _repair_json, create_provider, stream_fallback,
 )
+
+
+# ─── Module-level provider helpers ──────────────────────────────
+
+def _make_anthropic(**kw: Any) -> Any:
+    """Create an AnthropicProvider with test defaults."""
+    pytest.importorskip("anthropic")
+    from providers.anthropic import AnthropicProvider
+    defaults: dict[str, Any] = {"api_key": "test-key", "model": "test-model"}
+    defaults.update(kw)
+    return AnthropicProvider(**defaults)
+
+
+def _make_openai(**kw: Any) -> Any:
+    """Create an OpenAIProvider with test defaults."""
+    from providers.openai import OpenAIProvider
+    defaults: dict[str, Any] = {"api_key": "test-key", "model": "test-model"}
+    defaults.update(kw)
+    return OpenAIProvider(**defaults)
 
 # ─── LLMResponse ─────────────────────────────────────────────────
 
@@ -1284,3 +1305,99 @@ class TestOpenAIComplete:
                 system="", messages=[{"role": "user", "content": "hi"}], tools=[],
             )
         assert result.stop_reason == "max_tokens"
+
+
+# ─── Shared utility tests ───────────────────────────────────────
+
+class TestRepairJson:
+    """providers._repair_json — cross-provider JSON repair."""
+
+    def test_valid_json_passthrough(self):
+        assert _repair_json('{"key": "value"}') == {"key": "value"}
+
+    def test_trailing_comma_fixed(self):
+        assert _repair_json('{"a": 1, "b": 2,}') == {"a": 1, "b": 2}
+
+    def test_single_quotes_fixed(self):
+        assert _repair_json("{'key': 'value'}") == {"key": "value"}
+
+    def test_unquoted_keys_fixed(self):
+        assert _repair_json('{key: "value"}') == {"key": "value"}
+
+    def test_non_string_returns_none(self):
+        assert _repair_json(123) is None  # type: ignore[arg-type]
+
+    def test_non_dict_json_returns_none(self):
+        assert _repair_json("[1, 2, 3]") is None
+
+    def test_unfixable_returns_none(self):
+        assert _repair_json("not json at all {{{") is None
+
+    def test_empty_string_returns_none(self):
+        assert _repair_json("") is None
+
+
+class TestStripThinking:
+    """providers.openai._strip_thinking — thinking block extraction."""
+
+    def test_no_tags_passthrough(self):
+        from providers.openai import _strip_thinking
+        text, thinking = _strip_thinking("plain text")
+        assert text == "plain text"
+        assert thinking == ""
+
+    def test_single_block_extracted(self):
+        from providers.openai import _strip_thinking
+        text, thinking = _strip_thinking("<think>reasoning</think>answer")
+        assert text == "answer"
+        assert thinking == "reasoning"
+
+    def test_multiple_blocks_extracted(self):
+        from providers.openai import _strip_thinking
+        text, thinking = _strip_thinking(
+            "<think>first</think>middle<think>second</think>end"
+        )
+        assert text == "middleend"
+        assert "first" in thinking
+        assert "second" in thinking
+
+    def test_unclosed_at_start(self):
+        from providers.openai import _strip_thinking
+        text, thinking = _strip_thinking("<think>still thinking...")
+        assert text == ""
+        assert "still thinking..." in thinking
+
+    def test_empty_content(self):
+        from providers.openai import _strip_thinking
+        text, thinking = _strip_thinking("<think></think>result")
+        assert text == "result"
+
+    def test_empty_string(self):
+        from providers.openai import _strip_thinking
+        text, thinking = _strip_thinking("")
+        assert text == ""
+        assert thinking == ""
+
+
+class TestAnthropicSafeParseArgs:
+    """providers.anthropic._safe_parse_args — tool argument parsing."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self):
+        pytest.importorskip("anthropic")
+
+    def test_dict_passthrough(self):
+        from providers.anthropic import _safe_parse_args
+        assert _safe_parse_args({"key": "value"}) == {"key": "value"}
+
+    def test_valid_json_string_parsed(self):
+        from providers.anthropic import _safe_parse_args
+        assert _safe_parse_args('{"key": "value"}') == {"key": "value"}
+
+    def test_invalid_json_returns_raw(self):
+        from providers.anthropic import _safe_parse_args
+        assert _safe_parse_args("not json") == {"raw": "not json"}
+
+    def test_non_dict_json_returns_raw(self):
+        from providers.anthropic import _safe_parse_args
+        assert _safe_parse_args("[1, 2]") == {"raw": "[1, 2]"}
