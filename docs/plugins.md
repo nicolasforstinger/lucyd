@@ -17,22 +17,26 @@ plugins.d/
 ### Exports
 
 ```python
-TOOLS = [
-    {
-        "name": "my_tool",
-        "description": "What this tool does (shown to the LLM)",
-        "input_schema": {
+from tools import ToolSpec
+
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="my_tool",
+        description="What this tool does (shown to the LLM)",
+        input_schema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
             },
             "required": ["query"],
         },
-        "function": my_tool_fn,
-        "max_output": 0,  # optional: truncation limit (0 = use global default)
-    },
+        function=my_tool_fn,
+        max_output=0,  # optional: truncation limit (0 = use global default)
+    ),
 ]
 ```
+
+`ToolSpec` is a frozen dataclass — mypy catches misspelled fields, wrong types, and missing required fields at type-check time.
 
 The `function` must be an async callable:
 

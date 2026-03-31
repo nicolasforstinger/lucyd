@@ -15,6 +15,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from tools import ToolSpec
+
 import httpx
 
 from async_utils import run_blocking
@@ -110,11 +112,11 @@ async def tool_tts(text: str, voice_id: str = "",
     return {"text": f"Generated audio ({len(audio)} bytes)", "attachments": [output_file]}
 
 
-TOOLS = [
-    {
-        "name": "tts",
-        "description": "Generate speech audio from text. The audio file is included in the reply as an attachment.",
-        "input_schema": {
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="tts",
+        description="Generate speech audio from text. The audio file is included in the reply as an attachment.",
+        input_schema={
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "Text to convert to speech"},
@@ -124,6 +126,6 @@ TOOLS = [
             },
             "required": ["text"],
         },
-        "function": tool_tts,
-    },
+        function=tool_tts,
+    ),
 ]

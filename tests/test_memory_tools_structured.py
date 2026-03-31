@@ -199,16 +199,14 @@ class TestToolDefinitions:
         assert len(TOOLS) == 3
 
     def test_tool_names(self):
-        names = {t["name"] for t in TOOLS}
+        names = {t.name for t in TOOLS}
         assert names == {"memory_write", "memory_forget", "commitment_update"}
 
     def test_tools_have_functions(self):
         for tool in TOOLS:
-            assert callable(tool["function"])
+            assert callable(tool.function)
 
     def test_required_fields(self):
+        from tools import ToolSpec
         for tool in TOOLS:
-            assert "name" in tool
-            assert "description" in tool
-            assert "input_schema" in tool
-            assert "function" in tool
+            assert isinstance(tool, ToolSpec)

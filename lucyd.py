@@ -288,20 +288,26 @@ class LucydDaemon:
 
         def _configure_and_register(module: Any, source: str = "") -> None:
             """Call configure() with inspect-based injection, register enabled tools."""
+            from tools import ToolSpec
             configure_fn = getattr(module, "configure", None)
             if callable(configure_fn):
                 sig = inspect.signature(configure_fn)
                 kwargs = {k: v for k, v in deps.items() if k in sig.parameters}
                 configure_fn(**kwargs)
             for t in getattr(module, "TOOLS", []):
-                name = t.get("name", "")
-                if name in enabled:
-                    self.tool_registry.register(
-                        t["name"], t["description"], t["input_schema"],
-                        t["function"], t.get("max_output", 0),
+                # Accept both ToolSpec and legacy dicts (for third-party plugins)
+                if isinstance(t, ToolSpec):
+                    spec = t
+                else:
+                    spec = ToolSpec(
+                        name=t["name"], description=t["description"],
+                        input_schema=t["input_schema"], function=t["function"],
+                        max_output=t.get("max_output", 0),
                     )
+                if spec.name in enabled:
+                    self.tool_registry.register(spec)
                     if source:
-                        log.info("Plugin tool registered: %s (from %s)", name, source)
+                        log.info("Plugin tool registered: %s (from %s)", spec.name, source)
 
         # ── Built-in tools ───────────────────────────────────────────
         for module_path, tool_names in self._TOOL_MODULES:

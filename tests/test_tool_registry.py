@@ -4,28 +4,28 @@ import json
 
 import pytest
 
-from tools import ToolRegistry, _smart_truncate, _truncate_json
+from tools import ToolRegistry, ToolSpec, _smart_truncate, _truncate_json
 
 # ─── Registration ────────────────────────────────────────────────
 
 class TestRegister:
     def test_register_single(self):
         reg = ToolRegistry()
-        reg.register("ping", "Ping tool", {"type": "object"}, lambda: "pong")
+        reg.register(ToolSpec(name="ping", description="Ping tool", input_schema={"type": "object"}, function=lambda: "pong"))
         assert "ping" in reg.tool_names
 
     def test_register_many(self):
         reg = ToolRegistry()
         reg.register_many([
-            {"name": "a", "description": "A", "input_schema": {}, "function": lambda: "a"},
-            {"name": "b", "description": "B", "input_schema": {}, "function": lambda: "b"},
+            ToolSpec(name="a", description="A", input_schema={}, function=lambda: "a"),
+            ToolSpec(name="b", description="B", input_schema={}, function=lambda: "b"),
         ])
         assert set(reg.tool_names) == {"a", "b"}
 
     def test_overwrite_on_same_name(self):
         reg = ToolRegistry()
-        reg.register("x", "first", {}, lambda: "1")
-        reg.register("x", "second", {}, lambda: "2")
+        reg.register(ToolSpec(name="x", description="first", input_schema={}, function=lambda: "1"))
+        reg.register(ToolSpec(name="x", description="second", input_schema={}, function=lambda: "2"))
         assert len(reg.tool_names) == 1
         schemas = reg.get_schemas()
         assert schemas[0]["description"] == "second"
@@ -83,7 +83,7 @@ class TestExecute:
         def explode():
             raise RuntimeError("boom")
         reg = ToolRegistry()
-        reg.register("bomb", "explodes", {"type": "object"}, explode)
+        reg.register(ToolSpec(name="bomb", description="explodes", input_schema={"type": "object"}, function=explode))
         result = await reg.execute("bomb", {})
         assert "Error:" in result["text"]
         assert "Tool 'bomb' failed (RuntimeError)" in result["text"]
@@ -91,7 +91,7 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_truncation_at_limit(self):
         reg = ToolRegistry(truncation_limit=50)
-        reg.register("big", "returns big output", {}, lambda: "a" * 200)
+        reg.register(ToolSpec(name="big", description="returns big output", input_schema={}, function=lambda: "a" * 200))
         result = await reg.execute("big", {})
         assert len(result["text"]) < 200
         assert "[truncated" in result["text"]
@@ -99,21 +99,21 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_truncation_marker_text(self):
         reg = ToolRegistry(truncation_limit=10)
-        reg.register("big", "big", {}, lambda: "x" * 100)
+        reg.register(ToolSpec(name="big", description="big", input_schema={}, function=lambda: "x" * 100))
         result = await reg.execute("big", {})
         assert "[truncated" in result["text"]
 
     @pytest.mark.asyncio
     async def test_non_string_result_converted(self):
         reg = ToolRegistry()
-        reg.register("num", "returns int", {}, lambda: 42)
+        reg.register(ToolSpec(name="num", description="returns int", input_schema={}, function=lambda: 42))
         result = await reg.execute("num", {})
         assert result["text"] == "42"
 
     @pytest.mark.asyncio
     async def test_per_tool_max_output(self):
         reg = ToolRegistry(truncation_limit=1000)
-        reg.register("small", "small limit", {}, lambda: "x" * 200, max_output=50)
+        reg.register(ToolSpec(name="small", description="small limit", input_schema={}, function=lambda: "x" * 200, max_output=50))
         result = await reg.execute("small", {})
         assert "[truncated" in result["text"]
         # Should use per-tool limit (50), not registry default (1000)

@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from tools import ToolSpec
+
 log = logging.getLogger(__name__)
 
 
@@ -201,17 +203,17 @@ def tool_load_skill(name: str) -> str:
         return f"Error loading skill: {e}"
 
 
-TOOLS = [
-    {
-        "name": "load_skill",
-        "description": "Load a skill's full instructions by name. Use the skills index to see available skills.",
-        "input_schema": {
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="load_skill",
+        description="Load a skill's full instructions by name. Use the skills index to see available skills.",
+        input_schema={
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Skill name to load"},
             },
             "required": ["name"],
         },
-        "function": tool_load_skill,
-    },
+        function=tool_load_skill,
+    ),
 ]

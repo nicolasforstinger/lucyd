@@ -8,6 +8,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from . import ToolSpec
+
 # Set once at daemon startup via configure()
 _session_manager: Any = None
 _metering: Any = None  # MeteringDB instance
@@ -94,14 +96,14 @@ def tool_session_status() -> str:
     return "\n".join(lines)
 
 
-TOOLS = [
-    {
-        "name": "session_status",
-        "description": "Get current session statistics — context utilization, message count, compaction count, cost, uptime.",
-        "input_schema": {
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="session_status",
+        description="Get current session statistics — context utilization, message count, compaction count, cost, uptime.",
+        input_schema={
             "type": "object",
             "properties": {},
         },
-        "function": tool_session_status,
-    },
+        function=tool_session_status,
+    ),
 ]

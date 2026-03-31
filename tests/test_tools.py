@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from tools import ToolRegistry
+from tools import ToolRegistry, ToolSpec
 
 
 class TestToolErrorHandling:
@@ -18,7 +18,7 @@ class TestToolErrorHandling:
         def bad_tool():
             raise FileNotFoundError("/secret/path/to/file.db")
 
-        reg.register("bad", "A bad tool", {"type": "object", "properties": {}}, bad_tool)
+        reg.register(ToolSpec(name="bad", description="A bad tool", input_schema={"type": "object", "properties": {}}, function=bad_tool))
         result = await reg.execute("bad", {})
         assert "Error:" in result["text"]
         assert "Tool 'bad' failed (FileNotFoundError)" in result["text"]
@@ -33,7 +33,7 @@ class TestToolErrorHandling:
         def exploding_tool():
             raise ValueError("detailed internal error info")
 
-        reg.register("explode", "Exploding tool", {"type": "object", "properties": {}}, exploding_tool)
+        reg.register(ToolSpec(name="explode", description="Exploding tool", input_schema={"type": "object", "properties": {}}, function=exploding_tool))
         with caplog.at_level(logging.ERROR, logger="tools"):
             await reg.execute("explode", {})
         assert "detailed internal error info" in caplog.text

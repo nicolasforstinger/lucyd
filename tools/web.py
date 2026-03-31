@@ -18,6 +18,8 @@ import urllib.request
 from html.parser import HTMLParser
 from typing import Any
 
+from . import ToolSpec
+
 from async_utils import run_blocking
 
 log = logging.getLogger(__name__)
@@ -342,11 +344,11 @@ async def tool_web_fetch(url: str, max_chars: int = 50000) -> str:
         return f"Error fetching {url}: {e}"
 
 
-TOOLS = [
-    {
-        "name": "web_search",
-        "description": "Search the web. Returns titles, URLs, and snippets.",
-        "input_schema": {
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="web_search",
+        description="Search the web. Returns titles, URLs, and snippets.",
+        input_schema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
@@ -354,15 +356,15 @@ TOOLS = [
             },
             "required": ["query"],
         },
-        "function": tool_web_search,
-    },
-    {
-        "name": "web_fetch",
-        "description": (
+        function=tool_web_search,
+    ),
+    ToolSpec(
+        name="web_fetch",
+        description=(
             "Fetch a URL and return its content as readable text. "
             "Cannot fetch private/local network URLs (192.168.*, 10.*, 127.*, etc.)."
         ),
-        "input_schema": {
+        input_schema={
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "URL to fetch"},
@@ -370,6 +372,6 @@ TOOLS = [
             },
             "required": ["url"],
         },
-        "function": tool_web_fetch,
-    },
+        function=tool_web_fetch,
+    ),
 ]

@@ -6,11 +6,13 @@ Delegates to the same SQLite DB used by consolidation and recall.
 
 from __future__ import annotations
 
-import metrics
-
 import logging
 import sqlite3
 from typing import Any
+
+import metrics
+
+from . import ToolSpec
 
 from consolidation import _normalize_entity as _normalize
 from consolidation import upsert_fact
@@ -101,15 +103,15 @@ def handle_commitment_update(commitment_id: int, status: str) -> str:
     return f"No open commitment found with ID #{commitment_id}"
 
 
-TOOLS = [
-    {
-        "name": "memory_write",
-        "description": (
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="memory_write",
+        description=(
             "Store a fact in structured memory. Use for important information "
             "you want to recall reliably later. Facts are stored as "
             "entity-attribute-value triples."
         ),
-        "input_schema": {
+        input_schema={
             "type": "object",
             "properties": {
                 "entity": {
@@ -127,15 +129,15 @@ TOOLS = [
             },
             "required": ["entity", "attribute", "value"],
         },
-        "function": handle_memory_write,
-    },
-    {
-        "name": "memory_forget",
-        "description": (
+        function=handle_memory_write,
+    ),
+    ToolSpec(
+        name="memory_forget",
+        description=(
             "Mark a fact as no longer current. The fact is preserved in "
             "history but won't appear in future recalls."
         ),
-        "input_schema": {
+        input_schema={
             "type": "object",
             "properties": {
                 "entity": {"type": "string", "description": "Who or what (lowercase, underscores for spaces). Alias-resolved automatically."},
@@ -143,15 +145,15 @@ TOOLS = [
             },
             "required": ["entity", "attribute"],
         },
-        "function": handle_memory_forget,
-    },
-    {
-        "name": "commitment_update",
-        "description": (
+        function=handle_memory_forget,
+    ),
+    ToolSpec(
+        name="commitment_update",
+        description=(
             "Update a commitment's status. Use the commitment ID shown in "
             "the [Open commitments] section (e.g. #7)."
         ),
-        "input_schema": {
+        input_schema={
             "type": "object",
             "properties": {
                 "commitment_id": {
@@ -165,6 +167,6 @@ TOOLS = [
             },
             "required": ["commitment_id", "status"],
         },
-        "function": handle_commitment_update,
-    },
+        function=handle_commitment_update,
+    ),
 ]

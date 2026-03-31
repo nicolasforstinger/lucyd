@@ -11,7 +11,7 @@ import pytest
 
 from agentic import LoopConfig, run_agentic_loop
 from providers import LLMResponse, ModelCapabilities, ToolCall, Usage
-from tools import ToolRegistry
+from tools import ToolRegistry, ToolSpec
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -90,12 +90,12 @@ class TestConversationReplay:
         for tool_def in fixture.get("tools", []):
             name = tool_def["name"]
             result = mock_results.get(name, f"{name} result")
-            reg.register(
+            reg.register(ToolSpec(
                 name=name,
                 description=tool_def["description"],
                 input_schema=tool_def.get("input_schema", {}),
-                func=lambda _result=result, **kw: _result,
-            )
+                function=lambda _result=result, **kw: _result,
+            ))
 
         resp = await run_agentic_loop(
             provider=provider,

@@ -5,12 +5,27 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 import metrics
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """Typed definition of a tool available to the agentic loop.
+
+    Replaces the raw dict convention (``{"name": ..., "description": ..., ...}``).
+    Frozen because tool definitions don't change after registration.
+    """
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    function: Callable[..., Any]
+    max_output: int = 0  # per-tool truncation limit (0 = use registry default)
 
 
 def _smart_truncate(text: str, limit: int, tool_name: str = "") -> str:
@@ -97,49 +112,33 @@ class ToolRegistry:
     """Registers tool functions and dispatches calls from the agentic loop."""
 
     def __init__(self, truncation_limit: int = 30000, max_result_tokens: int = 0):
-        self._tools: dict[str, dict[str, Any]] = {}
+        self._tools: dict[str, ToolSpec] = {}
         self.truncation_limit = truncation_limit
         self.max_result_tokens = max_result_tokens  # 0 = use char limit only
 
-    def register(self, name: str, description: str, input_schema: dict[str, Any],
-                 func: Callable[..., Any], max_output: int = 0) -> None:
-        """Register a tool function.
+    def register(self, spec: ToolSpec) -> None:
+        """Register a tool from a ToolSpec."""
+        self._tools[spec.name] = spec
 
-        max_output: per-tool truncation limit (0 = use registry default).
-        """
-        self._tools[name] = {
-            "name": name,
-            "description": description,
-            "input_schema": input_schema,
-            "function": func,
-            "max_output": max_output,
-        }
-
-    def register_many(self, tools: list[dict[str, Any]]) -> None:
+    def register_many(self, tools: list[ToolSpec]) -> None:
         """Register multiple tools from a TOOLS list."""
-        for t in tools:
-            self.register(
-                name=t["name"],
-                description=t["description"],
-                input_schema=t["input_schema"],
-                func=t["function"],
-                max_output=t.get("max_output", 0),
-            )
+        for spec in tools:
+            self.register(spec)
 
     def get_schemas(self) -> list[dict[str, Any]]:
         """Return tool schemas for LLM (without function references)."""
         return [
             {
-                "name": t["name"],
-                "description": t["description"],
-                "input_schema": t["input_schema"],
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
             }
             for t in self._tools.values()
         ]
 
     def get_brief_descriptions(self) -> list[tuple[str, str]]:
         """Return (name, description) pairs for context builder."""
-        return [(t["name"], t["description"]) for t in self._tools.values()]
+        return [(t.name, t.description) for t in self._tools.values()]
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a tool call with error isolation and smart truncation.
@@ -159,15 +158,14 @@ class ToolRegistry:
                 "attachments": [],
             }
 
-        tool = self._tools[name]
-        func = tool["function"]
+        spec = self._tools[name]
         _tool_start = time.time()
         try:
             import inspect
-            if inspect.iscoroutinefunction(func):
-                result = await func(**arguments)
+            if inspect.iscoroutinefunction(spec.function):
+                result = await spec.function(**arguments)
             else:
-                result = func(**arguments)
+                result = spec.function(**arguments)
             if metrics.ENABLED:
                 metrics.TOOL_CALLS_TOTAL.labels(tool_name=name, status="success").inc()
                 metrics.TOOL_DURATION.labels(tool_name=name).observe(time.time() - _tool_start)
@@ -196,7 +194,7 @@ class ToolRegistry:
         else:
             result_str = str(result) if not isinstance(result, str) else result
 
-        limit = tool.get("max_output") or self.truncation_limit
+        limit = spec.max_output or self.truncation_limit
         if self.max_result_tokens > 0:
             from context import _estimate_tokens
             est = _estimate_tokens(result_str)

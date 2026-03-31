@@ -269,7 +269,7 @@ def cost_db(tmp_path):
 @pytest.fixture
 def tool_registry():
     """ToolRegistry with a sync + async dummy tool registered."""
-    from tools import ToolRegistry
+    from tools import ToolRegistry, ToolSpec
 
     reg = ToolRegistry(truncation_limit=100)
 
@@ -279,14 +279,24 @@ def tool_registry():
     async def async_tool(text: str = "default") -> str:
         return f"async:{text}"
 
-    reg.register("sync_echo", "A sync echo tool", {
-        "type": "object",
-        "properties": {"text": {"type": "string"}},
-    }, sync_tool)
-    reg.register("async_echo", "An async echo tool", {
-        "type": "object",
-        "properties": {"text": {"type": "string"}},
-    }, async_tool)
+    reg.register(ToolSpec(
+        name="sync_echo",
+        description="A sync echo tool",
+        input_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+        },
+        function=sync_tool,
+    ))
+    reg.register(ToolSpec(
+        name="async_echo",
+        description="An async echo tool",
+        input_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+        },
+        function=async_tool,
+    ))
     return reg
 
 

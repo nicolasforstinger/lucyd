@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from typing import Any
 
 import metrics
-from typing import Any
+
+from . import ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -84,15 +86,15 @@ async def tool_memory_get(file_path: str, start_line: int = 0,
         return f"Error retrieving memory: {e}"
 
 
-TOOLS = [
-    {
-        "name": "memory_search",
-        "description": (
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="memory_search",
+        description=(
             "Search long-term memory. Searches indexed workspace files "
             "(memory/*.md, MEMORY.md) plus structured facts, episodes, "
             "and open commitments extracted from past sessions."
         ),
-        "input_schema": {
+        input_schema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query (keywords or natural language)"},
@@ -100,16 +102,16 @@ TOOLS = [
             },
             "required": ["query"],
         },
-        "function": tool_memory_search,
-    },
-    {
-        "name": "memory_get",
-        "description": (
+        function=tool_memory_search,
+    ),
+    ToolSpec(
+        name="memory_get",
+        description=(
             "Retrieve a file snippet from indexed memory by workspace-relative path. "
             "Paths are relative to the workspace root (e.g., 'memory/2026-02-23.md', 'MEMORY.md'). "
             "Use memory_search to find available file paths first."
         ),
-        "input_schema": {
+        input_schema={
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "Workspace-relative path (e.g., 'memory/2026-02-23.md', 'MEMORY.md'). NOT an absolute path."},
@@ -118,6 +120,6 @@ TOOLS = [
             },
             "required": ["file_path"],
         },
-        "function": tool_memory_get,
-    },
+        function=tool_memory_get,
+    ),
 ]

@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from . import ToolSpec
+
 # Allowed path prefixes — set at startup via configure()
 _PATH_ALLOW: list[str] = []
 _default_read_limit: int = 2000
@@ -24,7 +26,7 @@ def configure(allowed_paths: list[str] | None = None,
         # Patch file_path descriptions with allowed paths
         paths_str = ", ".join(allowed_paths)
         for tool in TOOLS:
-            schema = tool["input_schema"]["properties"].get("file_path", {})
+            schema = tool.input_schema["properties"].get("file_path", {})
             if schema:
                 schema["description"] = (
                     f"Absolute path to the file. Allowed paths: {paths_str}"
@@ -139,14 +141,14 @@ def tool_edit(file_path: str, old_string: str, new_string: str,
     return f"Edited {file_path}"
 
 
-TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "read",
-        "description": (
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="read",
+        description=(
             "Read a file. Returns numbered lines. Use offset/limit for large files. "
             "For indexed memory files, use memory_get with workspace-relative paths instead."
         ),
-        "input_schema": {
+        input_schema={
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "Absolute path to the file"},
@@ -155,12 +157,12 @@ TOOLS: list[dict[str, Any]] = [
             },
             "required": ["file_path"],
         },
-        "function": tool_read,
-    },
-    {
-        "name": "write",
-        "description": "Write content to a file. Creates directories as needed. Overwrites existing files.",
-        "input_schema": {
+        function=tool_read,
+    ),
+    ToolSpec(
+        name="write",
+        description="Write content to a file. Creates directories as needed. Overwrites existing files.",
+        input_schema={
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "Absolute path to the file"},
@@ -168,12 +170,12 @@ TOOLS: list[dict[str, Any]] = [
             },
             "required": ["file_path", "content"],
         },
-        "function": tool_write,
-    },
-    {
-        "name": "edit",
-        "description": "Edit a file by exact string replacement. old_string must be unique unless replace_all is true.",
-        "input_schema": {
+        function=tool_write,
+    ),
+    ToolSpec(
+        name="edit",
+        description="Edit a file by exact string replacement. old_string must be unique unless replace_all is true.",
+        input_schema={
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "Absolute path to the file"},
@@ -183,6 +185,6 @@ TOOLS: list[dict[str, Any]] = [
             },
             "required": ["file_path", "old_string", "new_string"],
         },
-        "function": tool_edit,
-    },
+        function=tool_edit,
+    ),
 ]

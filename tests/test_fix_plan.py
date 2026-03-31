@@ -15,7 +15,7 @@ from agentic import (
 )
 from providers import LLMResponse, ModelCapabilities, ToolCall, Usage
 from session import Session, _validate_turn_structure
-from tools import ToolRegistry
+from tools import ToolRegistry, ToolSpec
 
 
 # ─── Shared Helpers ──────────────────────────────────────────────
@@ -71,8 +71,12 @@ def _tool_use(name="echo", tc_id="tc-1"):
 
 def _make_registry():
     reg = ToolRegistry()
-    reg.register("echo", "echo", {"type": "object"},
-                 lambda text="": f"echo:{text}")
+    reg.register(ToolSpec(
+        name="echo",
+        description="echo",
+        input_schema={"type": "object"},
+        function=lambda text="": f"echo:{text}",
+    ))
     return reg
 
 

@@ -15,7 +15,7 @@ from agentic import (
     run_agentic_loop,
 )
 from providers import CostContext, LLMResponse, ModelCapabilities, StreamDelta, ToolCall, Usage
-from tools import ToolRegistry
+from tools import ToolRegistry, ToolSpec
 
 # Default LoopConfig for tests (provided by config in production)
 _LOOP_CONFIG = LoopConfig(
@@ -100,8 +100,8 @@ def _make_registry():
     async def async_echo(text: str = "") -> str:
         return f"async:{text}"
 
-    reg.register("echo", "echo tool", {"type": "object"}, echo)
-    reg.register("async_echo", "async echo", {"type": "object"}, async_echo)
+    reg.register(ToolSpec(name="echo", description="echo tool", input_schema={"type": "object"}, function=echo))
+    reg.register(ToolSpec(name="async_echo", description="async echo", input_schema={"type": "object"}, function=async_echo))
     return reg
 
 
@@ -177,7 +177,7 @@ class TestAgenticLoop:
             raise RuntimeError("kaboom")
 
         reg = ToolRegistry()
-        reg.register("bomb", "explodes", {"type": "object"}, explode)
+        reg.register(ToolSpec(name="bomb", description="explodes", input_schema={"type": "object"}, function=explode))
 
         provider = MockProvider([
             _tool_use_response("bomb", {}),
@@ -475,8 +475,8 @@ class TestReturnExceptions:
             return "ok-result"
 
         reg = ToolRegistry()
-        reg.register("bomb", "explodes", {"type": "object", "properties": {}}, explode)
-        reg.register("ok_tool", "works", {"type": "object", "properties": {}}, ok)
+        reg.register(ToolSpec(name="bomb", description="explodes", input_schema={"type": "object", "properties": {}}, function=explode))
+        reg.register(ToolSpec(name="ok_tool", description="works", input_schema={"type": "object", "properties": {}}, function=ok))
 
         resp1 = LLMResponse(
             text=None,
@@ -633,7 +633,7 @@ class TestMaxTokensWithToolCalls:
             return f"echo:{text}"
 
         reg = ToolRegistry()
-        reg.register("echo", "echo tool", {"type": "object"}, tracked_echo)
+        reg.register(ToolSpec(name="echo", description="echo tool", input_schema={"type": "object"}, function=tracked_echo))
 
         truncated = LLMResponse(
             text=None,

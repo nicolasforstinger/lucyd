@@ -10,6 +10,8 @@ import logging
 import time
 from typing import Any
 
+from . import ToolSpec
+
 from messages import Message
 
 log = logging.getLogger(__name__)
@@ -213,15 +215,15 @@ async def tool_sessions_spawn(
         return f"Error: Sub-agent failed: {e}"
 
 
-TOOLS = [
-    {
-        "name": "sessions_spawn",
-        "description": (
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="sessions_spawn",
+        description=(
             "Spawn a sub-agent for delegated work. Same model and tools as you, but ephemeral — "
             "context is discarded after the task. Use for heavy tool work (document editing, "
             "bulk file operations) to keep your main session clean."
         ),
-        "input_schema": {
+        input_schema={
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "Task description / instructions for the sub-agent"},
@@ -234,6 +236,6 @@ TOOLS = [
             },
             "required": ["prompt"],
         },
-        "function": tool_sessions_spawn,
-    },
+        function=tool_sessions_spawn,
+    ),
 ]

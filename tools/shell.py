@@ -8,6 +8,8 @@ import os
 import signal
 from typing import Any
 
+from . import ToolSpec
+
 log = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 120
@@ -95,17 +97,17 @@ async def tool_exec(command: str, timeout: int | None = None) -> str:
     return result or "(no output)"
 
 
-TOOLS = [
-    {
-        "name": "exec",
-        "description": (
+TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="exec",
+        description=(
             "Execute a shell command. Returns stdout, stderr, and exit code. "
             "Working directory is the daemon's startup directory — use absolute paths. "
             "Secret environment variables are filtered (LUCYD_* and any ending in "
             "_KEY, _TOKEN, _SECRET, _PASSWORD are removed). "
             "Output is truncated at 30000 characters."
         ),
-        "input_schema": {
+        input_schema={
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command to execute"},
@@ -113,6 +115,6 @@ TOOLS = [
             },
             "required": ["command"],
         },
-        "function": tool_exec,
-    },
+        function=tool_exec,
+    ),
 ]
