@@ -11,7 +11,8 @@ AI agent framework. HTTP-core daemon with standalone channel bridges, agentic to
 - **Single-tenant by design.** One container, one agent, one personality. No multi-tenant routing, no agent orchestration, no session multiplexing across identities. The complexity budget goes into making one agent excellent.
 - **Personality-first.** Identity files load first, cache longest, and survive context compression. The agent's character isn't a system prompt afterthought — it's the architectural foundation. Workspace files (SOUL.md, MEMORY.md, skills/) define who the agent is, not just what it can do.
 - **HTTP-core with bridge channels.** The daemon exposes one API boundary. Telegram, CLI, and email are standalone bridge processes that speak HTTP — they don't import framework code, share memory, or know about each other. Adding a channel means writing an HTTP client, not extending the daemon.
-- **Provider-agnostic.** Swap LLM providers by editing a TOML load list. Provider SDKs are optional dependencies — the framework runs on `aiohttp` + `httpx` alone, with SDK-free HTTP fallbacks for every provider.
+- **Provider-agnostic.** `LLMProvider` Protocol — swap providers by editing a TOML load list. Provider SDKs are optional extras (`pip install lucyd[anthropic]`). Core runs on `aiohttp` + `httpx` alone, with SDK-free HTTP fallbacks for every provider.
+- **Default-secure.** HMAC Bearer token required on all endpoints. Localhost trust is opt-in via `http.trust_localhost` config, not assumed.
 - **No magic.** Flat module layout, single TOML config file, one daemon process. No dependency injection framework, no metaclass registration, no decorator-driven wiring. Extension points (tools, plugins, channels, providers) use plain Python conventions: export a `TOOLS` list, implement a Protocol, POST to an endpoint.
 
 ## Quick Start
@@ -52,11 +53,16 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 **Core features:**
 
 - **Agentic tool-use loop** — LLM calls tools, gets results, loops until done. Auto-fallback to single-shot for models without tool support
+- **Typed message spine** — TypedDict-based message contracts (`UserMessage`, `AssistantMessage`, `ToolResultsMessage`), mypy-enforced end to end
+- **Typed tool contract** — `ToolSpec` frozen dataclass replaces raw dicts for tool registration
 - **Streaming** — Provider to transport. SSE endpoint, CLI incremental print, Telegram progressive editing
 - **HTTP-core + bridge channels** — Telegram, CLI, Email as standalone bridge processes; HTTP API as the single boundary
+- **LLMProvider Protocol** — Swap providers with config, not code. Provider SDKs are optional; framework runs on `aiohttp` + `httpx` alone
+- **Four-layer error boundaries** — tool → API retry → message rollback → session self-healing
 - **Persistent sessions** — JSONL audit trail + atomic state snapshots, survives restarts
 - **Long-term memory** — SQLite FTS5 + vector similarity search (pluggable embedding provider)
 - **Structured memory** — Facts, episodes, commitments with automatic consolidation from sessions
+- **Budget-aware context** — Priority-tiered recall with token budget management
 - **Compaction** — Automatic conversation summarization when context fills up
 - **Skill system** — Markdown skill files with YAML frontmatter, loaded on demand
 - **Cost tracking** — Per-call cost recording in SQLite (EUR). Query via `lucydctl --cost` or `GET /cost`
@@ -64,13 +70,13 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 - **Voice transcription** — Automatic Whisper transcription of voice messages
 - **Live monitoring** — Real-time agentic loop state via `lucydctl --monitor` and HTTP endpoints
 - **Memory evolution** — Daily rewriting of workspace understanding files via cron
-- **Modular providers** — Swap LLM providers by editing a load list
 - **Plugin system** — Drop `.py` files in `plugins.d/` for custom tools and preprocessors
+- **CI quality gate** — `mypy --strict` + 1448 tests on every push via GitHub Actions
 - **Environment agnostic** — Single `LUCYD_DATA_DIR` root. No hardcoded paths
 
 ## Project Structure
 
-Top-level modules: `lucyd.py` (daemon), `api.py` (HTTP API), `agentic.py` (tool-use loop), `config.py`, `context.py` (system prompt builder), `session.py`, `messages.py` (TypedDict message types), `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `metering.py`, `metrics.py` (Prometheus), `attachments.py`, `log_utils.py`, `async_utils.py`. Subdirectories: `channels/` (standalone bridges: Telegram, CLI, email), `providers/` (Anthropic, OpenAI-compatible, smoke-test), `tools/` (14 agent tools), `plugins.d/` (tool + preprocessor plugins), `bin/` (`lucydctl` control client), `providers.d/` (provider configs). See [architecture](docs/architecture.md#module-map) for the full module map.
+Top-level modules: `lucyd.py` (daemon entry point, bootstrap, HTTP callbacks), `pipeline.py` (MessagePipeline — complete message processing flow), `operations.py` (periodic operations: evolve, index, consolidate, maintain, compact), `api.py` (HTTP API), `agentic.py` (tool-use loop), `config.py`, `context.py` (system prompt builder), `session.py`, `messages.py` (TypedDict message types), `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `metering.py`, `metrics.py` (Prometheus), `attachments.py`, `log_utils.py`, `async_utils.py`. Subdirectories: `channels/` (standalone bridges: Telegram, CLI, email), `providers/` (Anthropic, OpenAI-compatible, smoke-test), `tools/` (14 agent tools), `plugins.d/` (tool + preprocessor plugins), `bin/` (`lucydctl` control client), `providers.d/` (provider configs). See [architecture](docs/architecture.md#module-map) for the full module map.
 
 ## Configuration
 
