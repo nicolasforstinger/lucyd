@@ -12,7 +12,7 @@ from typing import Any, cast
 from context import _estimate_tokens
 from messages import Message
 
-from . import LLMResponse, ModelCapabilities, StreamDelta, Usage, stream_fallback
+from . import LLMResponse, ModelCapabilities, StreamDelta, SystemPrompt, Usage, stream_fallback
 
 
 class SmokeLocalProvider:
@@ -41,19 +41,19 @@ class SmokeLocalProvider:
     def format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return []
 
-    def format_system(self, blocks: list[dict[str, Any]]) -> str:
+    def format_system(self, blocks: list[dict[str, str]]) -> SystemPrompt:
         return "\n\n".join(b.get("text", "") for b in blocks)
 
     def format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         return cast(list[dict[str, Any]], messages)  # passthrough — TypedDicts are dicts at runtime
 
     async def complete(
-        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> LLMResponse:
         usage = Usage(
             input_tokens=max(
                 1,
-                _estimate_tokens(system or "")
+                _estimate_tokens(system if isinstance(system, str) else "")
                 + sum(
                     _estimate_tokens(msg.get("content", msg.get("text", "")))
                     for msg in messages
@@ -70,7 +70,7 @@ class SmokeLocalProvider:
         )
 
     async def stream(
-        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         async for delta in stream_fallback(self, system, messages, tools, **kwargs):
             yield delta

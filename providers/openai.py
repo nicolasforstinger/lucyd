@@ -30,6 +30,7 @@ from . import (
     LLMResponse,
     ModelCapabilities,
     StreamDelta,
+    SystemPrompt,
     ToolCall,
     Usage,
     _repair_json,
@@ -110,7 +111,7 @@ class OpenAIProvider:
             })
         return formatted
 
-    def format_system(self, blocks: list[dict[str, str]]) -> str:
+    def format_system(self, blocks: list[dict[str, str]]) -> SystemPrompt:
         """Concatenate system blocks into a single string.
 
         OpenAI doesn't support cache_control — caching is server-side.
@@ -291,7 +292,7 @@ class OpenAIProvider:
         )
 
     async def complete(
-        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> LLMResponse:
         """Call OpenAI-compatible chat completions API.
 
@@ -391,7 +392,7 @@ class OpenAIProvider:
         )
 
     async def stream(
-        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from OpenAI-compatible API.
 

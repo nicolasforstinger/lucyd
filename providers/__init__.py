@@ -133,6 +133,11 @@ class StreamDelta:
     status: str = ""           # intermediate status ("Running tools: read, search...")
 
 
+SystemPrompt = list[dict[str, Any]] | str
+"""Provider-formatted system prompt. Anthropic uses a list of content blocks,
+OpenAI and SmokeLocal use a single string."""
+
+
 class LLMProvider(Protocol):
     """Protocol for LLM provider implementations."""
 
@@ -145,7 +150,7 @@ class LLMProvider(Protocol):
         """Convert generic tool schemas to provider-specific format."""
         ...
 
-    def format_system(self, blocks: list[dict[str, str]]) -> Any:
+    def format_system(self, blocks: list[dict[str, str]]) -> SystemPrompt:
         """Convert system prompt blocks to provider format."""
         ...
 
@@ -154,13 +159,13 @@ class LLMProvider(Protocol):
         ...
 
     async def complete(
-        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> LLMResponse:
         """Send to LLM, return normalized response."""
         ...
 
     def stream(
-        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from LLM.
 
@@ -174,7 +179,7 @@ class LLMProvider(Protocol):
 
 
 async def stream_fallback(
-    provider: LLMProvider, system: Any, messages: list[dict[str, Any]],
+    provider: LLMProvider, system: SystemPrompt, messages: list[dict[str, Any]],
     tools: list[dict[str, Any]], **kwargs: Any,
 ) -> AsyncIterator[StreamDelta]:
     """Non-streaming fallback: call complete() and yield one StreamDelta."""

@@ -22,6 +22,7 @@ from . import (
     LLMResponse,
     ModelCapabilities,
     StreamDelta,
+    SystemPrompt,
     ToolCall,
     Usage,
     stream_fallback,
@@ -122,7 +123,7 @@ class AnthropicProvider:
             })
         return formatted
 
-    def format_system(self, blocks: list[dict[str, str]]) -> list[dict[str, Any]]:
+    def format_system(self, blocks: list[dict[str, str]]) -> SystemPrompt:
         """Convert cache-tier blocks to Anthropic system format.
 
         Each block: {"text": str, "tier": "stable"|"semi_stable"|"dynamic"}
@@ -383,7 +384,7 @@ class AnthropicProvider:
         return self._response_to_llm(response.json())
 
     async def complete(
-        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> LLMResponse:
         """Call Anthropic Messages API."""
         params: dict[str, Any] = {
@@ -454,7 +455,7 @@ class AnthropicProvider:
         return result
 
     async def stream(
-        self, system: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from Anthropic Messages API.
 
