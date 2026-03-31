@@ -102,7 +102,7 @@ Each provider file (`providers.d/*.toml`) has top-level connection settings and 
 
 ```toml
 # providers.d/anthropic.toml
-type = "anthropic-compat"
+type = "anthropic"
 api_key_env = "LUCYD_ANTHROPIC_KEY"
 
 [models.primary]
@@ -118,7 +118,7 @@ thinking_mode = "adaptive"          # "adaptive" | "budgeted" | "disabled"
 
 ```toml
 # providers.d/openai.toml
-type = "openai-compat"
+type = "openai"
 api_key_env = "LUCYD_OPENAI_KEY"
 base_url = "https://api.openai.com/v1"
 
@@ -146,13 +146,13 @@ Model names (`primary`, `embeddings`) are referenced by behavior settings and th
 
 | Option | Provider | Purpose |
 |---|---|---|
-| `cache_control` | anthropic-compat | Enable prompt caching via cache tier metadata |
-| `thinking_enabled` | anthropic-compat | Enable extended thinking (chain-of-thought) |
-| `thinking_budget` | anthropic-compat | Max tokens for thinking block |
-| `thinking_mode` | anthropic-compat | Thinking mode: `"adaptive"` (model decides depth), `"budgeted"` (uses `thinking_budget`), `"disabled"` |
-| `thinking_effort` | anthropic-compat | Thinking effort level (empty = default) |
-| `base_url` | openai-compat | API base URL |
-| `slot_id` | openai-compat | Pin to llama-server slot for prompt cache affinity (-1 = auto) |
+| `cache_control` | anthropic | Enable prompt caching via cache tier metadata |
+| `thinking_enabled` | anthropic | Enable extended thinking (chain-of-thought) |
+| `thinking_budget` | anthropic | Max tokens for thinking block |
+| `thinking_mode` | anthropic | Thinking mode: `"adaptive"` (model decides depth), `"budgeted"` (uses `thinking_budget`), `"disabled"` |
+| `thinking_effort` | anthropic | Thinking effort level (empty = default) |
+| `base_url` | openai | API base URL |
+| `slot_id` | openai | Pin to llama-server slot for prompt cache affinity (-1 = auto) |
 
 ### [models.routing]
 
@@ -461,7 +461,7 @@ API keys are loaded from `.env` in the same directory as `lucyd.toml` (also load
 | Variable | Purpose | Required |
 |---|---|---|
 | `LUCYD_DATA_DIR` | Root directory for all persistent state (default: `/data`) | No |
-| `LUCYD_ANTHROPIC_KEY` | Anthropic API key (Claude models) | Yes (if using anthropic-compat provider) |
+| `LUCYD_ANTHROPIC_KEY` | Anthropic API key (Claude models) | Yes (if using anthropic provider) |
 | `LUCYD_TELEGRAM_TOKEN` | Telegram Bot API token | Yes (if using telegram channel) |
 | `LUCYD_OPENAI_KEY` | OpenAI API key (embeddings) | For memory/embeddings |
 | `LUCYD_BRAVE_KEY` | Brave Search API key | For web_search tool |

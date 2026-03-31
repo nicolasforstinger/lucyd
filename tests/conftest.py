@@ -142,7 +142,7 @@ def minimal_toml_data():
         },
         "models": {
             "primary": {
-                "provider": "anthropic-compat",
+                "provider": "anthropic",
                 "model": "claude-opus-4-6",
                 "max_tokens": 16384,
                 "cost_per_mtok": [5.0, 25.0, 0.5],
@@ -151,7 +151,7 @@ def minimal_toml_data():
                 "thinking_budget": 10000,
             },
             "embeddings": {
-                "provider": "openai-compat",
+                "provider": "openai",
                 "model": "text-embedding-3-small",
                 "base_url": "https://api.openai.com/v1",
             },

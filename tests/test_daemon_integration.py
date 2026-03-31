@@ -82,7 +82,7 @@ def _make_config(tmp_path, **overrides):
         },
         "models": {
             "primary": {
-                "provider": "anthropic-compat",
+                "provider": "anthropic",
                 "model": "test-model",
                 "max_tokens": 1024,
                 "cost_per_mtok": [1.0, 5.0, 0.1],

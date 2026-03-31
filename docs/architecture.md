@@ -29,8 +29,8 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `bin/lucydctl` | CLI control client. HTTP wrapper for daemon endpoints. `lucydctl chat` for interactive SSE streaming. |
 | `channels/email.py` | Email bridge. IMAP polling, SMTP replies. Standalone config: `email.toml`. |
 | `providers/__init__.py` | `LLMProvider` protocol, data types (`LLMResponse`, `StreamDelta`, `Usage`, `ModelCapabilities`), factory. |
-| `providers/anthropic_compat.py` | Anthropic provider. Prompt caching, extended thinking, SDK or HTTP fallback. |
-| `providers/openai_compat.py` | OpenAI-compatible provider. Embeddings, thinking detection, JSON repair. |
+| `providers/anthropic.py` | Anthropic provider. Prompt caching, extended thinking, SDK or HTTP fallback. |
+| `providers/openai.py` | OpenAI-compatible provider. Embeddings, thinking detection, JSON repair. |
 | `providers/smoke_local.py` | Deterministic test provider. No network. |
 | `tools/__init__.py` | `ToolRegistry`. Dispatch, error isolation, JSON-aware truncation. |
 | `tools/filesystem.py` | `read`, `write`, `edit`. Path allowlist enforcement. |

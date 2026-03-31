@@ -348,8 +348,8 @@ flowchart TD
     end
 
     subgraph Providers["Implementations"]
-        ANTHROPIC["AnthropicCompatProvider<br/>SDK or HTTP fallback<br/>prompt caching, extended thinking"]
-        OPENAI["OpenAICompatProvider<br/>SDK or HTTP fallback<br/>thinking detection, JSON repair"]
+        ANTHROPIC["AnthropicProvider<br/>SDK or HTTP fallback<br/>prompt caching, extended thinking"]
+        OPENAI["OpenAIProvider<br/>SDK or HTTP fallback<br/>thinking detection, JSON repair"]
         SMOKE["SmokeLocalProvider<br/>deterministic, no network"]
     end
 
@@ -390,7 +390,7 @@ Class-name-based matching — no SDK imports required. Retryable: `RateLimitErro
 
 ### Factory
 
-`create_provider(model_config, api_key)` routes by `provider` field: `"anthropic-compat"`, `"openai-compat"`, `"smoke-local"`. Capabilities built from model config TOML via `_build_capabilities`. Provider name set on each instance for metrics labels.
+`create_provider(model_config, api_key)` routes by `provider` field: `"anthropic"`, `"openai"`, `"smoke-local"`. Capabilities built from model config TOML via `_build_capabilities`. Provider name set on each instance for metrics labels.
 
 ---
 

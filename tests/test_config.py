@@ -10,7 +10,7 @@ name = "TestAgent"
 workspace = "/tmp/test-workspace"
 
 [models.primary]
-provider = "anthropic-compat"
+provider = "anthropic"
 model = "claude-haiku-4-5-20251001"
 """
 
@@ -44,7 +44,7 @@ class TestMissingFields:
         """Missing [agent] name should raise ConfigError."""
         data = {
             "agent": {"workspace": "/tmp"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "x"}},
+            "models": {"primary": {"provider": "anthropic", "model": "x"}},
         }
         with pytest.raises(ConfigError, match="name"):
             Config(data)
@@ -73,7 +73,7 @@ class TestModelConfig:
     def test_model_config_missing_raises(self):
         cfg = Config({
             "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
         })
         with pytest.raises(ValueError, match="nonexistent"):
             cfg.model_config("nonexistent")
@@ -111,7 +111,7 @@ class TestWebSearchApiKey:
         monkeypatch.setenv("MY_BRAVE_KEY", "sk-brave-123")
         cfg = Config({
             "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
             "tools": {"web_search": {"api_key_env": "MY_BRAVE_KEY"}},
         })
         assert cfg.web_search_api_key == "sk-brave-123"
@@ -119,7 +119,7 @@ class TestWebSearchApiKey:
     def test_web_search_api_key_missing_env(self):
         cfg = Config({
             "agent": {"name": "Test", "workspace": "/tmp/test"},
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
             "tools": {"web_search": {"api_key_env": "NONEXISTENT_KEY"}},
         })
         assert cfg.web_search_api_key == ""
@@ -294,7 +294,7 @@ class TestEmbeddingConfig:
 
     def test_embedding_provider_from_model_system(self, minimal_toml_data):
         cfg = Config(minimal_toml_data)
-        assert cfg.embedding_provider == "openai-compat"
+        assert cfg.embedding_provider == "openai"
 
     def test_embedding_model_empty_when_no_models_section(self, minimal_toml_data):
         del minimal_toml_data["models"]["embeddings"]

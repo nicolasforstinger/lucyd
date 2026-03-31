@@ -13,7 +13,7 @@ import pytest
 from config import Config
 from context import ContextBuilder, _estimate_tokens
 from providers import LLMResponse, ModelCapabilities, ToolCall, Usage
-from providers.openai_compat import _repair_json, _strip_thinking
+from providers.openai import _repair_json, _strip_thinking
 from tools import _smart_truncate
 
 
@@ -23,7 +23,7 @@ def _make_config(**overrides):
     """Build a minimal Config with optional overrides."""
     data = {
         "agent": {"name": "Test", "workspace": "/tmp"},
-        "models": {"primary": {"provider": "openai-compat", "model": "test"}},
+        "models": {"primary": {"provider": "openai", "model": "test"}},
     }
     for key_path, val in overrides.items():
         parts = key_path.split(".")
@@ -158,9 +158,9 @@ class TestHeadTailTruncation:
 class TestPromptCacheAwareness:
     def test_cache_tokens_from_details(self):
         """Parses cached_tokens from prompt_tokens_details."""
-        from providers.openai_compat import OpenAICompatProvider
+        from providers.openai import OpenAIProvider
 
-        usage = OpenAICompatProvider._parse_usage_dict({
+        usage = OpenAIProvider._parse_usage_dict({
             "prompt_tokens": 100,
             "completion_tokens": 20,
             "prompt_tokens_details": {"cached_tokens": 60},

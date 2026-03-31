@@ -23,7 +23,7 @@ class TestConfigSchemaMinimal:
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
 
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
         }
         cfg = Config(data)
         assert cfg.agent_name == "Test"
@@ -32,7 +32,7 @@ class TestConfigSchemaMinimal:
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
 
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
         }
         cfg = Config(data)
         assert cfg.documents_enabled is False
@@ -41,7 +41,7 @@ class TestConfigSchemaMinimal:
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
 
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
         }
         cfg = Config(data)
         assert cfg.tools_enabled == []
@@ -68,7 +68,7 @@ class TestConfigSchemaFloatCoercion:
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
 
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
             "behavior": {"agent_timeout_seconds": 600},
         }
         cfg = Config(data)
@@ -83,7 +83,7 @@ class TestConfigSchemaPathResolution:
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
 
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
             "paths": {"state_dir": "/tmp/my-state"},
         }
         cfg = Config(data)
@@ -235,7 +235,7 @@ class TestMultiModelRoutingDefaults:
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
 
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
         }
         cfg = Config(data)
         assert cfg.compaction_model == ""
@@ -244,7 +244,7 @@ class TestMultiModelRoutingDefaults:
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
 
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
         }
         cfg = Config(data)
         assert cfg.consolidation_model == ""
@@ -253,7 +253,7 @@ class TestMultiModelRoutingDefaults:
         data = {
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
 
-            "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+            "models": {"primary": {"provider": "anthropic", "model": "test"}},
         }
         cfg = Config(data)
         assert cfg.subagent_model == ""
@@ -267,7 +267,7 @@ class TestMultiModelRoutingOverrides:
             "agent": {"name": "Test", "workspace": "/tmp/ws"},
 
             "models": {
-                "primary": {"provider": "anthropic-compat", "model": "opus"},
+                "primary": {"provider": "anthropic", "model": "opus"},
                 "routing": {
                     "compaction": "haiku",
                     "consolidation": "sonnet",

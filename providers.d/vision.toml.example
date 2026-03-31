@@ -5,7 +5,7 @@
 # The local llama-server does not validate API keys.
 # api_key_env points to an existing key as a passthrough.
 
-type = "openai-compat"
+type = "openai"
 api_key_env = "LUCYD_OPENAI_KEY"
 base_url = "http://llama-server-vision:8081/v1"
 

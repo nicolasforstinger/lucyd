@@ -41,7 +41,7 @@ _FULL_CONFIG = {
         "rate_limit": 30, "rate_window": 60, "status_rate_limit": 60,
         "rate_limit_cleanup_threshold": 1000,
     },
-    "models": {"primary": {"provider": "anthropic-compat", "model": "test"}},
+    "models": {"primary": {"provider": "anthropic", "model": "test"}},
     "memory": {
         "db": "", "search_top_k": 10, "vector_search_limit": 10000,
         "embedding_timeout": 15,

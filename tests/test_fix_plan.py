@@ -386,10 +386,10 @@ class TestOpenAIHttpFallback:
     async def test_extra_body_flattened(self):
         """extra_body keys are top-level in the HTTP request, not nested."""
         from unittest.mock import AsyncMock, MagicMock, patch
-        from providers.openai_compat import OpenAICompatProvider
+        from providers.openai import OpenAIProvider
 
         # Force no SDK
-        provider = OpenAICompatProvider(
+        provider = OpenAIProvider(
             api_key="test", model="test-model", base_url="http://localhost:8080",
             slot_id=3, thinking_budget=1000,
         )
@@ -414,7 +414,7 @@ class TestOpenAIHttpFallback:
         mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client.post = fake_post
 
-        with patch("providers.openai_compat.httpx.AsyncClient", return_value=mock_client):
+        with patch("providers.openai.httpx.AsyncClient", return_value=mock_client):
             await provider.complete("system prompt", [], [])
 
         # Verify extra_body was flattened

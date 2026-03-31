@@ -29,7 +29,7 @@ def _make_config(tmp_path, enabled=None, plugins_dir="plugins.d"):
         },
         "models": {
             "primary": {
-                "provider": "anthropic-compat", "model": "test-model",
+                "provider": "anthropic", "model": "test-model",
                 "max_tokens": 1024, "cost_per_mtok": [1.0, 5.0, 0.1],
             },
         },

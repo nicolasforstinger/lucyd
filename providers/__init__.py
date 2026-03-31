@@ -225,9 +225,9 @@ def create_provider(model_config: dict[str, Any], api_key: str = "") -> LLMProvi
         )
         p.provider_name = provider_type
         return p
-    elif provider_type == "anthropic-compat":
-        from .anthropic_compat import AnthropicCompatProvider
-        ap = AnthropicCompatProvider(
+    elif provider_type == "anthropic":
+        from .anthropic import AnthropicProvider
+        ap = AnthropicProvider(
             api_key=api_key,
             model=model_config["model"],
             max_tokens=model_config.get("max_tokens", 4096),
@@ -241,9 +241,9 @@ def create_provider(model_config: dict[str, Any], api_key: str = "") -> LLMProvi
         )
         ap.provider_name = provider_type
         return ap
-    elif provider_type == "openai-compat":
-        from .openai_compat import OpenAICompatProvider
-        op = OpenAICompatProvider(
+    elif provider_type == "openai":
+        from .openai import OpenAIProvider
+        op = OpenAIProvider(
             api_key=api_key,
             model=model_config["model"],
             max_tokens=model_config.get("max_tokens", 4096),

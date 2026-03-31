@@ -74,7 +74,7 @@ def _safe_parse_args(raw: Any) -> dict[str, Any]:
         return {"raw": raw}
 
 
-class AnthropicCompatProvider:
+class AnthropicProvider:
     provider_name: str = ""
 
     def __init__(

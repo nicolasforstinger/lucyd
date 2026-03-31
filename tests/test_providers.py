@@ -73,10 +73,10 @@ class TestAnthropicFormatTools:
         pytest.importorskip("anthropic")
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     def test_passthrough_name_desc_schema(self):
         p = self._make_provider()
@@ -97,10 +97,10 @@ class TestAnthropicFormatSystem:
         pytest.importorskip("anthropic")
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     def test_cache_control_on_stable_block(self):
         p = self._make_provider(cache_control=True)
@@ -127,10 +127,10 @@ class TestAnthropicFormatMessages:
         pytest.importorskip("anthropic")
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     def test_user_message(self):
         p = self._make_provider()
@@ -174,10 +174,10 @@ class TestAnthropicThinkingParam:
         pytest.importorskip("anthropic")
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     def test_adaptive_mode(self):
         p = self._make_provider(thinking_mode="adaptive")
@@ -199,14 +199,14 @@ class TestAnthropicHttpFallback:
     """Fallback path when the Anthropic SDK is unavailable."""
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     @pytest.mark.asyncio
     async def test_complete_uses_direct_http_when_sdk_missing(self, monkeypatch):
-        import providers.anthropic_compat as mod
+        import providers.anthropic as mod
 
         monkeypatch.setattr(mod, "anthropic", None)
         captured = {}
@@ -272,7 +272,7 @@ class TestAnthropicHttpFallback:
 
     @pytest.mark.asyncio
     async def test_stream_falls_back_to_complete_without_sdk(self, monkeypatch):
-        import providers.anthropic_compat as mod
+        import providers.anthropic as mod
 
         monkeypatch.setattr(mod, "anthropic", None)
 
@@ -312,10 +312,10 @@ class TestOpenAIFormatTools:
         pytest.importorskip("openai")
 
     def _make_provider(self, **kwargs):
-        from providers.openai_compat import OpenAICompatProvider
+        from providers.openai import OpenAIProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return OpenAICompatProvider(**defaults)
+        return OpenAIProvider(**defaults)
 
     def test_wraps_in_type_function(self):
         p = self._make_provider()
@@ -338,10 +338,10 @@ class TestOpenAIFormatMessages:
         pytest.importorskip("openai")
 
     def _make_provider(self, **kwargs):
-        from providers.openai_compat import OpenAICompatProvider
+        from providers.openai import OpenAIProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return OpenAICompatProvider(**defaults)
+        return OpenAIProvider(**defaults)
 
     def test_user_message(self):
         p = self._make_provider()
@@ -417,18 +417,18 @@ class TestOpenAIHttpFallback:
     """Fallback path when the OpenAI SDK is unavailable."""
 
     def _make_provider(self, **kwargs):
-        from providers.openai_compat import OpenAICompatProvider
+        from providers.openai import OpenAIProvider
         defaults = dict(
             api_key="test-key",
             model="test-model",
             base_url="http://smoke.example/v1",
         )
         defaults.update(kwargs)
-        return OpenAICompatProvider(**defaults)
+        return OpenAIProvider(**defaults)
 
     @pytest.mark.asyncio
     async def test_complete_uses_direct_http_when_sdk_missing(self, monkeypatch):
-        import providers.openai_compat as mod
+        import providers.openai as mod
 
         monkeypatch.setattr(mod, "openai", None)
         captured = {}
@@ -473,7 +473,7 @@ class TestOpenAIHttpFallback:
 
     @pytest.mark.asyncio
     async def test_complete_without_sdk_or_base_url_fails_fast(self, monkeypatch):
-        import providers.openai_compat as mod
+        import providers.openai as mod
 
         monkeypatch.setattr(mod, "openai", None)
         provider = self._make_provider(base_url="")
@@ -581,25 +581,25 @@ class TestCreateProviderFactory:
         with pytest.raises(ValueError, match="Unknown provider type"):
             create_provider({"model": "x"}, api_key="k")
 
-    def test_anthropic_compat_creates_provider(self):
-        """create_provider returns AnthropicCompatProvider for 'anthropic-compat'."""
+    def test_anthropic_creates_provider(self):
+        """create_provider returns AnthropicProvider for 'anthropic'."""
         pytest.importorskip("anthropic")
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         p = create_provider(
-            {"provider": "anthropic-compat", "model": "claude-test", "max_tokens": 1024},
+            {"provider": "anthropic", "model": "claude-test", "max_tokens": 1024},
             api_key="test-key",
         )
-        assert isinstance(p, AnthropicCompatProvider)
+        assert isinstance(p, AnthropicProvider)
 
-    def test_openai_compat_creates_provider(self):
-        """create_provider returns OpenAICompatProvider for 'openai-compat'."""
+    def test_openai_creates_provider(self):
+        """create_provider returns OpenAIProvider for 'openai'."""
         pytest.importorskip("openai")
-        from providers.openai_compat import OpenAICompatProvider
+        from providers.openai import OpenAIProvider
         p = create_provider(
-            {"provider": "openai-compat", "model": "gpt-test", "max_tokens": 1024},
+            {"provider": "openai", "model": "gpt-test", "max_tokens": 1024},
             api_key="test-key",
         )
-        assert isinstance(p, OpenAICompatProvider)
+        assert isinstance(p, OpenAIProvider)
 
 
 class TestModelCapabilities:
@@ -617,7 +617,7 @@ class TestModelCapabilities:
     def test_anthropic_provider_has_capabilities(self):
         pytest.importorskip("anthropic")
         p = create_provider(
-            {"provider": "anthropic-compat", "model": "test", "supports_vision": True,
+            {"provider": "anthropic", "model": "test", "supports_vision": True,
              "max_context_tokens": 200000},
             api_key="test-key",
         )
@@ -628,7 +628,7 @@ class TestModelCapabilities:
     def test_openai_provider_has_capabilities(self):
         pytest.importorskip("openai")
         p = create_provider(
-            {"provider": "openai-compat", "model": "test",
+            {"provider": "openai", "model": "test",
              "supports_tools": False, "max_context_tokens": 8192},
             api_key="test-key",
         )
@@ -640,7 +640,7 @@ class TestModelCapabilities:
         """supports_thinking derived from thinking_mode even without thinking_enabled."""
         pytest.importorskip("openai")
         p = create_provider(
-            {"provider": "openai-compat", "model": "test",
+            {"provider": "openai", "model": "test",
              "thinking_budget": 1000},
             api_key="test-key",
         )
@@ -649,7 +649,7 @@ class TestModelCapabilities:
     def test_thinking_inferred_from_anthropic_mode(self):
         pytest.importorskip("anthropic")
         p = create_provider(
-            {"provider": "anthropic-compat", "model": "test",
+            {"provider": "anthropic", "model": "test",
              "thinking_mode": "adaptive"},
             api_key="test-key",
         )
@@ -659,7 +659,7 @@ class TestModelCapabilities:
         """Tools supported by default when not specified in config."""
         pytest.importorskip("openai")
         p = create_provider(
-            {"provider": "openai-compat", "model": "test"},
+            {"provider": "openai", "model": "test"},
             api_key="test-key",
         )
         assert p.capabilities.supports_tools is True
@@ -772,10 +772,10 @@ class TestAnthropicThinkingParamExtended:
         pytest.importorskip("anthropic")
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     def test_adaptive_with_effort(self):
         """Adaptive mode includes effort when specified."""
@@ -813,10 +813,10 @@ class TestAnthropicFormatSystemExtended:
         pytest.importorskip("anthropic")
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     def test_semi_stable_gets_cache_control(self):
         """Semi-stable blocks also get cache_control when enabled."""
@@ -855,10 +855,10 @@ class TestAnthropicFormatMessagesExtended:
         pytest.importorskip("anthropic")
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     def test_assistant_with_thinking_block_signature(self):
         """Thinking block with signature is preserved in formatted output."""
@@ -952,20 +952,20 @@ class TestAnthropicSafeParseArgs:
         pytest.importorskip("anthropic")
 
     def test_dict_passthrough(self):
-        from providers.anthropic_compat import _safe_parse_args
+        from providers.anthropic import _safe_parse_args
         assert _safe_parse_args({"key": "val"}) == {"key": "val"}
 
     def test_valid_json_string(self):
-        from providers.anthropic_compat import _safe_parse_args
+        from providers.anthropic import _safe_parse_args
         assert _safe_parse_args('{"a": 1}') == {"a": 1}
 
     def test_malformed_string_returns_raw_fallback(self):
-        from providers.anthropic_compat import _safe_parse_args
+        from providers.anthropic import _safe_parse_args
         result = _safe_parse_args("not json {{{")
         assert result == {"raw": "not json {{{"}
 
     def test_none_returns_raw_fallback(self):
-        from providers.anthropic_compat import _safe_parse_args
+        from providers.anthropic import _safe_parse_args
         result = _safe_parse_args(None)
         assert result == {"raw": None}
 
@@ -974,17 +974,17 @@ class TestAnthropicSafeParseArgs:
 
 
 class TestAnthropicComplete:
-    """Unit tests for AnthropicCompatProvider.complete() with mocked SDK."""
+    """Unit tests for AnthropicProvider.complete() with mocked SDK."""
 
     @pytest.fixture(autouse=True)
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     def _mock_response(self, content_blocks, stop_reason="end_turn",
                        input_tokens=50, output_tokens=30):
@@ -1063,7 +1063,7 @@ class TestAnthropicMidstreamSSEReRaise:
     passes response=self.response (HTTP 200) to _make_status_error() for SSE
     error events. Tested on SDK v0.81.0.
 
-    DELETE THIS CLASS + the try/except in anthropic_compat.py when
+    DELETE THIS CLASS + the try/except in anthropic.py when
     test_sdk_bug_still_exists starts failing (= SDK fixed the bug).
     """
 
@@ -1072,13 +1072,13 @@ class TestAnthropicMidstreamSSEReRaise:
         pytest.importorskip("anthropic")
 
     def _make_provider(self, **kwargs):
-        from providers.anthropic_compat import AnthropicCompatProvider
+        from providers.anthropic import AnthropicProvider
         defaults = dict(
             api_key="test-key", model="test-model",
             thinking_enabled=True, thinking_mode="adaptive",
         )
         defaults.update(kwargs)
-        return AnthropicCompatProvider(**defaults)
+        return AnthropicProvider(**defaults)
 
     def _make_sse_error(self, error_type, message="error"):
         """Build an APIStatusError that mimics mid-stream SSE error behavior."""
@@ -1099,7 +1099,7 @@ class TestAnthropicMidstreamSSEReRaise:
         The bug is that _make_status_error() uses response.status_code (200)
         instead of the SSE error type to pick the exception class. When this
         test FAILS, the SDK has been fixed — delete this entire test class
-        and the HOTFIX block in anthropic_compat.py.
+        and the HOTFIX block in anthropic.py.
         """
         import anthropic
         import httpx
@@ -1122,7 +1122,7 @@ class TestAnthropicMidstreamSSEReRaise:
         p = self._make_provider()
         exc = self._make_sse_error("overloaded_error", "Overloaded")
 
-        with patch("providers.anthropic_compat.run_blocking", side_effect=exc), pytest.raises(OverloadedError):
+        with patch("providers.anthropic.run_blocking", side_effect=exc), pytest.raises(OverloadedError):
             await p.complete(system=[], messages=[{"role": "user", "content": "hi"}], tools=[])
 
     @pytest.mark.asyncio
@@ -1139,7 +1139,7 @@ class TestAnthropicMidstreamSSEReRaise:
         p = self._make_provider()
         exc = self._make_sse_error("overloaded_error", "Overloaded")
 
-        with patch("providers.anthropic_compat.run_blocking", side_effect=exc):
+        with patch("providers.anthropic.run_blocking", side_effect=exc):
             try:
                 await p.complete(system=[], messages=[{"role": "user", "content": "hi"}], tools=[])
             except Exception as caught:
@@ -1157,7 +1157,7 @@ class TestAnthropicMidstreamSSEReRaise:
         p = self._make_provider()
         exc = self._make_sse_error("api_error", "Internal error")
 
-        with patch("providers.anthropic_compat.run_blocking", side_effect=exc), pytest.raises(anthropic.InternalServerError):
+        with patch("providers.anthropic.run_blocking", side_effect=exc), pytest.raises(anthropic.InternalServerError):
             await p.complete(system=[], messages=[{"role": "user", "content": "hi"}], tools=[])
 
     @pytest.mark.asyncio
@@ -1169,7 +1169,7 @@ class TestAnthropicMidstreamSSEReRaise:
         p = self._make_provider()
         exc = self._make_sse_error("invalid_request_error", "bad input")
 
-        with patch("providers.anthropic_compat.run_blocking", side_effect=exc):
+        with patch("providers.anthropic.run_blocking", side_effect=exc):
             with pytest.raises(anthropic.APIStatusError) as exc_info:
                 await p.complete(system=[], messages=[{"role": "user", "content": "hi"}], tools=[])
             # Should be the original APIStatusError, NOT re-raised as something else
@@ -1185,7 +1185,7 @@ class TestAnthropicMidstreamSSEReRaise:
         p = self._make_provider(thinking_enabled=False, thinking_mode="disabled")
         exc = self._make_sse_error("overloaded_error", "Overloaded")
 
-        with patch("providers.anthropic_compat.run_blocking", side_effect=exc):
+        with patch("providers.anthropic.run_blocking", side_effect=exc):
             # Should raise original APIStatusError — the re-raise is only
             # in the streaming path
             with pytest.raises(anthropic.APIStatusError) as exc_info:
@@ -1194,17 +1194,17 @@ class TestAnthropicMidstreamSSEReRaise:
 
 
 class TestOpenAIComplete:
-    """Unit tests for OpenAICompatProvider.complete() with mocked SDK."""
+    """Unit tests for OpenAIProvider.complete() with mocked SDK."""
 
     @pytest.fixture(autouse=True)
     def _skip_if_no_sdk(self):
         pytest.importorskip("openai")
 
     def _make_provider(self, **kwargs):
-        from providers.openai_compat import OpenAICompatProvider
+        from providers.openai import OpenAIProvider
         defaults = dict(api_key="test-key", model="test-model")
         defaults.update(kwargs)
-        return OpenAICompatProvider(**defaults)
+        return OpenAIProvider(**defaults)
 
     def _mock_response(self, content=None, tool_calls=None,
                        finish_reason="stop", prompt_tokens=50,

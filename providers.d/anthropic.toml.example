@@ -1,6 +1,6 @@
 # Anthropic — official API (direct)
 # Copy to anthropic.toml and customize. The .example file is committed as a template.
-type = "anthropic-compat"
+type = "anthropic"
 api_key_env = "LUCYD_ANTHROPIC_KEY"
 
 [models.primary]

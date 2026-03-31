@@ -98,7 +98,7 @@ def _strip_thinking(text: str) -> tuple[str, str]:
     return cleaned.strip(), "\n".join(thinking_parts)
 
 
-class OpenAICompatProvider:
+class OpenAIProvider:
     provider_name: str = ""
 
     def __init__(
