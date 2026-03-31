@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.45,<1"]
 openai = ["openai>=2.0,<3"]
+mistral = ["mistralai>=1.0,<2"]
 tiktoken = ["tiktoken>=0.7,<1"]
 vision = ["Pillow~=12.0"]
 documents = ["pypdf~=6.7.5"]
@@ -25,6 +26,7 @@ metrics = ["prometheus_client"]
 all = [
     "anthropic>=0.45,<1",
     "openai>=2.0,<3",
+    "mistralai>=1.0,<2",
     "tiktoken>=0.7,<1",
     "Pillow~=12.0",
     "pypdf~=6.7.5",
@@ -68,6 +70,8 @@ module = [
     "anthropic.*",
     "openai",
     "openai.*",
+    "mistralai",
+    "mistralai.*",
     "PIL",
     "PIL.*",
     "pypdf",

@@ -291,5 +291,21 @@ def create_provider(model_config: dict[str, Any], api_key: str = "") -> LLMProvi
             capabilities=caps,
             provider_name=provider_type,
         )
+    elif provider_type == "mistral":
+        try:
+            from .mistral import MistralProvider  # type: ignore[import-not-found]  # module created in provider rebuild step
+        except ImportError:
+            raise ImportError(
+                "Mistral provider requires the mistralai package: pip install lucyd[mistral]"
+            ) from None
+        mp: LLMProvider = MistralProvider(
+            api_key=api_key,
+            model=model_config["model"],
+            max_tokens=model_config.get("max_tokens", 4096),
+            base_url=model_config.get("base_url", ""),
+            capabilities=caps,
+            provider_name=provider_type,
+        )
+        return mp
     else:
         raise ValueError(f"Unknown provider type: {provider_type!r}")
