@@ -69,6 +69,7 @@ HTTP API server. Always starts — there is no `enabled` toggle.
 host = "127.0.0.1"          # Listen address (code default: 0.0.0.0 — set to 127.0.0.1 for localhost only)
 port = 8100                  # Listen port (default: 8100)
 token_env = "LUCYD_HTTP_TOKEN"  # Env var containing the bearer token
+trust_localhost = false      # Skip auth for 127.0.0.1/::1 (default: false)
 download_dir = "/tmp/lucyd-http"  # Temp dir for HTTP attachment downloads
 max_body_bytes = 10485760    # Max request body size in bytes (default: 10 MB)
 rate_limit = 30              # Max requests per rate_window per sender (default: 30)
@@ -77,7 +78,11 @@ status_rate_limit = 60       # Max /status requests per rate_window (default: 60
 max_attachment_bytes = 52428800  # Max size for base64-decoded attachments (default: 50 MB)
 ```
 
-Auth token is loaded from the environment variable named by `token_env` (default: `LUCYD_HTTP_TOKEN`). See [operations — HTTP API](operations.md#http-api) for endpoint details.
+Auth token is loaded from the environment variable named by `token_env` (default: `LUCYD_HTTP_TOKEN`). All protected endpoints require a valid `Bearer` token. The `/api/v1/status` and `/metrics` endpoints are always auth-exempt.
+
+**`trust_localhost`:** When `true`, requests from `127.0.0.1` / `::1` bypass auth (no token required). Default is `false` — all requests require a bearer token. Enable this for Docker bridge networks where channel bridges (Telegram, email) and cron jobs (`lucydctl`) run as separate containers on the same host. When `false`, bridges and `lucydctl` must provide a valid token via `LUCYD_HTTP_TOKEN`.
+
+See [operations — HTTP API](operations.md#http-api) for endpoint details.
 
 ## [providers]
 
@@ -460,6 +465,6 @@ API keys are loaded from `.env` in the same directory as `lucyd.toml` (also load
 | `LUCYD_TELEGRAM_TOKEN` | Telegram Bot API token | Yes (if using telegram channel) |
 | `LUCYD_OPENAI_KEY` | OpenAI API key (embeddings) | For memory/embeddings |
 | `LUCYD_BRAVE_KEY` | Brave Search API key | For web_search tool |
-| `LUCYD_HTTP_TOKEN` | HTTP API bearer token | For remote HTTP API access (localhost is trusted) |
+| `LUCYD_HTTP_TOKEN` | HTTP API bearer token | Required for all protected endpoints (unless `trust_localhost = true`) |
 
 Environment variables take precedence over `.env` file values. The config loader reads `.env` first, then applies environment overrides.

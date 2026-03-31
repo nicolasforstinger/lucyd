@@ -107,12 +107,14 @@ class HTTPApi:
         rate_cleanup_threshold: int,
         agent_name: str = "",
         control_queue: asyncio.Queue[dict[str, Any]] | None = None,
+        trust_localhost: bool = False,
     ):
         self.queue = queue
         self._control_queue = control_queue or queue
         self.host = host
         self.port = port
         self.auth_token = auth_token
+        self._trust_localhost = trust_localhost
         self.agent_timeout = agent_timeout
         self.agent_name = agent_name
         self._get_status = get_status
@@ -203,11 +205,13 @@ class HTTPApi:
             r: web.StreamResponse = await handler(request)
             return r
 
-        # Localhost is trusted (agent's own environment — at jobs, lucydctl, etc.)
-        remote = request.remote or ""
-        if remote in ("127.0.0.1", "::1"):
-            r = await handler(request)
-            return r
+        # Localhost trust is opt-in (e.g., Docker bridge networks where bridges
+        # are separate containers).  Default: require bearer token for all requests.
+        if self._trust_localhost:
+            remote = request.remote or ""
+            if remote in ("127.0.0.1", "::1"):
+                r = await handler(request)
+                return r
 
         # No token configured = service misconfigured, deny all protected endpoints
         if not self.auth_token:

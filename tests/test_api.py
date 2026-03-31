@@ -119,7 +119,7 @@ def queue():
 
 @pytest.fixture
 def api(queue):
-    """HTTPApi instance with a test token."""
+    """HTTPApi instance with a test token and localhost trust enabled."""
     return HTTPApi(
         queue=queue,
         host="127.0.0.1",
@@ -132,19 +132,21 @@ def api(queue):
             "active_sessions": 1,
             "today_cost": 1.23,
         },
+        trust_localhost=True,
         **_HTTP_DEFAULTS,
     )
 
 
 @pytest.fixture
 def api_no_auth(queue):
-    """HTTPApi instance with no auth token (open access)."""
+    """HTTPApi instance with no auth token (open access), localhost trusted."""
     return HTTPApi(
         queue=queue,
         host="127.0.0.1",
         port=0,
         auth_token="",
         agent_timeout=5.0,
+        trust_localhost=True,
         **_HTTP_DEFAULTS,
     )
 
@@ -386,6 +388,84 @@ class TestAuthEdgeCases:
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/status")
             assert resp.status == 200
+
+
+# ─── Localhost Untrusted (secure default) ────────────────────────
+
+
+class TestLocalhostUntrusted:
+    """trust_localhost=False (default): localhost gets no special treatment."""
+
+    @pytest.fixture
+    def api_strict(self, queue):
+        """HTTPApi with trust_localhost=False (the production default)."""
+        return HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="test-token-123",
+            agent_timeout=5.0,
+            get_status=lambda: {"status": "ok"},
+            get_sessions=lambda: [],
+            trust_localhost=False,
+            **_HTTP_DEFAULTS,
+        )
+
+    @pytest.mark.asyncio
+    async def test_localhost_without_token_rejected(self, api_strict):
+        """Localhost without token → 401 when trust_localhost is false."""
+        app = _make_app(api_strict)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/v1/sessions")
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_localhost_with_wrong_token_rejected(self, api_strict):
+        """Localhost with wrong token → 401 when trust_localhost is false."""
+        app = _make_app(api_strict)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/v1/sessions",
+                headers={"Authorization": "Bearer wrong-token"},
+            )
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_localhost_with_valid_token_accepted(self, api_strict):
+        """Localhost with valid token → 200 regardless of trust_localhost."""
+        app = _make_app(api_strict)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/v1/sessions",
+                headers={"Authorization": "Bearer test-token-123"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_auth_exempt_paths_still_open(self, api_strict):
+        """Status and metrics remain auth-exempt regardless of trust_localhost."""
+        app = _make_app(api_strict)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/v1/status")
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_no_token_configured_denies_protected(self, queue):
+        """No token + trust_localhost=False → 503 on protected endpoints."""
+        api = HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="",
+            agent_timeout=5.0,
+            get_sessions=lambda: [],
+            trust_localhost=False,
+            **_HTTP_DEFAULTS,
+        )
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/v1/sessions")
+            assert resp.status == 503
 
 
 # ─── Status Endpoint ──────────────────────────────────────────────
@@ -2094,6 +2174,7 @@ class TestResetEndpoint:
             port=0,
             auth_token="test-token-123",
             agent_timeout=5.0,
+            trust_localhost=True,
             **_HTTP_DEFAULTS,
         )
 
@@ -2209,6 +2290,7 @@ class TestHistoryEndpoint:
             auth_token="test-token-123",
             agent_timeout=5.0,
             get_history=mock_history,
+            trust_localhost=True,
             **_HTTP_DEFAULTS,
         )
 
@@ -2282,6 +2364,7 @@ class TestEvolveEndpoint:
             auth_token="test-token-123",
             agent_timeout=5.0,
             handle_evolve=mock_evolve,
+            trust_localhost=True,
             **_HTTP_DEFAULTS,
         )
 
@@ -2348,6 +2431,7 @@ class TestCompactEndpoint:
             port=0,
             auth_token="test-token-123",
             agent_timeout=5.0,
+            trust_localhost=True,
             **_HTTP_DEFAULTS,
         )
 

@@ -87,6 +87,7 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     "http_rate_limit":      (("http", "rate_limit"),               int,   30),
     "http_rate_window":     (("http", "rate_window"),              int,   60),
     "http_status_rate_limit":    (("http", "status_rate_limit"),   int,   60),
+    "http_trust_localhost":      (("http", "trust_localhost"),     bool,  False),
 
     # ── Memory ───────────────────────────────────────────────────
     "memory_db":            (("memory", "db"),                     str,   ""),

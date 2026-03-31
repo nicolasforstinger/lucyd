@@ -1977,6 +1977,7 @@ class LucydDaemon:
                 rate_cleanup_threshold=1000,
                 agent_name=cfg.agent_name,
                 metering_db=self.metering_db,
+                trust_localhost=cfg.http_trust_localhost,
             )
             await self._http_api.start()
 
