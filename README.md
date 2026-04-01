@@ -71,12 +71,12 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 - **Live monitoring** — Real-time agentic loop state via `lucydctl --monitor` and HTTP endpoints
 - **Memory evolution** — Daily rewriting of workspace understanding files via cron
 - **Plugin system** — Drop `.py` files in `plugins.d/` for custom tools and preprocessors
-- **CI quality gate** — `mypy --strict` + 1448 tests on every push via GitHub Actions
+- **CI quality gate** — `mypy --strict` + 1507 tests on every push via GitHub Actions
 - **Environment agnostic** — Single `LUCYD_DATA_DIR` root. No hardcoded paths
 
 ## Project Structure
 
-Top-level modules: `lucyd.py` (daemon entry point, bootstrap, HTTP callbacks), `pipeline.py` (MessagePipeline — complete message processing flow), `operations.py` (periodic operations: evolve, index, consolidate, maintain, compact), `api.py` (HTTP API), `agentic.py` (tool-use loop), `config.py`, `context.py` (system prompt builder), `session.py`, `messages.py` (TypedDict message types), `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `metering.py`, `metrics.py` (Prometheus), `attachments.py`, `log_utils.py`, `async_utils.py`. Subdirectories: `channels/` (standalone bridges: Telegram, CLI, email), `providers/` (Anthropic, OpenAI-compatible, smoke-test), `tools/` (14 agent tools), `plugins.d/` (tool + preprocessor plugins), `bin/` (`lucydctl` control client), `providers.d/` (provider configs). See [architecture](docs/architecture.md#module-map) for the full module map.
+Top-level modules: `lucyd.py` (daemon entry point, bootstrap, HTTP callbacks), `pipeline.py` (MessagePipeline — complete message processing flow), `operations.py` (periodic operations: evolve, index, consolidate, maintain, compact), `api.py` (HTTP API), `agentic.py` (tool-use loop), `config.py`, `context.py` (system prompt builder), `session.py`, `messages.py` (TypedDict message types), `skills.py`, `memory.py`, `memory_schema.py`, `consolidation.py`, `metering.py`, `metrics.py` (Prometheus), `attachments.py`, `log_utils.py`, `async_utils.py`. Subdirectories: `channels/` (standalone bridges: Telegram, CLI, email), `providers/` (Anthropic, OpenAI, Mistral, smoke-test), `tools/` (14 agent tools), `plugins.d/` (tool + preprocessor plugins), `bin/` (`lucydctl` control client), `providers.d/` (provider configs). See [architecture](docs/architecture.md#module-map) for the full module map.
 
 ## Configuration
 

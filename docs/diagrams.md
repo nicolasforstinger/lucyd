@@ -6,7 +6,7 @@ Visual reference for the Lucyd agent framework. Every diagram traces to code. Re
 
 ## 1. Message Lifecycle
 
-Inbound message to response delivery. Source: `api.py` routes, `lucyd.py` `_message_loop`, `_process_message`, `_finalize_response`.
+Inbound message to response delivery. Source: `api.py` routes, `lucyd.py` `_message_loop`, `pipeline.py` `MessagePipeline.process_message()`, `_finalize_response()`.
 
 ### Inbound endpoints
 
@@ -124,7 +124,7 @@ Fire at: `_run_preprocessors` (count, duration), `_build_context` (context utili
 
 ## 2. Agentic Loop
 
-The core thinking-acting cycle. Source: `lucyd.py` `_run_agentic_with_retries()`, `agentic.py` `run_agentic_loop()`.
+The core thinking-acting cycle. Source: `pipeline.py` `_run_agentic_with_retries()`, `agentic.py` `run_agentic_loop()`.
 
 ```mermaid
 flowchart TD
@@ -194,7 +194,7 @@ Happens inside `ToolRegistry.execute()`, not as a step in the agentic loop. `_sm
 
 ## 3. Context Building
 
-System prompt assembly, recall injection, and context budget. Source: `lucyd.py` `_build_context()`, `context.py` `ContextBuilder.build()`.
+System prompt assembly, recall injection, and context budget. Source: `pipeline.py` `_build_context()`, `context.py` `ContextBuilder.build()`.
 
 ```mermaid
 flowchart TD
@@ -272,7 +272,7 @@ When `max_system_tokens > 0`, blocks are trimmed in priority order: dynamic firs
 
 ## 4. Session Start Recall
 
-How structured memory is injected at session start. Source: `lucyd.py` `_build_recall()`, `memory.py` `get_session_start_context()`, `inject_recall()`.
+How structured memory is injected at session start. Source: `pipeline.py` `_build_recall()`, `memory.py` `get_session_start_context()`, `inject_recall()`.
 
 ```mermaid
 flowchart TD
@@ -350,6 +350,7 @@ flowchart TD
     subgraph Providers["Implementations"]
         ANTHROPIC["AnthropicProvider<br/>SDK or HTTP fallback<br/>prompt caching, extended thinking"]
         OPENAI["OpenAIProvider<br/>SDK or HTTP fallback<br/>thinking detection, JSON repair"]
+        MISTRAL["MistralProvider<br/>SDK or HTTP fallback<br/>tool use, vision, streaming"]
         SMOKE["SmokeLocalProvider<br/>deterministic, no network"]
     end
 
@@ -390,13 +391,13 @@ Class-name-based matching — no SDK imports required. Retryable: `RateLimitErro
 
 ### Factory
 
-`create_provider(model_config, api_key)` routes by `provider` field: `"anthropic"`, `"openai"`, `"smoke-local"`. Capabilities built from model config TOML via `_build_capabilities`. Provider name set on each instance for metrics labels.
+`create_provider(model_config, api_key)` routes by `provider` field: `"anthropic"`, `"openai"`, `"mistral"`, `"smoke-local"`. Capabilities built from model config TOML via `_build_capabilities`. Provider name set on each instance for metrics labels.
 
 ---
 
 ## 6. Session Persistence
 
-Dual storage with compaction and consolidation. Source: `session.py` `Session` + `SessionManager`, `lucyd.py` `_finalize_response()`.
+Dual storage with compaction and consolidation. Source: `session.py` `Session` + `SessionManager`, `pipeline.py` `_finalize_response()`.
 
 ```mermaid
 flowchart TD
@@ -579,7 +580,7 @@ Per tool call: `TOOL_CALLS_TOTAL{tool_name, status}` (success/error), `TOOL_DURA
 
 ## 8. HTTP Core + Bridge Pattern
 
-Source: `api.py` middleware + route registration (lines 156-174), `channels/*.py`, `bin/lucydctl`.
+Source: `api.py` middleware + route registration (lines 158–176), `channels/*.py`, `bin/lucydctl`.
 
 See diagram 1 for the full message lifecycle including caller → endpoint → queue → processing flow. This section covers the HTTP layer internals and bridge contract.
 
@@ -589,7 +590,7 @@ flowchart TD
 
     subgraph Middleware["api.py middleware"]
         AUTH{"_auth_middleware"}
-        LOCALHOST["Localhost exempt<br/>(127.0.0.1, ::1)"]
+        LOCALHOST["Localhost exempt<br/>(when trust_localhost = true)"]
         TOKEN["Bearer token<br/>hmac.compare_digest"]
         RATE{"_rate_middleware"}
         RATE_RO["status_rate_limit<br/>(read-only endpoints)"]
@@ -606,7 +607,7 @@ flowchart TD
 
     REQ --> AUTH
     AUTH -->|"/status, /metrics"| RATE
-    AUTH -->|localhost| RATE
+    AUTH -->|"localhost<br/>(trust_localhost)"| RATE
     AUTH -->|valid token| RATE
     AUTH -->|"no token / invalid"| REJECT["401 / 503"]
     RATE -->|ok| Handlers
@@ -621,7 +622,7 @@ flowchart TD
 
 Two middleware layers, applied in order:
 
-1. **`_auth_middleware`**: `/status` and `/metrics` are exempt. Localhost (`127.0.0.1`, `::1`) is trusted. All other requests require `Authorization: Bearer <token>` validated via `hmac.compare_digest` against `LUCYD_HTTP_TOKEN`. No token configured → 503.
+1. **`_auth_middleware`**: `/status` and `/metrics` are exempt. When `trust_localhost` is enabled, requests from `127.0.0.1` / `::1` bypass auth (default: `false` — all requests require a bearer token). All other requests require `Authorization: Bearer <token>` validated via `hmac.compare_digest` against `LUCYD_HTTP_TOKEN`. No token configured → 503.
 
 2. **`_rate_middleware`**: per-IP rate limiting. Read-only endpoints (`/status`, `/metrics`, `/sessions`, `GET /sessions/{id}/history`) use a separate `status_rate_limit`. All other endpoints use `rate_limit` / `rate_window`. Stale entries evicted above `rate_limit_cleanup_threshold`.
 

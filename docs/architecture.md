@@ -10,7 +10,9 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 
 | File | Purpose |
 |---|---|
-| `lucyd.py` | Daemon entry point. Lifecycle, message loop, signal handlers. Hub-and-spoke across 5 attribute clusters. |
+| `lucyd.py` | Daemon coordinator. Bootstrap, message loop, signal handlers, init methods. Delegates processing to `MessagePipeline` and periodic operations to `operations.py`. |
+| `pipeline.py` | `MessagePipeline`. Complete message processing: preprocessors, attachments, session setup, recall, context, agentic loop, response finalization. |
+| `operations.py` | Periodic operations: evolve, index, consolidate, maintain, compact. Standalone functions called by daemon handlers. |
 | `agentic.py` | Provider-agnostic tool-use loop. Multi-turn or single-shot dispatch. Collects tool attachments. |
 | `api.py` | HTTP API server. 17 endpoints. Envelope extraction, auth, rate limiting. |
 | `config.py` | TOML config loader with env overrides. `_SCHEMA`-based typed properties + `raw()` for plugin config. |
@@ -21,7 +23,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `consolidation.py` | Structured data extraction from sessions via LLM. Facts, episodes, commitments, aliases. |
 | `skills.py` | Skill loader + `load_skill` tool. Markdown with YAML frontmatter. |
 | `metering.py` | Per-call cost recording to SQLite. Billing periods, EUR currency. |
-| `metrics.py` | Prometheus metrics. 21 metric families, graceful no-op if `prometheus_client` not installed. |
+| `metrics.py` | Prometheus metrics. 29 metric families, graceful no-op if `prometheus_client` not installed. |
 | `attachments.py` | `Attachment` type, image fitting (`fit_image`), document text extraction (`extract_document_text`), scanned PDF rendering (`render_pdf_pages`). Pure functions. |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
 | `async_utils.py` | `run_blocking()` for safe blocking I/O offload. |
@@ -31,6 +33,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `providers/__init__.py` | `LLMProvider` protocol, data types (`LLMResponse`, `StreamDelta`, `Usage`, `ModelCapabilities`), factory. |
 | `providers/anthropic.py` | Anthropic provider. Prompt caching, extended thinking, SDK or HTTP fallback. |
 | `providers/openai.py` | OpenAI-compatible provider. Embeddings, thinking detection, JSON repair. |
+| `providers/mistral.py` | Mistral provider. Tool use, vision, streaming. SDK or HTTP fallback. |
 | `providers/smoke_local.py` | Deterministic test provider. No network. |
 | `tools/__init__.py` | `ToolRegistry`. Dispatch, error isolation, JSON-aware truncation. |
 | `tools/filesystem.py` | `read`, `write`, `edit`. Path allowlist enforcement. |
@@ -102,70 +105,52 @@ The union `Message = UserMessage | AssistantMessage | ToolResultsMessage` is use
 
 ## Daemon State Architecture
 
-`LucydDaemon` is a composition root — the attributes are injected dependencies, not mutable shared state.
+`LucydDaemon` is a composition root — it wires dependencies at startup and delegates processing. `MessagePipeline` owns message processing state. `operations.py` provides standalone periodic functions.
 
-### Hub-and-Spoke Model
-
-`_process_message` is the hub. It orchestrates a pipeline that touches all subsystems sequentially. The spokes are 5 attribute clusters with minimal cross-talk:
+### Decomposed Structure
 
 ```
-                     config (universal — read by most methods)
-                          |
-     +--------------------+----------------------+
-     |                    |                      |
- [Provider]          [Event Loop]          [Diagnostics]
-  provider            running               _error_counts
-  _providers          queue                 start_time
-  _single_shot        _control_queue
-                      _session_locks
-                           |
-                    _process_message --- hub
-                           |
-              +------------+------------+
-              |            |            |
-         [Sessions]   [Memory]     [Context]
-         session_mgr  _memory_conn  context_builder
-         _current_    metering_db   skill_loader
-         session                    tool_registry
-                                    _preprocessors
+LucydDaemon (lucyd.py)
+  ├── Bootstrap: _init_provider, _init_sessions, _init_tools, _init_context, ...
+  ├── Event loop: _message_loop, queue, running
+  ├── Signals: SIGUSR1 (reload), SIGTERM/SIGINT (stop)
+  └── Delegates to:
+        ├── MessagePipeline (pipeline.py)
+        │     process_message → _build_recall → _build_context
+        │       → _run_agentic_with_retries → _finalize_response
+        │     Owns: session_mgr, tool_registry, context_builder,
+        │           _memory_conn, metering_db, _preprocessors, error_counts
+        └── operations.py
+              evolve, index, consolidate, maintain, compact
 ```
+
+`LucydDaemon._process_message()` is a thin delegator to `pipeline.process_message()`. The daemon owns init and lifecycle; the pipeline owns per-message processing.
 
 ### Write-Once-Read-Many Topology
 
-Every heavily-shared attribute has exactly one write site. After startup, no mutable-state entanglement:
+Every heavily-shared attribute has exactly one write site. After startup, no mutable-state entanglement. Most operational attributes live on `MessagePipeline`:
 
-| Attribute | Written by | Operational readers |
+| Attribute | Owner | Written by |
 |---|---|---|
-| `session_mgr` | `_init_sessions` | 12 methods |
-| `metering_db` | `_init_metering` | 8 methods |
-| `_memory_conn` | `_get_memory_conn` (lazy) | 7 methods |
-| `provider` | `_init_provider` | 6 methods |
-| `_preprocessors` | `_init_tools` | 1 method |
-| `tool_registry` | `_init_tools` | 4 methods |
-| `context_builder` | `_init_context` | 1 method |
-| `skill_loader` | `_init_skills` | 2 methods |
-
-### Bridge Points
-
-4 operational methods touch attributes from 3+ clusters:
-
-| Method | Clusters | Nature |
-|---|---|---|
-| `_init_tools` | All 5 | Wiring — runs once at startup |
-| `_run_compaction_if_needed` | Sessions + Memory | Pipeline step: sessions <-> memory |
-| `_build_sessions` | Sessions + Memory + Provider | Read-only view builder |
-| `_build_status` | Sessions + Memory + Diagnostics + Loop | Read-only health check |
+| `session_mgr` | pipeline | `_init_sessions` |
+| `metering_db` | pipeline | `_init_metering` |
+| `_memory_conn` | pipeline | `_get_memory_conn` (lazy) |
+| `provider` | daemon | `_init_provider` |
+| `_preprocessors` | pipeline | `_init_tools` |
+| `tool_registry` | pipeline | `_init_tools` |
+| `context_builder` | pipeline | `_init_context` |
+| `skill_loader` | pipeline | `_init_skills` |
 
 ### Rules for New Code
 
-1. **Identify the cluster.** New methods should touch attributes from one cluster. If it needs 2+, it's a bridge point.
-2. **Don't add write sites.** Create new shared resources in `_init_*` methods. Let operational methods read them.
-3. **Core never imports from plugins.d/.** Plugins resolve their own config via `config.raw()` and validate their own dependencies in `configure()`.
-4. **When to extract.** If a cluster grows beyond ~8 methods or ~150 lines AND its attributes don't bridge to other clusters, extract it.
+1. **Message processing goes in pipeline.py.** Per-message logic belongs on `MessagePipeline`. Daemon methods should only handle lifecycle, init, and HTTP handler callbacks.
+2. **Periodic operations go in operations.py.** Standalone functions, not daemon methods.
+3. **Don't add write sites.** Create new shared resources in `_init_*` methods. Let operational code read them.
+4. **Core never imports from plugins.d/.** Plugins resolve their own config via `config.raw()` and validate their own dependencies in `configure()`.
 
 ## HTTP API
 
-17 endpoints. All registered in `api.py` lines 156-174.
+17 endpoints. All registered in `api.py` lines 158–176.
 
 | Endpoint | Method | Auth | Purpose |
 |---|---|---|---|
@@ -272,20 +257,21 @@ Key data types:
 - `Usage`: input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
 - `ModelCapabilities`: supports_tools, supports_vision, supports_streaming, supports_thinking, max_context_tokens
 
-Three implementations: Anthropic (prompt caching, extended thinking), OpenAI-compatible (embeddings, local models), smoke-test (deterministic, offline). Model definitions live in `providers.d/*.toml`.
+Four implementations: Anthropic (prompt caching, extended thinking), OpenAI-compatible (embeddings, local models), Mistral (tool use, streaming), smoke-test (deterministic, offline). Model definitions live in `providers.d/*.toml`.
 
 ## Metrics
 
-21 Prometheus metric families (metrics.py). Graceful no-op when `prometheus_client` is not installed. Exposed at `GET /metrics`.
+29 Prometheus metric families (metrics.py). Graceful no-op when `prometheus_client` is not installed. Exposed at `GET /metrics`.
 
 | Scope | Metrics | Labels |
 |---|---|---|
-| Per-message | `messages_total`, `message_duration_seconds`, `message_cost_eur`, `agentic_turns`, `context_utilization_ratio` | channel_id, task_type, session_id, sender |
-| Per-provider | `api_calls_total`, `api_latency_seconds`, `tokens_total`, `api_cost_eur_total` | model, provider, status/direction |
+| Per-message | `messages_total`, `message_duration_seconds`, `message_cost_eur`, `agentic_turns`, `context_utilization_ratio`, `message_outcome_total` | channel_id, task_type, session_id, sender; outcome |
+| Per-provider | `api_calls_total`, `api_latency_seconds`, `tokens_total`, `api_cost_eur_total`, `ttft_seconds`, `api_retries_total` | model, provider, status/direction |
 | Per-tool | `tool_calls_total`, `tool_duration_seconds` | tool_name, status |
 | Per-preprocessor | `preprocessor_total`, `preprocessor_duration_seconds` | name, status |
-| Memory ops | `memory_ops_total` | operation |
-| Session | `active_sessions`, `compaction_total`, `compaction_tokens_reclaimed`, `session_close_total` | reason (close only) |
+| Memory | `memory_ops_total`, `memory_search_duration_seconds` | operation; search_type |
+| Session | `active_sessions`, `compaction_total`, `compaction_tokens_reclaimed`, `session_close_total`, `session_open_total`, `consolidation_duration_seconds` | reason (close only) |
+| Context | `context_trims_total`, `context_trim_tokens` | — |
 | System | `queue_depth`, `uptime_seconds`, `errors_total` | error_type (errors only) |
 
 ## Cost Tracking

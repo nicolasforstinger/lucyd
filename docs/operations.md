@@ -87,7 +87,7 @@ CLI control client (`bin/lucydctl`). Thin HTTP wrapper — all commands go throu
 
 ## HTTP API
 
-17 endpoints registered in `api.py` (lines 156-174). Auth via Bearer token from `LUCYD_HTTP_TOKEN` env var.
+17 endpoints registered in `api.py` (lines 158–176). Auth via Bearer token from `LUCYD_HTTP_TOKEN` env var.
 
 ### Authentication
 
@@ -218,7 +218,7 @@ Side effect: updates Prometheus gauges (`uptime_seconds`, `active_sessions`, `qu
 
 Prometheus metrics in text exposition format. Auth-exempt. Returns `text/plain`. Returns a comment line if `prometheus_client` is not installed.
 
-See [architecture.md](architecture.md#metrics) for the full 21-family metric inventory.
+See [architecture.md](architecture.md#metrics) for the full 29-family metric inventory.
 
 ---
 
