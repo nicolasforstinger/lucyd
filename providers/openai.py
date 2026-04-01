@@ -1,9 +1,9 @@
 """OpenAI-compatible provider.
 
-Works with OpenAI cloud, Ollama, vLLM, llama.cpp server, LM Studio, LocalAI,
-or any server implementing the OpenAI chat completions API.
-Uses the OpenAI SDK when available and falls back to direct HTTP requests
-when it is not.
+Works with OpenAI cloud, Ollama, vLLM, llama.cpp server, LM Studio,
+LocalAI, or any server implementing the OpenAI chat completions API.
+Uses the OpenAI SDK when available and falls back to direct HTTP
+requests when it is not.
 
 Small-model optimizations:
 - Thinking token detection: parses <think>...</think> blocks from reasoning models
@@ -45,6 +45,8 @@ except ImportError:
     openai = None  # type: ignore[assignment]  # conditional import — module when installed, None otherwise
 
 
+# ── Thinking block extraction ───────────────────────────────────
+
 def _strip_thinking(text: str) -> tuple[str, str]:
     """Extract and remove <think>...</think> blocks from model output.
 
@@ -66,6 +68,8 @@ def _strip_thinking(text: str) -> tuple[str, str]:
         cleaned = ""
     return cleaned.strip(), "\n".join(thinking_parts)
 
+
+# ── Provider ────────────────────────────────────────────────────
 
 class OpenAIProvider:
     def __init__(
@@ -98,6 +102,8 @@ class OpenAIProvider:
     def capabilities(self) -> ModelCapabilities:
         return self._capabilities
 
+    # ── Format helpers ──────────────────────────────────────────
+
     def format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         formatted = []
         for t in tools:
@@ -122,7 +128,7 @@ class OpenAIProvider:
     def _convert_content_blocks(content: Any) -> Any:
         """Convert neutral image blocks to OpenAI API format.
 
-        Text blocks pass through unchanged. Neutral image blocks
+        Text blocks pass through unchanged.  Neutral image blocks
         {"type": "image", "media_type": ..., "data": ...} become
         {"type": "image_url", "image_url": {"url": "data:mime;base64,..."}}.
         """
@@ -193,6 +199,8 @@ class OpenAIProvider:
 
         return result
 
+    # ── Response parsing ────────────────────────────────────────
+
     @staticmethod
     def _parse_choice(choice: dict[str, Any]) -> tuple[str | None, list[ToolCall], str, str | None]:
         """Parse an OpenAI choice dict into (text, tool_calls, stop_reason, thinking).
@@ -252,7 +260,10 @@ class OpenAIProvider:
             cache_read_tokens=cache_read,
         )
 
+    # ── Direct HTTP fallback ────────────────────────────────────
+
     async def _complete_via_httpx(self, params: dict[str, Any]) -> LLMResponse:
+        """Direct HTTP fallback when the OpenAI SDK is not installed."""
         if not self.base_url:
             raise RuntimeError(
                 "OpenAI-compatible provider requires either the openai package "
@@ -260,9 +271,8 @@ class OpenAIProvider:
             )
 
         # Flatten extra_body into top-level params for direct HTTP requests.
-        # extra_body is an SDK concept (OpenAI Python client); llama.cpp and
-        # other servers expect these keys (id_slot, thinking_budget) at the
-        # top level of the JSON body.
+        # extra_body is an SDK concept; llama.cpp and other servers expect
+        # these keys (id_slot, thinking_budget) at the top level.
         body = dict(params)
         extra = body.pop("extra_body", None)
         if extra and isinstance(extra, dict):
@@ -290,6 +300,8 @@ class OpenAIProvider:
             thinking=thinking_text,
             raw=data,
         )
+
+    # ── Completion ──────────────────────────────────────────────
 
     async def complete(
         self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
@@ -391,13 +403,15 @@ class OpenAIProvider:
             raw=response,
         )
 
+    # ── Streaming ───────────────────────────────────────────────
+
     async def stream(
         self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from OpenAI-compatible API.
 
-        Uses the SDK's stream=True parameter. Yields StreamDelta chunks.
-        Handles <think> block detection in streaming mode.
+        Uses the SDK's ``stream=True`` parameter.  Yields StreamDelta
+        chunks.  Handles ``<think>`` block detection in streaming mode.
         """
         if self.client is None:
             async for delta in stream_fallback(self, system, messages, tools, **kwargs):
@@ -451,16 +465,15 @@ class OpenAIProvider:
                 continue
 
             choice = item.choices[0]
-            delta = choice.delta
+            msg_delta = choice.delta
 
-            # Text content
-            if delta and delta.content:
-                text = delta.content
-                # Detect <think> blocks in streaming
+            # Text content with <think> block detection
+            if msg_delta and msg_delta.content:
+                text = msg_delta.content
                 if "<think>" in text:
                     in_think = True
                     text = text.split("<think>", 1)[0]
-                    think_part = delta.content.split("<think>", 1)[1]
+                    think_part = msg_delta.content.split("<think>", 1)[1]
                     if text:
                         yield StreamDelta(text=text)
                     if "</think>" in think_part:
@@ -484,8 +497,8 @@ class OpenAIProvider:
                     yield StreamDelta(text=text)
 
             # Tool call deltas
-            if delta and delta.tool_calls:
-                for tc_delta in delta.tool_calls:
+            if msg_delta and msg_delta.tool_calls:
+                for tc_delta in msg_delta.tool_calls:
                     idx = tc_delta.index if tc_delta.index is not None else 0
                     if tc_delta.id:
                         yield StreamDelta(
