@@ -293,7 +293,7 @@ def create_provider(model_config: dict[str, Any], api_key: str = "") -> LLMProvi
         )
     elif provider_type == "mistral":
         try:
-            from .mistral import MistralProvider  # type: ignore[import-not-found]  # module created in provider rebuild step
+            from .mistral import MistralProvider
         except ImportError:
             raise ImportError(
                 "Mistral provider requires the mistralai package: pip install lucyd[mistral]"

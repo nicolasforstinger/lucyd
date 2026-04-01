@@ -594,7 +594,7 @@ def is_transient_error(exc: BaseException) -> bool:
         if status is not None:
             if status in (400, 401, 403, 404, 422):
                 return False
-            return status >= 429
+            return bool(status >= 429)
         return False
 
     # Connection-level errors

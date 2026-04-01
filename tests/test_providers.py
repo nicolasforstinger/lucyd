@@ -1307,6 +1307,351 @@ class TestOpenAIComplete:
         assert result.stop_reason == "max_tokens"
 
 
+# ─── Mistral Provider ──────────────────────────────────────────
+
+
+def _make_mistral(**kw: Any) -> Any:
+    """Create a MistralProvider with test defaults."""
+    pytest.importorskip("mistralai")
+    from providers.mistral import MistralProvider
+    defaults: dict[str, Any] = {"api_key": "test-key", "model": "test-model"}
+    defaults.update(kw)
+    return MistralProvider(**defaults)
+
+
+class TestMistralFormatTools:
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self) -> None:
+        pytest.importorskip("mistralai")
+
+    def test_wraps_in_type_function(self) -> None:
+        p = _make_mistral()
+        tools = [{"name": "t1", "description": "d", "input_schema": {"type": "object"}}]
+        result = p.format_tools(tools)
+        assert result[0]["type"] == "function"
+        assert result[0]["function"]["name"] == "t1"
+
+    def test_input_schema_becomes_parameters(self) -> None:
+        p = _make_mistral()
+        schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+        tools = [{"name": "t1", "description": "d", "input_schema": schema}]
+        result = p.format_tools(tools)
+        assert result[0]["function"]["parameters"] == schema
+
+    def test_empty_list(self) -> None:
+        p = _make_mistral()
+        assert p.format_tools([]) == []
+
+
+class TestMistralFormatSystem:
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self) -> None:
+        pytest.importorskip("mistralai")
+
+    def test_concatenates_blocks(self) -> None:
+        p = _make_mistral()
+        blocks = [{"text": "block1", "tier": "stable"}, {"text": "block2", "tier": "dynamic"}]
+        result = p.format_system(blocks)
+        assert result == "block1\n\nblock2"
+
+    def test_single_block(self) -> None:
+        p = _make_mistral()
+        result = p.format_system([{"text": "only", "tier": "stable"}])
+        assert result == "only"
+
+
+class TestMistralFormatMessages:
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self) -> None:
+        pytest.importorskip("mistralai")
+
+    def test_user_message(self) -> None:
+        p = _make_mistral()
+        msgs = [{"role": "user", "content": "Hi"}]
+        result = p.format_messages(msgs)
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == "Hi"
+
+    def test_assistant_with_tool_calls(self) -> None:
+        p = _make_mistral()
+        msgs = [{"role": "assistant", "text": "", "tool_calls": [
+            {"id": "tc1", "name": "exec", "arguments": {"cmd": "ls"}}
+        ]}]
+        result = p.format_messages(msgs)
+        tc = result[0]["tool_calls"][0]
+        assert tc["type"] == "function"
+        assert tc["function"]["name"] == "exec"
+        assert json.loads(tc["function"]["arguments"]) == {"cmd": "ls"}
+
+    def test_tool_results_expanded(self) -> None:
+        p = _make_mistral()
+        msgs = [{"role": "tool_results", "results": [
+            {"tool_call_id": "tc1", "content": "output1"},
+            {"tool_call_id": "tc2", "content": "output2"},
+        ]}]
+        result = p.format_messages(msgs)
+        assert len(result) == 2
+        assert result[0]["role"] == "tool"
+        assert result[0]["tool_call_id"] == "tc1"
+        assert result[1]["role"] == "tool"
+
+    def test_empty_assistant_has_content(self) -> None:
+        """Assistant with no text and no tools still gets content key."""
+        p = _make_mistral()
+        msgs = [{"role": "assistant"}]
+        result = p.format_messages(msgs)
+        assert result[0]["content"] == ""
+
+    def test_user_message_with_neutral_image_blocks(self) -> None:
+        """Neutral image blocks converted to Mistral image_url format."""
+        p = _make_mistral()
+        msgs = [{"role": "user", "content": [
+            {"type": "text", "text": "describe this"},
+            {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
+        ]}]
+        result = p.format_messages(msgs)
+        content = result[0]["content"]
+        assert len(content) == 2
+        assert content[0] == {"type": "text", "text": "describe this"}
+        assert content[1]["type"] == "image_url"
+        assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,base64data"
+
+    def test_mixed_conversation(self) -> None:
+        p = _make_mistral()
+        msgs = [
+            {"role": "user", "content": "Read /tmp/x"},
+            {"role": "assistant", "text": "", "tool_calls": [
+                {"id": "tc1", "name": "read", "arguments": {"path": "/tmp/x"}}
+            ]},
+            {"role": "tool_results", "results": [
+                {"tool_call_id": "tc1", "content": "file contents"}
+            ]},
+            {"role": "assistant", "text": "Here is the file content."},
+        ]
+        result = p.format_messages(msgs)
+        assert len(result) == 4
+        assert result[0]["role"] == "user"
+        assert result[1]["role"] == "assistant"
+        assert result[2]["role"] == "tool"
+        assert result[3]["role"] == "assistant"
+
+
+class TestMistralParseToolArgs:
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self) -> None:
+        pytest.importorskip("mistralai")
+
+    def test_dict_passthrough(self) -> None:
+        from providers.mistral import MistralProvider
+        assert MistralProvider._parse_tool_args({"key": "val"}) == {"key": "val"}
+
+    def test_valid_json_string(self) -> None:
+        from providers.mistral import MistralProvider
+        assert MistralProvider._parse_tool_args('{"a": 1}') == {"a": 1}
+
+    def test_malformed_string_returns_raw(self) -> None:
+        from providers.mistral import MistralProvider
+        result = MistralProvider._parse_tool_args("not json {{{")
+        assert result == {"raw": "not json {{{"}
+
+    def test_none_returns_empty(self) -> None:
+        from providers.mistral import MistralProvider
+        assert MistralProvider._parse_tool_args(None) == {}
+
+
+class TestMistralComplete:
+    """Unit tests for MistralProvider.complete() with mocked SDK."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self) -> None:
+        pytest.importorskip("mistralai")
+
+    def _mock_response(
+        self, content: Any = "Hello", tool_calls: Any = None,
+        finish_reason: str = "stop", prompt_tokens: int = 50,
+        completion_tokens: int = 30,
+    ) -> Any:
+        from unittest.mock import MagicMock
+        message = MagicMock()
+        message.content = content
+        message.tool_calls = tool_calls
+        choice = MagicMock()
+        choice.message = message
+        choice.finish_reason = finish_reason
+        resp = MagicMock()
+        resp.choices = [choice]
+        resp.usage.prompt_tokens = prompt_tokens
+        resp.usage.completion_tokens = completion_tokens
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_text_response(self) -> None:
+        from unittest.mock import patch
+        p = _make_mistral()
+        resp = self._mock_response(content="Hello world")
+
+        with patch.object(p.client.chat, "complete", return_value=resp):
+            result = await p.complete(
+                system="system prompt",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+            )
+        assert result.text == "Hello world"
+        assert result.stop_reason == "end_turn"
+        assert result.usage.input_tokens == 50
+        assert result.usage.output_tokens == 30
+
+    @pytest.mark.asyncio
+    async def test_tool_call_response(self) -> None:
+        from unittest.mock import MagicMock, patch
+        p = _make_mistral()
+        tc = MagicMock()
+        tc.id = "tc-1"
+        tc.function.name = "exec"
+        tc.function.arguments = {"command": "ls"}
+        resp = self._mock_response(content=None, tool_calls=[tc], finish_reason="tool_calls")
+
+        with patch.object(p.client.chat, "complete", return_value=resp):
+            result = await p.complete(
+                system="sys", messages=[{"role": "user", "content": "list files"}],
+                tools=[{"name": "exec"}],
+            )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "exec"
+        assert result.tool_calls[0].arguments == {"command": "ls"}
+        assert result.stop_reason == "tool_use"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_string_args_repaired(self) -> None:
+        from unittest.mock import MagicMock, patch
+        p = _make_mistral()
+        tc = MagicMock()
+        tc.id = "tc-2"
+        tc.function.name = "read"
+        tc.function.arguments = '{"path": "/tmp"}'  # string form
+        resp = self._mock_response(content=None, tool_calls=[tc], finish_reason="tool_calls")
+
+        with patch.object(p.client.chat, "complete", return_value=resp):
+            result = await p.complete(
+                system="sys", messages=[{"role": "user", "content": "read"}],
+                tools=[{"name": "read"}],
+            )
+        assert result.tool_calls[0].arguments == {"path": "/tmp"}
+
+    @pytest.mark.asyncio
+    async def test_malformed_tool_args_fallback(self) -> None:
+        from unittest.mock import MagicMock, patch
+        p = _make_mistral()
+        tc = MagicMock()
+        tc.id = "tc-3"
+        tc.function.name = "read"
+        tc.function.arguments = "not valid json {{{"
+        resp = self._mock_response(content=None, tool_calls=[tc], finish_reason="tool_calls")
+
+        with patch.object(p.client.chat, "complete", return_value=resp):
+            result = await p.complete(
+                system="sys", messages=[{"role": "user", "content": "read"}],
+                tools=[{"name": "read"}],
+            )
+        assert result.tool_calls[0].arguments == {"raw": "not valid json {{{"}
+
+    @pytest.mark.asyncio
+    async def test_length_stop_reason(self) -> None:
+        from unittest.mock import patch
+        p = _make_mistral()
+        resp = self._mock_response(content="cut off", finish_reason="length")
+
+        with patch.object(p.client.chat, "complete", return_value=resp):
+            result = await p.complete(
+                system="", messages=[{"role": "user", "content": "hi"}], tools=[],
+            )
+        assert result.stop_reason == "max_tokens"
+
+    @pytest.mark.asyncio
+    async def test_model_length_stop_reason(self) -> None:
+        from unittest.mock import patch
+        p = _make_mistral()
+        resp = self._mock_response(content="model limit", finish_reason="model_length")
+
+        with patch.object(p.client.chat, "complete", return_value=resp):
+            result = await p.complete(
+                system="", messages=[{"role": "user", "content": "hi"}], tools=[],
+            )
+        assert result.stop_reason == "max_tokens"
+
+    @pytest.mark.asyncio
+    async def test_empty_response_handled(self) -> None:
+        from unittest.mock import MagicMock, patch
+        p = _make_mistral()
+        resp = MagicMock()
+        resp.choices = []
+
+        with patch.object(p.client.chat, "complete", return_value=resp):
+            result = await p.complete(
+                system="sys", messages=[{"role": "user", "content": "hi"}], tools=[],
+            )
+        assert result.text is None
+        assert result.stop_reason == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_system_prepended_to_messages(self) -> None:
+        from unittest.mock import patch
+        p = _make_mistral()
+        resp = self._mock_response()
+        captured: dict[str, Any] = {}
+
+        original_complete = p.client.chat.complete
+
+        def capturing_complete(**kwargs: Any) -> Any:
+            captured.update(kwargs)
+            return resp
+
+        with patch.object(p.client.chat, "complete", side_effect=capturing_complete):
+            await p.complete(
+                system="be helpful",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+            )
+        assert captured["messages"][0] == {"role": "system", "content": "be helpful"}
+        assert captured["messages"][1]["role"] == "user"
+
+
+class TestMistralFactoryIntegration:
+    """Factory creates MistralProvider for type='mistral'."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_sdk(self) -> None:
+        pytest.importorskip("mistralai")
+
+    def test_mistral_creates_provider(self) -> None:
+        from providers.mistral import MistralProvider
+        p = create_provider(
+            {"provider": "mistral", "model": "mistral-large-latest", "max_tokens": 2048},
+            api_key="test-key",
+        )
+        assert isinstance(p, MistralProvider)
+        assert p.model == "mistral-large-latest"
+        assert p.max_tokens == 2048
+
+    def test_mistral_capabilities_from_config(self) -> None:
+        p = create_provider(
+            {"provider": "mistral", "model": "test",
+             "supports_tools": True, "supports_streaming": True,
+             "max_context_tokens": 128000},
+            api_key="test-key",
+        )
+        assert p.capabilities.supports_tools is True
+        assert p.capabilities.supports_streaming is True
+        assert p.capabilities.max_context_tokens == 128000
+
+    def test_mistral_provider_name_set(self) -> None:
+        p = create_provider(
+            {"provider": "mistral", "model": "test"},
+            api_key="test-key",
+        )
+        assert p.provider_name == "mistral"
+
+
 # ─── Shared utility tests ───────────────────────────────────────
 
 class TestRepairJson:
