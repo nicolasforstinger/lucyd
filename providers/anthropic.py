@@ -1,9 +1,9 @@
-"""Anthropic-compatible provider.
+"""Anthropic provider.
 
 Works with any model accessible through the Anthropic Messages API.
-Supports prompt caching (cache_control) and extended thinking (adaptive/budgeted).
-Uses the Anthropic SDK when available and falls back to direct HTTP requests
-when it is not.
+Supports prompt caching (cache_control) and extended thinking
+(adaptive/budgeted).  Uses the Anthropic SDK when available and
+falls back to direct HTTP requests when it is not.
 """
 
 from __future__ import annotations
@@ -42,8 +42,10 @@ _DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 _ANTHROPIC_VERSION = "2023-06-01"
 
 
+# ── SDK-free compatibility exceptions for httpx fallback path ───
+
 class APIStatusError(Exception):
-    """SDK-free compatibility error with Anthropic-like shape."""
+    """SDK-free error carrying an HTTP status code."""
 
     def __init__(self, message: str, *, status_code: int, body: Any = None, response: httpx.Response | None = None):
         super().__init__(message)
@@ -60,11 +62,13 @@ class APITimeoutError(Exception):
     """Raised when the direct HTTP fallback times out."""
 
 
+# ── Helpers ─────────────────────────────────────────────────────
+
 def _safe_parse_args(raw: Any) -> dict[str, Any]:
     """Parse tool input, handling both dict and string forms.
 
-    Anthropic usually returns a dict, but may return a string in edge cases.
-    Matches the OpenAI provider's fallback pattern ({"raw": ...}).
+    Anthropic usually returns a dict, but may return a string in edge
+    cases.  Matches the OpenAI/Mistral fallback pattern ({"raw": ...}).
     """
     if isinstance(raw, dict):
         return raw
@@ -74,6 +78,8 @@ def _safe_parse_args(raw: Any) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError):
         return {"raw": raw}
 
+
+# ── Provider ────────────────────────────────────────────────────
 
 class AnthropicProvider:
     def __init__(
@@ -113,6 +119,8 @@ class AnthropicProvider:
     def capabilities(self) -> ModelCapabilities:
         return self._capabilities
 
+    # ── Format helpers ──────────────────────────────────────────
+
     def format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         formatted = []
         for t in tools:
@@ -140,7 +148,7 @@ class AnthropicProvider:
     def _convert_content_blocks(content: Any) -> Any:
         """Convert neutral image blocks to Anthropic API format.
 
-        Text blocks pass through unchanged. Neutral image blocks
+        Text blocks pass through unchanged.  Neutral image blocks
         {"type": "image", "media_type": ..., "data": ...} become
         {"type": "image", "source": {"type": "base64", ...}}.
         """
@@ -215,8 +223,16 @@ class AnthropicProvider:
 
         return result
 
+    # ── Thinking parameter ──────────────────────────────────────
+
     def _build_thinking_param(self) -> dict[str, Any] | None:
-        """Build the thinking parameter based on config."""
+        """Build the thinking parameter based on config.
+
+        Maps to Anthropic ThinkingConfigParam:
+        - {"type": "adaptive", "effort": ...}
+        - {"type": "enabled", "budget_tokens": ...}
+        - None (disabled)
+        """
         # Explicit thinking_mode takes precedence
         if self.thinking_mode == "disabled":
             return None
@@ -239,6 +255,8 @@ class AnthropicProvider:
             "budget_tokens": self.thinking_budget,
         }
 
+    # ── Direct HTTP fallback ────────────────────────────────────
+
     def _headers(self) -> dict[str, str]:
         headers = {
             "anthropic-version": _ANTHROPIC_VERSION,
@@ -257,10 +275,16 @@ class AnthropicProvider:
             return f"{base}/messages"
         return f"{base}/v1/messages"
 
+    # ── Response parsing ────────────────────────────────────────
+
     @staticmethod
     def _sdk_response_to_dict(response: Any) -> dict[str, Any]:
-        """Convert an Anthropic SDK Message object to a plain dict
-        compatible with _response_to_llm()."""
+        """Convert an Anthropic SDK Message object to a plain dict.
+
+        The SDK returns typed objects (TextBlock, ToolUseBlock,
+        ThinkingBlock, etc.).  We normalize to dicts so both the SDK
+        and httpx paths feed the same ``_response_to_llm()`` method.
+        """
         content = []
         for block in response.content:
             if block.type == "text":
@@ -307,6 +331,7 @@ class AnthropicProvider:
 
     @classmethod
     def _response_to_llm(cls, response_data: dict[str, Any]) -> LLMResponse:
+        """Convert a normalized response dict to LLMResponse."""
         text_parts = []
         tool_calls = []
         thinking_text = None
@@ -350,6 +375,7 @@ class AnthropicProvider:
         )
 
     async def _complete_via_httpx(self, params: dict[str, Any]) -> LLMResponse:
+        """Direct HTTP fallback when the Anthropic SDK is not installed."""
         timeout = max(float(params.get("timeout", 0) or 0), 600.0 if "thinking" in params else 60.0)
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -383,6 +409,8 @@ class AnthropicProvider:
 
         return self._response_to_llm(response.json())
 
+    # ── Completion ──────────────────────────────────────────────
+
     async def complete(
         self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> LLMResponse:
@@ -415,7 +443,7 @@ class AnthropicProvider:
                 response: Any = await run_blocking(_stream_to_message)
             except anthropic.APIStatusError as e:
                 # HOTFIX(2026-02-27): Anthropic SDK mid-stream SSE error misclassification.
-                # SDK bug (v0.81.0, github.com/anthropics/anthropic-sdk-python#688):
+                # SDK bug (v0.81.0+, github.com/anthropics/anthropic-sdk-python#688):
                 # Stream.__stream__() catches SSE "error" events and calls
                 # _make_status_error(response=self.response) — but self.response is
                 # the original HTTP 200, not the error. So overloaded_error (529) arrives
@@ -429,9 +457,6 @@ class AnthropicProvider:
                         err = body.get("error", body)
                         if isinstance(err, dict):
                             etype = err.get("type", "")
-                            # Synthesize the correct HTTP response the SDK
-                            # should have used, so the re-raised exception
-                            # carries the right status_code end-to-end.
                             if etype == "overloaded_error":
                                 resp529 = httpx.Response(529, request=e.response.request)
                                 raise _OverloadedError(
@@ -454,12 +479,14 @@ class AnthropicProvider:
         result.raw = response  # preserve SDK object
         return result
 
+    # ── Streaming ───────────────────────────────────────────────
+
     async def stream(
         self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
         """Stream response deltas from Anthropic Messages API.
 
-        Uses the SDK's messages.stream() context manager and yields
+        Uses the SDK's ``messages.stream()`` context manager and yields
         StreamDelta chunks as events arrive.
         """
         if self.client is None:
@@ -489,7 +516,7 @@ class AnthropicProvider:
 
         tool_index = -1
         async for item in threaded_stream(_stream_factory):
-            # Final message object (has .usage)
+            # Final message object (has .usage and .stop_reason)
             if hasattr(item, "usage") and hasattr(item, "stop_reason"):
                 data = self._sdk_response_to_dict(item)
                 usage = self._parse_usage_dict(data.get("usage"))
@@ -513,13 +540,13 @@ class AnthropicProvider:
                         tool_name=block.name,
                     )
             elif etype == "content_block_delta":
-                delta = item.delta
-                if delta.type == "text_delta":
-                    yield StreamDelta(text=delta.text)
-                elif delta.type == "thinking_delta":
-                    yield StreamDelta(thinking=delta.thinking)
-                elif delta.type == "input_json_delta":
+                block_delta = item.delta
+                if block_delta.type == "text_delta":
+                    yield StreamDelta(text=block_delta.text)
+                elif block_delta.type == "thinking_delta":
+                    yield StreamDelta(thinking=block_delta.thinking)
+                elif block_delta.type == "input_json_delta":
                     yield StreamDelta(
                         tool_call_index=tool_index,
-                        tool_args_delta=delta.partial_json,
+                        tool_args_delta=block_delta.partial_json,
                     )
