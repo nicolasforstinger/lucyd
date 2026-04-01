@@ -93,14 +93,8 @@ class TestAnthropicFormatTools:
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
 
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
-
     def test_passthrough_name_desc_schema(self):
-        p = self._make_provider()
+        p = _make_anthropic()
         tools = [{"name": "t1", "description": "desc1", "input_schema": {"type": "object"}}]
         result = p.format_tools(tools)
         assert result[0]["name"] == "t1"
@@ -108,7 +102,7 @@ class TestAnthropicFormatTools:
         assert result[0]["input_schema"] == {"type": "object"}
 
     def test_empty_list(self):
-        p = self._make_provider()
+        p = _make_anthropic()
         assert p.format_tools([]) == []
 
 
@@ -117,26 +111,20 @@ class TestAnthropicFormatSystem:
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
 
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
-
     def test_cache_control_on_stable_block(self):
-        p = self._make_provider(cache_control=True)
+        p = _make_anthropic(cache_control=True)
         blocks = [{"text": "personality", "tier": "stable"}]
         result = p.format_system(blocks)
         assert result[0]["cache_control"] == {"type": "ephemeral"}
 
     def test_no_cache_control_on_dynamic(self):
-        p = self._make_provider(cache_control=True)
+        p = _make_anthropic(cache_control=True)
         blocks = [{"text": "current time", "tier": "dynamic"}]
         result = p.format_system(blocks)
         assert "cache_control" not in result[0]
 
     def test_cache_disabled(self):
-        p = self._make_provider(cache_control=False)
+        p = _make_anthropic(cache_control=False)
         blocks = [{"text": "personality", "tier": "stable"}]
         result = p.format_system(blocks)
         assert "cache_control" not in result[0]
@@ -147,21 +135,15 @@ class TestAnthropicFormatMessages:
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
 
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
-
     def test_user_message(self):
-        p = self._make_provider()
+        p = _make_anthropic()
         msgs = [{"role": "user", "content": "Hello"}]
         result = p.format_messages(msgs)
         assert result[0]["role"] == "user"
         assert result[0]["content"] == "Hello"
 
     def test_assistant_with_thinking(self):
-        p = self._make_provider()
+        p = _make_anthropic()
         msgs = [{"role": "assistant", "text": "Reply", "thinking": "hmm"}]
         result = p.format_messages(msgs)
         content = result[0]["content"]
@@ -170,7 +152,7 @@ class TestAnthropicFormatMessages:
         assert "text" in types
 
     def test_assistant_with_tool_calls(self):
-        p = self._make_provider()
+        p = _make_anthropic()
         msgs = [{"role": "assistant", "tool_calls": [
             {"id": "tc1", "name": "read", "arguments": {"path": "/tmp"}}
         ]}]
@@ -180,7 +162,7 @@ class TestAnthropicFormatMessages:
         assert content[0]["name"] == "read"
 
     def test_tool_results_become_user_role(self):
-        p = self._make_provider()
+        p = _make_anthropic()
         msgs = [{"role": "tool_results", "results": [
             {"tool_call_id": "tc1", "content": "file contents"}
         ]}]
@@ -194,36 +176,24 @@ class TestAnthropicThinkingParam:
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
 
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
-
     def test_adaptive_mode(self):
-        p = self._make_provider(thinking_mode="adaptive")
+        p = _make_anthropic(thinking_mode="adaptive")
         param = p._build_thinking_param()
         assert param["type"] == "adaptive"
 
     def test_budgeted_mode(self):
-        p = self._make_provider(thinking_mode="budgeted", thinking_budget=5000)
+        p = _make_anthropic(thinking_mode="budgeted", thinking_budget=5000)
         param = p._build_thinking_param()
         assert param["type"] == "enabled"
         assert param["budget_tokens"] == 5000
 
     def test_disabled_returns_none(self):
-        p = self._make_provider(thinking_mode="disabled")
+        p = _make_anthropic(thinking_mode="disabled")
         assert p._build_thinking_param() is None
 
 
 class TestAnthropicHttpFallback:
     """Fallback path when the Anthropic SDK is unavailable."""
-
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
 
     @pytest.mark.asyncio
     async def test_complete_uses_direct_http_when_sdk_missing(self, monkeypatch):
@@ -270,7 +240,7 @@ class TestAnthropicHttpFallback:
 
         monkeypatch.setattr(mod.httpx.AsyncClient, "post", fake_post)
 
-        provider = self._make_provider(thinking_mode="adaptive")
+        provider = _make_anthropic(thinking_mode="adaptive")
         result = await provider.complete(
             system=[{"type": "text", "text": "system prompt"}],
             messages=[{"role": "user", "content": "hi"}],
@@ -311,7 +281,7 @@ class TestAnthropicHttpFallback:
 
         monkeypatch.setattr(mod.httpx.AsyncClient, "post", fake_post)
 
-        provider = self._make_provider()
+        provider = _make_anthropic()
         deltas = [delta async for delta in provider.stream(
             system=[{"type": "text", "text": "sys"}],
             messages=[{"role": "user", "content": "hi"}],
@@ -332,21 +302,15 @@ class TestOpenAIFormatTools:
     def _skip_if_no_sdk(self):
         pytest.importorskip("openai")
 
-    def _make_provider(self, **kwargs):
-        from providers.openai import OpenAIProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return OpenAIProvider(**defaults)
-
     def test_wraps_in_type_function(self):
-        p = self._make_provider()
+        p = _make_openai()
         tools = [{"name": "t1", "description": "d", "input_schema": {"type": "object"}}]
         result = p.format_tools(tools)
         assert result[0]["type"] == "function"
         assert result[0]["function"]["name"] == "t1"
 
     def test_input_schema_becomes_parameters(self):
-        p = self._make_provider()
+        p = _make_openai()
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
         tools = [{"name": "t1", "description": "d", "input_schema": schema}]
         result = p.format_tools(tools)
@@ -358,21 +322,15 @@ class TestOpenAIFormatMessages:
     def _skip_if_no_sdk(self):
         pytest.importorskip("openai")
 
-    def _make_provider(self, **kwargs):
-        from providers.openai import OpenAIProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return OpenAIProvider(**defaults)
-
     def test_user_message(self):
-        p = self._make_provider()
+        p = _make_openai()
         msgs = [{"role": "user", "content": "Hi"}]
         result = p.format_messages(msgs)
         assert result[0]["role"] == "user"
         assert result[0]["content"] == "Hi"
 
     def test_assistant_with_tool_calls(self):
-        p = self._make_provider()
+        p = _make_openai()
         msgs = [{"role": "assistant", "text": "", "tool_calls": [
             {"id": "tc1", "name": "exec", "arguments": {"cmd": "ls"}}
         ]}]
@@ -384,7 +342,7 @@ class TestOpenAIFormatMessages:
         assert json.loads(tc["function"]["arguments"]) == {"cmd": "ls"}
 
     def test_tool_results_expanded(self):
-        p = self._make_provider()
+        p = _make_openai()
         msgs = [{"role": "tool_results", "results": [
             {"tool_call_id": "tc1", "content": "output1"},
             {"tool_call_id": "tc2", "content": "output2"},
@@ -397,7 +355,7 @@ class TestOpenAIFormatMessages:
 
     def test_user_message_with_neutral_image_blocks(self):
         """Neutral image blocks are converted to OpenAI image_url format."""
-        p = self._make_provider()
+        p = _make_openai()
         msgs = [{"role": "user", "content": [
             {"type": "text", "text": "describe this"},
             {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
@@ -413,14 +371,14 @@ class TestOpenAIFormatMessages:
 
     def test_user_message_string_unchanged(self):
         """Plain string content is not affected by image conversion."""
-        p = self._make_provider()
+        p = _make_openai()
         msgs = [{"role": "user", "content": "just text"}]
         result = p.format_messages(msgs)
         assert result[0]["content"] == "just text"
 
     def test_multiple_images_converted(self):
         """Multiple image blocks all converted to data URIs."""
-        p = self._make_provider()
+        p = _make_openai()
         msgs = [{"role": "user", "content": [
             {"type": "image", "media_type": "image/png", "data": "img1"},
             {"type": "text", "text": "compare"},
@@ -436,16 +394,6 @@ class TestOpenAIFormatMessages:
 
 class TestOpenAIHttpFallback:
     """Fallback path when the OpenAI SDK is unavailable."""
-
-    def _make_provider(self, **kwargs):
-        from providers.openai import OpenAIProvider
-        defaults = dict(
-            api_key="test-key",
-            model="test-model",
-            base_url="http://smoke.example/v1",
-        )
-        defaults.update(kwargs)
-        return OpenAIProvider(**defaults)
 
     @pytest.mark.asyncio
     async def test_complete_uses_direct_http_when_sdk_missing(self, monkeypatch):
@@ -477,7 +425,7 @@ class TestOpenAIHttpFallback:
 
         monkeypatch.setattr(mod.httpx.AsyncClient, "post", fake_post)
 
-        provider = self._make_provider()
+        provider = _make_openai(base_url="http://smoke.example/v1")
         result = await provider.complete(
             system="system prompt",
             messages=[{"role": "user", "content": "hi"}],
@@ -497,7 +445,7 @@ class TestOpenAIHttpFallback:
         import providers.openai as mod
 
         monkeypatch.setattr(mod, "openai", None)
-        provider = self._make_provider(base_url="")
+        provider = _make_openai(base_url="")
 
         with pytest.raises(RuntimeError, match="base_url"):
             await provider.complete(
@@ -792,36 +740,30 @@ class TestAnthropicThinkingParamExtended:
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
 
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
-
     def test_adaptive_with_effort(self):
         """Adaptive mode includes effort when specified."""
-        p = self._make_provider(thinking_mode="adaptive", thinking_effort="high")
+        p = _make_anthropic(thinking_mode="adaptive", thinking_effort="high")
         param = p._build_thinking_param()
         assert param["type"] == "adaptive"
         assert param["effort"] == "high"
 
     def test_adaptive_without_effort(self):
         """Adaptive mode omits effort key when not specified."""
-        p = self._make_provider(thinking_mode="adaptive", thinking_effort="")
+        p = _make_anthropic(thinking_mode="adaptive", thinking_effort="")
         param = p._build_thinking_param()
         assert param["type"] == "adaptive"
         assert "effort" not in param
 
     def test_fallback_enabled_flag(self):
         """When thinking_mode is empty, falls back to thinking_enabled flag."""
-        p = self._make_provider(thinking_mode="", thinking_enabled=True, thinking_budget=8000)
+        p = _make_anthropic(thinking_mode="", thinking_enabled=True, thinking_budget=8000)
         param = p._build_thinking_param()
         assert param["type"] == "enabled"
         assert param["budget_tokens"] == 8000
 
     def test_fallback_disabled_flag(self):
         """When both thinking_mode and thinking_enabled are off, returns None."""
-        p = self._make_provider(thinking_mode="", thinking_enabled=False)
+        p = _make_anthropic(thinking_mode="", thinking_enabled=False)
         param = p._build_thinking_param()
         assert param is None
 
@@ -833,22 +775,16 @@ class TestAnthropicFormatSystemExtended:
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
 
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
-
     def test_semi_stable_gets_cache_control(self):
         """Semi-stable blocks also get cache_control when enabled."""
-        p = self._make_provider(cache_control=True)
+        p = _make_anthropic(cache_control=True)
         blocks = [{"text": "memory content", "tier": "semi_stable"}]
         result = p.format_system(blocks)
         assert result[0]["cache_control"] == {"type": "ephemeral"}
 
     def test_multiple_blocks_mixed_tiers(self):
         """Only stable and semi_stable blocks get cache_control."""
-        p = self._make_provider(cache_control=True)
+        p = _make_anthropic(cache_control=True)
         blocks = [
             {"text": "personality", "tier": "stable"},
             {"text": "memory", "tier": "semi_stable"},
@@ -861,7 +797,7 @@ class TestAnthropicFormatSystemExtended:
 
     def test_text_preserved_verbatim(self):
         """Block text is passed through without modification."""
-        p = self._make_provider(cache_control=False)
+        p = _make_anthropic(cache_control=False)
         blocks = [{"text": "exact content here", "tier": "stable"}]
         result = p.format_system(blocks)
         assert result[0]["text"] == "exact content here"
@@ -875,15 +811,9 @@ class TestAnthropicFormatMessagesExtended:
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
 
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
-
     def test_assistant_with_thinking_block_signature(self):
         """Thinking block with signature is preserved in formatted output."""
-        p = self._make_provider()
+        p = _make_anthropic()
         msgs = [{
             "role": "assistant",
             "text": "Answer",
@@ -901,12 +831,12 @@ class TestAnthropicFormatMessagesExtended:
 
     def test_empty_message_list(self):
         """Empty message list returns empty result."""
-        p = self._make_provider()
+        p = _make_anthropic()
         assert p.format_messages([]) == []
 
     def test_mixed_conversation(self):
         """Full conversation with user, assistant, tool_results formats correctly."""
-        p = self._make_provider()
+        p = _make_anthropic()
         msgs = [
             {"role": "user", "content": "Read /tmp/x"},
             {"role": "assistant", "text": "", "tool_calls": [
@@ -926,7 +856,7 @@ class TestAnthropicFormatMessagesExtended:
 
     def test_user_message_with_neutral_image_blocks(self):
         """Neutral image blocks are converted to Anthropic source format."""
-        p = self._make_provider()
+        p = _make_anthropic()
         msgs = [{"role": "user", "content": [
             {"type": "text", "text": "what is this"},
             {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
@@ -944,14 +874,14 @@ class TestAnthropicFormatMessagesExtended:
 
     def test_user_message_string_unchanged(self):
         """Plain string content is not affected by image conversion."""
-        p = self._make_provider()
+        p = _make_anthropic()
         msgs = [{"role": "user", "content": "just text"}]
         result = p.format_messages(msgs)
         assert result[0]["content"] == "just text"
 
     def test_multiple_images_converted(self):
         """Multiple image blocks all converted."""
-        p = self._make_provider()
+        p = _make_anthropic()
         msgs = [{"role": "user", "content": [
             {"type": "image", "media_type": "image/png", "data": "img1"},
             {"type": "text", "text": "compare these"},
@@ -1001,12 +931,6 @@ class TestAnthropicComplete:
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
 
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
-
     def _mock_response(self, content_blocks, stop_reason="end_turn",
                        input_tokens=50, output_tokens=30):
         from unittest.mock import MagicMock
@@ -1022,7 +946,7 @@ class TestAnthropicComplete:
     @pytest.mark.asyncio
     async def test_text_response(self):
         from unittest.mock import MagicMock, patch
-        p = self._make_provider()
+        p = _make_anthropic()
         block = MagicMock()
         block.type = "text"
         block.text = "Hello world"
@@ -1041,7 +965,7 @@ class TestAnthropicComplete:
     @pytest.mark.asyncio
     async def test_tool_use_response(self):
         from unittest.mock import MagicMock, patch
-        p = self._make_provider()
+        p = _make_anthropic()
         block = MagicMock()
         block.type = "tool_use"
         block.id = "tc-1"
@@ -1063,7 +987,7 @@ class TestAnthropicComplete:
     @pytest.mark.asyncio
     async def test_max_tokens_stop_reason(self):
         from unittest.mock import MagicMock, patch
-        p = self._make_provider()
+        p = _make_anthropic()
         block = MagicMock()
         block.type = "text"
         block.text = "truncated"
@@ -1091,15 +1015,6 @@ class TestAnthropicMidstreamSSEReRaise:
     @pytest.fixture(autouse=True)
     def _skip_if_no_sdk(self):
         pytest.importorskip("anthropic")
-
-    def _make_provider(self, **kwargs):
-        from providers.anthropic import AnthropicProvider
-        defaults = dict(
-            api_key="test-key", model="test-model",
-            thinking_enabled=True, thinking_mode="adaptive",
-        )
-        defaults.update(kwargs)
-        return AnthropicProvider(**defaults)
 
     def _make_sse_error(self, error_type, message="error"):
         """Build an APIStatusError that mimics mid-stream SSE error behavior."""
@@ -1140,7 +1055,7 @@ class TestAnthropicMidstreamSSEReRaise:
         from unittest.mock import patch
 
         from anthropic._exceptions import OverloadedError
-        p = self._make_provider()
+        p = _make_anthropic(thinking_enabled=True, thinking_mode="adaptive")
         exc = self._make_sse_error("overloaded_error", "Overloaded")
 
         with patch("providers.anthropic.run_blocking", side_effect=exc), pytest.raises(OverloadedError):
@@ -1157,7 +1072,7 @@ class TestAnthropicMidstreamSSEReRaise:
         from unittest.mock import patch
 
         from agentic import is_transient_error
-        p = self._make_provider()
+        p = _make_anthropic(thinking_enabled=True, thinking_mode="adaptive")
         exc = self._make_sse_error("overloaded_error", "Overloaded")
 
         with patch("providers.anthropic.run_blocking", side_effect=exc):
@@ -1175,7 +1090,7 @@ class TestAnthropicMidstreamSSEReRaise:
         from unittest.mock import patch
 
         import anthropic
-        p = self._make_provider()
+        p = _make_anthropic(thinking_enabled=True, thinking_mode="adaptive")
         exc = self._make_sse_error("api_error", "Internal error")
 
         with patch("providers.anthropic.run_blocking", side_effect=exc), pytest.raises(anthropic.InternalServerError):
@@ -1187,7 +1102,7 @@ class TestAnthropicMidstreamSSEReRaise:
         from unittest.mock import patch
 
         import anthropic
-        p = self._make_provider()
+        p = _make_anthropic(thinking_enabled=True, thinking_mode="adaptive")
         exc = self._make_sse_error("invalid_request_error", "bad input")
 
         with patch("providers.anthropic.run_blocking", side_effect=exc):
@@ -1203,7 +1118,7 @@ class TestAnthropicMidstreamSSEReRaise:
 
         import anthropic
         # No thinking — uses create() not stream()
-        p = self._make_provider(thinking_enabled=False, thinking_mode="disabled")
+        p = _make_anthropic(thinking_enabled=False, thinking_mode="disabled")
         exc = self._make_sse_error("overloaded_error", "Overloaded")
 
         with patch("providers.anthropic.run_blocking", side_effect=exc):
@@ -1220,12 +1135,6 @@ class TestOpenAIComplete:
     @pytest.fixture(autouse=True)
     def _skip_if_no_sdk(self):
         pytest.importorskip("openai")
-
-    def _make_provider(self, **kwargs):
-        from providers.openai import OpenAIProvider
-        defaults = dict(api_key="test-key", model="test-model")
-        defaults.update(kwargs)
-        return OpenAIProvider(**defaults)
 
     def _mock_response(self, content=None, tool_calls=None,
                        finish_reason="stop", prompt_tokens=50,
@@ -1244,7 +1153,7 @@ class TestOpenAIComplete:
     @pytest.mark.asyncio
     async def test_text_response(self):
         from unittest.mock import patch
-        p = self._make_provider()
+        p = _make_openai()
         resp = self._mock_response(content="Hello")
 
         with patch.object(p.client.chat.completions, "create", return_value=resp):
@@ -1260,7 +1169,7 @@ class TestOpenAIComplete:
     @pytest.mark.asyncio
     async def test_tool_call_response(self):
         from unittest.mock import MagicMock, patch
-        p = self._make_provider()
+        p = _make_openai()
         tc = MagicMock()
         tc.id = "tc-1"
         tc.function.name = "exec"
@@ -1280,7 +1189,7 @@ class TestOpenAIComplete:
     @pytest.mark.asyncio
     async def test_malformed_tool_args_fallback(self):
         from unittest.mock import MagicMock, patch
-        p = self._make_provider()
+        p = _make_openai()
         tc = MagicMock()
         tc.id = "tc-2"
         tc.function.name = "read"
@@ -1297,7 +1206,7 @@ class TestOpenAIComplete:
     @pytest.mark.asyncio
     async def test_length_stop_reason(self):
         from unittest.mock import patch
-        p = self._make_provider()
+        p = _make_openai()
         resp = self._mock_response(content="cut off", finish_reason="length")
 
         with patch.object(p.client.chat.completions, "create", return_value=resp):
