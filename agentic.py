@@ -286,9 +286,8 @@ async def run_agentic_loop(
 
     Returns:
         Final LLMResponse from the loop. response.text is the final
-        turn's text only. Intermediate text generated alongside tool
-        calls is persisted to the session but not surfaced here —
-        deliberate outbound messages go through the message tool.
+        turn's text, or intermediate text from earlier turns if the
+        final turn produced none.
     """
     cfg = config or LoopConfig()
     cc = cost if cost else CostContext.none()
@@ -390,10 +389,9 @@ async def run_agentic_loop(
             await on_response(response) if inspect.iscoroutinefunction(on_response) \
                 else on_response(response)
 
-        # Collect intermediate text as fallback for abnormal exits only
-        # (cost limit, max_turns).  NOT used on normal end_turn — the
-        # model chose to stop; resurfacing stale narration causes
-        # duplicate delivery when the message tool was already used.
+        # Collect text generated alongside tool calls.  If the final
+        # turn produces its own text, that wins.  Otherwise this text
+        # is surfaced as the response so the user isn't left with silence.
         if response.text and response.tool_calls:
             fallback_text.append(response.text)
 
@@ -419,6 +417,8 @@ async def run_agentic_loop(
         # tool_calls alongside text are treated as the final response.
         # This prevents re-entering the loop when the model intended to stop.
         if not response.tool_calls or response.stop_reason == "end_turn":
+            if not response.text and fallback_text:
+                response.text = "\n\n".join(fallback_text)
             response.attachments = all_attachments
             response.turns = turn + 1
             return response

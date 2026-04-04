@@ -256,11 +256,10 @@ class TestAgenticLoop:
         assert resp.text == "Final"
 
     @pytest.mark.asyncio
-    async def test_intermediate_text_not_surfaced_on_empty_end(self):
+    async def test_intermediate_text_surfaced_on_empty_end(self):
         """When the final turn is empty, intermediate text alongside tool
-        calls is NOT surfaced as the response — it was already persisted
-        to the session.  Outbound replies go through the message tool;
-        resurfacing intermediate narration causes duplicate delivery."""
+        calls is surfaced as the response so the user isn't left with
+        silence."""
         turn1 = LLMResponse(
             text="First thought",
             tool_calls=[ToolCall(id="tc-1", name="echo", arguments={"text": "a"})],
@@ -284,7 +283,7 @@ class TestAgenticLoop:
             tools=reg.get_schemas(), tool_executor=reg,
             config=replace(_LOOP_CONFIG, max_turns=10),
         )
-        assert resp.text == ""
+        assert resp.text == "First thought\n\nSecond thought"
 
     @pytest.mark.asyncio
     async def test_messages_mutated_in_place(self):
@@ -508,9 +507,9 @@ class TestFallbackText:
     """Mutant #163-166: fallback text logic."""
 
     @pytest.mark.asyncio
-    async def test_no_fallback_on_normal_end_turn(self):
-        """Intermediate text is NOT resurfaced on normal end_turn —
-        only on abnormal exits (cost limit, max_turns)."""
+    async def test_fallback_on_normal_end_turn(self):
+        """Intermediate text is surfaced when the final turn is empty,
+        so the user isn't left with silence."""
         turn1 = LLMResponse(
             text="Intermediate thought",
             tool_calls=[ToolCall(id="tc-1", name="echo", arguments={"text": "x"})],
@@ -529,7 +528,7 @@ class TestFallbackText:
             tools=reg.get_schemas(), tool_executor=reg,
             config=replace(_LOOP_CONFIG, max_turns=5),
         )
-        assert resp.text is None
+        assert resp.text == "Intermediate thought"
 
     @pytest.mark.asyncio
     async def test_no_fallback_when_final_has_text(self):
