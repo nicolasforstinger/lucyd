@@ -43,6 +43,7 @@ ruff.toml
 # Local
 build
 deploy/
+.dockerignore
 
 # Claude Code
 .claude/
