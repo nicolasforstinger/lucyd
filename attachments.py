@@ -108,7 +108,7 @@ def extract_document_text(path: str, content_type: str, filename: str,
                 break
             parts.append(page_text)
             total += len(page_text)
-        return "\n".join(parts) or None
+        return "\n".join(parts).strip() or None
 
     return None
 
