@@ -44,5 +44,18 @@ chmod 644 /etc/cron.d/lucyd
 cron
 atd
 
+# ── Co-launch channel bridges if requested ────────────────────────
+# --with-telegram and --with-email start bridge processes alongside
+# the daemon. Bridges still talk to the daemon over HTTP (localhost).
+# For remote bridge deployments, run the bridge standalone instead.
+DAEMON_ARGS=""
+for arg in "$@"; do
+    case "$arg" in
+        --with-telegram) python -P channels/telegram.py & ;;
+        --with-email)    python -P channels/email.py & ;;
+        *)               DAEMON_ARGS="${DAEMON_ARGS:+$DAEMON_ARGS }$arg" ;;
+    esac
+done
+
 # Exec into the daemon — PID 1, receives SIGTERM
-exec python lucyd.py "$@"
+exec python lucyd.py $DAEMON_ARGS
