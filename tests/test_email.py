@@ -383,8 +383,8 @@ class TestSendReply:
         assert sent_msg["To"] == "user@example.com"
         assert sent_msg["Subject"] == "Re: Hello"
 
-    def test_smtp_error_is_caught_and_logged(self) -> None:
-        """SMTP errors are caught and logged, not raised."""
+    def test_smtp_error_is_logged_and_reraised(self) -> None:
+        """SMTP errors are logged and re-raised so callers can handle them."""
         email_mod.SMTP_HOST = "smtp.example.com"
         email_mod.USER = "bot@example.com"
         email_mod.PASSWORD = "pass"
@@ -394,8 +394,8 @@ class TestSendReply:
             "channels.email.smtplib.SMTP_SSL",
             side_effect=smtplib.SMTPException("connection failed"),
         ):
-            # Must not raise
-            email_mod.send_reply("user@example.com", "Re: Hi", "Body")
+            with pytest.raises(smtplib.SMTPException, match="connection failed"):
+                email_mod.send_reply("user@example.com", "Re: Hi", "Body")
 
 
 # ─── 4. Poll loop ────────────────────────────────────────────────
@@ -706,3 +706,95 @@ class TestMain:
 
         mock_load.assert_called_once()
         mock_poll.assert_called_once()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6. Delivery failure notification
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class TestDeliveryFailureNotification:
+    @pytest.mark.asyncio
+    async def test_smtp_failure_notifies_daemon(self) -> None:
+        """SMTP failure POSTs to /api/v1/notify."""
+        email_mod.URL = "http://daemon:8100"
+        mock_client = AsyncMock()
+        mock_client.post.return_value = MagicMock(status_code=202)
+
+        err = smtplib.SMTPException("relay denied")
+        await email_mod._notify_delivery_failure(mock_client, "user@x.com", err)
+
+        mock_client.post.assert_called_once()
+        call_args = mock_client.post.call_args
+        assert "/api/v1/notify" in call_args.args[0]
+        body = call_args.kwargs["json"]
+        assert "user@x.com" in body["message"]
+        assert body["source"] == "email"
+
+    @pytest.mark.asyncio
+    async def test_notify_failure_does_not_raise(self) -> None:
+        """If notify POST fails, it logs but doesn't raise."""
+        email_mod.URL = "http://daemon:8100"
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = Exception("daemon down")
+
+        # Must not raise
+        await email_mod._notify_delivery_failure(
+            mock_client, "user@x.com", Exception("smtp fail"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_smtp_failure_uid_not_marked_processed(self) -> None:
+        """When SMTP send fails, UID is not marked as processed for retry."""
+        email_mod.URL = "http://test-daemon:8100"
+        email_mod.USER = "bot@example.com"
+        email_mod.IMAP_HOST = "imap.example.com"
+        email_mod.SMTP_HOST = "smtp.example.com"
+        email_mod.PASSWORD = "pass"
+        email_mod.POLL_INTERVAL = 10
+        email_mod.FROM_ADDR = "bot@example.com"
+
+        fetched: list[dict[str, Any]] = [{
+            "uid": b"7",
+            "from": "sender@x.com",
+            "subject": "Fail",
+            "body": "test",
+        }]
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"reply": "hi"}
+        mock_client.post.return_value = mock_resp
+
+        sleep_effects: list[Any] = [None, asyncio.CancelledError()]
+
+        def _smtp_fail(*_args: Any, **_kw: Any) -> None:
+            raise smtplib.SMTPException("relay denied")
+
+        with (
+            patch.object(
+                email_mod, "fetch_and_mark",
+                side_effect=[fetched, []],
+            ) as mock_fetch,
+            patch.object(email_mod, "send_reply", side_effect=_smtp_fail),
+            patch("channels.email.httpx.AsyncClient") as mock_ac,
+            patch("channels.email.asyncio.sleep", side_effect=sleep_effects),
+            patch("channels.email.asyncio.get_event_loop") as mock_loop,
+            patch.object(email_mod, "_notify_delivery_failure", new_callable=AsyncMock),
+        ):
+            mock_ac.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_ac.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            async def _run_in_executor(
+                _pool: Any, fn: Any, *args: Any,
+            ) -> Any:
+                return fn(*args)
+            mock_loop.return_value.run_in_executor = AsyncMock(
+                side_effect=_run_in_executor,
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await email_mod.poll_loop()
+
+        # UID 7 should NOT be in the processed list on the second fetch call
+        assert mock_fetch.call_args_list[1] == call([])

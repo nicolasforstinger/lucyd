@@ -2671,6 +2671,118 @@ class TestQueueRoutingInvariant:
 # ─── Log Injection Prevention ────────────────────────────────────
 
 
+class TestOutboundAttachmentEncoding:
+    """Verify outbound attachments are base64-encoded in /chat responses."""
+
+    def test_encode_outbound_attachments(self, tmp_path):
+        """File paths replaced with base64-encoded dicts."""
+        import base64
+
+        f = tmp_path / "voice.mp3"
+        f.write_bytes(b"mp3content")
+
+        result = {"reply": "ok", "attachments": [str(f)]}
+        HTTPApi._encode_outbound_attachments(result)
+
+        atts = result["attachments"]
+        assert len(atts) == 1
+        assert atts[0]["filename"] == "voice.mp3"
+        assert atts[0]["content_type"] == "audio/mpeg"
+        assert base64.b64decode(atts[0]["data"]) == b"mp3content"
+
+    def test_missing_file_skipped_with_warning(self, tmp_path):
+        """Non-existent files are skipped (not included in encoded list)."""
+        result = {"reply": "ok", "attachments": ["/no/such/file.mp3"]}
+        HTTPApi._encode_outbound_attachments(result)
+        assert result["attachments"] == []
+
+    def test_empty_attachments_unchanged(self):
+        """Empty or missing attachments list is a no-op."""
+        result: dict = {"reply": "ok"}
+        HTTPApi._encode_outbound_attachments(result)
+        assert "attachments" not in result
+
+        result2 = {"reply": "ok", "attachments": []}
+        HTTPApi._encode_outbound_attachments(result2)
+        assert result2["attachments"] == []
+
+    def test_multiple_files_encoded(self, tmp_path):
+        """Multiple attachments are all encoded."""
+        import base64
+
+        mp3 = tmp_path / "a.mp3"
+        mp3.write_bytes(b"audio")
+        png = tmp_path / "b.png"
+        png.write_bytes(b"image")
+
+        result = {"reply": "ok", "attachments": [str(mp3), str(png)]}
+        HTTPApi._encode_outbound_attachments(result)
+
+        assert len(result["attachments"]) == 2
+        names = {a["filename"] for a in result["attachments"]}
+        assert names == {"a.mp3", "b.png"}
+        assert result["attachments"][0]["content_type"] == "audio/mpeg"
+        assert result["attachments"][1]["content_type"] == "image/png"
+
+    def test_unknown_extension_gets_octet_stream(self, tmp_path):
+        """Unknown file extensions get application/octet-stream."""
+        f = tmp_path / "data.xyz"
+        f.write_bytes(b"stuff")
+
+        result = {"reply": "ok", "attachments": [str(f)]}
+        HTTPApi._encode_outbound_attachments(result)
+        assert result["attachments"][0]["content_type"] == "application/octet-stream"
+
+    @pytest.mark.asyncio
+    async def test_chat_response_includes_encoded_attachments(self, queue, tmp_path):
+        """Full /chat round-trip: attachments in response are base64-encoded."""
+        import base64
+
+        audio_file = tmp_path / "voice.ogg"
+        audio_file.write_bytes(b"oggcontent")
+
+        api_inst = HTTPApi(
+            queue=queue,
+            host="127.0.0.1",
+            port=0,
+            auth_token="test-token-123",
+            agent_timeout=5.0,
+            trust_localhost=True,
+            **_HTTP_DEFAULTS,
+        )
+        app = _make_app(api_inst)
+
+        async with TestClient(TestServer(app)) as client:
+            async def resolve():
+                await asyncio.sleep(0.05)
+                item = await queue.get()
+                item["response_future"].set_result({
+                    "reply": "here's the audio",
+                    "session_id": "s1",
+                    "tokens": {"input": 10, "output": 5},
+                    "attachments": [str(audio_file)],
+                })
+
+            task = asyncio.create_task(resolve())
+            resp = await client.post(
+                "/api/v1/chat",
+                json={"message": "send voice"},
+                headers={"Authorization": "Bearer test-token-123"},
+            )
+            await task
+
+            assert resp.status == 200
+            body = await resp.json()
+            atts = body["attachments"]
+            assert len(atts) == 1
+            assert atts[0]["filename"] == "voice.ogg"
+            assert atts[0]["content_type"] == "audio/ogg"
+            assert base64.b64decode(atts[0]["data"]) == b"oggcontent"
+
+
+# ─── Log Injection Prevention ────────────────────────────────────
+
+
 class TestLogInjectionPrevention:
     """Verify http_api re-exports _log_safe from log_utils."""
 

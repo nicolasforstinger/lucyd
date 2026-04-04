@@ -164,8 +164,7 @@ async def send_text(chat_id: int, text: str) -> None:
 async def send_attachment(chat_id: int, path: str) -> None:
     p = Path(path)
     if not p.exists():
-        log.warning("Attachment not found: %s", path)
-        return
+        raise FileNotFoundError(f"Attachment not found: {path}")
     ext = p.suffix.lower()
     if ext in (".ogg", ".mp3", ".m4a") or ext.startswith(".audio"):
         with p.open("rb") as f:
@@ -181,12 +180,17 @@ async def send_attachment(chat_id: int, path: str) -> None:
 async def _send_with_retry(send_fn: Callable[[int, str], Awaitable[None]],
                            chat_id: int, payload: str, *,
                            retries: int = 2, delay: float = 1.0) -> None:
-    """Call a Telegram send function with retry on transient failures."""
+    """Call a Telegram send function with retry on transient failures.
+
+    Raises the last exception if all attempts fail.
+    """
+    last_exc: Exception | None = None
     for attempt in range(1 + retries):
         try:
             await send_fn(chat_id, payload)
             return
-        except httpx.ConnectError:
+        except httpx.ConnectError as e:
+            last_exc = e
             await _reset_client()
             if attempt < retries:
                 log.warning("Telegram send ConnectError (attempt %d/%d), client reset",
@@ -195,7 +199,8 @@ async def _send_with_retry(send_fn: Callable[[int, str], Awaitable[None]],
             else:
                 log.error("Telegram send failed after %d attempts (ConnectError)",
                           1 + retries, exc_info=True)
-        except Exception:
+        except Exception as e:
+            last_exc = e
             if attempt < retries:
                 log.warning("Telegram send failed (attempt %d/%d)",
                             attempt + 1, 1 + retries, exc_info=True)
@@ -203,6 +208,8 @@ async def _send_with_retry(send_fn: Callable[[int, str], Awaitable[None]],
             else:
                 log.error("Telegram send failed after %d attempts",
                           1 + retries, exc_info=True)
+    assert last_exc is not None  # guaranteed: loop only exits here on failure
+    raise last_exc
 
 
 # ─── Inbound: Parse Messages ─────────────────────────────────────
@@ -422,10 +429,66 @@ async def process_message(message: dict[str, Any], download_dir: Path,
     reply = data.get("reply", "")
 
     # Deliver to Telegram (with retry + client reset on ConnectError)
+    failures: list[str] = []
     if reply:
-        await _send_with_retry(send_text, chat_id, reply)
-    for att_path in data.get("attachments", []):
-        await _send_with_retry(send_attachment, chat_id, att_path)
+        try:
+            await _send_with_retry(send_text, chat_id, reply)
+        except Exception as e:
+            log.error("Text delivery failed for %s: %s", sender, e)
+            failures.append(f"text: {e}")
+
+    for att in data.get("attachments", []):
+        local_path: str | None = None
+        try:
+            local_path = _decode_outbound_attachment(att, download_dir)
+            await _send_with_retry(send_attachment, chat_id, local_path)
+        except Exception as e:
+            fname = att.get("filename", "?") if isinstance(att, dict) else att
+            log.error("Attachment delivery failed for %s (%s): %s", sender, fname, e)
+            failures.append(f"attachment {fname}: {e}")
+        finally:
+            # Clean up temp file after send (success or failure)
+            if local_path:
+                Path(local_path).unlink(missing_ok=True)
+
+    if failures:
+        await _notify_delivery_failure(sender, failures)
+
+
+def _decode_outbound_attachment(att: dict[str, str], download_dir: Path) -> str:
+    """Decode a base64-encoded outbound attachment to a local temp file.
+
+    Returns the local file path.
+    """
+    data_b64 = att.get("data", "")
+    if not data_b64:
+        raise ValueError("Attachment missing 'data' field")
+    data = base64.b64decode(data_b64)
+    filename = att.get("filename", "attachment")
+    ts = int(time.time() * 1000)
+    local_path = download_dir / f"{ts}_{filename}"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(data)
+    return str(local_path)
+
+
+async def _notify_delivery_failure(sender: str, failures: list[str]) -> None:
+    """POST delivery failure to daemon's /notify endpoint.
+
+    The daemon routes /notify messages to the primary session so the agent
+    learns about the failure on the next turn.
+    """
+    detail = "; ".join(failures)
+    message = f"Delivery to {sender} failed: {detail}"
+    try:
+        client = await _get_client()
+        await client.post(
+            f"{DAEMON_URL}/api/v1/notify",
+            json={"message": message, "source": "telegram"},
+            timeout=10,
+        )
+    except Exception as e:
+        log.error("Failed to notify daemon of delivery failure: %s", e)
 
 
 # ─── Config Loading ──────────────────────────────────────────────

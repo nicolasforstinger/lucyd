@@ -170,7 +170,11 @@ def fetch_and_mark(processed_uids: list[bytes]) -> list[dict[str, Any]]:
 
 
 def send_reply(to: str, subject: str, body: str) -> None:
-    """Send email reply via SMTP."""
+    """Send email reply via SMTP.
+
+    Raises on SMTP failure so the caller can handle it (e.g. skip marking
+    the email as processed, notify the daemon).
+    """
     try:
         msg = MIMEText(body, "plain", "utf-8")
         msg["From"] = FROM_ADDR
@@ -184,6 +188,7 @@ def send_reply(to: str, subject: str, body: str) -> None:
         log.info("Reply sent to %s", to)
     except Exception as e:
         log.error("SMTP error: %s", e, exc_info=True)
+        raise
 
 
 async def poll_loop() -> None:
@@ -221,9 +226,15 @@ async def poll_loop() -> None:
                         subject = msg["subject"]
                         if not subject.lower().startswith("re:"):
                             subject = f"Re: {subject}"
-                        await asyncio.get_event_loop().run_in_executor(
-                            None, send_reply, msg["from"], subject, reply,
-                        )
+                        try:
+                            await asyncio.get_event_loop().run_in_executor(
+                                None, send_reply, msg["from"], subject, reply,
+                            )
+                        except Exception as smtp_err:
+                            await _notify_delivery_failure(
+                                client, msg["from"], smtp_err,
+                            )
+                            continue  # don't mark UID processed — retry next poll
 
                     processed_uids.append(msg["uid"])
 
@@ -231,6 +242,21 @@ async def poll_loop() -> None:
                     log.error("Failed to process email from %s: %s", msg["from"], e, exc_info=True)
 
             await asyncio.sleep(POLL_INTERVAL)
+
+
+async def _notify_delivery_failure(
+    client: httpx.AsyncClient, recipient: str, error: Exception,
+) -> None:
+    """POST delivery failure to daemon's /notify endpoint."""
+    message = f"Email delivery to {recipient} failed: {error}"
+    try:
+        await client.post(
+            f"{URL}/api/v1/notify",
+            json={"message": message, "source": "email"},
+            timeout=10,
+        )
+    except Exception as e:
+        log.error("Failed to notify daemon of delivery failure: %s", e)
 
 
 async def main() -> None:

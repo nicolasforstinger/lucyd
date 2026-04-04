@@ -591,10 +591,9 @@ class TestSendAttachment:
         assert mock_api.call_args.args[0] == "sendDocument"
 
     @pytest.mark.asyncio
-    async def test_missing_file_skips(self) -> None:
-        with patch.object(tg, "tg_api", new_callable=AsyncMock) as mock_api:
+    async def test_missing_file_raises(self) -> None:
+        with pytest.raises(FileNotFoundError, match="Attachment not found"):
             await tg.send_attachment(123, "/no/such/file.txt")
-        mock_api.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_mp3_sends_voice(self, tmp_path: Path) -> None:
@@ -635,9 +634,15 @@ def _msg(
     return m
 
 
-def _daemon_response(reply: str = "OK", attachments: list[str] | None = None,
-                     status_code: int = 200) -> MagicMock:
-    """Build a mock httpx response for the daemon POST."""
+def _daemon_response(
+    reply: str = "OK",
+    attachments: list[dict[str, str]] | None = None,
+    status_code: int = 200,
+) -> MagicMock:
+    """Build a mock httpx response for the daemon POST.
+
+    Attachments are base64-encoded dicts (as returned by the API after encoding).
+    """
     resp = MagicMock()
     resp.status_code = status_code
     body: dict[str, Any] = {"reply": reply}
@@ -646,6 +651,16 @@ def _daemon_response(reply: str = "OK", attachments: list[str] | None = None,
     resp.json.return_value = body
     resp.text = json.dumps(body)
     return resp
+
+
+def _b64_attachment(filename: str = "audio.mp3", content: bytes = b"audiodata",
+                    content_type: str = "audio/mpeg") -> dict[str, str]:
+    """Build a base64-encoded outbound attachment dict."""
+    return {
+        "filename": filename,
+        "content_type": content_type,
+        "data": base64.b64encode(content).decode(),
+    }
 
 
 class TestProcessMessage:
@@ -786,26 +801,37 @@ class TestProcessMessage:
         mock_send.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_daemon_returns_attachments_send_attachment_called(self, tmp_path: Path) -> None:
+    async def test_daemon_returns_attachments_decoded_and_sent(self, tmp_path: Path) -> None:
+        """Outbound base64 attachments are decoded to temp files and sent."""
         tg._bot_id = 0
         tg.ALLOW_FROM = set()
         tg.DAEMON_URL = "http://daemon:8100"
 
+        atts = [
+            _b64_attachment("a.png", b"pngdata", "image/png"),
+            _b64_attachment("b.ogg", b"oggdata", "audio/ogg"),
+        ]
         mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.return_value = _daemon_response("reply", attachments=["/tmp/a.png", "/tmp/b.ogg"])
+        mock_client.post.return_value = _daemon_response("reply", attachments=atts)
+
+        sent_paths: list[str] = []
+
+        async def capture_send(_chat_id: int, path: str) -> None:
+            sent_paths.append(path)
 
         with (
             patch.object(tg, "_get_client", return_value=mock_client),
             patch.object(tg, "tg_api", new_callable=AsyncMock),
             patch.object(tg, "send_text", new_callable=AsyncMock),
-            patch.object(tg, "send_attachment", new_callable=AsyncMock) as mock_sa,
+            patch.object(tg, "send_attachment", side_effect=capture_send) as mock_sa,
             patch.object(tg, "extract_attachments", new_callable=AsyncMock, return_value=[]),
         ):
             await tg.process_message(_msg(), tmp_path)
 
         assert mock_sa.call_count == 2
-        mock_sa.assert_any_call(9999, "/tmp/a.png")
-        mock_sa.assert_any_call(9999, "/tmp/b.ogg")
+        # Verify files were decoded with correct content
+        for path_str in sent_paths:
+            assert "a.png" in path_str or "b.ogg" in path_str
 
     @pytest.mark.asyncio
     async def test_sender_resolved_from_id_to_name(self, tmp_path: Path) -> None:
@@ -852,12 +878,21 @@ class TestSendWithRetry:
         mock_reset.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_exhausts_retries(self) -> None:
-        """All attempts fail → error logged, no exception raised."""
+    async def test_exhausts_retries_and_raises(self) -> None:
+        """All attempts fail → error logged, last exception re-raised."""
         mock_fn = AsyncMock(side_effect=httpx.ConnectError("down"))
         with patch.object(tg, "_reset_client", new_callable=AsyncMock):
-            await tg._send_with_retry(mock_fn, 123, "hello", retries=2, delay=0.0)
+            with pytest.raises(httpx.ConnectError, match="down"):
+                await tg._send_with_retry(mock_fn, 123, "hello", retries=2, delay=0.0)
         assert mock_fn.call_count == 3  # 1 + 2 retries
+
+    @pytest.mark.asyncio
+    async def test_exhausts_retries_generic_exception(self) -> None:
+        """Non-ConnectError exceptions also re-raised after retries."""
+        mock_fn = AsyncMock(side_effect=RuntimeError("api error"))
+        with pytest.raises(RuntimeError, match="api error"):
+            await tg._send_with_retry(mock_fn, 123, "hello", retries=1, delay=0.0)
+        assert mock_fn.call_count == 2
 
     @pytest.mark.asyncio
     async def test_daemon_non_200_no_send(self, tmp_path: Path) -> None:
@@ -1046,3 +1081,139 @@ class TestInboundLoop:
         with patch.object(tg, "tg_api", side_effect=mock_tg_api):
             # Should return without error
             await tg.inbound_loop()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 9. Outbound attachment decoding & delivery failure notification
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class TestDecodeOutboundAttachment:
+    def test_decodes_base64_to_file(self, tmp_path: Path) -> None:
+        att = _b64_attachment("voice.mp3", b"mp3content", "audio/mpeg")
+        local = tg._decode_outbound_attachment(att, tmp_path)
+        assert Path(local).exists()
+        assert Path(local).read_bytes() == b"mp3content"
+        assert "voice.mp3" in local
+
+    def test_missing_data_raises(self, tmp_path: Path) -> None:
+        att = {"filename": "bad.mp3", "content_type": "audio/mpeg"}
+        with pytest.raises(ValueError, match="missing 'data'"):
+            tg._decode_outbound_attachment(att, tmp_path)
+
+    def test_creates_download_dir(self, tmp_path: Path) -> None:
+        subdir = tmp_path / "new" / "deep"
+        att = _b64_attachment()
+        local = tg._decode_outbound_attachment(att, subdir)
+        assert subdir.exists()
+        assert Path(local).exists()
+
+
+class TestDeliveryFailureNotification:
+    @pytest.mark.asyncio
+    async def test_delivery_failure_notifies_daemon(self) -> None:
+        """Failed delivery POSTs to /api/v1/notify."""
+        tg.DAEMON_URL = "http://daemon:8100"
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = MagicMock(status_code=202)
+
+        with patch.object(tg, "_get_client", return_value=mock_client):
+            await tg._notify_delivery_failure("Alice", ["text: ConnectError"])
+
+        mock_client.post.assert_called_once()
+        call_args = mock_client.post.call_args
+        assert "/api/v1/notify" in call_args.args[0]
+        body = call_args.kwargs["json"]
+        assert "Alice" in body["message"]
+        assert body["source"] == "telegram"
+
+    @pytest.mark.asyncio
+    async def test_notify_failure_does_not_raise(self) -> None:
+        """If the notify POST itself fails, it logs but doesn't raise."""
+        tg.DAEMON_URL = "http://daemon:8100"
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.side_effect = httpx.ConnectError("daemon down")
+
+        with patch.object(tg, "_get_client", return_value=mock_client):
+            # Must not raise
+            await tg._notify_delivery_failure("Alice", ["text: error"])
+
+    @pytest.mark.asyncio
+    async def test_partial_delivery_notifies_for_attachment_only(self, tmp_path: Path) -> None:
+        """Text succeeds but attachment fails → notify includes only attachment."""
+        tg._bot_id = 0
+        tg.ALLOW_FROM = set()
+        tg.DAEMON_URL = "http://daemon:8100"
+
+        att = _b64_attachment("voice.mp3", b"data", "audio/mpeg")
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = _daemon_response("hello", attachments=[att])
+
+        with (
+            patch.object(tg, "_get_client", return_value=mock_client),
+            patch.object(tg, "tg_api", new_callable=AsyncMock),
+            patch.object(tg, "send_text", new_callable=AsyncMock),
+            patch.object(tg, "send_attachment", new_callable=AsyncMock,
+                         side_effect=RuntimeError("Telegram API error")),
+            patch.object(tg, "extract_attachments", new_callable=AsyncMock, return_value=[]),
+            patch.object(tg, "_notify_delivery_failure", new_callable=AsyncMock) as mock_notify,
+        ):
+            await tg.process_message(_msg(), tmp_path)
+
+        mock_notify.assert_called_once()
+        failures = mock_notify.call_args.args[1]
+        assert len(failures) == 1
+        assert "voice.mp3" in failures[0]
+
+    @pytest.mark.asyncio
+    async def test_all_deliveries_succeed_no_notification(self, tmp_path: Path) -> None:
+        """Successful delivery → no notify POST."""
+        tg._bot_id = 0
+        tg.ALLOW_FROM = set()
+        tg.DAEMON_URL = "http://daemon:8100"
+
+        att = _b64_attachment("voice.mp3", b"data", "audio/mpeg")
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = _daemon_response("hello", attachments=[att])
+
+        with (
+            patch.object(tg, "_get_client", return_value=mock_client),
+            patch.object(tg, "tg_api", new_callable=AsyncMock),
+            patch.object(tg, "send_text", new_callable=AsyncMock),
+            patch.object(tg, "send_attachment", new_callable=AsyncMock),
+            patch.object(tg, "extract_attachments", new_callable=AsyncMock, return_value=[]),
+            patch.object(tg, "_notify_delivery_failure", new_callable=AsyncMock) as mock_notify,
+        ):
+            await tg.process_message(_msg(), tmp_path)
+
+        mock_notify.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_temp_files_cleaned_up_after_send(self, tmp_path: Path) -> None:
+        """Decoded temp files are deleted after sending."""
+        tg._bot_id = 0
+        tg.ALLOW_FROM = set()
+        tg.DAEMON_URL = "http://daemon:8100"
+
+        att = _b64_attachment("voice.mp3", b"audiodata", "audio/mpeg")
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = _daemon_response("", attachments=[att])
+
+        decoded_paths: list[str] = []
+
+        async def capture_and_check_send(_chat_id: int, path: str) -> None:
+            decoded_paths.append(path)
+            assert Path(path).exists(), "File should exist during send"
+
+        with (
+            patch.object(tg, "_get_client", return_value=mock_client),
+            patch.object(tg, "tg_api", new_callable=AsyncMock),
+            patch.object(tg, "send_text", new_callable=AsyncMock),
+            patch.object(tg, "send_attachment", side_effect=capture_and_check_send),
+            patch.object(tg, "extract_attachments", new_callable=AsyncMock, return_value=[]),
+        ):
+            await tg.process_message(_msg(), tmp_path)
+
+        # After process_message returns, temp files should be cleaned up
+        assert len(decoded_paths) == 1
+        assert not Path(decoded_paths[0]).exists(), "Temp file should be deleted after send"

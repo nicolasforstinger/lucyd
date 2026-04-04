@@ -307,6 +307,55 @@ class HTTPApi:
 
         return attachments
 
+    # ─── Outbound Attachment Encoding ────────────────────────────
+
+    _CONTENT_TYPE_MAP: dict[str, str] = {
+        ".mp3": "audio/mpeg",
+        ".ogg": "audio/ogg",
+        ".oga": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".wav": "audio/wav",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".pdf": "application/pdf",
+    }
+
+    @classmethod
+    def _encode_outbound_attachments(
+        cls, result: dict[str, Any],
+    ) -> None:
+        """Replace file-path attachments with base64-encoded dicts (in-place).
+
+        Outbound attachments are produced by tools (e.g. TTS) and stored as
+        local file paths. Channel bridges run in separate containers and
+        cannot access the daemon's filesystem, so we encode file content
+        into the HTTP response — symmetric with how inbound attachments
+        are base64-encoded by the bridge.
+        """
+        paths: list[str] = result.get("attachments") or []
+        if not paths:
+            return
+
+        encoded: list[dict[str, str]] = []
+        for path_str in paths:
+            p = Path(path_str)
+            if not p.exists():
+                log.warning("Outbound attachment not found, skipping: %s", path_str)
+                continue
+            ct = cls._CONTENT_TYPE_MAP.get(p.suffix.lower(), "application/octet-stream")
+            data = p.read_bytes()
+            encoded.append({
+                "filename": p.name,
+                "content_type": ct,
+                "data": base64.b64encode(data).decode(),
+            })
+            log.debug("Encoded outbound attachment: %s (%d bytes)", p.name, len(data))
+
+        result["attachments"] = encoded
+
     # ─── Message Envelope ─────────────────────────────────────────
 
     _VALID_TASK_TYPES = frozenset(("conversational", "task", "system"))
@@ -448,6 +497,7 @@ class HTTPApi:
 
         try:
             result = await asyncio.wait_for(future, timeout=self.agent_timeout)
+            self._encode_outbound_attachments(result)
             return self._json_response(result, status=200)
         except TimeoutError:
             log.error("HTTP /chat timeout for sender=%s", _log_safe(sender))
