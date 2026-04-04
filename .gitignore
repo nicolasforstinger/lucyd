@@ -42,8 +42,7 @@ ruff.toml
 
 # Local
 build
-deploy/*
-!deploy/entrypoint.sh
+deploy/
 
 # Claude Code
 .claude/
