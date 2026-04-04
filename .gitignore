@@ -44,6 +44,7 @@ ruff.toml
 build
 deploy/
 .dockerignore
+Dockerfile
 
 # Claude Code
 .claude/
