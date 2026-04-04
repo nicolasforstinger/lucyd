@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import metrics
 from messages import AssistantMessage, Message, ToolResultsMessage, UserMessage
 
 log = logging.getLogger(__name__)
@@ -325,6 +326,8 @@ class SessionManager:
         self._save_index()
         self._sessions[contact] = session
         log.info("Created session %s for %s", session_id, contact)
+        if metrics.ENABLED:
+            metrics.SESSION_OPEN_TOTAL.inc()
         return session
 
     def on_close(self, callback: Callable[..., Any]) -> None:

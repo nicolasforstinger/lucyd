@@ -936,6 +936,9 @@ class MessagePipeline:
             )
         except Exception as e:
             await self._handle_agentic_error(ctx, e, _resolve)
+            if metrics.ENABLED:
+                _outcome = "timeout" if isinstance(e, TimeoutError) else "error"
+                metrics.MESSAGE_OUTCOME_TOTAL.labels(outcome=_outcome).inc()
             if stream_queue is not None:
                 # Emit SSE error event before closing the stream
                 await stream_queue.put({"error": str(e), "done": True})
@@ -983,3 +986,14 @@ class MessagePipeline:
                         if len(ctx.cost_rates) >= 3:
                             _cost += u.cache_read_tokens * ctx.cost_rates[2] / 1_000_000
                     metrics.MESSAGE_COST.labels(**_labels).observe(_cost)
+            # Outcome: the single most important quality signal
+            if ctx.response:
+                if ctx.response.cost_limited:
+                    _outcome = "cost_limited"
+                elif ctx.response.stop_reason != "end_turn":
+                    _outcome = "max_turns"
+                else:
+                    _outcome = "resolved"
+            else:
+                _outcome = "error"
+            metrics.MESSAGE_OUTCOME_TOTAL.labels(outcome=_outcome).inc()

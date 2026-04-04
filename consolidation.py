@@ -8,15 +8,15 @@ in SQLite tables managed by memory_schema.py.
 from __future__ import annotations
 
 import contextlib
-
-import metrics
 import hashlib
 import json
 import logging
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
+import metrics
 from messages import Message
 from session import _text_from_content
 
@@ -506,9 +506,12 @@ async def consolidate_session(
 
     try:
         persona_blocks = context_builder.build_stable()
+        _cons_start = time.time()
         facts_added, episode_id, usage = await extract_structured_data(
             text, session_id, provider, persona_blocks, conn, threshold,
         )
+        if metrics.ENABLED:
+            metrics.CONSOLIDATION_DURATION.observe(time.time() - _cons_start)
 
         update_consolidation_state(
             session_id, compaction_count, len(messages), conn,

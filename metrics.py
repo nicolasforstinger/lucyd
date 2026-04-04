@@ -155,6 +155,56 @@ try:
         ["error_type"],
     )
 
+    # ── Observability blindspot metrics ──────────────────────────────
+
+    TTFT = Histogram(
+        "lucyd_ttft_seconds",
+        "Time to first token",
+        ["model", "provider"],
+        buckets=(0.1, 0.2, 0.5, 0.75, 1, 1.5, 2, 3, 5, 8, 10),
+    )
+
+    API_RETRIES_TOTAL = Counter(
+        "lucyd_api_retries_total",
+        "LLM API retry attempts",
+        ["model", "provider"],
+    )
+
+    SESSION_OPEN_TOTAL = Counter(
+        "lucyd_session_open_total",
+        "Sessions created",
+    )
+
+    CONSOLIDATION_DURATION = Histogram(
+        "lucyd_consolidation_duration_seconds",
+        "Consolidation wall-clock duration including LLM extraction",
+        buckets=(0.5, 1, 2, 5, 10, 20, 30, 60),
+    )
+
+    CONTEXT_TRIMS_TOTAL = Counter(
+        "lucyd_context_trims_total",
+        "Mid-loop context trim events",
+    )
+
+    CONTEXT_TRIM_TOKENS = Histogram(
+        "lucyd_context_trim_tokens",
+        "Tokens removed per context trim",
+        buckets=(500, 1000, 2500, 5000, 10000, 25000, 50000),
+    )
+
+    MEMORY_SEARCH_DURATION = Histogram(
+        "lucyd_memory_search_duration_seconds",
+        "Memory search latency",
+        ["search_type"],
+        buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
+    )
+
+    MESSAGE_OUTCOME_TOTAL = Counter(
+        "lucyd_message_outcome_total",
+        "Message processing outcomes",
+        ["outcome"],
+    )
+
     ENABLED = True
 
 except ImportError:

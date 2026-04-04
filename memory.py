@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 
+import metrics
 from async_utils import run_blocking
 from context import _estimate_tokens
 
@@ -73,25 +74,34 @@ class MemoryInterface:
     async def search(self, query: str, top_k: int | None = None) -> list[dict[str, Any]]:
         """Search memory: FTS first, vector fallback."""
         k = top_k or self.top_k
+        _search_start = time.time()
+        _search_type = "fts"
 
-        # Try FTS first
-        fts_results = await self._fts_search(query, k)
-        # Fall back to vector search if FTS returns fewer than 3 results
-        if len(fts_results) >= self.fts_min_results:
+        try:
+            # Try FTS first
+            fts_results = await self._fts_search(query, k)
+            # Fall back to vector search if FTS returns fewer than 3 results
+            if len(fts_results) >= self.fts_min_results:
+                return fts_results
+
+            # Vector fallback
+            if self.api_key:
+                _search_type = "combined"
+                vector_results = await self._vector_search(query, k)
+                # Merge: deduplicate by chunk ID, prefer vector scores
+                seen = {r["id"] for r in fts_results}
+                merged = list(fts_results)
+                for vr in vector_results:
+                    if vr["id"] not in seen:
+                        merged.append(vr)
+                return sorted(merged, key=lambda x: x.get("score", 0), reverse=True)[:k]
+
             return fts_results
-
-        # Vector fallback
-        if self.api_key:
-            vector_results = await self._vector_search(query, k)
-            # Merge: deduplicate by chunk ID, prefer vector scores
-            seen = {r["id"] for r in fts_results}
-            merged = list(fts_results)
-            for vr in vector_results:
-                if vr["id"] not in seen:
-                    merged.append(vr)
-            return sorted(merged, key=lambda x: x.get("score", 0), reverse=True)[:k]
-
-        return fts_results
+        finally:
+            if metrics.ENABLED:
+                metrics.MEMORY_SEARCH_DURATION.labels(search_type=_search_type).observe(
+                    time.time() - _search_start,
+                )
 
     @staticmethod
     def _sanitize_fts5(query: str) -> str:

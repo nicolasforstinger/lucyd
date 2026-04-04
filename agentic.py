@@ -99,6 +99,8 @@ async def _call_provider_with_retry(
                 metrics.TOKENS_TOTAL.labels(direction="output", model=_model, provider=_prov).inc(u.output_tokens)
                 if u.cache_read_tokens:
                     metrics.TOKENS_TOTAL.labels(direction="cache_read", model=_model, provider=_prov).inc(u.cache_read_tokens)
+                if u.cache_write_tokens:
+                    metrics.TOKENS_TOTAL.labels(direction="cache_write", model=_model, provider=_prov).inc(u.cache_write_tokens)
             return response
         except TimeoutError:
             log.error("[%s] API call timed out after %.0fs", trace_id[:8], cfg.timeout)
@@ -115,6 +117,8 @@ async def _call_provider_with_retry(
             log.warning("[%s] Transient API error (attempt %d/%d): %s — retrying in %.1fs",
                         trace_id[:8], attempt + 1, cfg.api_retries + 1, exc, delay)
             last_exc = exc
+            if metrics.ENABLED:
+                metrics.API_RETRIES_TOTAL.labels(model=_model, provider=_prov).inc()
             await asyncio.sleep(delay)
 
     raise last_exc  # type: ignore[misc]  # loop always runs ≥1 iteration; last_exc is set on retry path
@@ -179,6 +183,11 @@ async def _stream_to_response(
         if ttft is None and (delta.text or delta.thinking):
             ttft = time.time() - stream_start
             log.info("TTFT: %.3fs", ttft)
+            if metrics.ENABLED:
+                metrics.TTFT.labels(
+                    model=getattr(provider, "model", ""),
+                    provider=getattr(provider, "provider_name", ""),
+                ).observe(ttft)
 
         # Forward to consumer
         if on_delta:
@@ -327,6 +336,9 @@ async def run_agentic_loop(
                     total_msg -= group_tokens
                     log.info("[%s] Context trimmed: removed turn group (%d msgs, %d tokens), %d remaining",
                              trace_id[:8], group_end - 1, group_tokens, total_msg)
+                    if metrics.ENABLED:
+                        metrics.CONTEXT_TRIMS_TOTAL.inc()
+                        metrics.CONTEXT_TRIM_TOKENS.observe(group_tokens)
 
         fmt_messages = provider.format_messages(messages)
 
