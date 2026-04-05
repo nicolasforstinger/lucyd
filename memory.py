@@ -250,6 +250,10 @@ class MemoryInterface:
             return list(embedding)
         except Exception as e:
             log.error("Embedding failed: %s", e, exc_info=True)
+            if metrics.ENABLED:
+                metrics.API_CALLS_TOTAL.labels(
+                    model=self.model, provider=self.provider, status="error",
+                ).inc()
             return []
 
     async def _get_cached_embedding(self, text: str) -> list[float]:

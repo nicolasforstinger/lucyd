@@ -327,7 +327,9 @@ async def handle_maintain(
     stats: dict[str, Any] = await run_blocking(_run)
 
     if metering_db:
-        stats["metering_deleted"] = metering_db.enforce_retention(12)
+        stats["metering_deleted"] = metering_db.enforce_retention(
+            config.metering_retention_months,
+        )
     else:
         stats["metering_deleted"] = 0
 

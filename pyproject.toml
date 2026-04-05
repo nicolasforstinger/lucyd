@@ -48,12 +48,10 @@ tests_dir = [
     "tests/test_filesystem.py",
     "tests/test_indexer.py",
     "tests/test_memory_tools_structured.py",
-    "tests/test_messaging.py",
     "tests/test_shell_security.py",
     "tests/test_skills.py",
     "tests/test_tool_registry.py",
     "tests/test_tools.py",
-    "tests/test_tts.py",
     "tests/test_web_security.py",
     "tests/test_zero_kill_modules.py",
 ]

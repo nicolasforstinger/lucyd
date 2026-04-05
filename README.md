@@ -65,13 +65,13 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 - **Budget-aware context** — Priority-tiered recall with token budget management
 - **Compaction** — Automatic conversation summarization when context fills up
 - **Skill system** — Markdown skill files with YAML frontmatter, loaded on demand
-- **Cost tracking** — Per-call cost recording in SQLite (EUR). Query via `lucydctl --cost` or `GET /cost`
+- **Cost tracking** — Per-call cost recording in SQLite (EUR). Query via `lucydctl --cost` or `GET /api/v1/cost`
 - **Sub-agents** — Spawn sub-sessions with scoped tools and deny-lists
 - **Voice transcription** — Automatic Whisper transcription of voice messages
 - **Live monitoring** — Real-time agentic loop state via `lucydctl --monitor` and HTTP endpoints
 - **Memory evolution** — Daily rewriting of workspace understanding files via cron
 - **Plugin system** — Drop `.py` files in `plugins.d/` for custom tools and preprocessors
-- **CI quality gate** — `mypy --strict` + 1507 tests on every push via GitHub Actions
+- **CI quality gate** — `mypy --strict` + full test suite on every push via GitHub Actions
 - **Environment agnostic** — Single `LUCYD_DATA_DIR` root. No hardcoded paths
 
 ## Project Structure

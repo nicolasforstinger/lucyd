@@ -269,10 +269,17 @@ def embed_batch(
 
         url = f"{base_url.rstrip('/')}/embeddings"
 
-        resp = httpx.post(url, json={"model": model, "input": batch},
-                          headers={"Authorization": f"Bearer {api_key}"},
-                          timeout=embedding_timeout)
-        resp.raise_for_status()
+        try:
+            resp = httpx.post(url, json={"model": model, "input": batch},
+                              headers={"Authorization": f"Bearer {api_key}"},
+                              timeout=embedding_timeout)
+            resp.raise_for_status()
+        except Exception:
+            if metrics.ENABLED:
+                metrics.API_CALLS_TOTAL.labels(
+                    model=model or "", provider=EMBEDDING_PROVIDER, status="error",
+                ).inc()
+            raise
         data = resp.json()
 
         for item in data["data"]:

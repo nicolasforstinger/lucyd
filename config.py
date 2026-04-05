@@ -187,8 +187,11 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     # Empty string = derive from data_dir at resolution time.
     "state_dir":    (("paths", "state_dir"),    Path, ""),
     "sessions_dir": (("paths", "sessions_dir"), Path, ""),
-    "metering_db":  (("paths", "metering_db"),  Path, ""),
-    "log_file":     (("paths", "log_file"),     Path, ""),
+    "metering_db":           (("paths", "metering_db"),          Path, ""),
+    "log_file":              (("paths", "log_file"),             Path, ""),
+
+    # ── Metering ───────────────────────────────────────────────
+    "metering_retention_months": (("metering", "retention_months"), int, 12),
 
     # ── Conversion ──────────────────────────────────────────────
     "conversion_api_url":     (("conversion", "api_url"),     str,   ""),
