@@ -551,6 +551,47 @@ class TestFallbackText:
         assert resp.text == "Final answer"
         assert "Intermediate" not in resp.text
 
+    @pytest.mark.asyncio
+    async def test_no_fallback_when_tool_produces_attachments(self) -> None:
+        """Fallback text is suppressed when tools produce attachments.
+
+        When the model emits text + tool_use (e.g. tts) in the same turn,
+        the text is a preamble, not the reply.  The attachment (audio file)
+        IS the reply.  Surfacing the preamble sends a spurious text message.
+        """
+        turn1 = LLMResponse(
+            text="hier",
+            tool_calls=[ToolCall(id="tc-tts", name="tts_stub",
+                                 arguments={"text": "hello"})],
+            stop_reason="tool_use",
+            usage=Usage(input_tokens=100, output_tokens=50),
+        )
+        end = _end_turn_response(None)
+        end.text = None
+
+        # Tool that returns an attachment (like tts)
+        def tts_stub(text: str = "") -> dict[str, object]:
+            return {"text": "Generated audio", "attachments": ["/tmp/audio.mp3"]}
+
+        reg = _make_registry()
+        reg.register(ToolSpec(
+            name="tts_stub", description="tts stub",
+            input_schema={"type": "object"}, function=tts_stub,
+        ))
+
+        provider = MockProvider([turn1, end])
+        messages: list[dict[str, object]] = [{"role": "user", "content": "test"}]
+
+        resp = await run_agentic_loop(
+            provider=provider, system=[], messages=messages,
+            tools=reg.get_schemas(), tool_executor=reg,
+            config=replace(_LOOP_CONFIG, max_turns=5),
+        )
+        # Preamble "hier" must NOT become response.text
+        assert resp.text is None or resp.text == ""
+        # Attachment from tts must be present
+        assert resp.attachments == ["/tmp/audio.mp3"]
+
 
 class TestToolsFormatting:
     """Mutant #12: fmt_tools = ... → None"""

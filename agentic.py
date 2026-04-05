@@ -374,8 +374,9 @@ async def run_agentic_loop(
             log.warning("[%s] Cost limit reached: $%.4f > $%.2f (turn %d)",
                         trace_id[:8], accumulated_cost, max_cost, turn)
             response.cost_limited = True
-            # Preserve any agent text; fall back to intermediate text
-            if not response.text and fallback_text:
+            # Preserve any agent text; fall back to intermediate text.
+            # Skip when tools produced attachments — the attachment is the reply.
+            if not response.text and fallback_text and not all_attachments:
                 response.text = "\n\n".join(fallback_text)
             response.attachments = all_attachments
             response.turns = turn + 1
@@ -417,7 +418,9 @@ async def run_agentic_loop(
         # tool_calls alongside text are treated as the final response.
         # This prevents re-entering the loop when the model intended to stop.
         if not response.tool_calls or response.stop_reason == "end_turn":
-            if not response.text and fallback_text:
+            # Skip fallback when tools produced attachments — the attachment
+            # is the reply (e.g. tts audio), not the pre-tool-call preamble.
+            if not response.text and fallback_text and not all_attachments:
                 response.text = "\n\n".join(fallback_text)
             response.attachments = all_attachments
             response.turns = turn + 1
@@ -538,7 +541,7 @@ async def run_agentic_loop(
         stop_msg = f"\n[Stopped: maximum tool-use turns ({max_turns}) reached]"
         if response.text:
             response.text += stop_msg
-        elif fallback_text:
+        elif fallback_text and not all_attachments:
             response.text = "\n\n".join(fallback_text) + stop_msg
         else:
             response.text = stop_msg
