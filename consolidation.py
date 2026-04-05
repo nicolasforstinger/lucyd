@@ -457,6 +457,8 @@ def _record_extraction_cost(
     model_name: str = "",
     cost_rates: list[float] | None = None,
     trace_id: str = "",
+    converter: Any = None,
+    currency: str = "EUR",
 ) -> None:
     """Record extraction cost via metering."""
     if not usage or not cost_rates:
@@ -467,6 +469,7 @@ def _record_extraction_cost(
             model=model_name, provider="",
             usage=usage, cost_rates=cost_rates,
             call_type="consolidation", trace_id=trace_id,
+            converter=converter, currency=currency,
         )
 
 
@@ -482,6 +485,7 @@ async def consolidate_session(
     conn: sqlite3.Connection,
     trace_id: str = "",
     metering: Any = None,
+    converter: Any = None,
 ) -> dict[str, Any]:
     """Run full consolidation on a session's messages.
 
@@ -528,9 +532,11 @@ async def consolidate_session(
     model_cfg = config.model_config(model_role) if hasattr(config, "model_config") else {}
     cost_rates = model_cfg.get("cost_per_mtok")
     display_name = model_cfg.get("model", model_role)
+    currency = model_cfg.get("currency", "EUR")
     _record_extraction_cost(
         usage, metering=metering, session_id=session_id,
         model_name=display_name, cost_rates=cost_rates, trace_id=trace_id,
+        converter=converter, currency=currency,
     )
 
     return {"facts_added": facts_added, "episode_id": episode_id}
@@ -546,6 +552,8 @@ async def extract_from_file(
     model_name: str = "",
     cost_rates: list[float] | None = None,
     metering: Any = None,
+    converter: Any = None,
+    currency: str = "EUR",
 ) -> int:
     """Extract facts from a workspace markdown file.
 
@@ -591,6 +599,7 @@ async def extract_from_file(
         usage, metering=metering,
         session_id=f"file:{file_path}",
         model_name=model_name, cost_rates=cost_rates,
+        converter=converter, currency=currency,
     )
 
     return count

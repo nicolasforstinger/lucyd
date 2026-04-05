@@ -2,12 +2,13 @@
 # Copy to anthropic.toml and customize. The .example file is committed as a template.
 type = "anthropic"
 api_key_env = "LUCYD_ANTHROPIC_KEY"
+currency = "USD"
 
 [models.primary]
 model = "claude-sonnet-4-6"
 max_tokens = 65536
 max_context_tokens = 200000
-cost_per_mtok = [3.0, 15.0, 0.3]   # [input, output, cache_read]
+cost_per_mtok = [3.0, 15.0, 0.3, 3.75]   # [input, output, cache_read, cache_write]
 cache_control = true
 thinking_enabled = true
 thinking_mode = "adaptive"          # "adaptive" | "budgeted" | "disabled"

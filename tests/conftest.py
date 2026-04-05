@@ -145,7 +145,7 @@ def minimal_toml_data():
                 "provider": "anthropic",
                 "model": "claude-opus-4-6",
                 "max_tokens": 16384,
-                "cost_per_mtok": [5.0, 25.0, 0.5],
+                "cost_per_mtok": [5.0, 25.0, 0.5, 6.25],
                 "cache_control": True,
                 "thinking_enabled": True,
                 "thinking_budget": 10000,

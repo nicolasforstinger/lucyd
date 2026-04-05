@@ -110,6 +110,7 @@ class LucydDaemon:
         self._http_api: Any = None
         self._memory_conn: Any = None
         self.metering_db: Any = None
+        self.converter: Any = None
         self._evolve_rollback_tag: str | None = None
         self.pipeline: Any = None  # MessagePipeline, set in run()
 
@@ -264,9 +265,11 @@ class LucydDaemon:
                 fts_min_results=self.config.fts_min_results,
                 sqlite_timeout=self.config.sqlite_timeout,
             )
-            # Wire metering for embedding cost tracking
+            # Wire metering + conversion for embedding cost tracking
             if self.metering_db:
                 memory.metering = self.metering_db
+            if self.converter:
+                memory.converter = self.converter
             if self.config.consolidation_enabled:
                 conn = self._get_memory_conn()
 
@@ -284,6 +287,7 @@ class LucydDaemon:
             "session_getter": lambda: self.pipeline.current_session if self.pipeline else None,
             "start_time": self.start_time,
             "metering": self.metering_db,
+            "converter": self.converter,
         }
 
         def _configure_and_register(module: Any, source: str = "") -> None:
@@ -399,6 +403,19 @@ class LucydDaemon:
             sqlite_timeout=self.config.sqlite_timeout,
         )
 
+    def _init_conversion(self) -> None:
+        """Initialize currency converter from config."""
+        api_url = self.config.conversion_api_url
+        static_rate = self.config.conversion_static_rate
+        if api_url or static_rate != 1.0:
+            from conversion import CurrencyConverter
+            self.converter = CurrencyConverter(
+                api_url=api_url, static_rate=static_rate,
+            )
+            log.info("Currency conversion: api=%s static=%.4f",
+                     api_url or "(disabled)", static_rate)
+        else:
+            self.converter = None
 
     # ── Pipeline delegation ─────────────────────────────────────────
 
@@ -679,6 +696,7 @@ class LucydDaemon:
         return await ops.handle_consolidate(
             self.config, self._get_memory_conn,
             self.get_provider, self.metering_db,
+            converter=self.converter,
         )
 
     async def _handle_maintain(self) -> dict[str, Any]:
@@ -882,6 +900,7 @@ class LucydDaemon:
             self._init_skills()
             self._init_context()
             self._init_metering()
+            self._init_conversion()
             self._init_tools()
 
             # Create message pipeline — the core runtime path
@@ -899,6 +918,7 @@ class LucydDaemon:
                 preprocessors=self._preprocessors,
                 queue=self.queue,
                 on_pre_close=self._pre_close_hook,
+                converter=self.converter,
             )
 
             # Patch session_getter to point at pipeline's current_session

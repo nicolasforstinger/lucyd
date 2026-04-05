@@ -13,4 +13,4 @@ base_url = "http://llama-server-vision:8081/v1"
 model = "qwen3-vl-8b"
 max_tokens = 2048
 supports_vision = true
-cost_per_mtok = [0.0, 0.0, 0.0]    # local inference — no API cost
+cost_per_mtok = [0.0, 0.0, 0.0, 0.0]    # local inference — no API cost

@@ -255,6 +255,7 @@ async def handle_consolidate(
     get_memory_conn: Callable[[], Any],
     get_provider: Callable[[str], Any],
     metering_db: MeteringDB | None,
+    converter: Any = None,
 ) -> dict[str, Any]:
     """Run memory consolidation — extract facts from workspace files."""
     conn = get_memory_conn()
@@ -265,6 +266,7 @@ async def handle_consolidate(
     fact_model_cfg = config.model_config("primary")
     model_name = fact_model_cfg.get("model", "primary")
     cost_rates = fact_model_cfg.get("cost_per_mtok", [])
+    currency = fact_model_cfg.get("currency", "EUR")
 
     file_list = scan_workspace(
         config.workspace,
@@ -282,6 +284,8 @@ async def handle_consolidate(
                 model_name=model_name,
                 cost_rates=cost_rates,
                 metering=metering_db,
+                converter=converter,
+                currency=currency,
             )
             if count:
                 files_with_facts += 1

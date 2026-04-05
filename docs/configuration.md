@@ -104,12 +104,13 @@ Each provider file (`providers.d/*.toml`) has top-level connection settings and 
 # providers.d/anthropic.toml
 type = "anthropic"
 api_key_env = "LUCYD_ANTHROPIC_KEY"
+currency = "USD"
 
 [models.primary]
 model = "claude-sonnet-4-6"
 max_tokens = 65536
 max_context_tokens = 200000
-cost_per_mtok = [3.0, 15.0, 0.3]   # [input, output, cache_read]
+cost_per_mtok = [3.0, 15.0, 0.3, 3.75]   # [input, output, cache_read, cache_write]
 cache_control = true
 thinking_enabled = true
 thinking_mode = "adaptive"          # "adaptive" | "budgeted" | "disabled"
@@ -139,8 +140,14 @@ Model names (`primary`, `embeddings`) are referenced by behavior settings and th
 | `model` | Model identifier passed to the provider API (e.g., `"claude-sonnet-4-6"`) |
 | `max_tokens` | Maximum output tokens per API call |
 | `max_context_tokens` | Maximum input context window size (used by `session_status` tool for context % display) |
-| `cost_per_mtok` | Cost per million tokens as `[input, output, cache_read]` — used for cost tracking |
+| `cost_per_mtok` | Cost per million tokens as `[input, output, cache_read, cache_write]` — used for cost tracking |
 | `supports_vision` | Enable vision/image input for this model (default: `false` — must be declared per-model in provider files) |
+
+**Provider-level options (inherited by all models in the file):**
+
+| Option | Purpose |
+|---|---|
+| `currency` | Billing currency for this provider (e.g., `"USD"`, `"EUR"`). Default: `"EUR"`. Used with `[conversion]` to convert costs to EUR. |
 
 **Provider-specific options:**
 
@@ -423,6 +430,21 @@ Cost tracking configuration.
 currency = "EUR"           # Display currency for cost reports (default: EUR)
 retention_months = 12      # Delete metering records older than this via lucydctl --maintain (default: 12)
 ```
+
+## [conversion]
+
+Currency conversion for multi-currency cost tracking. Converts provider-native costs (e.g., USD for Anthropic/OpenAI) to EUR using an FX rate API. Requires `currency` to be set in provider config files.
+
+```toml
+[conversion]
+api_url = "https://api.frankfurter.dev/v2/rate/EUR/USD"  # FX rate API endpoint ("" = static-only)
+static_rate = 1.15                                       # Fallback rate when API is unavailable (1 EUR = X foreign)
+```
+
+| Option | Purpose |
+|---|---|
+| `api_url` | FX rate API endpoint. Any JSON API returning `{"rate": float}`. Empty string disables API fetching. |
+| `static_rate` | Fallback rate used when `api_url` is empty or the API is unreachable. `1.0` = no conversion. |
 
 ## [media]
 

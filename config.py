@@ -189,6 +189,10 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     "sessions_dir": (("paths", "sessions_dir"), Path, ""),
     "metering_db":  (("paths", "metering_db"),  Path, ""),
     "log_file":     (("paths", "log_file"),     Path, ""),
+
+    # ── Conversion ──────────────────────────────────────────────
+    "conversion_api_url":     (("conversion", "api_url"),     str,   ""),
+    "conversion_static_rate": (("conversion", "static_rate"), float, 1.0),
 }
 
 

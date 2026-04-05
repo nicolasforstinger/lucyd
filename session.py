@@ -395,11 +395,15 @@ class SessionManager:
     ) -> None:
         """Compact old messages using a summarization model."""
         metering = None
+        converter = None
+        currency = "EUR"
         if cost is not None:
             metering = cost.metering
             model_name = cost.model_name
             cost_rates = cost.cost_rates
             provider_name = cost.provider_name
+            converter = cost.converter
+            currency = cost.currency
         if len(session.messages) < min_messages:
             return
 
@@ -478,6 +482,7 @@ class SessionManager:
                 model=model_name, provider=provider_name,
                 usage=response.usage, cost_rates=cost_rates,
                 call_type="compaction", trace_id=trace_id,
+                converter=converter, currency=currency,
             )
 
         # Replace old messages with summary + compaction marker

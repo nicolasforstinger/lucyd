@@ -132,6 +132,49 @@ class TestRecord:
         types = [r["call_type"] for r in rows]
         assert types == ["agentic", "compaction", "consolidation", "embedding"]
 
+    def test_four_element_rates_include_cache_write(self, metering_db):
+        usage = MockUsage(input_tokens=1000, output_tokens=500,
+                          cache_read_tokens=200, cache_write_tokens=100)
+        cost = metering_db.record(
+            "s", "m", "p", usage, [3.0, 15.0, 0.3, 3.75],
+        )
+        expected = (1000 * 3.0 + 500 * 15.0 + 200 * 0.3 + 100 * 3.75) / 1e6
+        assert abs(cost - expected) < 1e-9
+
+    def test_three_element_rates_backward_compatible(self, metering_db):
+        """Old 3-element rates still work — cache_write defaults to 0."""
+        usage = MockUsage(input_tokens=1000, output_tokens=500,
+                          cache_read_tokens=200, cache_write_tokens=100)
+        cost = metering_db.record(
+            "s", "m", "p", usage, [3.0, 15.0, 0.3],
+        )
+        expected = (1000 * 3.0 + 500 * 15.0 + 200 * 0.3) / 1e6
+        assert abs(cost - expected) < 1e-9
+
+    def test_converter_applied_for_non_eur(self, metering_db):
+        """Converter is called when currency != EUR."""
+        usage = MockUsage(input_tokens=1000000, output_tokens=0)
+        from unittest.mock import MagicMock
+        converter = MagicMock()
+        converter.convert.return_value = 2.6087
+        cost = metering_db.record(
+            "s", "m", "p", usage, [3.0],
+            converter=converter, currency="USD",
+        )
+        converter.convert.assert_called_once()
+        assert cost == 2.6087
+
+    def test_converter_not_called_for_eur(self, metering_db):
+        """Converter is skipped when currency is EUR."""
+        usage = MockUsage(input_tokens=1000000, output_tokens=0)
+        from unittest.mock import MagicMock
+        converter = MagicMock()
+        metering_db.record(
+            "s", "m", "p", usage, [3.0],
+            converter=converter, currency="EUR",
+        )
+        converter.convert.assert_not_called()
+
 
 # ── Queries ───────────────────────────────────────────────────────
 

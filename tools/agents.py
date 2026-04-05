@@ -22,6 +22,7 @@ _provider: Any = None
 _get_provider: Any = None  # callback(role) → provider; uses routed subagent model
 _tool_registry: Any = None
 _metering: Any = None  # MeteringDB instance
+_converter: Any = None  # CurrencyConverter instance
 # Active deny set — set by config at configure() time
 _subagent_deny: set[str] = set()
 
@@ -39,9 +40,9 @@ _MEMORY_CONVENTIONS: list[str] = [
 
 def configure(config: Any = None, provider: Any = None, tool_registry: Any = None,
               session_manager: Any = None, get_provider: Any = None,
-              metering: Any = None, **_: Any) -> None:
+              metering: Any = None, converter: Any = None, **_: Any) -> None:
     global _config, _provider, _get_provider, _tool_registry, _subagent_deny
-    global _default_max_turns, _default_timeout, _metering
+    global _default_max_turns, _default_timeout, _metering, _converter
     if config is not None:
         _config = config
     if provider is not None:
@@ -52,6 +53,8 @@ def configure(config: Any = None, provider: Any = None, tool_registry: Any = Non
         _tool_registry = tool_registry
     if metering is not None:
         _metering = metering
+    if converter is not None:
+        _converter = converter
     # Apply deny-list from config
     if config is not None:
         deny = config.subagent_deny
@@ -181,6 +184,8 @@ async def tool_sessions_spawn(
         session_id=f"sub-{parent_session_id}" if parent_session_id else "",
         model_name=model_name or model_cfg.get("model", ""),
         cost_rates=model_cfg.get("cost_per_mtok", []),
+        currency=model_cfg.get("currency", "EUR"),
+        converter=_converter,
     )
 
     try:

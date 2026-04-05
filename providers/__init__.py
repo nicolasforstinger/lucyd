@@ -66,6 +66,8 @@ class CostContext:
     model_name: str
     cost_rates: list[float]
     provider_name: str = ""
+    currency: str = "EUR"
+    converter: Any = None  # CurrencyConverter | None
 
     @classmethod
     def none(cls) -> "CostContext":

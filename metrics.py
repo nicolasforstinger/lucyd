@@ -205,6 +205,13 @@ try:
         ["outcome"],
     )
 
+    # ── Currency conversion ──────────────────────────────────────────
+
+    FX_FETCH_ERRORS_TOTAL = Counter(
+        "lucyd_fx_fetch_errors_total",
+        "FX rate API fetch failures",
+    )
+
     ENABLED = True
 
 except ImportError:

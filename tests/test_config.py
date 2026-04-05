@@ -22,14 +22,14 @@ class TestValidConfig:
         assert cfg.model_config("primary")["model"] == "claude-opus-4-6"
         assert "embeddings" in cfg._data.get("models", {})
 
-    def test_model_cost_per_mtok_is_three_elements(self, minimal_toml_data):
-        """cost_per_mtok must be [input, output, cache_read]."""
+    def test_model_cost_per_mtok_is_four_elements(self, minimal_toml_data):
+        """cost_per_mtok must be [input, output, cache_read, cache_write]."""
         cfg = Config(minimal_toml_data)
         primary = cfg.model_config("primary")
         rates = primary["cost_per_mtok"]
         assert isinstance(rates, list)
-        assert len(rates) == 3
-        assert rates == [5.0, 25.0, 0.5]
+        assert len(rates) == 4
+        assert rates == [5.0, 25.0, 0.5, 6.25]
 
     def test_thinking_config_on_primary(self, minimal_toml_data):
         """Primary model has thinking_enabled and thinking_budget."""

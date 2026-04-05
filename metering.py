@@ -102,20 +102,27 @@ class MeteringDB:
         success: bool = True,
         error_type: str | None = None,
         currency: str = "EUR",
+        converter: Any = None,
     ) -> float:
-        """Record an API call and return calculated cost."""
+        """Record an API call and return calculated cost in EUR."""
         if not cost_rates:
             return 0.0
 
         input_rate = cost_rates[0] if len(cost_rates) > 0 else 0.0
         output_rate = cost_rates[1] if len(cost_rates) > 1 else 0.0
-        cache_rate = cost_rates[2] if len(cost_rates) > 2 else 0.0
+        cache_read_rate = cost_rates[2] if len(cost_rates) > 2 else 0.0
+        cache_write_rate = cost_rates[3] if len(cost_rates) > 3 else 0.0
 
         cost_val = (
             usage.input_tokens * input_rate / 1_000_000
             + usage.output_tokens * output_rate / 1_000_000
-            + usage.cache_read_tokens * cache_rate / 1_000_000
+            + usage.cache_read_tokens * cache_read_rate / 1_000_000
+            + usage.cache_write_tokens * cache_write_rate / 1_000_000
         )
+
+        # Convert to EUR if the provider bills in a different currency
+        if converter is not None and currency != "EUR":
+            cost_val = converter.convert(cost_val, currency)
 
         now = int(time.time())
         billing_period = _current_billing_period()

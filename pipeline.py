@@ -184,6 +184,7 @@ class _MessageState:
     model_name: str = ""
     provider_name: str = ""
     cost_rates: list[float] = field(default_factory=list)
+    currency: str = "EUR"
     fmt_system: Any = None
     tools: list[dict[str, Any]] = field(default_factory=list)
     msg_count_before: int = 0
@@ -216,6 +217,7 @@ class MessagePipeline:
         preprocessors: list[dict[str, Any]],
         queue: asyncio.Queue[dict[str, Any]],
         on_pre_close: Callable[[str], None] | None = None,
+        converter: Any = None,
     ) -> None:
         self._config = config
         self._provider = provider
@@ -225,6 +227,7 @@ class MessagePipeline:
         self._tool_registry = tool_registry
         self._skill_loader = skill_loader
         self._metering_db = metering_db
+        self._converter = converter
         self._get_memory_conn = get_memory_conn
         self._preprocessors = preprocessors
         self._queue = queue
@@ -556,6 +559,8 @@ class MessagePipeline:
                     model_name=ctx.model_name,
                     cost_rates=ctx.cost_rates,
                     provider_name=ctx.provider_name,
+                    currency=ctx.currency,
+                    converter=self._converter,
                 )
                 loop_cfg = LoopConfig(
                     max_turns=self._config.max_turns,
@@ -766,6 +771,7 @@ class MessagePipeline:
                     conn=conn,
                     metering=self._metering_db,
                     trace_id=ctx.trace_id,
+                    converter=self._converter,
                 )
                 if result["facts_added"] or result.get("episode_id"):
                     log.info("consolidation: %d facts, episode=%s",
@@ -781,6 +787,8 @@ class MessagePipeline:
             model_name=ctx.model_name,
             cost_rates=ctx.cost_rates,
             provider_name=ctx.provider_name,
+            currency=ctx.currency,
+            converter=self._converter,
         )
         _pre_tokens = session.last_input_tokens
         await self._session_mgr.compact_session(
@@ -874,6 +882,7 @@ class MessagePipeline:
             model_name=model_cfg.get("model", ""),
             provider_name=model_cfg.get("provider", ""),
             cost_rates=model_cfg.get("cost_per_mtok", []),
+            currency=model_cfg.get("currency", "EUR"),
             force_compact=force_compact,
         )
 
@@ -985,6 +994,8 @@ class MessagePipeline:
                                  + u.output_tokens * ctx.cost_rates[1]) / 1_000_000
                         if len(ctx.cost_rates) >= 3:
                             _cost += u.cache_read_tokens * ctx.cost_rates[2] / 1_000_000
+                        if len(ctx.cost_rates) >= 4:
+                            _cost += u.cache_write_tokens * ctx.cost_rates[3] / 1_000_000
                     metrics.MESSAGE_COST.labels(**_labels).observe(_cost)
             # Outcome: the single most important quality signal
             if ctx.response:

@@ -156,6 +156,7 @@ async def run_single_shot(
             model=cc.model_name, provider=cc.provider_name,
             usage=response.usage, cost_rates=cc.cost_rates,
             trace_id=trace_id,
+            converter=cc.converter, currency=cc.currency,
         )
 
     if on_response:
@@ -364,6 +365,7 @@ async def run_agentic_loop(
                 model=cc.model_name, provider=cc.provider_name,
                 usage=response.usage, cost_rates=cc.cost_rates,
                 trace_id=trace_id,
+                converter=cc.converter, currency=cc.currency,
             )
             accumulated_cost += turn_cost
             if metrics.ENABLED:

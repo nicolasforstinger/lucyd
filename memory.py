@@ -63,6 +63,7 @@ class MemoryInterface:
         self.provider = embedding_provider
         self.embedding_timeout = embedding_timeout
         self.metering = None  # Set externally for embedding cost tracking
+        self.converter: Any = None  # Set externally for FX conversion
         self.top_k = top_k
         self.vector_search_limit = vector_search_limit
         self.fts_min_results = fts_min_results
@@ -238,6 +239,7 @@ class MemoryInterface:
                     model=self.model, provider=self.provider,
                     usage=usage, cost_rates=_DEFAULT_EMBEDDING_COST_RATES,
                     call_type="embedding", latency_ms=latency_ms,
+                    converter=self.converter, currency="USD",
                 )
 
             # Cache it
