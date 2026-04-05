@@ -91,16 +91,10 @@ async def _call_provider_with_retry(
                     provider.complete(system, fmt_messages, fmt_tools),
                     timeout=cfg.timeout,
                 )
-            if metrics.ENABLED:
-                metrics.API_LATENCY.labels(model=_model, provider=_prov).observe(time.time() - _api_start)
-                metrics.API_CALLS_TOTAL.labels(model=_model, provider=_prov, status="success").inc()
-                u = response.usage
-                metrics.TOKENS_TOTAL.labels(direction="input", model=_model, provider=_prov).inc(u.input_tokens)
-                metrics.TOKENS_TOTAL.labels(direction="output", model=_model, provider=_prov).inc(u.output_tokens)
-                if u.cache_read_tokens:
-                    metrics.TOKENS_TOTAL.labels(direction="cache_read", model=_model, provider=_prov).inc(u.cache_read_tokens)
-                if u.cache_write_tokens:
-                    metrics.TOKENS_TOTAL.labels(direction="cache_write", model=_model, provider=_prov).inc(u.cache_write_tokens)
+            response._api_latency_ms = int((time.time() - _api_start) * 1000)
+            metrics.record_api_call(
+                _model, _prov, response.usage, latency_ms=response._api_latency_ms,
+            )
             return response
         except TimeoutError:
             log.error("[%s] API call timed out after %.0fs", trace_id[:8], cfg.timeout)
@@ -151,11 +145,12 @@ async def run_single_shot(
     messages.append(response.to_internal_message())
 
     if cc.metering and cc.cost_rates:
-        cc.metering.record(
+        latency = getattr(response, "_api_latency_ms", None)
+        response.total_cost = cc.metering.record(
             session_id=cc.session_id,
             model=cc.model_name, provider=cc.provider_name,
             usage=response.usage, cost_rates=cc.cost_rates,
-            trace_id=trace_id,
+            trace_id=trace_id, latency_ms=latency,
             converter=cc.converter, currency=cc.currency,
         )
 
@@ -358,18 +353,17 @@ async def run_agentic_loop(
             f" thinking={response.thinking[:40]}..." if response.thinking else "",
         )
 
-        # Track cost
+        # Track cost (Prometheus emission happens inside metering.record)
         if cc.metering and cc.cost_rates:
+            latency = getattr(response, "_api_latency_ms", None)
             turn_cost = cc.metering.record(
                 session_id=cc.session_id,
                 model=cc.model_name, provider=cc.provider_name,
                 usage=response.usage, cost_rates=cc.cost_rates,
-                trace_id=trace_id,
+                trace_id=trace_id, latency_ms=latency,
                 converter=cc.converter, currency=cc.currency,
             )
             accumulated_cost += turn_cost
-            if metrics.ENABLED:
-                metrics.API_COST.labels(model=cc.model_name, provider=cc.provider_name).inc(turn_cost)
 
         # Max cost circuit breaker
         if max_cost > 0 and accumulated_cost > max_cost:
@@ -382,6 +376,7 @@ async def run_agentic_loop(
                 response.text = "\n\n".join(fallback_text)
             response.attachments = all_attachments
             response.turns = turn + 1
+            response.total_cost = accumulated_cost
             return response
 
         # Add to messages
@@ -426,6 +421,7 @@ async def run_agentic_loop(
                 response.text = "\n\n".join(fallback_text)
             response.attachments = all_attachments
             response.turns = turn + 1
+            response.total_cost = accumulated_cost
             return response
 
         # Context pressure check (Challenge 6): inject wrap-up hint
@@ -549,6 +545,7 @@ async def run_agentic_loop(
             response.text = stop_msg
         response.attachments = all_attachments
     response.turns = max_turns  # type: ignore[union-attr]  # response is always set when loop exits normally
+    response.total_cost = accumulated_cost  # type: ignore[union-attr]
     return response  # type: ignore[return-value]  # same — mypy can't prove the loop body always executes
 
 

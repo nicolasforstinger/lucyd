@@ -85,12 +85,16 @@ class LLMResponse:
     raw: Any = None
     # Full thinking block with signature for Anthropic tool-use continuity
     _thinking_block: dict[str, Any] | None = field(default=None, repr=False)
+    # API call latency (set by _call_provider_with_retry for metering)
+    _api_latency_ms: int | None = field(default=None, repr=False)
     # Set by agentic loop when per-message cost limit is exceeded
     cost_limited: bool = False
     # File paths produced by tools during the agentic loop
     attachments: list[str] = field(default_factory=list)
     # Agentic loop turn count (set by run_agentic_loop)
     turns: int = 0
+    # Accumulated cost across all turns (set by agentic loop / single-shot)
+    total_cost: float = 0.0
 
     def to_internal_message(self) -> AssistantMessage:
         """Convert to internal message format for session storage."""

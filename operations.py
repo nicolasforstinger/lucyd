@@ -215,7 +215,12 @@ async def handle_evolve(
 # ─── Indexing ────────────────────────────────────────────────────
 
 
-async def handle_index(config: Config, full: bool = False) -> dict[str, Any]:
+async def handle_index(
+    config: Config,
+    full: bool = False,
+    metering: Any = None,
+    converter: Any = None,
+) -> dict[str, Any]:
     """Run workspace indexing in a blocking thread."""
     from async_utils import run_blocking
     from tools.indexer import configure as indexer_configure
@@ -227,6 +232,10 @@ async def handle_index(config: Config, full: bool = False) -> dict[str, Any]:
         embed_batch_limit=config.indexer_embed_batch_limit,
         embedding_model=config.embedding_model,
         embedding_base_url=config.embedding_base_url,
+        metering=metering,
+        converter=converter,
+        cost_rates=config.embedding_cost_rates,
+        currency=config.embedding_currency,
     )
 
     summary: dict[str, Any] = await run_blocking(

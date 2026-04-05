@@ -154,6 +154,8 @@ def minimal_toml_data():
                 "provider": "openai",
                 "model": "text-embedding-3-small",
                 "base_url": "https://api.openai.com/v1",
+                "cost_per_mtok": [0.02, 0.0, 0.0, 0.0],
+                "currency": "USD",
             },
         },
         "memory": {

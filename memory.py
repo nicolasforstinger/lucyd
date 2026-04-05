@@ -27,10 +27,6 @@ from context import _estimate_tokens
 
 log = logging.getLogger(__name__)
 
-# Default cost rates for embedding models [input, output, cache] per million tokens.
-# Override via config if the deployment uses a different embedding pricing tier.
-_DEFAULT_EMBEDDING_COST_RATES: list[float] = [0.02, 0.0, 0.0]
-
 def cosine_sim(a: list[float], b: list[float]) -> float:
     """Pure-Python cosine similarity."""
     dot = sum(x * y for x, y in zip(a, b, strict=True))
@@ -51,6 +47,8 @@ class MemoryInterface:
         embedding_provider: str = "",
         *,
         embedding_timeout: int,
+        embedding_cost_rates: list[float] | None = None,
+        embedding_currency: str = "EUR",
         top_k: int,
         vector_search_limit: int,
         fts_min_results: int,
@@ -62,7 +60,9 @@ class MemoryInterface:
         self.base_url = embedding_base_url.rstrip("/")
         self.provider = embedding_provider
         self.embedding_timeout = embedding_timeout
-        self.metering = None  # Set externally for embedding cost tracking
+        self.cost_rates: list[float] = embedding_cost_rates or []
+        self.currency: str = embedding_currency
+        self.metering: Any = None  # Set externally for embedding cost tracking
         self.converter: Any = None  # Set externally for FX conversion
         self.top_k = top_k
         self.vector_search_limit = vector_search_limit
@@ -227,19 +227,22 @@ class MemoryInterface:
             embedding = data["data"][0]["embedding"]
             latency_ms = int((time.time() - t0) * 1000)
 
-            # Record embedding cost if metering is configured
+            # Record embedding cost + call-level Prometheus metrics
+            usage_data = data.get("usage", {})
+            from providers import Usage
+            usage = Usage(
+                input_tokens=usage_data.get("prompt_tokens", 0),
+            )
+            metrics.record_api_call(
+                self.model, self.provider, usage, latency_ms=latency_ms,
+            )
             if self.metering:
-                usage_data = data.get("usage", {})
-                from providers import Usage
-                usage = Usage(
-                    input_tokens=usage_data.get("prompt_tokens", 0),
-                )
                 self.metering.record(
                     session_id="embedding",
                     model=self.model, provider=self.provider,
-                    usage=usage, cost_rates=_DEFAULT_EMBEDDING_COST_RATES,
+                    usage=usage, cost_rates=self.cost_rates,
                     call_type="embedding", latency_ms=latency_ms,
-                    converter=self.converter, currency="USD",
+                    converter=self.converter, currency=self.currency,
                 )
 
             # Cache it

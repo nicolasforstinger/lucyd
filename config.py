@@ -442,6 +442,20 @@ class Config:
                 return os.environ.get(key_env, "")
         return ""
 
+    @property
+    def embedding_cost_rates(self) -> list[float]:
+        """Cost rates for the embeddings model from provider config."""
+        if "embeddings" in self._data.get("models", {}):
+            return list(self.model_config("embeddings").get("cost_per_mtok", []))
+        return []
+
+    @property
+    def embedding_currency(self) -> str:
+        """Billing currency for the embeddings provider."""
+        if "embeddings" in self._data.get("models", {}):
+            return str(self.model_config("embeddings").get("currency", "EUR"))
+        return "EUR"
+
     # ── Filesystem (path list resolution) ────────────────────────
 
     @property

@@ -122,9 +122,11 @@ thinking_mode = "adaptive"          # "adaptive" | "budgeted" | "disabled"
 type = "openai"
 api_key_env = "LUCYD_OPENAI_KEY"
 base_url = "https://api.openai.com/v1"
+currency = "USD"
 
 [models.embeddings]
 model = "text-embedding-3-small"
+cost_per_mtok = [0.02, 0.0, 0.0, 0.0]
 ```
 
 The `type` and `api_key_env` from the provider file are inherited by each `[models.*]` section in that file, so individual models don't need to repeat them.

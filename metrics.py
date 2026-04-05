@@ -214,7 +214,35 @@ try:
 
     ENABLED = True
 
+    def record_api_call(
+        model: str, provider: str, usage: object, latency_ms: int | None = None,
+    ) -> None:
+        """Emit call-level Prometheus metrics for an API call.
+
+        Called from _call_provider_with_retry (LLM completions) and from
+        embedding paths (memory.py, indexer.py) so that all API calls —
+        regardless of call type — appear in token/call/latency dashboards.
+        """
+        API_CALLS_TOTAL.labels(model=model, provider=provider, status="success").inc()
+        in_tok = getattr(usage, "input_tokens", 0)
+        out_tok = getattr(usage, "output_tokens", 0)
+        cache_r = getattr(usage, "cache_read_tokens", 0)
+        cache_w = getattr(usage, "cache_write_tokens", 0)
+        TOKENS_TOTAL.labels(direction="input", model=model, provider=provider).inc(in_tok)
+        TOKENS_TOTAL.labels(direction="output", model=model, provider=provider).inc(out_tok)
+        if cache_r:
+            TOKENS_TOTAL.labels(direction="cache_read", model=model, provider=provider).inc(cache_r)
+        if cache_w:
+            TOKENS_TOTAL.labels(direction="cache_write", model=model, provider=provider).inc(cache_w)
+        if latency_ms is not None:
+            API_LATENCY.labels(model=model, provider=provider).observe(latency_ms / 1000)
+
 except ImportError:
     ENABLED = False
     generate_latest = None  # type: ignore[assignment,unused-ignore]
     CONTENT_TYPE_LATEST = "text/plain"
+
+    def record_api_call(  # type: ignore[misc,unused-ignore]  # no-op fallback; unused when prometheus_client installed
+        model: str, provider: str, usage: object, latency_ms: int | None = None,
+    ) -> None:
+        """No-op fallback when prometheus_client is not installed."""

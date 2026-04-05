@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import metrics
+
 log = logging.getLogger(__name__)
 
 
@@ -103,22 +105,29 @@ class MeteringDB:
         error_type: str | None = None,
         currency: str = "EUR",
         converter: Any = None,
+        cost_override: float | None = None,
     ) -> float:
-        """Record an API call and return calculated cost in EUR."""
-        if not cost_rates:
+        """Record an API call and return calculated cost in EUR.
+
+        When *cost_override* is set the token-rate math is skipped and the
+        caller-provided cost is used directly (e.g. TTS per-character billing).
+        """
+        if cost_override is not None:
+            cost_val = cost_override
+        elif not cost_rates:
             return 0.0
+        else:
+            input_rate = cost_rates[0] if len(cost_rates) > 0 else 0.0
+            output_rate = cost_rates[1] if len(cost_rates) > 1 else 0.0
+            cache_read_rate = cost_rates[2] if len(cost_rates) > 2 else 0.0
+            cache_write_rate = cost_rates[3] if len(cost_rates) > 3 else 0.0
 
-        input_rate = cost_rates[0] if len(cost_rates) > 0 else 0.0
-        output_rate = cost_rates[1] if len(cost_rates) > 1 else 0.0
-        cache_read_rate = cost_rates[2] if len(cost_rates) > 2 else 0.0
-        cache_write_rate = cost_rates[3] if len(cost_rates) > 3 else 0.0
-
-        cost_val = (
-            usage.input_tokens * input_rate / 1_000_000
-            + usage.output_tokens * output_rate / 1_000_000
-            + usage.cache_read_tokens * cache_read_rate / 1_000_000
-            + usage.cache_write_tokens * cache_write_rate / 1_000_000
-        )
+            cost_val = (
+                usage.input_tokens * input_rate / 1_000_000
+                + usage.output_tokens * output_rate / 1_000_000
+                + usage.cache_read_tokens * cache_read_rate / 1_000_000
+                + usage.cache_write_tokens * cache_write_rate / 1_000_000
+            )
 
         # Convert to EUR if the provider bills in a different currency
         if converter is not None and currency != "EUR":
@@ -148,6 +157,12 @@ class MeteringDB:
             conn.commit()
         except Exception as e:
             log.warning("Failed to record cost: %s", e, exc_info=True)
+
+        # Emit cost to Prometheus — single point for all cost recording.
+        # Call-level metrics (tokens, calls, latency) are emitted at the
+        # actual call site via metrics.record_api_call().
+        if metrics.ENABLED:
+            metrics.API_COST.labels(model=model, provider=provider).inc(cost_val)
 
         return float(cost_val)
 

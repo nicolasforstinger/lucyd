@@ -986,17 +986,9 @@ class MessagePipeline:
                 turns = ctx.response.turns
                 if turns > 0:
                     metrics.AGENTIC_TURNS.labels(**_labels).observe(turns)
-                u = ctx.response.usage
-                if u:
-                    _cost = 0.0
-                    if ctx.cost_rates and len(ctx.cost_rates) >= 2:
-                        _cost = (u.input_tokens * ctx.cost_rates[0]
-                                 + u.output_tokens * ctx.cost_rates[1]) / 1_000_000
-                        if len(ctx.cost_rates) >= 3:
-                            _cost += u.cache_read_tokens * ctx.cost_rates[2] / 1_000_000
-                        if len(ctx.cost_rates) >= 4:
-                            _cost += u.cache_write_tokens * ctx.cost_rates[3] / 1_000_000
-                    metrics.MESSAGE_COST.labels(**_labels).observe(_cost)
+                _total_cost = ctx.response.total_cost
+                if isinstance(_total_cost, (int, float)) and _total_cost > 0:
+                    metrics.MESSAGE_COST.labels(**_labels).observe(_total_cost)
             # Outcome: the single most important quality signal
             if ctx.response:
                 if ctx.response.cost_limited:

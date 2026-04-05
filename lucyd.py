@@ -260,6 +260,8 @@ class LucydDaemon:
                 embedding_model=self.config.embedding_model,
                 embedding_base_url=self.config.embedding_base_url,
                 embedding_timeout=self.config.embedding_timeout,
+                embedding_cost_rates=self.config.embedding_cost_rates,
+                embedding_currency=self.config.embedding_currency,
                 top_k=self.config.memory_top_k,
                 vector_search_limit=self.config.vector_search_limit,
                 fts_min_results=self.config.fts_min_results,
@@ -685,7 +687,10 @@ class LucydDaemon:
 
     async def _handle_index(self, full: bool = False) -> dict[str, Any]:
         import operations as ops
-        return await ops.handle_index(self.config, full=full)
+        return await ops.handle_index(
+            self.config, full=full,
+            metering=self.metering_db, converter=self.converter,
+        )
 
     async def _handle_index_status(self) -> dict[str, Any]:
         import operations as ops

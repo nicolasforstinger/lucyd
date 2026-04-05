@@ -175,6 +175,40 @@ class TestRecord:
         )
         converter.convert.assert_not_called()
 
+    def test_cost_override_bypasses_token_math(self, metering_db):
+        """cost_override skips rate calculation and uses the value directly."""
+        usage = MockUsage(input_tokens=1000000, output_tokens=500000)
+        cost = metering_db.record(
+            "s", "m", "p", usage, [3.0, 15.0],
+            cost_override=42.0,
+        )
+        assert cost == 42.0
+        rows = metering_db.query("SELECT cost FROM costs")
+        assert rows[0]["cost"] == 42.0
+
+    def test_cost_override_with_empty_rates(self, metering_db):
+        """cost_override works even when cost_rates is empty."""
+        usage = MockUsage()
+        cost = metering_db.record(
+            "s", "m", "p", usage, [],
+            cost_override=5.0,
+        )
+        assert cost == 5.0
+
+    def test_prometheus_api_cost_emitted(self, metering_db):
+        """record() emits API_COST to Prometheus."""
+        import metrics
+        from unittest.mock import patch, MagicMock
+        mock_counter = MagicMock()
+        with patch.object(metrics, "ENABLED", True), \
+             patch.object(metrics, "API_COST", mock_counter):
+            metering_db.record(
+                "s", "model-x", "prov-y", MockUsage(input_tokens=1000),
+                [3.0],
+            )
+        mock_counter.labels.assert_called_with(model="model-x", provider="prov-y")
+        mock_counter.labels().inc.assert_called_once()
+
 
 # ── Queries ───────────────────────────────────────────────────────
 

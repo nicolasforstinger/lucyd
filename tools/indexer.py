@@ -16,6 +16,8 @@ from typing import Any
 
 import httpx
 
+import metrics
+
 log = logging.getLogger(__name__)
 
 # ─── Module config (set by configure(), defaults for standalone use) ──
@@ -30,18 +32,32 @@ INCLUDE_PATTERNS = ["memory/*.md", "MEMORY.md"]
 EXCLUDE_DIRS = {"memory/cache"}
 _EMBED_BATCH_LIMIT = 100
 
+# Cost tracking (set by configure, used by embed_batch)
+_METERING: Any = None
+_CONVERTER: Any = None
+_COST_RATES: list[float] = []
+_CURRENCY: str = "EUR"
+
 
 def configure(chunk_size: int = 1600, chunk_overlap: int = 320,
               embed_batch_limit: int = 100,
-              embedding_model: str = "", embedding_base_url: str = "") -> None:
+              embedding_model: str = "", embedding_base_url: str = "",
+              metering: Any = None, converter: Any = None,
+              cost_rates: list[float] | None = None,
+              currency: str = "EUR") -> None:
     """Set indexer config from lucyd.toml values."""
     global CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, _EMBED_BATCH_LIMIT
     global EMBEDDING_MODEL, EMBEDDING_BASE_URL
+    global _METERING, _CONVERTER, _COST_RATES, _CURRENCY
     CHUNK_SIZE_CHARS = chunk_size
     CHUNK_OVERLAP_CHARS = chunk_overlap
     _EMBED_BATCH_LIMIT = embed_batch_limit
     EMBEDDING_MODEL = embedding_model
     EMBEDDING_BASE_URL = embedding_base_url
+    _METERING = metering
+    _CONVERTER = converter
+    _COST_RATES = cost_rates or []
+    _CURRENCY = currency
 
 
 # ─── Pure Functions ──────────────────────────────────────────────
@@ -261,6 +277,23 @@ def embed_batch(
 
         for item in data["data"]:
             all_embeddings.append((batch_start + item["index"], item["embedding"]))
+
+        # Record embedding call metrics + cost
+        usage_data = data.get("usage", {})
+        if usage_data:
+            from providers import Usage
+            usage = Usage(input_tokens=usage_data.get("prompt_tokens", 0))
+            metrics.record_api_call(
+                model or "", EMBEDDING_PROVIDER, usage,
+            )
+            if _METERING and _COST_RATES:
+                _METERING.record(
+                    session_id="indexer", model=model or "",
+                    provider=EMBEDDING_PROVIDER,
+                    usage=usage, cost_rates=_COST_RATES,
+                    call_type="embedding", converter=_CONVERTER,
+                    currency=_CURRENCY,
+                )
 
     # Sort by original index to preserve order
     all_embeddings.sort(key=lambda x: x[0])

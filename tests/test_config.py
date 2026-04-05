@@ -306,6 +306,29 @@ class TestEmbeddingConfig:
         cfg = Config(minimal_toml_data)
         assert cfg.embedding_base_url == ""
 
+    def test_embedding_cost_rates_from_model_system(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.embedding_cost_rates == [0.02, 0.0, 0.0, 0.0]
+
+    def test_embedding_cost_rates_empty_when_no_models_section(self, minimal_toml_data):
+        del minimal_toml_data["models"]["embeddings"]
+        cfg = Config(minimal_toml_data)
+        assert cfg.embedding_cost_rates == []
+
+    def test_embedding_currency_from_model_system(self, minimal_toml_data):
+        cfg = Config(minimal_toml_data)
+        assert cfg.embedding_currency == "USD"
+
+    def test_embedding_currency_defaults_to_eur(self, minimal_toml_data):
+        del minimal_toml_data["models"]["embeddings"]["currency"]
+        cfg = Config(minimal_toml_data)
+        assert cfg.embedding_currency == "EUR"
+
+    def test_embedding_currency_eur_when_no_models_section(self, minimal_toml_data):
+        del minimal_toml_data["models"]["embeddings"]
+        cfg = Config(minimal_toml_data)
+        assert cfg.embedding_currency == "EUR"
+
     def test_embedding_fallback_to_memory_section(self, minimal_toml_data):
         del minimal_toml_data["models"]["embeddings"]
         minimal_toml_data["memory"] = {"embedding_model": "local-embed"}
