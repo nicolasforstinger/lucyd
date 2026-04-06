@@ -72,6 +72,8 @@ module = [
     "openai.*",
     "mistralai",
     "mistralai.*",
+    "elevenlabs",
+    "elevenlabs.*",
     "PIL",
     "PIL.*",
     "pypdf",
