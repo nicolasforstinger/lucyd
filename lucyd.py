@@ -635,7 +635,7 @@ class LucydDaemon:
 
         today_cost = 0.0
         rows = await self.metering_db.query(
-            "SELECT SUM(cost) AS total FROM metering.costs WHERE timestamp >= to_timestamp($1)",
+            "SELECT SUM(cost_eur) AS total FROM metering.costs WHERE timestamp >= to_timestamp($1)",
             today_start_ts(),
         )
         if rows and rows[0]["total"]:

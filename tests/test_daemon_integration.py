@@ -205,7 +205,7 @@ class TestBuildStatus:
         # Backdate the last record to 2 days ago
         await pool.execute(
             "UPDATE metering.costs SET timestamp = to_timestamp($1) "
-            "WHERE session_id = $2 AND cost = $3",
+            "WHERE session_id = $2 AND cost_eur = $3",
             int(time.time()) - 86400 * 2, "s-2", 10.0,
         )
 

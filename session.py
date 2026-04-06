@@ -614,7 +614,7 @@ async def build_session_info(
     session_cost = 0.0
     if metering:
         rows = await metering.query(
-            "SELECT SUM(cost) AS total FROM metering.costs "
+            "SELECT SUM(cost_eur) AS total FROM metering.costs "
             "WHERE client_id = $1 AND agent_id = $2 AND session_id = $3",
             client_id, agent_id, session_id,
         )

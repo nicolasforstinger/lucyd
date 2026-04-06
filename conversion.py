@@ -40,18 +40,22 @@ class CurrencyConverter:
         self._api_url = api_url
         self._static_rate = static_rate
 
-    def convert(self, amount: float, source_currency: str) -> float:
+    def convert(self, amount: float, source_currency: str) -> tuple[float, float]:
         """Convert *amount* from *source_currency* to EUR.
 
-        Returns the amount unchanged when *source_currency* is already EUR.
+        Returns ``(converted_amount, rate_used)`` where *rate_used* is the
+        source-currency-per-EUR divisor (e.g. 1.15 means 1 EUR = 1.15 USD).
+
+        Returns the amount unchanged with rate ``1.0`` when *source_currency*
+        is already EUR.
         """
         if source_currency == "EUR":
-            return amount
+            return amount, 1.0
 
         rate = self._fetch_rate() if self._api_url else None
         if rate is None:
             rate = self._static_rate if self._static_rate > 0 else 1.0
-        return amount / rate
+        return amount / rate, rate
 
     # ── Internal ────────────────────────────────────────────────────
 

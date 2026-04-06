@@ -93,7 +93,7 @@ class TestRecord:
         assert r["session_id"] == "sess_1"
         assert r["model"] == "mistral-large"
         assert r["provider"] == "mistral"
-        assert r["currency"] == "EUR"
+        assert r["fx_rate"] is None
         assert r["billing_period"] == _current_billing_period()
         assert r["success"] is True
         assert r["call_type"] == "agentic"
@@ -166,19 +166,23 @@ class TestRecord:
         """Converter is called when currency != EUR."""
         usage = MockUsage(input_tokens=1000000, output_tokens=0)
         converter = MagicMock()
-        converter.convert.return_value = 2.6087
+        converter.convert.return_value = (2.6087, 1.15)
         cost = await metering_db.record(
             "s", "m", "p", usage, [3.0],
             converter=converter, currency="USD",
         )
         converter.convert.assert_called_once()
         assert cost == 2.6087
+        rows = await metering_db.query(
+            "SELECT fx_rate FROM metering.costs ORDER BY id DESC LIMIT 1"
+        )
+        assert float(rows[0]["fx_rate"]) == 1.15
 
     @pytest.mark.asyncio
     async def test_converter_not_called_for_eur(
         self, metering_db: MeteringDB,
     ) -> None:
-        """Converter is skipped when currency is EUR."""
+        """Converter is skipped when currency is EUR; fx_rate is NULL."""
         usage = MockUsage(input_tokens=1000000, output_tokens=0)
         converter = MagicMock()
         await metering_db.record(
@@ -186,6 +190,10 @@ class TestRecord:
             converter=converter, currency="EUR",
         )
         converter.convert.assert_not_called()
+        rows = await metering_db.query(
+            "SELECT fx_rate FROM metering.costs ORDER BY id DESC LIMIT 1"
+        )
+        assert rows[0]["fx_rate"] is None
 
     @pytest.mark.asyncio
     async def test_cost_override_bypasses_token_math(
@@ -198,8 +206,8 @@ class TestRecord:
             cost_override=42.0,
         )
         assert cost == 42.0
-        rows = await metering_db.query("SELECT cost FROM metering.costs")
-        assert float(rows[0]["cost"]) == 42.0
+        rows = await metering_db.query("SELECT cost_eur FROM metering.costs")
+        assert float(rows[0]["cost_eur"]) == 42.0
 
     @pytest.mark.asyncio
     async def test_cost_override_with_empty_rates(
@@ -267,7 +275,7 @@ class TestGetRecords:
         assert data["agent_id"] == "cust_a"
         assert data["client_id"] == TEST_CLIENT_ID
         assert data["billing_period"] == bp
-        assert data["currency"] == "EUR"
+        assert data["currency"] == "EUR"  # summary-level, always EUR
         assert len(data["records"]) == 3
 
     @pytest.mark.asyncio
@@ -280,7 +288,8 @@ class TestGetRecords:
         assert "call_type" in rec
         assert "input_tokens" in rec
         assert "output_tokens" in rec
-        assert "cost" in rec
+        assert "cost_eur" in rec
+        assert "fx_rate" in rec
         assert "session_id" in rec
         assert "trace_id" in rec
         assert "latency_ms" in rec
@@ -319,18 +328,18 @@ class TestMaintenance:
         await pool.execute(
             """INSERT INTO metering.costs
                (client_id, agent_id, timestamp, session_id, model,
-                provider, cost, currency, call_type, billing_period, success)
+                provider, cost_eur, call_type, billing_period, success)
                VALUES ($1, $2, to_timestamp($3), 's', 'm',
-                       'p', 0.1, 'EUR', 'agentic', '2024-01', TRUE)""",
+                       'p', 0.1, 'agentic', '2024-01', TRUE)""",
             TEST_CLIENT_ID, "retention", old_ts,
         )
         # Insert a recent record
         await pool.execute(
             """INSERT INTO metering.costs
                (client_id, agent_id, timestamp, session_id, model,
-                provider, cost, currency, call_type, billing_period, success)
+                provider, cost_eur, call_type, billing_period, success)
                VALUES ($1, $2, to_timestamp($3), 's', 'm',
-                       'p', 0.1, 'EUR', 'agentic', $4, TRUE)""",
+                       'p', 0.1, 'agentic', $4, TRUE)""",
             TEST_CLIENT_ID, "retention", int(time.time()),
             _current_billing_period(),
         )

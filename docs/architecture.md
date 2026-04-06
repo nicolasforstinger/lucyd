@@ -22,7 +22,7 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `memory.py` | Long-term memory. PostgreSQL tsvector FTS + pgvector similarity. Structured recall (facts, episodes, commitments). |
 | `consolidation.py` | Structured data extraction from sessions via LLM. Facts, episodes, commitments, aliases. |
 | `skills.py` | Skill loader + `load_skill` tool. Markdown with YAML frontmatter. |
-| `metering.py` | Per-call cost recording to PostgreSQL. Billing periods, EUR currency. |
+| `metering.py` | Per-call cost recording to PostgreSQL. Billing periods, costs in EUR. |
 | `metrics.py` | Prometheus metrics. 29 metric families, graceful no-op if `prometheus_client` not installed. |
 | `attachments.py` | `Attachment` type, image fitting (`fit_image`), document text extraction (`extract_document_text`), scanned PDF rendering (`render_pdf_pages`). Pure functions. |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
@@ -276,4 +276,4 @@ Four implementations: Anthropic (prompt caching, extended thinking), OpenAI-comp
 
 ## Cost Tracking
 
-Every LLM call records to `metering.db` via `MeteringDB` (metering.py): tokens, cost (EUR), model, provider, session, latency. Query via `lucydctl --cost` or `GET /api/v1/cost`.
+Every LLM call records to PostgreSQL via `MeteringDB` (metering.py): tokens, cost_eur, fx_rate, model, provider, session, latency. Query via `lucydctl --cost` or `GET /api/v1/cost`.

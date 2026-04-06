@@ -20,27 +20,25 @@ class TestToolSessionStatus:
     def test_no_session_returns_no_data(self):
         """With nothing configured, returns 'No status data available.'"""
         import tools.status as mod
-        original = (mod._session_getter, mod._daemon_start_time, mod._metering)
+        original = (mod._session_getter, mod._daemon_start_time)
         mod._session_getter = None
         mod._daemon_start_time = 0.0
-        mod._metering = None
         try:
             result = mod.tool_session_status()
             assert "No status data available" in result
         finally:
-            mod._session_getter, mod._daemon_start_time, mod._metering = original
+            mod._session_getter, mod._daemon_start_time = original
 
     def test_reports_tokens_and_context_pct(self):
         """With a session, reports token count and context percentage."""
         import tools.status as mod
-        original = (mod._session_getter, mod._daemon_start_time, mod._metering, mod.MAX_CONTEXT_TOKENS)
+        original = (mod._session_getter, mod._daemon_start_time, mod.MAX_CONTEXT_TOKENS)
         session = MagicMock()
         session.last_input_tokens = 50000
         session.messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "text": "hello"}]
         session.compaction_count = 2
         mod._session_getter = lambda: session
         mod._daemon_start_time = 0.0
-        mod._metering = None
         mod.MAX_CONTEXT_TOKENS = 200000
         try:
             result = mod.tool_session_status()
@@ -49,46 +47,20 @@ class TestToolSessionStatus:
             assert "Messages: 2" in result
             assert "Compactions: 2" in result
         finally:
-            mod._session_getter, mod._daemon_start_time, mod._metering, mod.MAX_CONTEXT_TOKENS = original
+            mod._session_getter, mod._daemon_start_time, mod.MAX_CONTEXT_TOKENS = original
 
     def test_reports_uptime(self):
         """Reports daemon uptime when start_time is set."""
         import tools.status as mod
-        original = (mod._session_getter, mod._daemon_start_time, mod._metering)
+        original = (mod._session_getter, mod._daemon_start_time)
         mod._session_getter = None
         mod._daemon_start_time = time.time() - 3700  # ~1h 1m
-        mod._metering = None
         try:
             result = mod.tool_session_status()
             assert "Daemon uptime:" in result
             assert "1h" in result
         finally:
-            mod._session_getter, mod._daemon_start_time, mod._metering = original
-
-    def test_reports_cost(self):
-        """Reports cost from metering when query returns rows.
-
-        tool_session_status() calls _metering.query() synchronously.
-        We mock query() to return rows directly — this tests the
-        formatting logic without needing a real database.
-        """
-        import tools.status as mod
-
-        mock_metering = MagicMock()
-        mock_metering.query.return_value = [
-            (0.1750, 10000, 5000),
-        ]
-
-        original = (mod._session_getter, mod._daemon_start_time, mod._metering)
-        mod._session_getter = None
-        mod._daemon_start_time = 0.0
-        mod._metering = mock_metering
-        try:
-            result = mod.tool_session_status()
-            assert "EUR" in result
-            assert "10,000 in" in result
-        finally:
-            mod._session_getter, mod._daemon_start_time, mod._metering = original
+            mod._session_getter, mod._daemon_start_time = original
 
     def test_configure_sets_max_context_tokens(self):
         """configure() with max_context_tokens updates the module global."""

@@ -1,7 +1,7 @@
 """Cost metering with billing period support.
 
-Records API call costs to PostgreSQL with billing period segmentation and
-EUR currency.  Agent and client identity are set once at init.  Consumers
+Records API call costs (in EUR) to PostgreSQL with billing period
+segmentation.  Agent and client identity are set once at init.  Consumers
 (CLI, Grafana, psql) handle aggregation — the daemon only emits raw records.
 """
 
@@ -82,8 +82,9 @@ class MeteringDB:
             )
 
         # Convert to EUR if the provider bills in a different currency.
+        fx_rate: float | None = None
         if converter is not None and currency != "EUR":
-            cost_val = converter.convert(cost_val, currency)
+            cost_val, fx_rate = converter.convert(cost_val, currency)
 
         now = int(time.time())
         billing_period = _current_billing_period()
@@ -95,7 +96,7 @@ class MeteringDB:
                     session_id, model, provider,
                     input_tokens, output_tokens,
                     cache_read_tokens, cache_write_tokens,
-                    cost, currency, call_type, trace_id,
+                    cost_eur, fx_rate, call_type, trace_id,
                     billing_period, latency_ms, success, error_type
                 ) VALUES (
                     $1, $2, to_timestamp($3),
@@ -108,7 +109,7 @@ class MeteringDB:
                 session_id, model, provider,
                 usage.input_tokens, usage.output_tokens,
                 usage.cache_read_tokens, usage.cache_write_tokens,
-                cost_val, currency, call_type, trace_id,
+                cost_val, fx_rate, call_type, trace_id,
                 billing_period, latency_ms, success, error_type,
             )
         except Exception as e:
@@ -138,7 +139,7 @@ class MeteringDB:
         if not billing_period:
             billing_period = _current_billing_period()
         val = await self._pool.fetchval(
-            "SELECT COALESCE(SUM(cost), 0.0) FROM metering.costs "
+            "SELECT COALESCE(SUM(cost_eur), 0.0) FROM metering.costs "
             "WHERE client_id = $1 AND agent_id = $2 "
             "AND billing_period = $3 AND success = TRUE",
             self._client_id, self._agent_id, billing_period,
@@ -159,7 +160,7 @@ class MeteringDB:
             """SELECT timestamp, model, provider, call_type,
                       input_tokens, output_tokens,
                       cache_read_tokens, cache_write_tokens,
-                      cost, currency, session_id, trace_id,
+                      cost_eur, fx_rate, session_id, trace_id,
                       latency_ms, success, error_type
                FROM metering.costs
                WHERE client_id = $1 AND agent_id = $2

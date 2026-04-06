@@ -12,7 +12,6 @@ from . import ToolSpec
 
 # Set once at daemon startup via configure()
 _session_manager: Any = None
-_metering: Any = None  # MeteringDB instance
 _daemon_start_time: float = 0.0
 _session_getter: Any = None  # Callback returning current session
 
@@ -23,13 +22,11 @@ def configure(session_manager: Any = None,
               start_time: float = 0.0, max_context_tokens: int = 0,
               session_getter: Any = None,
               config: Any = None, provider: Any = None,
-              metering: Any = None, **_: Any) -> None:
-    global _session_manager, _metering, _daemon_start_time
+              **_: Any) -> None:
+    global _session_manager, _daemon_start_time
     global MAX_CONTEXT_TOKENS, _session_getter
     if session_manager is not None:
         _session_manager = session_manager
-    if metering is not None:
-        _metering = metering
     # Prefer provider.capabilities for max_context_tokens
     if provider is not None and hasattr(provider, "capabilities"):
         mct = provider.capabilities.max_context_tokens
@@ -71,19 +68,8 @@ def tool_session_status() -> str:
         minutes = int((uptime_s % 3600) // 60)
         lines.append(f"Daemon uptime: {hours}h {minutes}m")
 
-    # Today's cost from metering DB
-    if _metering is not None:
-        from config import today_start_ts
-        rows = _metering.query(
-            "SELECT COALESCE(SUM(cost), 0.0), "
-            "COALESCE(SUM(input_tokens), 0), "
-            "COALESCE(SUM(output_tokens), 0) "
-            "FROM costs WHERE timestamp >= ?",
-            (today_start_ts(),),
-        )
-        if rows and rows[0][0]:
-            lines.append(f"Today's cost: {rows[0][0]:.4f} EUR")
-            lines.append(f"Today's tokens: {rows[0][1]:,} in / {rows[0][2]:,} out")
+    # Today's cost from metering DB — requires async; skipped in sync tool.
+    # Cost is surfaced via /status HTTP endpoint (lucyd.py) instead.
 
     if not lines:
         lines.append("No status data available.")
