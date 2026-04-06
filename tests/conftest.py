@@ -62,14 +62,8 @@ def pytest_unconfigure(config):
 _root = Path(__file__).parent.parent
 sys.path.insert(0, str(_root))
 
-# Make plugins.d/stt.py importable as "stt" (merged from root stt.py)
+# Make plugins.d/ modules importable for tests
 import importlib.util as _ilu
-_stt_path = _root / "plugins.d" / "stt.py"
-if _stt_path.exists() and "stt" not in sys.modules:
-    _spec = _ilu.spec_from_file_location("stt", _stt_path)
-    _stt_mod = _ilu.module_from_spec(_spec)
-    sys.modules["stt"] = _stt_mod
-    _spec.loader.exec_module(_stt_mod)
 
 # Mutmut fallback: when running from mutants/, non-target modules (config,
 # agentic, etc.) live in the real project root one level up.
@@ -207,9 +201,6 @@ def minimal_toml_data():
             },
             "web_search": {"provider": "", "api_key_env": "", "timeout": 15},
             "web_fetch": {"timeout": 15},
-        },
-        "stt": {
-            "backend": "",
         },
         "documents": {
             "enabled": True,

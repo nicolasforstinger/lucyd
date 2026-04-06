@@ -1,0 +1,26 @@
+# Whisper speech-to-text plugin config.
+# Copy to whisper.toml and customize.
+
+backend = "openai"                              # "openai" (cloud API) or "local" (whisper.cpp server)
+
+[openai]
+api_key_env = "LUCYD_OPENAI_KEY"
+api_url = "https://api.openai.com/v1/audio/transcriptions"
+model = "whisper-1"
+timeout = 60
+retries = 2
+
+[local]
+endpoint = "http://whisper-server:8082/inference"
+language = "auto"
+ffmpeg_timeout = 30
+request_timeout = 60
+
+# Cost tracking — pricing depends on the model:
+#   whisper-1:                $0.006 / minute
+#   gpt-4o-transcribe:       $0.006 / minute (equivalent)
+#   gpt-4o-mini-transcribe:  $0.003 / minute (equivalent)
+# Local whisper.cpp has no external cost — leave per_minute at 0.
+[cost]
+per_minute = 0.006
+currency = "USD"

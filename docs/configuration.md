@@ -298,37 +298,14 @@ timeout = 15                    # Request timeout in seconds (default: 15)
 timeout = 15          # Request timeout in seconds (default: 15)
 ```
 
-## [stt]
+## Plugin Config
 
-Plugin-owned config — read by `plugins.d/stt.py` via `config.raw("stt")`. Core does not reference these keys.
+TTS and STT config has moved from `lucyd.toml` to plugin-local TOML files in `plugins.d/`:
 
-```toml
-[stt]
-backend = "openai"                           # "openai" or "local" (required if voice messages enabled; empty = transcription disabled)
-```
+- **ElevenLabs TTS**: `plugins.d/elevenlabs.toml` (see `elevenlabs.toml.example`)
+- **Whisper STT**: `plugins.d/whisper.toml` (see `whisper.toml.example`)
 
-**OpenAI backend** (default):
-
-```toml
-[stt.openai]
-api_url = "https://api.openai.com/v1/audio/transcriptions"    # Whisper API endpoint
-model = "whisper-1"                                            # Whisper model identifier
-timeout = 60                                                   # Request timeout (seconds)
-```
-
-Requires `LUCYD_OPENAI_KEY`.
-
-**Local backend** (whisper.cpp server):
-
-```toml
-[stt.local]
-endpoint = "http://whisper-server:8082/inference"    # whisper.cpp HTTP inference endpoint
-language = "auto"                                     # Language hint (or "auto" for detection)
-ffmpeg_timeout = 30                                   # Timeout for ffmpeg audio conversion (seconds)
-request_timeout = 60                                  # Timeout for whisper.cpp HTTP request (seconds)
-```
-
-The local backend converts audio to WAV (16kHz mono) via ffmpeg before sending to the whisper.cpp server. Requires `ffmpeg` installed on the system.
+Each plugin loads its own config via `tomllib` at startup. Core does not reference plugin config keys.
 
 ## [documents]
 

@@ -573,8 +573,8 @@ Per tool call: `TOOL_CALLS_TOTAL{tool_name, status}` (success/error), `TOOL_DURA
 
 | Plugin | Exports | Example |
 |--------|---------|---------|
-| `plugins.d/tts.py` | TOOLS (1) | `tts` — ElevenLabs text-to-speech |
-| `plugins.d/stt.py` | PREPROCESSORS (1) | `stt` — audio transcription before agentic loop |
+| `plugins.d/elevenlabs.py` | TOOLS (1) | `tts` — ElevenLabs text-to-speech (SDK + cost tracking) |
+| `plugins.d/whisper.py` | PREPROCESSORS (1) | `stt` — Whisper audio transcription (SDK + cost tracking) |
 
 ---
 

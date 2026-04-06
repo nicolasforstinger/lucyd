@@ -180,22 +180,6 @@ class TestTodayStartTs:
 # ─── Vision Config ────────────────────────────────────────────────
 
 
-class TestSTTConfig:
-    """STT config is plugin-owned — core only sees it via raw()."""
-
-    def test_stt_raw_config(self, minimal_toml_data):
-        minimal_toml_data["stt"] = {
-            "backend": "openai",
-            "api_key_env": "MY_STT_KEY",
-            "openai": {"model": "whisper-large-v3"},
-        }
-        cfg = Config(minimal_toml_data)
-        raw = cfg.raw("stt", default={})
-        assert raw["backend"] == "openai"
-        assert raw["openai"]["model"] == "whisper-large-v3"
-        assert raw["api_key_env"] == "MY_STT_KEY"
-
-
 class TestPluginConfig:
     """Plugin system config properties."""
 

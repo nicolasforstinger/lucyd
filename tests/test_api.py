@@ -62,8 +62,6 @@ _FULL_CONFIG = {
         "filesystem": {"allowed_paths": ["/tmp/"], "default_read_limit": 2000},
         "web_search": {"provider": "", "api_key_env": "", "timeout": 15},
         "web_fetch": {"timeout": 15},
-        "tts": {"provider": "", "api_key_env": "", "timeout": 60, "api_url": ""},
-        
     },
     "documents": {"enabled": True, "max_chars": 30000, "max_file_bytes": 10485760,
                   "text_extensions": [".txt", ".md"]},

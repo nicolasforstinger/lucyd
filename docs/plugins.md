@@ -10,8 +10,11 @@ A tool plugin is a Python file in `plugins.d/` that exports a `TOOLS` list.
 
 ```
 plugins.d/
-  tts.py          # Text-to-speech tool
-  my_tool.py      # Your custom tool
+  elevenlabs.py          # ElevenLabs text-to-speech tool
+  whisper.py             # Whisper speech-to-text preprocessor
+  elevenlabs.toml        # Plugin config (from elevenlabs.toml.example)
+  whisper.toml           # Plugin config (from whisper.toml.example)
+  my_tool.py             # Your custom tool
 ```
 
 ### Exports
@@ -54,10 +57,16 @@ Return value: `{"text": "...", "attachments": ["/path/to/file"]}`. The `text` is
 If your plugin defines a `configure()` function, it's called at startup with inspect-based injection. Name your parameters to match available dependencies:
 
 ```python
-def configure(config, provider, session_mgr, **_):
+def configure(config, metering=None, converter=None, **_):
     """Called once at startup. Pull what you need by parameter name."""
-    global _my_setting
-    _my_setting = config.raw("tools", "my_tool", default={}).get("setting", "default")
+    import tomllib
+    # Plugin-local config — lives next to the plugin, not in lucyd.toml
+    toml_path = Path(__file__).parent / "my_tool.toml"
+    if toml_path.exists():
+        with toml_path.open("rb") as f:
+            cfg = tomllib.load(f)
+    # Or use config.raw() for simple settings in lucyd.toml
+    # _my_setting = config.raw("tools", "my_tool", default={}).get("setting", "")
 ```
 
 Available dependencies:
@@ -76,6 +85,7 @@ Available dependencies:
 | `session_getter` | `callable` | Returns current session (lambda) |
 | `start_time` | `float` | Daemon start timestamp |
 | `metering` | `MeteringDB` | Cost tracking DB |
+| `converter` | `CurrencyConverter` | Currency conversion (EUR ↔ other) |
 
 ### Gating
 
@@ -88,7 +98,7 @@ enabled = ["read", "write", "exec", "my_tool"]
 
 ### Reference Implementation
 
-See `plugins.d/tts.py` — ElevenLabs text-to-speech. Shows config access via `config.raw()`, async tool function, structured result with file attachment.
+See `plugins.d/elevenlabs.py` — ElevenLabs text-to-speech. Shows plugin-local TOML config loading via `tomllib`, SDK integration, cost tracking via `metering.record(cost_override=...)`, and structured result with file attachment.
 
 ## Preprocessor Plugins
 
@@ -146,7 +156,7 @@ All plugins in `plugins.d/` are loaded and their `configure()` is called uncondi
 
 ### Reference Implementation
 
-See `plugins.d/stt.py` — speech-to-text. Claims audio attachments, transcribes via the `stt.py` backend, appends transcription to message text.
+See `plugins.d/whisper.py` — Whisper speech-to-text. Claims audio attachments, transcribes via OpenAI SDK or local whisper.cpp, appends transcription to message text, records cost via metering.
 
 ## Channels
 

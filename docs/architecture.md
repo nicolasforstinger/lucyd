@@ -45,8 +45,8 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `tools/agents.py` | `sessions_spawn`. Sub-agent with scoped tools and deny-list. |
 | `tools/status.py` | `session_status`. Context utilization, uptime, cost. |
 | `tools/indexer.py` | Workspace file indexer for memory. Used by `POST /api/v1/index`. |
-| `plugins.d/stt.py` | STT preprocessor plugin. Transcription backends (OpenAI Whisper, local whisper.cpp), ffmpeg validation, audio attachment preprocessing. |
-| `plugins.d/tts.py` | TTS tool plugin. ElevenLabs API, returns audio as attachment. |
+| `plugins.d/whisper.py` | STT preprocessor plugin. OpenAI Whisper SDK (cloud) + whisper.cpp (local), cost tracking via metering DI. Config: `whisper.toml`. |
+| `plugins.d/elevenlabs.py` | TTS tool plugin. ElevenLabs SDK, cost tracking via metering DI. Config: `elevenlabs.toml`. |
 | `providers.d/*.toml` | Provider config files. Connection type, API key, model sections. |
 
 ## Message Flow

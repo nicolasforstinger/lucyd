@@ -5,7 +5,7 @@
 # REQUIRED sections: [agent], [models.primary], [paths]
 # OPTIONAL sections: everything else — missing sections use sensible defaults.
 # Feature-gated: [vision], [documents], [tools.web_search] — only needed when enabled.
-# Plugin config: [stt], [tools.tts] — read by plugins via config.raw(), not by core.
+# Plugin config: each plugin loads its own .toml from plugins.d/ (see plugins.d/*.toml.example).
 
 # ─── Agent Identity (REQUIRED) ───────────────────────────────────
 
@@ -120,33 +120,6 @@ timeout = 15                                               # Web search request 
 
 [tools.web_fetch]
 timeout = 15                                               # Web fetch request timeout (seconds)
-
-[tools.tts]
-provider = "elevenlabs"                                    # TTS provider name
-api_key_env = "LUCYD_ELEVENLABS_KEY"                       # Env var for TTS API key
-default_voice_id = "your-elevenlabs-voice-id"
-default_model_id = "eleven_v3"                             # Provider-specific model ID
-speed = 1.0
-stability = 0.5
-similarity_boost = 0.75
-timeout = 60                                               # TTS API request timeout (seconds)
-api_url = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-
-# ─── Speech-to-Text (OPTIONAL — entire section can be omitted) ───
-
-[stt]
-backend = "openai"                                         # "openai" (cloud) or "local" (whisper.cpp server)
-
-[stt.openai]
-api_url = "https://api.openai.com/v1/audio/transcriptions"
-model = "whisper-1"
-timeout = 60
-
-# [stt.local]
-# endpoint = "http://whisper-server:8082/inference"
-# language = "auto"
-# ffmpeg_timeout = 30
-# request_timeout = 60
 
 # ─── Documents (OPTIONAL — defaults to disabled) ────────────────
 # Extract text from document attachments (PDF, text files, etc.)
