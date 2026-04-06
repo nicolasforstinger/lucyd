@@ -56,7 +56,7 @@ def mock_config(tmp_path: Path) -> MagicMock:
 @pytest.fixture
 def mock_metering() -> MagicMock:
     m = MagicMock()
-    m.record = MagicMock(return_value=0.01)
+    m.record = AsyncMock(return_value=0.01)
     return m
 
 

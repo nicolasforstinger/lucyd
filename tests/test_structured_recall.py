@@ -1,5 +1,6 @@
 """Tests for structured recall functions in memory.py (Memory v2)."""
 
+import datetime
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -93,7 +94,7 @@ async def populated_pool(pool: Any) -> Any:
         "summary, emotional_tone) "
         "VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8) "
         "RETURNING id",
-        cid, aid, "sess1", "2026-02-18",
+        cid, aid, "sess1", datetime.date(2026, 2, 18),
         '["memory system", "architecture"]', '["use SQLite"]',
         "Discussed memory architecture.", "productive",
     )
@@ -103,7 +104,7 @@ async def populated_pool(pool: Any) -> Any:
         "summary, emotional_tone) "
         "VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8) "
         "RETURNING id",
-        cid, aid, "sess2", "2026-02-19",
+        cid, aid, "sess2", datetime.date(2026, 2, 19),
         '["deployment"]', '[]',
         "Planned deployment steps.", "focused",
     )

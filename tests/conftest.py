@@ -364,3 +364,10 @@ async def pool() -> Any:
                         f"TRUNCATE {schema}.{t['tablename']} CASCADE"
                     )
         await p.close()
+
+
+@pytest.fixture
+async def cost_db(pool: Any) -> Any:
+    """MeteringDB backed by the test PostgreSQL pool."""
+    from metering import MeteringDB
+    return MeteringDB(pool, client_id=TEST_CLIENT_ID, agent_id=TEST_AGENT_ID)

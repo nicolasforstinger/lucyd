@@ -362,10 +362,10 @@ async def handle_compact(
 ) -> dict[str, Any]:
     """Force-compact the primary session after agent writes diary."""
     primary = None
-    for contact in session_mgr.list_contacts():
+    for contact in await session_mgr.list_contacts():
         if contact.startswith("http:"):
             continue
-        session = session_mgr.get_or_create(contact)
+        session = await session_mgr.get_or_create(contact)
         if primary is None or len(session.messages) > len(primary[1].messages):
             primary = (contact, session)
 

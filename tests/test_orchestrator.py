@@ -158,20 +158,20 @@ def _make_daemon(tmp_path):
     session.last_input_tokens = 0
     session.needs_compaction = MagicMock(return_value=False)
     session.warned_about_compaction = False
-    session.add_user_message = MagicMock()
-    session.add_assistant_message = MagicMock()
-    session.add_tool_results = MagicMock()
-    session.save_state = MagicMock()
+    session.add_user_message = AsyncMock()
+    session.add_assistant_message = AsyncMock()
+    session.add_tool_results = AsyncMock()
+    session.save_state = AsyncMock()
 
     daemon.session_mgr = MagicMock()
-    daemon.session_mgr.get_or_create = MagicMock(return_value=session)
+    daemon.session_mgr.get_or_create = AsyncMock(return_value=session)
     daemon.session_mgr.close_session = AsyncMock(return_value=True)
-    daemon.session_mgr.save_state = MagicMock(side_effect=lambda s: s.save_state())
-    daemon.session_mgr.has_session = MagicMock(return_value=False)
-    daemon.session_mgr.list_contacts = MagicMock(return_value=[])
+    daemon.session_mgr.save_state = AsyncMock(side_effect=lambda s: s.save_state())
+    daemon.session_mgr.has_session = AsyncMock(return_value=False)
+    daemon.session_mgr.list_contacts = AsyncMock(return_value=[])
     daemon.session_mgr.list_sessions = MagicMock(return_value=[])
-    daemon.session_mgr.session_count = MagicMock(return_value=0)
-    daemon.session_mgr.get_index = MagicMock(return_value={})
+    daemon.session_mgr.session_count = AsyncMock(return_value=0)
+    daemon.session_mgr.get_index = AsyncMock(return_value={})
     daemon.session_mgr.get_loaded = MagicMock(return_value=None)
 
     daemon.context_builder = MagicMock()
@@ -555,10 +555,18 @@ class TestWarningInjection:
         response = _make_response()
 
         call_order = []
-        original_save = session.save_state
-        session.save_state = lambda: (call_order.append("save_state"), original_save())
+
+        async def tracking_save_state(s):
+            call_order.append("save_state")
+
+        daemon.session_mgr.save_state = AsyncMock(side_effect=tracking_save_state)
+
         original_add = session.add_user_message
-        session.add_user_message = lambda *a, **kw: (call_order.append("add_user_message"), original_add(*a, **kw))
+
+        async def tracking_add(*a, **kw):
+            call_order.append("add_user_message")
+
+        session.add_user_message = AsyncMock(side_effect=tracking_add)
 
         async def fake_loop(**kwargs):
             call_order.append("agentic_loop")
@@ -891,13 +899,13 @@ class TestMemoryV2Wiring:
             return response
 
         mock_context = "Facts:\n- nicolas — lives in: Austria"
+        daemon.pool = MagicMock()
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("pipeline.get_session_start_context", return_value=mock_context) as mock_gsc:
-                with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
-                    await daemon._process_message(
-                        text="hello", sender="user", source="telegram",
-                    )
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                )
 
         mock_gsc.assert_called_once()
         # Verify context_builder.build received the recall text
@@ -960,13 +968,14 @@ class TestMemoryV2Wiring:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
+        daemon.pool = MagicMock()
+
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("pipeline.get_session_start_context", side_effect=Exception("DB corrupt")):
-                with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
-                    await daemon._process_message(
-                        text="hello", sender="user", source="telegram",
-                        response_future=future,
-                    )
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                    response_future=future,
+                )
 
         # Should complete without crashing and deliver reply
         result = future.result()
@@ -988,13 +997,13 @@ class TestMemoryV2Wiring:
             return response
 
         mock_result = {"facts_added": 3, "episode_id": "ep-1"}
+        daemon.pool = MagicMock()
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock, return_value=mock_result) as mock_consol:
-                with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
-                    await daemon._process_message(
-                        text="hello", sender="user", source="telegram",
-                    )
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                )
 
         mock_consol.assert_called_once()
         # Compaction should also proceed
@@ -1015,12 +1024,13 @@ class TestMemoryV2Wiring:
         async def fake_loop(**kwargs):
             return response
 
+        daemon.pool = MagicMock()
+
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock, side_effect=Exception("LLM timeout")):
-                with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
-                    await daemon._process_message(
-                        text="hello", sender="user", source="telegram",
-                    )
+                await daemon._process_message(
+                    text="hello", sender="user", source="telegram",
+                )
 
         # Compaction MUST still proceed despite consolidation failure
         daemon.session_mgr.compact_session.assert_called_once()
@@ -1057,14 +1067,14 @@ class TestConsolidateOnClose:
     async def test_consolidate_on_close_calls_consolidation(self, tmp_path):
         """_consolidate_on_close calls consolidation.consolidate_session."""
         daemon, provider, session = _make_daemon(tmp_path)
+        daemon.pool = MagicMock()
         session.compaction_count = 0
 
         mock_result = {"facts_added": 1, "episode_id": "ep-close"}
 
         with patch("consolidation.get_unprocessed_range", return_value=(0, 5)):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock, return_value=mock_result) as mock_consol:
-                with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
-                    await daemon._consolidate_on_close(session)
+                await daemon._consolidate_on_close(session)
 
         mock_consol.assert_called_once()
 
@@ -1072,12 +1082,12 @@ class TestConsolidateOnClose:
     async def test_consolidate_on_close_skips_when_no_unprocessed(self, tmp_path):
         """No unprocessed messages → consolidation not called."""
         daemon, provider, session = _make_daemon(tmp_path)
+        daemon.pool = MagicMock()
         session.compaction_count = 0
 
         with patch("consolidation.get_unprocessed_range", return_value=(5, 5)):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock) as mock_consol:
-                with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
-                    await daemon._consolidate_on_close(session)
+                await daemon._consolidate_on_close(session)
 
         mock_consol.assert_not_called()
 
@@ -1085,12 +1095,12 @@ class TestConsolidateOnClose:
     async def test_consolidate_on_close_failure_does_not_crash(self, tmp_path):
         """Consolidation failure on close is caught — no exception propagated."""
         daemon, provider, session = _make_daemon(tmp_path)
+        daemon.pool = MagicMock()
         session.compaction_count = 0
 
         with patch("consolidation.get_unprocessed_range", side_effect=Exception("DB locked")):
-            with patch.object(daemon, "_get_memory_conn", return_value=MagicMock()):
-                # Should not raise
-                await daemon._consolidate_on_close(session)
+            # Should not raise
+            await daemon._consolidate_on_close(session)
 
 
 # ─── Error Recovery: Orphaned User Messages ──────────────────────
@@ -1107,7 +1117,7 @@ class TestErrorRecoveryOrphanedMessages:
         # Make add_user_message actually append (real behavior)
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         async def fake_loop(**kwargs):
             raise RuntimeError("API returned 400")
@@ -1135,7 +1145,7 @@ class TestErrorRecoveryOrphanedMessages:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         async def fake_loop(**kwargs):
             raise RuntimeError("API error")
@@ -1158,7 +1168,7 @@ class TestErrorRecoveryOrphanedMessages:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         async def fake_loop(**kwargs):
             raise RuntimeError("API rejected image")
@@ -1193,7 +1203,7 @@ class TestErrorRecoveryOrphanedMessages:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="recovered!")
 
@@ -1242,7 +1252,7 @@ class TestConsecutiveUserMessageMerge:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
         captured_messages = []
@@ -1276,7 +1286,7 @@ class TestConsecutiveUserMessageMerge:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
         captured_messages = []
@@ -1302,7 +1312,7 @@ class TestConsecutiveUserMessageMerge:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
 
@@ -1334,7 +1344,7 @@ class TestConsecutiveUserMessageMerge:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
         captured_messages = []
@@ -1370,7 +1380,7 @@ class TestConsecutiveUserMessageMerge:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
         captured_messages = []
@@ -1596,7 +1606,7 @@ class TestDocumentExtractionIntegration:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="Got it")
 
@@ -1628,7 +1638,7 @@ class TestDocumentExtractionIntegration:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
 
@@ -1656,7 +1666,7 @@ class TestDocumentExtractionIntegration:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
 
@@ -1688,7 +1698,7 @@ class TestDocumentExtractionIntegration:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
 
@@ -1719,7 +1729,7 @@ class TestDocumentExtractionIntegration:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
 
@@ -1798,7 +1808,7 @@ class TestScannedPdfVisionFallback:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="I can read this")
 
@@ -1836,7 +1846,7 @@ class TestScannedPdfVisionFallback:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
 
@@ -1871,7 +1881,7 @@ class TestScannedPdfVisionFallback:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
 
@@ -1911,7 +1921,7 @@ class TestScannedPdfVisionFallback:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
 
@@ -2068,7 +2078,7 @@ class TestImageFitting:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="I see green")
 
@@ -2102,7 +2112,7 @@ class TestMessageLevelRetry:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         call_count = [0]
         response = _make_response(text="recovered!")
@@ -2137,7 +2147,7 @@ class TestMessageLevelRetry:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         call_count = [0]
         AuthenticationError = type("AuthenticationError", (Exception,), {})
@@ -2169,7 +2179,7 @@ class TestMessageLevelRetry:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         call_count = [0]
         InternalServerError = type("InternalServerError", (Exception,), {})
@@ -2204,7 +2214,7 @@ class TestMessageLevelRetry:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         call_count = [0]
         content_snapshots = []
@@ -2360,11 +2370,11 @@ class TestPrimarySenderRouting:
         # Pre-existing session
         daemon.session_mgr._sessions = {"http:Nicolas": session}
         daemon.session_mgr._index = {"http:Nicolas": {"session_id": session.id}}
-        daemon.session_mgr.has_session = MagicMock(side_effect=lambda s: s in {"http:Nicolas"})
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:Nicolas"])
+        daemon.session_mgr.has_session = AsyncMock(side_effect=lambda s: s in {"http:Nicolas"})
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:Nicolas"])
         daemon.session_mgr.get_loaded = MagicMock(side_effect=lambda c: {"http:Nicolas": session}.get(c))
-        daemon.session_mgr.get_index = MagicMock(return_value={"http:Nicolas": {"session_id": session.id}})
-        daemon.session_mgr.session_count = MagicMock(return_value=1)
+        daemon.session_mgr.get_index = AsyncMock(return_value={"http:Nicolas": {"session_id": session.id}})
+        daemon.session_mgr.session_count = AsyncMock(return_value=1)
         response = _make_response(text="processed")
 
         async def fake_loop(**kwargs):
@@ -2405,11 +2415,11 @@ class TestPrimarySenderRouting:
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.session_mgr._sessions = {"http:Nicolas": session}
         daemon.session_mgr._index = {"http:Nicolas": {"session_id": session.id}}
-        daemon.session_mgr.has_session = MagicMock(side_effect=lambda s: s in {"http:Nicolas"})
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:Nicolas"])
+        daemon.session_mgr.has_session = AsyncMock(side_effect=lambda s: s in {"http:Nicolas"})
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:Nicolas"])
         daemon.session_mgr.get_loaded = MagicMock(side_effect=lambda c: {"http:Nicolas": session}.get(c))
-        daemon.session_mgr.get_index = MagicMock(return_value={"http:Nicolas": {"session_id": session.id}})
-        daemon.session_mgr.session_count = MagicMock(return_value=1)
+        daemon.session_mgr.get_index = AsyncMock(return_value={"http:Nicolas": {"session_id": session.id}})
+        daemon.session_mgr.session_count = AsyncMock(return_value=1)
 
         async def fake_loop(**kwargs):
             raise RuntimeError("API down")
@@ -2482,7 +2492,7 @@ class TestForcedCompact:
         evo_session = MagicMock()
         evo_session.messages = [{"role": "user"}] * 100
         daemon.session_mgr._index = {"http:evolution": evo_session, "http:http-system": evo_session}
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:evolution", "http:http-system"])
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:evolution", "http:http-system"])
 
         result = await daemon._handle_compact()
         assert result["status"] == "skipped"
@@ -2505,9 +2515,9 @@ class TestForcedCompact:
             "alice": {"session_id": "small"},
             "bob": {"session_id": "large"},
         }
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["alice", "bob"])
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["alice", "bob"])
         sessions_by_contact = {"alice": small_session, "bob": large_session}
-        daemon.session_mgr.get_or_create = MagicMock(
+        daemon.session_mgr.get_or_create = AsyncMock(
             side_effect=lambda contact, **kw: sessions_by_contact[contact]
         )
 
@@ -2535,7 +2545,7 @@ class TestForcedCompact:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="diary written")
 
@@ -2574,7 +2584,7 @@ class TestForcedCompact:
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="done")
 
@@ -2598,17 +2608,13 @@ class TestForcedCompact:
         """force_compact=True runs pre-compaction consolidation."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.consolidation_enabled = True
-        # Set valid memory_db path so _get_memory_conn doesn't fail
-        db_path = tmp_path / "memory" / "main.sqlite"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        daemon.config.memory_db = str(db_path)
-        daemon._memory_conn = None  # reset cached connection
+        daemon.pool = MagicMock()
         session.needs_compaction = MagicMock(return_value=False)
         session.compaction_count = 0
 
         def fake_add_user(text, sender="", source=""):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="done")
 

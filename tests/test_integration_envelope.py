@@ -104,10 +104,11 @@ def _make_config(tmp_path: Path) -> Config:
     return Config(data, config_dir=tmp_path)
 
 
-async def _boot_daemon(tmp_path: Path) -> LucydDaemon:
+async def _boot_daemon(tmp_path: Path, pool: object) -> LucydDaemon:
     config = _make_config(tmp_path)
     daemon = LucydDaemon(config)
     Path(config.state_dir).mkdir(parents=True, exist_ok=True)
+    daemon.pool = pool
     daemon._init_provider()
     daemon._init_sessions()
     daemon._init_skills()
@@ -133,9 +134,9 @@ async def _send_and_process(daemon: LucydDaemon, item: dict) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_envelope_channel_id_in_session_key(tmp_path):
+async def test_envelope_channel_id_in_session_key(tmp_path, pool):
     """channel_id propagates to session key as channel_id:sender."""
-    daemon = await _boot_daemon(tmp_path)
+    daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
         "text": "ping",
@@ -153,9 +154,9 @@ async def test_envelope_channel_id_in_session_key(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_task_type_auto_close(tmp_path):
+async def test_task_type_auto_close(tmp_path, pool):
     """task_type 'task' auto-closes the session after response."""
-    daemon = await _boot_daemon(tmp_path)
+    daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
         "text": "one-shot request",
@@ -173,9 +174,9 @@ async def test_task_type_auto_close(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_conversational_session_stays_open(tmp_path):
+async def test_conversational_session_stays_open(tmp_path, pool):
     """task_type 'conversational' keeps the session open."""
-    daemon = await _boot_daemon(tmp_path)
+    daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
         "text": "first message",
@@ -193,9 +194,9 @@ async def test_conversational_session_stays_open(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_default_envelope_values(tmp_path):
+async def test_default_envelope_values(tmp_path, pool):
     """Missing envelope fields default to channel_id='http', task_type='conversational'."""
-    daemon = await _boot_daemon(tmp_path)
+    daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
         "text": "bare message",
@@ -212,14 +213,14 @@ async def test_default_envelope_values(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_metrics_incremented(tmp_path):
+async def test_metrics_incremented(tmp_path, pool):
     """Prometheus metrics are incremented after message processing."""
     import metrics
 
     if not metrics.ENABLED:
         pytest.skip("prometheus_client not installed")
 
-    daemon = await _boot_daemon(tmp_path)
+    daemon = await _boot_daemon(tmp_path, pool)
 
     # Clear metric state for test isolation
     metrics.MESSAGES_TOTAL._metrics.clear()
@@ -255,9 +256,9 @@ async def test_metrics_incremented(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reply_to_default(tmp_path):
+async def test_reply_to_default(tmp_path, pool):
     """No reply_to — normal HTTP response with reply text."""
-    daemon = await _boot_daemon(tmp_path)
+    daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
         "text": "normal request",
@@ -272,9 +273,9 @@ async def test_reply_to_default(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reply_to_silent(tmp_path):
+async def test_reply_to_silent(tmp_path, pool):
     """reply_to='silent' — reply marked silent, not delivered."""
-    daemon = await _boot_daemon(tmp_path)
+    daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
         "text": "silent request",
@@ -289,9 +290,9 @@ async def test_reply_to_silent(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reply_to_redirect(tmp_path):
+async def test_reply_to_redirect(tmp_path, pool):
     """reply_to='<sender>' — reply enqueued as system message into target session."""
-    daemon = await _boot_daemon(tmp_path)
+    daemon = await _boot_daemon(tmp_path, pool)
 
     # First, create the target's session so we can verify the redirect lands
     await _send_and_process(daemon, {
@@ -330,9 +331,9 @@ async def test_reply_to_redirect(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_message_with_system_task_type(tmp_path):
+async def test_message_with_system_task_type(tmp_path, pool):
     """task_type 'system' via /message auto-closes like the old /system endpoint."""
-    daemon = await _boot_daemon(tmp_path)
+    daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
         "text": "system event via /message",

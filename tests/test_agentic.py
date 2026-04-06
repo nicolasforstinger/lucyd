@@ -207,7 +207,7 @@ class TestAgenticLoop:
             cost=replace(_TEST_COST, metering=cost_db),
         )
 
-        rows = cost_db.query("SELECT COUNT(*) AS cnt FROM costs")
+        rows = await cost_db.query("SELECT COUNT(*) AS cnt FROM metering.costs")
         count = rows[0]["cnt"]
         assert count >= 1
 

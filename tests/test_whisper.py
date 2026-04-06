@@ -59,7 +59,7 @@ def audio_file(tmp_path: Path) -> str:
 @pytest.fixture
 def mock_metering() -> MagicMock:
     m = MagicMock()
-    m.record = MagicMock(return_value=0.001)
+    m.record = AsyncMock(return_value=0.001)
     return m
 
 

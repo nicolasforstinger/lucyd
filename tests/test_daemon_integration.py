@@ -414,6 +414,11 @@ class TestResolveIntegration:
 
         daemon.session_mgr = MagicMock()
         daemon.session_mgr.get_or_create = AsyncMock(return_value=session)
+        daemon.session_mgr.has_session = AsyncMock(return_value=False)
+        daemon.session_mgr.save_state = AsyncMock()
+        daemon.session_mgr.close_session = AsyncMock(return_value=True)
+        daemon.session_mgr.compact_session = AsyncMock()
+        daemon.session_mgr.session_count = AsyncMock(return_value=0)
 
         # Mock context builder
         daemon.context_builder = MagicMock()
@@ -565,7 +570,11 @@ class TestContextBuilderSourcePassthrough:
 
         daemon.session_mgr = MagicMock()
         daemon.session_mgr.get_or_create = AsyncMock(return_value=session)
+        daemon.session_mgr.has_session = AsyncMock(return_value=False)
+        daemon.session_mgr.save_state = AsyncMock()
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
+        daemon.session_mgr.compact_session = AsyncMock()
+        daemon.session_mgr.session_count = AsyncMock(return_value=0)
 
         daemon.context_builder = MagicMock()
         daemon.context_builder.build = MagicMock(return_value=[])

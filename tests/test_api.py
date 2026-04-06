@@ -106,6 +106,13 @@ _HTTP_DEFAULTS = dict(
     rate_cleanup_threshold=1000,
 )
 
+def _async_val(val):
+    """Return an async callable that returns *val* — adapter for sync test data."""
+    async def _inner(*args, **kwargs):
+        return val
+    return _inner
+
+
 # ─── Fixtures ─────────────────────────────────────────────────────
 
 
@@ -123,12 +130,12 @@ def api(queue):
         port=0,  # unused — we use aiohttp test client
         auth_token="test-token-123",
         agent_timeout=5.0,
-        get_status=lambda: {
+        get_status=_async_val({
             "status": "ok",
             "uptime_seconds": 42,
             "active_sessions": 1,
             "today_cost": 1.23,
-        },
+        }),
         trust_localhost=True,
         **_HTTP_DEFAULTS,
     )
@@ -402,8 +409,8 @@ class TestLocalhostUntrusted:
             port=0,
             auth_token="test-token-123",
             agent_timeout=5.0,
-            get_status=lambda: {"status": "ok"},
-            get_sessions=lambda: [],
+            get_status=_async_val({"status": "ok"}),
+            get_sessions=_async_val([]),
             trust_localhost=False,
             **_HTTP_DEFAULTS,
         )
@@ -455,7 +462,7 @@ class TestLocalhostUntrusted:
             port=0,
             auth_token="",
             agent_timeout=5.0,
-            get_sessions=lambda: [],
+            get_sessions=_async_val([]),
             trust_localhost=False,
             **_HTTP_DEFAULTS,
         )
@@ -1557,7 +1564,7 @@ class TestSessions:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
-            get_sessions=lambda: sessions_data,
+            get_sessions=_async_val(sessions_data),
             **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
@@ -1574,7 +1581,7 @@ class TestSessions:
         api = HTTPApi(
             queue=queue, host="127.0.0.1", port=0,
             auth_token="test-token-123", agent_timeout=5.0,
-            get_sessions=lambda: [],
+            get_sessions=_async_val([]),
             **_HTTP_DEFAULTS,
         )
         app = _make_app(api)
@@ -2041,8 +2048,8 @@ class TestAgentIdentity:
             auth_token="test-token-123",
             agent_timeout=5.0,
             agent_name="Lucy",
-            get_status=lambda: {"status": "ok"},
-            get_sessions=lambda: [],
+            get_status=_async_val({"status": "ok"}),
+            get_sessions=_async_val([]),
             **_HTTP_DEFAULTS,
         )
 
@@ -2275,7 +2282,7 @@ class TestHistoryEndpoint:
 
     @pytest.fixture
     def api_with_history(self, queue):
-        def mock_history(session_id, full=False):
+        async def mock_history(session_id, full=False):
             return {
                 "session_id": session_id,
                 "events": [
