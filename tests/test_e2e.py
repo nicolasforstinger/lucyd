@@ -97,7 +97,6 @@ def _make_e2e_config(tmp_path: Path) -> Config:
         "paths": {
             "state_dir": str(tmp_path / "state"),
             "sessions_dir": str(tmp_path / "sessions"),
-            "metering_db": str(tmp_path / "metering.db"),
             "log_file": str(tmp_path / "logs" / "lucyd.log"),
         },
     }
@@ -105,10 +104,11 @@ def _make_e2e_config(tmp_path: Path) -> Config:
 
 
 @pytest.mark.asyncio
-async def test_e2e_message_cycle(tmp_path):
+async def test_e2e_message_cycle(tmp_path, pool):
     """Boot daemon, send a message, verify response + session + metering."""
     config = _make_e2e_config(tmp_path)
     daemon = LucydDaemon(config)
+    daemon.pool = pool
 
     # Ensure state dir exists (monitor.json writes there)
     Path(config.state_dir).mkdir(parents=True, exist_ok=True)
@@ -141,15 +141,21 @@ async def test_e2e_message_cycle(tmp_path):
     reply = result if isinstance(result, str) else result.get("reply", "")
     assert "Hello from smoke test!" in reply
 
-    # Verify session state persisted
-    sessions_dir = Path(config.sessions_dir)
-    session_files = list(sessions_dir.glob("*.json"))
-    assert len(session_files) >= 1, "Session state file should be persisted"
+    # Verify session state persisted in Postgres
+    row = await pool.fetchval(
+        "SELECT COUNT(*) FROM sessions.sessions "
+        "WHERE client_id = $1 AND agent_id = $2",
+        config.client_id or config.agent_name,
+        config.agent_id or config.agent_name,
+    )
+    assert row >= 1, "At least one session should be persisted"
 
-    # Verify metering record created
-    import sqlite3
-    meter_conn = sqlite3.connect(str(config.metering_db))
-    rows = meter_conn.execute("SELECT COUNT(*) FROM costs").fetchone()
-    meter_conn.close()
-    assert rows[0] >= 1, "At least one metering record should exist"
+    # Verify metering record created in Postgres
+    cost_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM metering.costs "
+        "WHERE client_id = $1 AND agent_id = $2",
+        config.client_id or config.agent_name,
+        config.agent_id or config.agent_name,
+    )
+    assert cost_count >= 1, "At least one metering record should exist"
 

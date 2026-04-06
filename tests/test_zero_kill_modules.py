@@ -3,13 +3,13 @@
 Phase 2: Each test calls the REAL function — no reimplemented logic.
 """
 
-import sqlite3
 import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from memory_schema import ensure_schema
+TEST_CLIENT_ID = "test"
+TEST_AGENT_ID = "test_agent"
 
 # ─── tools/status.py ─────────────────────────────────────────────
 
@@ -65,26 +65,24 @@ class TestToolSessionStatus:
         finally:
             mod._session_getter, mod._daemon_start_time, mod._metering = original
 
-    def test_reports_cost(self, tmp_path):
-        """Reports cost from metering DB when configured."""
+    def test_reports_cost(self):
+        """Reports cost from metering when query returns rows.
+
+        tool_session_status() calls _metering.query() synchronously.
+        We mock query() to return rows directly — this tests the
+        formatting logic without needing a real database.
+        """
         import tools.status as mod
-        from dataclasses import dataclass
-        from metering import MeteringDB
 
-        @dataclass
-        class _Usage:
-            input_tokens: int = 0
-            output_tokens: int = 0
-            cache_read_tokens: int = 0
-            cache_write_tokens: int = 0
-
-        metering = MeteringDB(str(tmp_path / "metering.db"))
-        metering.record("s1", "opus", "test", _Usage(input_tokens=10000, output_tokens=5000), [5.0, 25.0, 0.5])
+        mock_metering = MagicMock()
+        mock_metering.query.return_value = [
+            (0.1750, 10000, 5000),
+        ]
 
         original = (mod._session_getter, mod._daemon_start_time, mod._metering)
         mod._session_getter = None
         mod._daemon_start_time = 0.0
-        mod._metering = metering
+        mod._metering = mock_metering
         try:
             result = mod.tool_session_status()
             assert "EUR" in result
@@ -186,25 +184,24 @@ class TestToolMemorySearch:
             mod._memory = original
 
     @pytest.mark.asyncio
-    async def test_structured_recall_path_with_vector_results(self):
-        """With _conn and _config set, structured recall path is exercised."""
+    async def test_structured_recall_path_with_vector_results(self, pool):
+        """With _pool and _config set, structured recall path is exercised."""
         import tools.memory_read as mod
         mock_mem = AsyncMock()
         mock_mem.search.return_value = [
             {"text": "vector result about nicolas", "score": 0.9, "days_old": 1},
         ]
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
-        ensure_schema(conn)
 
         class FakeConfig:
             recall_max_facts = 20
             recall_decay_rate = 0.03
             recall_max_dynamic_tokens = 1000
 
-        original = (mod._memory, mod._conn, mod._config)
+        original = (mod._memory, mod._pool, mod._client_id, mod._agent_id, mod._config)
         mod._memory = mock_mem
-        mod._conn = conn
+        mod._pool = pool
+        mod._client_id = TEST_CLIENT_ID
+        mod._agent_id = TEST_AGENT_ID
         mod._config = FakeConfig()
         try:
             result = await mod.tool_memory_search("nicolas")
@@ -212,70 +209,69 @@ class TestToolMemorySearch:
             assert "[Memory search]" in result
             mock_mem.search.assert_awaited_once()
         finally:
-            mod._memory, mod._conn, mod._config = original
-            conn.close()
+            mod._memory, mod._pool, mod._client_id, mod._agent_id, mod._config = original
 
     @pytest.mark.asyncio
-    async def test_structured_recall_empty_returns_fallback(self):
+    async def test_structured_recall_empty_returns_fallback(self, pool):
         """Empty structured recall returns EMPTY_RECALL_FALLBACK."""
         import tools.memory_read as mod
         mock_mem = AsyncMock()
         mock_mem.search.return_value = []
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
-        ensure_schema(conn)
 
         class FakeConfig:
             recall_max_facts = 20
             recall_decay_rate = 0.03
             recall_max_dynamic_tokens = 1000
 
-        original = (mod._memory, mod._conn, mod._config)
+        original = (mod._memory, mod._pool, mod._client_id, mod._agent_id, mod._config)
         mod._memory = mock_mem
-        mod._conn = conn
+        mod._pool = pool
+        mod._client_id = TEST_CLIENT_ID
+        mod._agent_id = TEST_AGENT_ID
         mod._config = FakeConfig()
         try:
             result = await mod.tool_memory_search("xyznonexistent")
             assert "No results found in structured memory" in result
         finally:
-            mod._memory, mod._conn, mod._config = original
-            conn.close()
+            mod._memory, mod._pool, mod._client_id, mod._agent_id, mod._config = original
 
     @pytest.mark.asyncio
-    async def test_structured_recall_with_facts(self):
+    async def test_structured_recall_with_facts(self, pool):
         """Structured recall includes facts from the DB."""
         import tools.memory_read as mod
         mock_mem = AsyncMock()
         mock_mem.search.return_value = []
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
-        ensure_schema(conn)
-        # Seed a fact and alias
-        conn.execute(
-            "INSERT INTO facts (entity, attribute, value, confidence, source_session, accessed_at) "
-            "VALUES ('nicolas', 'lives_in', 'Austria', 1.0, 'test', datetime('now'))"
+        # Seed a fact and alias via asyncpg
+        await pool.execute(
+            "INSERT INTO knowledge.facts "
+            "(client_id, agent_id, entity, attribute, value, confidence, source_session, accessed_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, now())",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+            "nicolas", "lives_in", "Austria", 1.0, "test",
         )
-        conn.execute(
-            "INSERT INTO entity_aliases (alias, canonical) VALUES ('nicolas', 'nicolas')"
+        await pool.execute(
+            "INSERT INTO knowledge.entity_aliases (client_id, agent_id, alias, canonical) "
+            "VALUES ($1, $2, $3, $4)",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "nicolas", "nicolas",
         )
-        conn.commit()
 
         class FakeConfig:
             recall_max_facts = 20
             recall_decay_rate = 0.03
             recall_max_dynamic_tokens = 1000
 
-        original = (mod._memory, mod._conn, mod._config)
+        original = (mod._memory, mod._pool, mod._client_id, mod._agent_id, mod._config)
         mod._memory = mock_mem
-        mod._conn = conn
+        mod._pool = pool
+        mod._client_id = TEST_CLIENT_ID
+        mod._agent_id = TEST_AGENT_ID
         mod._config = FakeConfig()
         try:
             result = await mod.tool_memory_search("nicolas")
             assert "[Known facts]" in result
             assert "Austria" in result
         finally:
-            mod._memory, mod._conn, mod._config = original
-            conn.close()
+            mod._memory, mod._pool, mod._client_id, mod._agent_id, mod._config = original
 
     @pytest.mark.asyncio
     async def test_structured_recall_fallback_on_error(self):
@@ -285,25 +281,29 @@ class TestToolMemorySearch:
         mock_mem.search.return_value = [
             {"source": "test.md", "text": "fallback result", "score": 0.7},
         ]
-        # Use a closed connection to trigger an error in structured recall
-        conn = sqlite3.connect(":memory:")
-        conn.close()
+        # Mock pool that raises on every async call to trigger recall failure
+        bad_pool = MagicMock()
+        bad_pool.fetch = AsyncMock(side_effect=Exception("connection error"))
+        bad_pool.fetchrow = AsyncMock(side_effect=Exception("connection error"))
+        bad_pool.fetchval = AsyncMock(side_effect=Exception("connection error"))
 
         class FakeConfig:
             recall_max_facts = 20
             recall_decay_rate = 0.03
             recall_max_dynamic_tokens = 1000
 
-        original = (mod._memory, mod._conn, mod._config)
+        original = (mod._memory, mod._pool, mod._client_id, mod._agent_id, mod._config)
         mod._memory = mock_mem
-        mod._conn = conn
+        mod._pool = bad_pool
+        mod._client_id = TEST_CLIENT_ID
+        mod._agent_id = TEST_AGENT_ID
         mod._config = FakeConfig()
         try:
             result = await mod.tool_memory_search("query")
             # Should fall back to vector format
             assert "fallback result" in result
         finally:
-            mod._memory, mod._conn, mod._config = original
+            mod._memory, mod._pool, mod._client_id, mod._agent_id, mod._config = original
 
 
 class TestToolMemoryGet:

@@ -1,27 +1,32 @@
-"""Tests for evolution.py — state tracking and pre-check logic."""
-
-import sqlite3
+"""Tests for evolution state tracking and pre-check logic (asyncpg)."""
 
 import pytest
 
+from conftest import TEST_AGENT_ID, TEST_CLIENT_ID
 from operations import (
     check_new_logs_exist,
     get_evolution_state,
 )
-from memory_schema import ensure_schema
 
-# ── Fixtures ─────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def mem_conn():
-    """In-memory SQLite DB with full schema."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    ensure_schema(conn)
-    yield conn
-    conn.close()
+async def _insert_evolution_state(
+    pool: object, file_path: str, content_hash: str, logs_through: str,
+) -> None:
+    """Insert evolution state directly (helper for tests)."""
+    await pool.execute(  # type: ignore[union-attr]
+        "INSERT INTO knowledge.evolution_state "
+        "(client_id, agent_id, file_path, last_evolved_at, content_hash, logs_through) "
+        "VALUES ($1, $2, $3, now(), $4, $5) "
+        "ON CONFLICT (client_id, agent_id, file_path) DO UPDATE SET "
+        "last_evolved_at = now(), content_hash = EXCLUDED.content_hash, "
+        "logs_through = EXCLUDED.logs_through",
+        TEST_CLIENT_ID, TEST_AGENT_ID, file_path, content_hash, logs_through,
+    )
+
+
+# ── Fixtures ────────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -47,31 +52,26 @@ def workspace(tmp_path):
     return ws
 
 
-def _insert_evolution_state(conn, file_path, content_hash, logs_through):
-    """Insert evolution state directly (helper for tests)."""
-    conn.execute(
-        "INSERT OR REPLACE INTO evolution_state "
-        "(file_path, last_evolved_at, content_hash, logs_through) "
-        "VALUES (?, datetime('now'), ?, ?)",
-        (file_path, content_hash, logs_through),
-    )
-    conn.commit()
-
-
-# ── TestEvolutionState ───────────────────────────────────────────
+# ── TestEvolutionState ──────────────────────────────────────────
 
 
 class TestEvolutionState:
-    def test_get_state_returns_none_on_first_run(self, mem_conn):
+    @pytest.mark.asyncio
+    async def test_get_state_returns_none_on_first_run(self, pool):
         """No row exists — get_evolution_state returns None."""
-        result = get_evolution_state("MEMORY.md", mem_conn)
+        result = await get_evolution_state(
+            "MEMORY.md", pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert result is None
 
-    def test_get_state_returns_stored_values(self, mem_conn):
+    @pytest.mark.asyncio
+    async def test_get_state_returns_stored_values(self, pool):
         """Insert state then read it back."""
-        _insert_evolution_state(mem_conn, "MEMORY.md", "abc123hash", "2026-02-22")
+        await _insert_evolution_state(pool, "MEMORY.md", "abc123hash", "2026-02-22")
 
-        state = get_evolution_state("MEMORY.md", mem_conn)
+        state = await get_evolution_state(
+            "MEMORY.md", pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert state is not None
         assert state["content_hash"] == "abc123hash"
         assert state["logs_through"] == "2026-02-22"
@@ -82,39 +82,57 @@ class TestEvolutionState:
 
 
 class TestCheckNewLogsExist:
-    def test_returns_true_when_no_prior_state(self, workspace, mem_conn):
+    @pytest.mark.asyncio
+    async def test_returns_true_when_no_prior_state(self, workspace, pool):
         """First run — no state, all logs are 'new'."""
-        has_new, since = check_new_logs_exist(workspace, mem_conn)
+        has_new, since = await check_new_logs_exist(
+            workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert has_new is True
         assert since == ""
 
-    def test_returns_false_when_no_new_logs(self, workspace, mem_conn):
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_new_logs(self, workspace, pool):
         """All logs are older than logs_through — skip."""
-        _insert_evolution_state(mem_conn, "MEMORY.md", "abc", "2026-02-22")
-        has_new, since = check_new_logs_exist(workspace, mem_conn)
+        await _insert_evolution_state(pool, "MEMORY.md", "abc", "2026-02-22")
+        has_new, since = await check_new_logs_exist(
+            workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert has_new is False
         assert since == "2026-02-22"
 
-    def test_returns_true_when_new_logs_exist(self, workspace, mem_conn):
+    @pytest.mark.asyncio
+    async def test_returns_true_when_new_logs_exist(self, workspace, pool):
         """New logs after logs_through — trigger."""
-        _insert_evolution_state(mem_conn, "MEMORY.md", "abc", "2026-02-20")
-        has_new, since = check_new_logs_exist(workspace, mem_conn)
+        await _insert_evolution_state(pool, "MEMORY.md", "abc", "2026-02-20")
+        has_new, since = await check_new_logs_exist(
+            workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert has_new is True
         assert since == "2026-02-20"
 
-    def test_returns_false_when_no_memory_dir(self, tmp_path, mem_conn):
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_memory_dir(self, tmp_path, pool):
         """No memory directory at all — nothing to evolve."""
         ws = tmp_path / "empty-workspace"
         ws.mkdir()
-        has_new, since = check_new_logs_exist(ws, mem_conn)
+        has_new, since = await check_new_logs_exist(
+            ws, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert has_new is False
 
-    def test_uses_reference_file_for_state(self, workspace, mem_conn):
+    @pytest.mark.asyncio
+    async def test_uses_reference_file_for_state(self, workspace, pool):
         """Custom reference file is used for state lookup."""
-        _insert_evolution_state(mem_conn, "USER.md", "abc", "2026-02-22")
+        await _insert_evolution_state(pool, "USER.md", "abc", "2026-02-22")
         # Default ref is MEMORY.md — no state for it, so has_new=True
-        has_new, _ = check_new_logs_exist(workspace, mem_conn)
+        has_new, _ = await check_new_logs_exist(
+            workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert has_new is True
-        # With USER.md as ref — state exists, all logs ≤ 2026-02-22
-        has_new, _ = check_new_logs_exist(workspace, mem_conn, reference_file="USER.md")
+        # With USER.md as ref — state exists, all logs <= 2026-02-22
+        has_new, _ = await check_new_logs_exist(
+            workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+            reference_file="USER.md",
+        )
         assert has_new is False

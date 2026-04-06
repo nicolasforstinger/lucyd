@@ -6,15 +6,18 @@ import pytest
 
 from session import SessionManager
 
+TEST_CLIENT_ID = "test"
+TEST_AGENT_ID = "test_agent"
+
 
 @pytest.fixture
-def session_mgr(tmp_sessions):
+async def session_mgr(pool):
     """SessionManager with a test session ready."""
-    mgr = SessionManager(tmp_sessions, agent_name="TestAgent")
-    session = mgr.get_or_create("test-user")
-    session.add_user_message("hello")
-    session.add_assistant_message({"role": "assistant", "content": "hi there"})
-    session.save_state()
+    mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID, agent_name="TestAgent")
+    session = await mgr.get_or_create("test-user")
+    await session.add_user_message("hello")
+    await session.add_assistant_message({"role": "assistant", "text": "hi there"})
+    await session.save_state()
     return mgr
 
 
@@ -106,7 +109,7 @@ class TestCallbackOrdering:
         assert order == ["first", "second", "third"]
 
     @pytest.mark.asyncio
-    async def test_callback_fires_before_archive(self, session_mgr, tmp_sessions):
+    async def test_callback_fires_before_archive(self, session_mgr):
         """Callback should see the session before it's archived/removed."""
         session_id = None
         messages_count = 0
@@ -124,11 +127,12 @@ class TestCallbackOrdering:
 
 
 class TestAgentName:
-    def test_agent_name_stored(self, tmp_sessions):
-        mgr = SessionManager(tmp_sessions, agent_name="Lucy")
+    @pytest.mark.asyncio
+    async def test_agent_name_stored(self, pool):
+        mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID, agent_name="Lucy")
         assert mgr.agent_name == "Lucy"
 
-    def test_agent_name_default(self, tmp_sessions):
-        mgr = SessionManager(tmp_sessions)
+    @pytest.mark.asyncio
+    async def test_agent_name_default(self, pool):
+        mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert mgr.agent_name == "Assistant"
-

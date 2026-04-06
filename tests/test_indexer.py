@@ -1,13 +1,11 @@
-"""Tests for tools/indexer.py — memory indexer."""
+"""Tests for tools/indexer.py — memory indexer (PostgreSQL)."""
 
 from __future__ import annotations
 
 import hashlib
-import json
-import sqlite3
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -22,24 +20,17 @@ from tools.indexer import (
     get_index_status,
     get_indexed_files,
     index_workspace,
-    rebuild_fts,
     remove_stale_files,
     scan_workspace,
     update_chunks,
 )
 
+# ─── Constants ───────────────────────────────────────────────────
+
+TEST_CLIENT_ID = "test"
+TEST_AGENT_ID = "test_agent"
+
 # ─── Fixtures ────────────────────────────────────────────────────
-
-@pytest.fixture
-def index_db(tmp_path: Path) -> Path:
-    """Fresh SQLite DB with production schema."""
-    from memory_schema import ensure_schema
-
-    db_path = tmp_path / "memory.sqlite"
-    conn = sqlite3.connect(str(db_path))
-    ensure_schema(conn)
-    conn.close()
-    return db_path
 
 
 @pytest.fixture
@@ -77,13 +68,12 @@ def tmp_memory_workspace(tmp_path: Path) -> Path:
     return ws
 
 
-def _fake_embeddings(
-    texts: list[str], api_key: str = "", base_url: str = "",
-    model: str = "", **kwargs: Any,
+async def _fake_embeddings(
+    texts: list[str], *args: Any, **kwargs: Any,
 ) -> list[list[float]]:
     """Generate deterministic fake embeddings for testing.
 
-    Matches embed_batch(texts, api_key, base_url, model) signature.
+    Matches async embed_batch(texts, api_key, base_url, model) signature.
     """
     result: list[list[float]] = []
     for text in texts:
@@ -94,6 +84,7 @@ def _fake_embeddings(
 
 
 # ─── TestComputeHashes ───────────────────────────────────────────
+
 
 class TestComputeHashes:
     def test_file_hash_deterministic(self) -> None:
@@ -128,6 +119,7 @@ class TestComputeHashes:
 
 
 # ─── TestChunkFile ───────────────────────────────────────────────
+
 
 class TestChunkFile:
     def test_empty_input(self) -> None:
@@ -216,6 +208,7 @@ class TestChunkFile:
 
 # ─── TestScanWorkspace ───────────────────────────────────────────
 
+
 class TestScanWorkspace:
     def test_finds_daily_logs(self, tmp_memory_workspace: Path) -> None:
         results = scan_workspace(tmp_memory_workspace)
@@ -253,55 +246,63 @@ class TestScanWorkspace:
 
 # ─── TestGetIndexedFiles ─────────────────────────────────────────
 
-class TestGetIndexedFiles:
-    def test_empty_db(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
-        assert get_indexed_files(conn) == {}
-        conn.close()
 
-    def test_returns_path_hash_map(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
-        conn.execute(
-            "INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)",
-            ("memory/test.md", "memory", "abc123", 1000, 500),
+class TestGetIndexedFiles:
+    @pytest.mark.asyncio
+    async def test_empty_db(self, pool: Any) -> None:
+        assert await get_indexed_files(pool, TEST_CLIENT_ID, TEST_AGENT_ID) == {}
+
+    @pytest.mark.asyncio
+    async def test_returns_path_hash_map(self, pool: Any) -> None:
+        await pool.execute(
+            "INSERT INTO search.files (client_id, agent_id, path, source, hash, mtime, size) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "memory/test.md", "memory", "abc123", 1000, 500,
         )
-        conn.commit()
-        result = get_indexed_files(conn)
+        result = await get_indexed_files(pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert result == {"memory/test.md": "abc123"}
-        conn.close()
 
 
 # ─── TestUpdateChunks ────────────────────────────────────────────
 
+
 class TestUpdateChunks:
-    def test_inserts_chunks(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
+    @pytest.mark.asyncio
+    async def test_inserts_chunks(self, pool: Any) -> None:
         chunks = [
             {"text": "chunk one", "start_line": 1, "end_line": 5,
              "embedding": [0.1, 0.2, 0.3]},
             {"text": "chunk two", "start_line": 4, "end_line": 10,
              "embedding": [0.4, 0.5, 0.6]},
         ]
-        count = update_chunks(conn, "memory/test.md", "memory", chunks,
-                              "text-embedding-3-small", "hash123", 1000, 500)
-        conn.commit()
+        count = await update_chunks(
+            pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+            "memory/test.md", "memory", chunks,
+            "text-embedding-3-small", "hash123", 1000, 500,
+        )
         assert count == 2
 
-        rows = conn.execute("SELECT id, path, text FROM chunks ORDER BY start_line").fetchall()
+        rows = await pool.fetch(
+            "SELECT id, path, text FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2 AND path = $3 ORDER BY start_line",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "memory/test.md",
+        )
         assert len(rows) == 2
-        assert rows[0][1] == "memory/test.md"
-        assert rows[0][2] == "chunk one"
-        conn.close()
+        assert rows[0]["path"] == "memory/test.md"
+        assert rows[0]["text"] == "chunk one"
 
-    def test_reindex_replaces_old_chunks(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
+    @pytest.mark.asyncio
+    async def test_reindex_replaces_old_chunks(self, pool: Any) -> None:
         # First index
         chunks_v1 = [
             {"text": "old content", "start_line": 1, "end_line": 5,
              "embedding": [0.1]},
         ]
-        update_chunks(conn, "memory/test.md", "memory", chunks_v1,
-                       "text-embedding-3-small", "hash1", 1000, 500)
+        await update_chunks(
+            pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+            "memory/test.md", "memory", chunks_v1,
+            "text-embedding-3-small", "hash1", 1000, 500,
+        )
 
         # Re-index same path
         chunks_v2 = [
@@ -310,210 +311,126 @@ class TestUpdateChunks:
             {"text": "more new content", "start_line": 3, "end_line": 6,
              "embedding": [0.3]},
         ]
-        count = update_chunks(conn, "memory/test.md", "memory", chunks_v2,
-                               "text-embedding-3-small", "hash2", 2000, 600)
-        conn.commit()
+        count = await update_chunks(
+            pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+            "memory/test.md", "memory", chunks_v2,
+            "text-embedding-3-small", "hash2", 2000, 600,
+        )
 
         assert count == 2
-        rows = conn.execute("SELECT text FROM chunks WHERE path = ? ORDER BY start_line",
-                            ("memory/test.md",)).fetchall()
+        rows = await pool.fetch(
+            "SELECT text FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2 AND path = $3 ORDER BY start_line",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "memory/test.md",
+        )
         assert len(rows) == 2
-        assert rows[0][0] == "new content"
-        conn.close()
+        assert rows[0]["text"] == "new content"
 
-    def test_file_record_updated(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
+    @pytest.mark.asyncio
+    async def test_file_record_updated(self, pool: Any) -> None:
         chunks = [{"text": "text", "start_line": 1, "end_line": 1,
                     "embedding": [0.1]}]
-        update_chunks(conn, "test.md", "memory", chunks,
-                       "model", "hash_a", 1000, 100)
-        conn.commit()
+        await update_chunks(
+            pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+            "test.md", "memory", chunks, "model", "hash_a", 1000, 100,
+        )
 
-        row = conn.execute("SELECT hash, mtime, size FROM files WHERE path = 'test.md'").fetchone()
-        assert row == ("hash_a", 1000, 100)
+        row = await pool.fetchrow(
+            "SELECT hash, mtime, size FROM search.files "
+            "WHERE client_id = $1 AND agent_id = $2 AND path = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "test.md",
+        )
+        assert row["hash"] == "hash_a"
+        assert row["mtime"] == 1000
+        assert row["size"] == 100
 
         # Update
-        update_chunks(conn, "test.md", "memory", chunks,
-                       "model", "hash_b", 2000, 200)
-        conn.commit()
-        row = conn.execute("SELECT hash, mtime, size FROM files WHERE path = 'test.md'").fetchone()
-        assert row == ("hash_b", 2000, 200)
-        conn.close()
-
-
-# ─── TestRebuildFts ──────────────────────────────────────────────
-
-class TestRebuildFts:
-    def test_fts_rowids_match_chunks(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
-        # Insert some chunks
-        for i in range(3):
-            conn.execute(
-                "INSERT INTO chunks (id, path, source, start_line, end_line, "
-                "hash, model, text, embedding, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"id{i}", "test.md", "memory", i + 1, i + 1,
-                 f"h{i}", "model", f"chunk text {i}", "[]", 1000),
-            )
-        rebuild_fts(conn)
-        conn.commit()
-
-        # FTS count should match chunks count
-        fts_count = conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
-        chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        assert fts_count == chunk_count
-        conn.close()
-
-    def test_fts_searchable_after_rebuild(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
-        conn.execute(
-            "INSERT INTO chunks (id, path, source, start_line, end_line, "
-            "hash, model, text, embedding, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("id1", "test.md", "memory", 1, 5, "h1", "model",
-             "the quick brown fox jumps over the lazy dog", "[]", 1000),
+        await update_chunks(
+            pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+            "test.md", "memory", chunks, "model", "hash_b", 2000, 200,
         )
-        rebuild_fts(conn)
-        conn.commit()
-
-        rows = conn.execute(
-            "SELECT id FROM chunks_fts WHERE chunks_fts MATCH '\"brown\" \"fox\"'"
-        ).fetchall()
-        assert len(rows) == 1
-        assert rows[0][0] == "id1"
-        conn.close()
-
-    def test_fts_count_equals_chunk_count(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
-        for i in range(5):
-            conn.execute(
-                "INSERT INTO chunks (id, path, source, start_line, end_line, "
-                "hash, model, text, embedding, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"id{i}", f"file{i}.md", "memory", 1, 1,
-                 f"h{i}", "model", f"text {i}", "[]", 1000),
-            )
-        rebuild_fts(conn)
-        conn.commit()
-
-        fts_count = conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
-        assert fts_count == 5
-        conn.close()
+        row = await pool.fetchrow(
+            "SELECT hash, mtime, size FROM search.files "
+            "WHERE client_id = $1 AND agent_id = $2 AND path = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "test.md",
+        )
+        assert row["hash"] == "hash_b"
+        assert row["mtime"] == 2000
+        assert row["size"] == 200
 
 
 # ─── TestRemoveStale ─────────────────────────────────────────────
 
-class TestRemoveStale:
-    def test_removes_chunks_and_file_record(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
-        # Insert a file + chunk
-        conn.execute(
-            "INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)",
-            ("old.md", "memory", "hash1", 1000, 100),
-        )
-        conn.execute(
-            "INSERT INTO chunks (id, path, source, start_line, end_line, "
-            "hash, model, text, embedding, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("id1", "old.md", "memory", 1, 5, "h1", "model", "old text", "[]", 1000),
-        )
-        conn.commit()
 
-        removed = remove_stale_files(conn, {"new.md"})
-        conn.commit()
+class TestRemoveStale:
+    @pytest.mark.asyncio
+    async def test_removes_chunks_and_file_record(self, pool: Any) -> None:
+        # Insert a file + chunk
+        await pool.execute(
+            "INSERT INTO search.files (client_id, agent_id, path, source, hash, mtime, size) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "old.md", "memory", "hash1", 1000, 100,
+        )
+        await pool.execute(
+            "INSERT INTO search.chunks (client_id, agent_id, id, path, source, start_line, "
+            "end_line, hash, model, text, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "id1", "old.md", "memory", 1, 5,
+            "h1", "model", "old text",
+        )
+
+        removed = await remove_stale_files(pool, TEST_CLIENT_ID, TEST_AGENT_ID, {"new.md"})
         assert removed == ["old.md"]
 
         # Verify chunks removed
-        assert conn.execute("SELECT COUNT(*) FROM chunks WHERE path = 'old.md'").fetchone()[0] == 0
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2 AND path = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "old.md",
+        )
+        assert count == 0
         # Verify file record removed
-        assert conn.execute("SELECT COUNT(*) FROM files WHERE path = 'old.md'").fetchone()[0] == 0
-        conn.close()
-
-    def test_keeps_non_stale_files(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
-        conn.execute(
-            "INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)",
-            ("keep.md", "memory", "hash1", 1000, 100),
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM search.files "
+            "WHERE client_id = $1 AND agent_id = $2 AND path = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "old.md",
         )
-        conn.execute(
-            "INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)",
-            ("remove.md", "memory", "hash2", 1000, 100),
-        )
-        conn.commit()
+        assert count == 0
 
-        removed = remove_stale_files(conn, {"keep.md"})
-        conn.commit()
+    @pytest.mark.asyncio
+    async def test_keeps_non_stale_files(self, pool: Any) -> None:
+        await pool.execute(
+            "INSERT INTO search.files (client_id, agent_id, path, source, hash, mtime, size) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "keep.md", "memory", "hash1", 1000, 100,
+        )
+        await pool.execute(
+            "INSERT INTO search.files (client_id, agent_id, path, source, hash, mtime, size) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "remove.md", "memory", "hash2", 1000, 100,
+        )
+
+        removed = await remove_stale_files(pool, TEST_CLIENT_ID, TEST_AGENT_ID, {"keep.md"})
         assert removed == ["remove.md"]
-        assert conn.execute("SELECT COUNT(*) FROM files WHERE path = 'keep.md'").fetchone()[0] == 1
-        conn.close()
-
-
-# ─── TestFtsIntegrity ────────────────────────────────────────────
-
-class TestFtsIntegrity:
-    def test_join_works_after_update_and_rebuild(self, index_db: Path) -> None:
-        """Verify the exact JOIN that memory.py uses works correctly."""
-        conn = sqlite3.connect(str(index_db))
-
-        chunks = [
-            {"text": "nicolas discussed the portfolio project", "start_line": 1,
-             "end_line": 5, "embedding": [0.1, 0.2]},
-            {"text": "claudio built the memory indexer", "start_line": 4,
-             "end_line": 10, "embedding": [0.3, 0.4]},
-        ]
-        update_chunks(conn, "memory/test.md", "memory", chunks,
-                       "text-embedding-3-small", "hash1", 1000, 500)
-        rebuild_fts(conn)
-        conn.commit()
-
-        # This is the exact query from memory.py._fts_search
-        rows = conn.execute(
-            """
-            SELECT c.id, c.path, c.source, c.text, fts.rank AS score
-            FROM chunks_fts fts
-            JOIN chunks c ON c.rowid = fts.rowid
-            WHERE chunks_fts MATCH '"portfolio"'
-            ORDER BY fts.rank
-            LIMIT 10
-            """,
-        ).fetchall()
-
-        assert len(rows) == 1
-        assert "portfolio" in rows[0][3]
-        assert rows[0][1] == "memory/test.md"
-        conn.close()
-
-    def test_all_chunks_joinable(self, index_db: Path) -> None:
-        """Every chunk has a matching FTS entry via rowid JOIN."""
-        conn = sqlite3.connect(str(index_db))
-
-        for i in range(5):
-            conn.execute(
-                "INSERT INTO chunks (id, path, source, start_line, end_line, "
-                "hash, model, text, embedding, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"id{i}", f"file{i}.md", "memory", 1, 1,
-                 f"h{i}", "model", f"unique text {i}", "[]", 1000),
-            )
-        rebuild_fts(conn)
-        conn.commit()
-
-        # JOIN should return all rows
-        joined = conn.execute(
-            "SELECT c.id FROM chunks c JOIN chunks_fts f ON c.rowid = f.rowid"
-        ).fetchall()
-        assert len(joined) == 5
-        conn.close()
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM search.files "
+            "WHERE client_id = $1 AND agent_id = $2 AND path = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "keep.md",
+        )
+        assert count == 1
 
 
 # ─── TestEmbedBatch ──────────────────────────────────────────────
 
+
 class TestEmbedBatch:
-    def test_empty_input(self) -> None:
-        result = embed_batch([], "fake-key")
+    @pytest.mark.asyncio
+    async def test_empty_input(self) -> None:
+        result = await embed_batch([], "fake-key")
         assert result == []
 
-    def test_calls_api_and_returns_ordered(self) -> None:
+    @pytest.mark.asyncio
+    async def test_calls_api_and_returns_ordered(self) -> None:
         """Mock the API call and verify ordering."""
         fake_response = {
             "data": [
@@ -527,8 +444,10 @@ class TestEmbedBatch:
         mock_resp.json.return_value = fake_response
 
         with patch("tools.indexer.httpx.post", return_value=mock_resp):
-            result = embed_batch(["text a", "text b"], "fake-key",
-                                 base_url="https://api.example.com/v1")
+            result = await embed_batch(
+                ["text a", "text b"], "fake-key",
+                base_url="https://api.example.com/v1",
+            )
 
         assert len(result) == 2
         # Should be sorted by index
@@ -538,108 +457,125 @@ class TestEmbedBatch:
 
 # ─── TestCacheEmbeddings ────────────────────────────────────────
 
+
 class TestCacheEmbeddings:
-    def test_populates_cache(self, index_db: Path) -> None:
-        conn = sqlite3.connect(str(index_db))
+    @pytest.mark.asyncio
+    async def test_populates_cache(self, pool: Any) -> None:
         texts = ["hello world", "test text"]
         embeddings = [[0.1, 0.2], [0.3, 0.4]]
 
-        cache_embeddings(conn, texts, embeddings)
-        conn.commit()
+        await cache_embeddings(pool, TEST_CLIENT_ID, TEST_AGENT_ID, texts, embeddings)
 
-        rows = conn.execute(
-            "SELECT provider, model, provider_key, dims FROM embedding_cache"
-        ).fetchall()
+        rows = await pool.fetch(
+            "SELECT provider, model, provider_key, dims FROM search.embedding_cache "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert len(rows) == 2
         for row in rows:
-            assert row[0] == EMBEDDING_PROVIDER
-            assert row[1] == EMBEDDING_MODEL
-            assert row[2] == ""  # provider_key
-            assert row[3] == 2   # dims
-        conn.close()
+            assert row["provider"] == EMBEDDING_PROVIDER
+            assert row["model"] == EMBEDDING_MODEL
+            assert row["provider_key"] == ""
+            assert row["dims"] == 2
 
-    def test_cache_lookup_compatible_with_memory_py(self, index_db: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_lookup_compatible_with_memory_py(self, pool: Any) -> None:
         """Verify our cache entries match memory.py's lookup pattern."""
-        conn = sqlite3.connect(str(index_db))
-
         text = "test lookup"
         emb = [0.1, 0.2, 0.3]
-        cache_embeddings(conn, [text], [emb])
-        conn.commit()
+        await cache_embeddings(pool, TEST_CLIENT_ID, TEST_AGENT_ID, [text], [emb])
 
-        # This is the exact query from memory.py._get_cached_embedding
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        row = conn.execute(
-            "SELECT embedding FROM embedding_cache WHERE hash = ? AND model = ?",
-            (text_hash, EMBEDDING_MODEL),
-        ).fetchone()
+        row = await pool.fetchrow(
+            "SELECT embedding FROM search.embedding_cache "
+            "WHERE client_id = $1 AND agent_id = $2 AND hash = $3 AND model = $4",
+            TEST_CLIENT_ID, TEST_AGENT_ID, text_hash, EMBEDDING_MODEL,
+        )
 
         assert row is not None
-        assert json.loads(row[0]) == emb
-        conn.close()
+        # pgvector returns embedding as a string like "[0.1,0.2,0.3]"
+        stored = [float(x) for x in row["embedding"].strip("[]").split(",")]
+        assert len(stored) == len(emb)
+        for s, e in zip(stored, emb):
+            assert abs(s - e) < 1e-6
 
-    def test_cache_upsert_replaces_embedding(self, index_db: Path) -> None:
-        """INSERT OR REPLACE updates existing entry, no duplicates."""
-        conn = sqlite3.connect(str(index_db))
+    @pytest.mark.asyncio
+    async def test_cache_upsert_replaces_embedding(self, pool: Any) -> None:
+        """ON CONFLICT updates existing entry, no duplicates."""
         text = "same text"
 
-        cache_embeddings(conn, [text], [[0.1, 0.2]])
-        conn.commit()
+        await cache_embeddings(pool, TEST_CLIENT_ID, TEST_AGENT_ID, [text], [[0.1, 0.2]])
 
         # Re-cache with different embedding
-        cache_embeddings(conn, [text], [[0.9, 0.8]])
-        conn.commit()
+        await cache_embeddings(pool, TEST_CLIENT_ID, TEST_AGENT_ID, [text], [[0.9, 0.8]])
 
-        rows = conn.execute("SELECT embedding FROM embedding_cache").fetchall()
+        rows = await pool.fetch(
+            "SELECT embedding FROM search.embedding_cache "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert len(rows) == 1
-        assert json.loads(rows[0][0]) == [0.9, 0.8]
-        conn.close()
+        stored = [float(x) for x in rows[0]["embedding"].strip("[]").split(",")]
+        assert len(stored) == 2
+        assert abs(stored[0] - 0.9) < 1e-6
+        assert abs(stored[1] - 0.8) < 1e-6
 
-    def test_cache_with_explicit_model_and_provider(self, index_db: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_with_explicit_model_and_provider(self, pool: Any) -> None:
         """Explicit model/provider args override module globals."""
-        conn = sqlite3.connect(str(index_db))
-        cache_embeddings(
-            conn, ["text"], [[0.1]],
+        await cache_embeddings(
+            pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+            ["text"], [[0.1]],
             model="custom-model", provider="custom-provider",
         )
-        conn.commit()
 
-        row = conn.execute(
-            "SELECT provider, model FROM embedding_cache"
-        ).fetchone()
-        assert row == ("custom-provider", "custom-model")
-        conn.close()
+        row = await pool.fetchrow(
+            "SELECT provider, model FROM search.embedding_cache "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        assert row["provider"] == "custom-provider"
+        assert row["model"] == "custom-model"
 
-    def test_cache_hash_unique_per_text(self, index_db: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_hash_unique_per_text(self, pool: Any) -> None:
         """Different texts produce different cache entries."""
-        conn = sqlite3.connect(str(index_db))
-        cache_embeddings(conn, ["alpha", "beta"], [[0.1], [0.2]])
-        conn.commit()
+        await cache_embeddings(
+            pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+            ["alpha", "beta"], [[0.1], [0.2]],
+        )
 
-        rows = conn.execute(
-            "SELECT hash FROM embedding_cache ORDER BY hash"
-        ).fetchall()
+        rows = await pool.fetch(
+            "SELECT hash FROM search.embedding_cache "
+            "WHERE client_id = $1 AND agent_id = $2 ORDER BY hash",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert len(rows) == 2
-        assert rows[0][0] != rows[1][0]
-        conn.close()
+        assert rows[0]["hash"] != rows[1]["hash"]
 
-    def test_cache_mismatched_lengths_raises(self, index_db: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_mismatched_lengths_raises(self, pool: Any) -> None:
         """Mismatched text/embedding list lengths raises ValueError."""
-        conn = sqlite3.connect(str(index_db))
         with pytest.raises(ValueError):
-            cache_embeddings(conn, ["one", "two"], [[0.1]])
-        conn.close()
+            await cache_embeddings(
+                pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+                ["one", "two"], [[0.1]],
+            )
 
 
 # ─── TestIndexWorkspace (Integration) ────────────────────────────
 
+
 class TestIndexWorkspace:
-    def test_full_flow(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_full_flow(self, pool: Any, tmp_memory_workspace: Path) -> None:
         """Full index with mocked embeddings."""
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            summary = index_workspace(
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            summary = await index_workspace(
                 workspace=tmp_memory_workspace,
-                db_path=index_db,
+                pool=pool,
+                client_id=TEST_CLIENT_ID,
+                agent_id=TEST_AGENT_ID,
                 api_key="fake-key",
             )
 
@@ -649,169 +585,218 @@ class TestIndexWorkspace:
         assert summary["total_files"] == 3
         assert summary["total_chunks"] > 0
 
-    def test_skip_unchanged(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_skip_unchanged(self, pool: Any, tmp_memory_workspace: Path) -> None:
         """Second run skips unchanged files."""
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings) as mock_embed:
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings) as mock_embed:
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
             first_calls = mock_embed.call_count
 
-            summary = index_workspace(tmp_memory_workspace, index_db, "fake-key")
+            summary = await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
             second_calls = mock_embed.call_count
 
         assert summary["skipped"] == 3
         assert len(summary["indexed"]) == 0
         assert second_calls == first_calls  # No new embedding calls
 
-    def test_reindex_changed_file(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_reindex_changed_file(self, pool: Any, tmp_memory_workspace: Path) -> None:
         """Changed file gets re-indexed."""
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
             # Modify a file
             (tmp_memory_workspace / "memory" / "2026-02-15.md").write_text(
                 "# Updated content\n\nnew text here.\n"
             )
 
-            summary = index_workspace(tmp_memory_workspace, index_db, "fake-key")
+            summary = await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
         assert len(summary["indexed"]) == 1
         assert summary["indexed"][0][0] == "memory/2026-02-15.md"
         assert summary["skipped"] == 2
 
-    def test_remove_deleted_file(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_remove_deleted_file(self, pool: Any, tmp_memory_workspace: Path) -> None:
         """Deleted file gets removed from DB."""
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
             # Remove a file
             (tmp_memory_workspace / "memory" / "2026-02-16.md").unlink()
 
-            summary = index_workspace(tmp_memory_workspace, index_db, "fake-key")
+            summary = await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
         assert "memory/2026-02-16.md" in summary["removed"]
         assert summary["total_files"] == 2
 
-    def test_fts_searchable_for_all_content(self, index_db: Path, tmp_memory_workspace: Path) -> None:
-        """FTS can find content from all indexed files."""
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+    @pytest.mark.asyncio
+    async def test_fts_searchable_for_all_content(self, pool: Any, tmp_memory_workspace: Path) -> None:
+        """tsvector can find content from all indexed files."""
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
-        conn = sqlite3.connect(str(index_db))
         # Search for content from daily log
-        rows = conn.execute(
-            "SELECT c.path FROM chunks_fts fts "
-            "JOIN chunks c ON c.rowid = fts.rowid "
-            "WHERE chunks_fts MATCH '\"portfolio\"'"
-        ).fetchall()
+        rows = await pool.fetch(
+            "SELECT path FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2 "
+            "AND search_vector @@ plainto_tsquery('english', $3)",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "portfolio",
+        )
         assert len(rows) >= 1
-        assert rows[0][0] == "memory/2026-02-15.md"
+        assert rows[0]["path"] == "memory/2026-02-15.md"
 
         # Search for content from MEMORY.md
-        rows = conn.execute(
-            "SELECT c.path FROM chunks_fts fts "
-            "JOIN chunks c ON c.rowid = fts.rowid "
-            "WHERE chunks_fts MATCH '\"familiar\"'"
-        ).fetchall()
+        rows = await pool.fetch(
+            "SELECT path FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2 "
+            "AND search_vector @@ plainto_tsquery('english', $3)",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "familiar",
+        )
         assert len(rows) >= 1
-        assert rows[0][0] == "MEMORY.md"
-        conn.close()
+        assert rows[0]["path"] == "MEMORY.md"
 
-    def test_summary_correct(self, index_db: Path, tmp_memory_workspace: Path) -> None:
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            summary = index_workspace(tmp_memory_workspace, index_db, "fake-key")
+    @pytest.mark.asyncio
+    async def test_summary_correct(self, pool: Any, tmp_memory_workspace: Path) -> None:
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            summary = await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
         # Verify DB counts match summary
-        conn = sqlite3.connect(str(index_db))
-        db_chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        db_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        db_fts = conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
-        conn.close()
+        db_chunks = await pool.fetchval(
+            "SELECT COUNT(*) FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        db_files = await pool.fetchval(
+            "SELECT COUNT(*) FROM search.files "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
 
         assert summary["total_chunks"] == db_chunks
         assert summary["total_files"] == db_files
-        assert db_fts == db_chunks  # FTS matches chunks
 
-    def test_force_reindexes_all(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_force_reindexes_all(self, pool: Any, tmp_memory_workspace: Path) -> None:
         """--full flag re-indexes even unchanged files."""
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
-            summary = index_workspace(
-                tmp_memory_workspace, index_db, "fake-key", force=True,
+            summary = await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+                "fake-key", force=True,
             )
 
         assert len(summary["indexed"]) == 3
         assert summary["skipped"] == 0
 
-    def test_cache_populated_after_indexing(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_populated_after_indexing(self, pool: Any, tmp_memory_workspace: Path) -> None:
         """index_workspace populates embedding_cache for every chunk."""
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
-
-        conn = sqlite3.connect(str(index_db))
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
         # Cache entry count matches chunk count
-        cache_count = conn.execute(
-            "SELECT COUNT(*) FROM embedding_cache"
-        ).fetchone()[0]
-        chunk_count = conn.execute(
-            "SELECT COUNT(*) FROM chunks"
-        ).fetchone()[0]
+        cache_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM search.embedding_cache "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        chunk_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert cache_count > 0
         assert cache_count == chunk_count
 
         # Each chunk's text hash resolves to a cache entry with matching dims
-        chunks = conn.execute("SELECT text FROM chunks").fetchall()
-        for (chunk_text,) in chunks:
-            text_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
-            row = conn.execute(
-                "SELECT embedding, dims FROM embedding_cache WHERE hash = ?",
-                (text_hash,),
-            ).fetchone()
-            assert row is not None
-            emb = json.loads(row[0])
-            assert len(emb) == row[1]  # dims matches actual embedding length
+        chunks = await pool.fetch(
+            "SELECT text FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        for row in chunks:
+            text_hash = hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
+            cache_row = await pool.fetchrow(
+                "SELECT embedding, dims FROM search.embedding_cache "
+                "WHERE client_id = $1 AND agent_id = $2 AND hash = $3",
+                TEST_CLIENT_ID, TEST_AGENT_ID, text_hash,
+            )
+            assert cache_row is not None
+            emb = [float(x) for x in cache_row["embedding"].strip("[]").split(",")]
+            assert len(emb) == cache_row["dims"]
 
-        conn.close()
-
-    def test_cache_no_duplicates_on_force_reindex(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_no_duplicates_on_force_reindex(self, pool: Any, tmp_memory_workspace: Path) -> None:
         """Force re-index upserts cache entries, no duplicates."""
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
-        conn = sqlite3.connect(str(index_db))
-        count_first = conn.execute(
-            "SELECT COUNT(*) FROM embedding_cache"
-        ).fetchone()[0]
-        conn.close()
+        count_first = await pool.fetchval(
+            "SELECT COUNT(*) FROM search.embedding_cache "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
 
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key", force=True)
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+                "fake-key", force=True,
+            )
 
-        conn = sqlite3.connect(str(index_db))
-        count_second = conn.execute(
-            "SELECT COUNT(*) FROM embedding_cache"
-        ).fetchone()[0]
-        conn.close()
+        count_second = await pool.fetchval(
+            "SELECT COUNT(*) FROM search.embedding_cache "
+            "WHERE client_id = $1 AND agent_id = $2",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
 
         assert count_first == count_second
 
-    def test_missing_api_key_raises(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_missing_api_key_raises(self, pool: Any, tmp_memory_workspace: Path) -> None:
         with pytest.raises(ValueError, match="API key"):
-            index_workspace(tmp_memory_workspace, index_db, "")
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "",
+            )
 
-    def test_embedding_error_skips_file(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_embedding_error_skips_file(self, pool: Any, tmp_memory_workspace: Path) -> None:
         """Embedding failure for one file doesn't block others."""
         call_count = [0]
 
-        def failing_embed(texts: list[str], *args: Any, **kwargs: Any) -> list[list[float]]:
+        async def failing_embed(texts: list[str], *args: Any, **kwargs: Any) -> list[list[float]]:
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ConnectionError("API down")
-            return _fake_embeddings(texts)
+            return await _fake_embeddings(texts)
 
-        with patch("tools.indexer.embed_batch", side_effect=failing_embed):
-            summary = index_workspace(tmp_memory_workspace, index_db, "fake-key")
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=failing_embed):
+            summary = await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
         assert len(summary["errors"]) == 1
         assert len(summary["indexed"]) == 2  # 2 of 3 succeeded
@@ -820,42 +805,47 @@ class TestIndexWorkspace:
 
 # ─── TestIdempotency ─────────────────────────────────────────────
 
+
 class TestIdempotency:
-    def test_double_run_same_result(self, index_db: Path, tmp_memory_workspace: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_double_run_same_result(self, pool: Any, tmp_memory_workspace: Path) -> None:
         """Running twice produces identical DB state."""
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
-        conn = sqlite3.connect(str(index_db))
-        chunks_after_first = conn.execute(
-            "SELECT id, path, text FROM chunks ORDER BY id"
-        ).fetchall()
-        fts_after_first = conn.execute(
-            "SELECT COUNT(*) FROM chunks_fts"
-        ).fetchone()[0]
-        conn.close()
+        chunks_after_first = await pool.fetch(
+            "SELECT id, path, text FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2 ORDER BY id",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
 
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
-        conn = sqlite3.connect(str(index_db))
-        chunks_after_second = conn.execute(
-            "SELECT id, path, text FROM chunks ORDER BY id"
-        ).fetchall()
-        fts_after_second = conn.execute(
-            "SELECT COUNT(*) FROM chunks_fts"
-        ).fetchone()[0]
-        conn.close()
+        chunks_after_second = await pool.fetch(
+            "SELECT id, path, text FROM search.chunks "
+            "WHERE client_id = $1 AND agent_id = $2 ORDER BY id",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
 
-        assert chunks_after_first == chunks_after_second
-        assert fts_after_first == fts_after_second
+        assert [(r["id"], r["path"], r["text"]) for r in chunks_after_first] == \
+               [(r["id"], r["path"], r["text"]) for r in chunks_after_second]
 
-    def test_no_embedding_calls_on_second_run(self, index_db: Path, tmp_memory_workspace: Path) -> None:
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings) as mock:
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+    @pytest.mark.asyncio
+    async def test_no_embedding_calls_on_second_run(self, pool: Any, tmp_memory_workspace: Path) -> None:
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings) as mock:
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
             calls_after_first = mock.call_count
 
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
             calls_after_second = mock.call_count
 
         assert calls_after_second == calls_after_first
@@ -863,31 +853,42 @@ class TestIdempotency:
 
 # ─── TestGetIndexStatus ──────────────────────────────────────────
 
-class TestGetIndexStatus:
-    def test_nonexistent_db(self, tmp_path: Path) -> None:
-        status = get_index_status(tmp_path / "no.db", tmp_path)
-        assert status["db_exists"] is False
-        assert status["indexed_files"] == 0
 
-    def test_pending_files_detected(self, index_db: Path, tmp_memory_workspace: Path) -> None:
-        status = get_index_status(index_db, tmp_memory_workspace)
+class TestGetIndexStatus:
+    @pytest.mark.asyncio
+    async def test_empty_db(self, pool: Any, tmp_path: Path) -> None:
+        """Empty tables return zero counts (pool always exists with Postgres)."""
+        status = await get_index_status(pool, TEST_CLIENT_ID, TEST_AGENT_ID, tmp_path)
+        assert status["db_exists"] is True
+        assert status["indexed_files"] == 0
+        assert status["total_chunks"] == 0
+
+    @pytest.mark.asyncio
+    async def test_pending_files_detected(self, pool: Any, tmp_memory_workspace: Path) -> None:
+        status = await get_index_status(pool, TEST_CLIENT_ID, TEST_AGENT_ID, tmp_memory_workspace)
         assert len(status["pending_files"]) == 3  # All files are pending
 
-    def test_no_pending_after_index(self, index_db: Path, tmp_memory_workspace: Path) -> None:
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+    @pytest.mark.asyncio
+    async def test_no_pending_after_index(self, pool: Any, tmp_memory_workspace: Path) -> None:
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
-        status = get_index_status(index_db, tmp_memory_workspace)
+        status = await get_index_status(pool, TEST_CLIENT_ID, TEST_AGENT_ID, tmp_memory_workspace)
         assert status["pending_files"] == []
         assert status["indexed_files"] == 3
         assert status["total_chunks"] > 0
 
-    def test_stale_files_detected(self, index_db: Path, tmp_memory_workspace: Path) -> None:
-        with patch("tools.indexer.embed_batch", side_effect=_fake_embeddings):
-            index_workspace(tmp_memory_workspace, index_db, "fake-key")
+    @pytest.mark.asyncio
+    async def test_stale_files_detected(self, pool: Any, tmp_memory_workspace: Path) -> None:
+        with patch("tools.indexer.embed_batch", new_callable=AsyncMock, side_effect=_fake_embeddings):
+            await index_workspace(
+                tmp_memory_workspace, pool, TEST_CLIENT_ID, TEST_AGENT_ID, "fake-key",
+            )
 
         # Remove a file from disk
         (tmp_memory_workspace / "memory" / "2026-02-16.md").unlink()
 
-        status = get_index_status(index_db, tmp_memory_workspace)
+        status = await get_index_status(pool, TEST_CLIENT_ID, TEST_AGENT_ID, tmp_memory_workspace)
         assert "memory/2026-02-16.md" in status["stale_files"]

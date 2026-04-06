@@ -6,20 +6,19 @@ the daemon's orchestration logic.
 """
 
 import asyncio
-import json
 import os
-import sqlite3
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from async_utils import run_blocking
 from lucyd import LucydDaemon
-from pipeline import _is_silent
 from metering import MeteringDB
+from pipeline import _is_silent
+
+TEST_CLIENT_ID = "test"
+TEST_AGENT_ID = "test_agent"
 
 
 @dataclass
@@ -149,9 +148,10 @@ def _make_config(tmp_path, **overrides):
     return Config(base)
 
 
-def _attach_metering(daemon, tmp_path):
+def _attach_metering(daemon, pool):
     """Attach a fresh MeteringDB to the daemon."""
-    daemon.metering_db = MeteringDB(str(tmp_path / "metering.db"))
+    daemon.metering_db = MeteringDB(pool, client_id=TEST_CLIENT_ID, agent_id=TEST_AGENT_ID)
+    daemon.pool = pool
 
 
 # ─── _build_status ───────────────────────────────────────────────
@@ -160,18 +160,19 @@ def _attach_metering(daemon, tmp_path):
 class TestBuildStatus:
     """Tests for LucydDaemon._build_status()."""
 
-    def test_basic_status_fields(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_basic_status_fields(self, tmp_path, pool):
         """Status dict contains all expected fields."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
         daemon.provider = MagicMock()
         daemon._providers = {"primary": daemon.provider}
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {"user1": "s-1", "system": "s-2"}
-        daemon.session_mgr.session_count = MagicMock(return_value=2)
+        daemon.session_mgr.session_count = AsyncMock(return_value=2)
 
-        status = daemon._build_status()
+        status = await daemon._build_status()
 
         assert status["status"] == "ok"
         assert status["pid"] == os.getpid()
@@ -181,81 +182,86 @@ class TestBuildStatus:
         assert isinstance(status["today_cost"], float)
         assert isinstance(status["queue_depth"], int)
 
-    def test_today_cost_from_db(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_today_cost_from_db(self, tmp_path, pool):
         """Today's cost is calculated from metering DB."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
         daemon.provider = None
         daemon._providers = {}
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {}
-        daemon.session_mgr.session_count = MagicMock(return_value=0)
+        daemon.session_mgr.session_count = AsyncMock(return_value=0)
 
         # Insert test data via metering DB.
         # cost = input*rate[0]/1M + output*rate[1]/1M + cache_read*rate[2]/1M
         # Record 1: 1M input * 0.5/1M = 0.50
-        daemon.metering_db.record("s-1", "test", "p", _U(input_tokens=1_000_000), [0.5, 0.0, 0.0])
+        await daemon.metering_db.record("s-1", "test", "p", _U(input_tokens=1_000_000), [0.5, 0.0, 0.0])
         # Record 2: 1M input * 1.25/1M = 1.25
-        daemon.metering_db.record("s-1", "test", "p", _U(input_tokens=1_000_000), [1.25, 0.0, 0.0])
+        await daemon.metering_db.record("s-1", "test", "p", _U(input_tokens=1_000_000), [1.25, 0.0, 0.0])
         # Record 3: will be backdated — should NOT be counted today
-        daemon.metering_db.record("s-2", "test", "p", _U(input_tokens=1_000_000), [10.0, 0.0, 0.0])
+        await daemon.metering_db.record("s-2", "test", "p", _U(input_tokens=1_000_000), [10.0, 0.0, 0.0])
         # Backdate the last record to 2 days ago
-        conn = sqlite3.connect(daemon.metering_db.path)
-        conn.execute("UPDATE costs SET timestamp = ? WHERE rowid = (SELECT MAX(rowid) FROM costs)",
-                      (int(time.time()) - 86400 * 2,))
-        conn.commit()
-        conn.close()
+        await pool.execute(
+            "UPDATE metering.costs SET timestamp = to_timestamp($1) "
+            "WHERE session_id = $2 AND cost = $3",
+            int(time.time()) - 86400 * 2, "s-2", 10.0,
+        )
 
-        status = daemon._build_status()
+        status = await daemon._build_status()
         assert status["today_cost"] == round(0.50 + 1.25, 4)
 
-    def test_no_cost_db_returns_zero(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_no_cost_db_returns_zero(self, tmp_path, pool):
         """Empty metering DB returns 0.0 cost."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
         daemon.provider = None
         daemon._providers = {}
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {}
-        daemon.session_mgr.session_count = MagicMock(return_value=0)
+        daemon.session_mgr.session_count = AsyncMock(return_value=0)
 
         # No records inserted
-        status = daemon._build_status()
+        status = await daemon._build_status()
         assert status["today_cost"] == 0.0
 
-    def test_empty_cost_db(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_empty_cost_db(self, tmp_path, pool):
         """Empty metering DB returns 0.0 cost."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
         daemon.provider = None
         daemon._providers = {}
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {}
-        daemon.session_mgr.session_count = MagicMock(return_value=0)
+        daemon.session_mgr.session_count = AsyncMock(return_value=0)
 
-        status = daemon._build_status()
+        status = await daemon._build_status()
         assert status["today_cost"] == 0.0
 
-    def test_no_session_manager(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_no_session_manager(self, tmp_path, pool):
         """No session manager returns 0 active sessions."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
         daemon.provider = None
         daemon._providers = {}
         daemon.session_mgr = None
 
-        status = daemon._build_status()
+        status = await daemon._build_status()
         assert status["active_sessions"] == 0
 
-    def test_queue_depth_reflects_items(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_queue_depth_reflects_items(self, tmp_path, pool):
         """Queue depth matches actual items in the queue."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
         daemon.provider = None
         daemon._providers = {}
         daemon.session_mgr = None
@@ -264,32 +270,34 @@ class TestBuildStatus:
         daemon.queue.put_nowait({"text": "msg1"})
         daemon.queue.put_nowait({"text": "msg2"})
 
-        status = daemon._build_status()
+        status = await daemon._build_status()
         assert status["queue_depth"] == 2
 
-    def test_uptime_increases(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_uptime_increases(self, tmp_path, pool):
         """Uptime is positive and based on start_time."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
         daemon.start_time = time.time() - 120  # Started 2 min ago
         daemon.provider = None
         daemon._providers = {}
         daemon.session_mgr = None
 
-        status = daemon._build_status()
+        status = await daemon._build_status()
         assert status["uptime_seconds"] >= 119  # Allow 1s tolerance
 
-    def test_provider_listed_in_status(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_provider_listed_in_status(self, tmp_path, pool):
         """Provider name appears in status."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
         daemon.provider = MagicMock()
         daemon._providers = {"primary": daemon.provider}
         daemon.session_mgr = None
 
-        status = daemon._build_status()
+        status = await daemon._build_status()
         assert status["model"] == "test-model"
 
 
@@ -373,11 +381,11 @@ class TestResolveIntegration:
     """Integration tests: verify Future is resolved at each exit path."""
 
     @pytest.fixture
-    def daemon_with_mock_provider(self, tmp_path):
+    def daemon_with_mock_provider(self, tmp_path, pool):
         """Daemon with a mocked provider that we can control."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
 
         # Mock provider
         provider = MagicMock()
@@ -399,13 +407,13 @@ class TestResolveIntegration:
         session.last_input_tokens = 0
         session.needs_compaction = MagicMock(return_value=False)
         session.warned_about_compaction = False
-        session.add_user_message = MagicMock()
-        session.add_assistant_message = MagicMock()
-        session.add_tool_results = MagicMock()
-        session.save_state = MagicMock()
+        session.add_user_message = AsyncMock()
+        session.add_assistant_message = AsyncMock()
+        session.add_tool_results = AsyncMock()
+        session.save_state = AsyncMock()
 
         daemon.session_mgr = MagicMock()
-        daemon.session_mgr.get_or_create = MagicMock(return_value=session)
+        daemon.session_mgr.get_or_create = AsyncMock(return_value=session)
 
         # Mock context builder
         daemon.context_builder = MagicMock()
@@ -532,10 +540,10 @@ class TestContextBuilderSourcePassthrough:
     """Verify that task_type is passed through to context_builder.build()."""
 
     @pytest.fixture
-    def daemon_for_context_test(self, tmp_path):
+    def daemon_for_context_test(self, tmp_path, pool):
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
 
         provider = MagicMock()
         provider.format_system = MagicMock(return_value=[])
@@ -552,11 +560,11 @@ class TestContextBuilderSourcePassthrough:
         session.last_input_tokens = 0
         session.needs_compaction = MagicMock(return_value=False)
         session.warned_about_compaction = False
-        session.add_user_message = MagicMock()
-        session.save_state = MagicMock()
+        session.add_user_message = AsyncMock()
+        session.save_state = AsyncMock()
 
         daemon.session_mgr = MagicMock()
-        daemon.session_mgr.get_or_create = MagicMock(return_value=session)
+        daemon.session_mgr.get_or_create = AsyncMock(return_value=session)
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
 
         daemon.context_builder = MagicMock()
@@ -714,11 +722,11 @@ class TestProcessMessageIntegration:
     provider, mock channel, and mock session."""
 
     @pytest.fixture
-    def full_daemon(self, tmp_path):
+    def full_daemon(self, tmp_path, pool):
         """Daemon with all required mocks for _process_message."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
 
         # Mock provider
         provider = MagicMock()
@@ -739,21 +747,21 @@ class TestProcessMessageIntegration:
         session.last_input_tokens = 0
         session.needs_compaction = MagicMock(return_value=False)
         session.warned_about_compaction = False
-        session.add_user_message = MagicMock()
-        session.add_assistant_message = MagicMock()
-        session.add_tool_results = MagicMock()
-        session.save_state = MagicMock()
+        session.add_user_message = AsyncMock()
+        session.add_assistant_message = AsyncMock()
+        session.add_tool_results = AsyncMock()
+        session.save_state = AsyncMock()
 
         daemon.session_mgr = MagicMock()
-        daemon.session_mgr.get_or_create = MagicMock(return_value=session)
+        daemon.session_mgr.get_or_create = AsyncMock(return_value=session)
         daemon.session_mgr.compact_session = AsyncMock()
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
-        daemon.session_mgr.save_state = MagicMock(side_effect=lambda s: s.save_state())
-        daemon.session_mgr.has_session = MagicMock(return_value=False)
-        daemon.session_mgr.list_contacts = MagicMock(return_value=[])
+        daemon.session_mgr.save_state = AsyncMock(side_effect=lambda s: s.save_state())
+        daemon.session_mgr.has_session = AsyncMock(return_value=False)
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=[])
         daemon.session_mgr.list_sessions = MagicMock(return_value=[])
-        daemon.session_mgr.session_count = MagicMock(return_value=0)
-        daemon.session_mgr.get_index = MagicMock(return_value={})
+        daemon.session_mgr.session_count = AsyncMock(return_value=0)
+        daemon.session_mgr.get_index = AsyncMock(return_value={})
         daemon.session_mgr.get_loaded = MagicMock(return_value=None)
 
         # Mock context builder
@@ -922,9 +930,9 @@ class TestProcessMessageIntegration:
 
         # Make add_user_message actually append a message to session.messages
         # so that session.messages[user_msg_idx] works for image block injection
-        def fake_add_user(text, **kwargs):
+        async def fake_add_user(text, **kwargs):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
@@ -949,9 +957,9 @@ class TestProcessMessageIntegration:
 
         response = _mock_response(text="ok")
 
-        def fake_add_user(text, **kwargs):
+        async def fake_add_user(text, **kwargs):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         from PIL import Image as PILImage
 
@@ -979,9 +987,9 @@ class TestProcessMessageIntegration:
 
         response = _mock_response(text="ok")
 
-        def fake_add_user(text, **kwargs):
+        async def fake_add_user(text, **kwargs):
             session.messages.append({"role": "user", "content": text})
-        session.add_user_message = MagicMock(side_effect=fake_add_user)
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         from attachments import Attachment
 
@@ -1031,11 +1039,11 @@ class TestMessageLoopDebounce:
     """Test debounce window combining behavior in _message_loop."""
 
     @pytest.fixture
-    def loop_daemon(self, tmp_path):
+    def loop_daemon(self, tmp_path, pool):
         """Daemon configured for message loop testing with short debounce."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
 
         # Mock everything _process_message needs
         provider = MagicMock()
@@ -1053,20 +1061,20 @@ class TestMessageLoopDebounce:
         session.last_input_tokens = 0
         session.needs_compaction = MagicMock(return_value=False)
         session.warned_about_compaction = False
-        session.add_user_message = MagicMock()
-        session.save_state = MagicMock()
+        session.add_user_message = AsyncMock()
+        session.save_state = AsyncMock()
 
         daemon.session_mgr = MagicMock()
-        daemon.session_mgr.get_or_create = MagicMock(return_value=session)
+        daemon.session_mgr.get_or_create = AsyncMock(return_value=session)
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
         daemon.session_mgr.close_session_by_id = AsyncMock(return_value=True)
         daemon.session_mgr._index = {}
-        daemon.session_mgr.save_state = MagicMock(side_effect=lambda s: s.save_state())
-        daemon.session_mgr.has_session = MagicMock(return_value=False)
-        daemon.session_mgr.list_contacts = MagicMock(return_value=[])
+        daemon.session_mgr.save_state = AsyncMock(side_effect=lambda s: s.save_state())
+        daemon.session_mgr.has_session = AsyncMock(return_value=False)
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=[])
         daemon.session_mgr.list_sessions = MagicMock(return_value=[])
-        daemon.session_mgr.session_count = MagicMock(return_value=0)
-        daemon.session_mgr.get_index = MagicMock(return_value={})
+        daemon.session_mgr.session_count = AsyncMock(return_value=0)
+        daemon.session_mgr.get_index = AsyncMock(return_value={})
         daemon.session_mgr.get_loaded = MagicMock(return_value=None)
 
         daemon.context_builder = MagicMock()
@@ -1294,7 +1302,7 @@ class TestMessageLoopDebounce:
         """Reset with all=True closes every session in session_mgr._index."""
         daemon, session = loop_daemon
         daemon.session_mgr._index = {"alice": MagicMock(), "bob": MagicMock(), "system": MagicMock()}
-        daemon.session_mgr.list_contacts.return_value = ["alice", "bob", "system"]
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["alice", "bob", "system"])
 
         await daemon.queue.put({"type": "reset", "all": True})
         await daemon.queue.put(None)
@@ -1310,7 +1318,7 @@ class TestMessageLoopDebounce:
         """Reset with sender='user' resolves to first non-http: contact."""
         daemon, session = loop_daemon
         daemon.session_mgr._index = {"http:http-system": MagicMock(), "http:cli": MagicMock(), "telegram:Nicolas": MagicMock()}
-        daemon.session_mgr.list_contacts.return_value = ["http:http-system", "http:cli", "telegram:Nicolas"]
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:http-system", "http:cli", "telegram:Nicolas"])
 
         await daemon.queue.put({"type": "reset", "sender": "user"})
         await daemon.queue.put(None)
@@ -1321,7 +1329,7 @@ class TestMessageLoopDebounce:
 
     @pytest.mark.asyncio
     async def test_reset_unknown_sender_logs_warning(self, loop_daemon):
-        """Reset for sender with no session → close_session returns False."""
+        """Reset for sender with no session -> close_session returns False."""
         daemon, session = loop_daemon
         daemon.session_mgr.close_session = AsyncMock(return_value=False)
 
@@ -1398,21 +1406,21 @@ class TestMessageLoopDebounce:
 class TestBuildSessions:
     """Tests for LucydDaemon._build_sessions()."""
 
-    def test_active_sessions(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_active_sessions(self, tmp_path, pool):
         """Returns session info from index and live sessions."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
 
         # Mock session manager with index and live sessions
         daemon.session_mgr = MagicMock()
-        daemon.session_mgr.dir = tmp_path / "sessions"
         the_index = {
             "alice": {"session_id": "s-1", "created_at": 1707000000},
             "bob": {"session_id": "s-2", "created_at": 1707001000},
         }
         daemon.session_mgr._index = the_index
-        daemon.session_mgr.get_index = MagicMock(return_value=the_index)
+        daemon.session_mgr.get_index = AsyncMock(return_value=the_index)
         live_session = MagicMock()
         live_session.messages = [{"role": "user"}, {"role": "assistant"}]
         live_session.compaction_count = 1
@@ -1421,7 +1429,11 @@ class TestBuildSessions:
         daemon.session_mgr._sessions = the_sessions
         daemon.session_mgr.get_loaded = MagicMock(side_effect=lambda c: the_sessions.get(c))
 
-        result = daemon._build_sessions()
+        # Mock provider for max_context_tokens
+        daemon.provider = MagicMock()
+        daemon.provider.capabilities.max_context_tokens = 200000
+
+        result = await daemon._build_sessions()
 
         assert len(result) == 2
         alice = next(s for s in result if s["contact"] == "alice")
@@ -1438,26 +1450,28 @@ class TestBuildSessions:
         assert bob["context_tokens"] == 0
         assert bob["context_pct"] == 0
         assert "cost" in bob
-        assert "log_files" in bob
-        assert "log_bytes" in bob
 
-    def test_empty_sessions(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_empty_sessions(self, tmp_path, pool):
         """No active sessions returns empty list."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
+        _attach_metering(daemon, pool)
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {}
-        daemon.session_mgr.get_index = MagicMock(return_value={})
+        daemon.session_mgr.get_index = AsyncMock(return_value={})
 
-        assert daemon._build_sessions() == []
+        assert await daemon._build_sessions() == []
 
-    def test_no_session_manager(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_no_session_manager(self, tmp_path, pool):
         """No session manager returns empty list."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
+        _attach_metering(daemon, pool)
         daemon.session_mgr = None
 
-        assert daemon._build_sessions() == []
+        assert await daemon._build_sessions() == []
 
 
 # ─── Cost (metering integration) ─────────────────────────────────
@@ -1466,10 +1480,9 @@ class TestBuildSessions:
 class TestMeteringIntegration:
     """Verify daemon metering DB is wired correctly."""
 
-    def test_get_records_returns_data(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_get_records_returns_data(self, tmp_path, pool):
         """metering_db.get_records() returns recorded data."""
-        from dataclasses import dataclass
-
         @dataclass
         class _Usage:
             input_tokens: int = 1000
@@ -1479,21 +1492,22 @@ class TestMeteringIntegration:
 
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
 
-        daemon.metering_db.record("s1", "test-model", "", _Usage(), [1.0, 1.0, 0.1])
+        await daemon.metering_db.record("s1", "test-model", "", _Usage(), [1.0, 1.0, 0.1])
 
-        result = daemon.metering_db.get_records()
+        result = await daemon.metering_db.get_records()
         assert len(result["records"]) == 1
         assert result["records"][0]["model"] == "test-model"
         assert result["records"][0]["cache_read_tokens"] == 200
 
-    def test_empty_db_returns_no_records(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_empty_db_returns_no_records(self, tmp_path, pool):
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-        _attach_metering(daemon, tmp_path)
+        _attach_metering(daemon, pool)
 
-        result = daemon.metering_db.get_records()
+        result = await daemon.metering_db.get_records()
         assert result["records"] == []
 
 
@@ -1510,7 +1524,7 @@ class TestResetSession:
         daemon = LucydDaemon(config)
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {"alice": {}, "bob": {}}
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["alice", "bob"])
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["alice", "bob"])
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
 
         result = await daemon._reset_session("all")
@@ -1569,7 +1583,7 @@ class TestResetSession:
             "http:http-system": {}, "http:cli": {}, "http:http-n8n": {},
             "telegram:Nicolas": {},
         }
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:http-system", "http:cli", "http:http-n8n", "telegram:Nicolas"])
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:http-system", "http:cli", "http:http-n8n", "telegram:Nicolas"])
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
 
         result = await daemon._reset_session("user")
@@ -1584,7 +1598,7 @@ class TestResetSession:
         daemon = LucydDaemon(config)
         daemon.session_mgr = MagicMock()
         daemon.session_mgr._index = {"http:http-system": {}, "http:http-api": {}}
-        daemon.session_mgr.list_contacts = MagicMock(return_value=["http:http-system", "http:http-api"])
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:http-system", "http:http-api"])
 
         result = await daemon._reset_session("user")
 
@@ -1657,34 +1671,34 @@ class TestBuildMonitor:
 class TestBuildHistory:
     """Tests for _build_history()."""
 
-    def test_returns_events(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_returns_events(self, tmp_path, pool):
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
-
-        sessions_dir = tmp_path / "sessions"
-        sessions_dir.mkdir(exist_ok=True)
+        _attach_metering(daemon, pool)
 
         from session import SessionManager
-        daemon.session_mgr = SessionManager(sessions_dir)
+        daemon.session_mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID)
 
-        # Write JSONL
-        events = [
-            {"type": "message", "role": "user", "content": "test", "timestamp": 1.0},
-        ]
-        (sessions_dir / "s-h1.2026-02-26.jsonl").write_text(
-            json.dumps(events[0]) + "\n"
-        )
+        # Create a session in the DB
+        session = await daemon.session_mgr.get_or_create("test-contact", model="test")
+        sid = session.id
 
-        result = daemon._build_history("s-h1")
-        assert result["session_id"] == "s-h1"
+        # Write a user event via the session
+        await session.append_event({
+            "type": "message", "role": "user", "content": "test",
+        })
+
+        result = await daemon._build_history(sid)
+        assert result["session_id"] == sid
         assert len(result["events"]) == 1
 
-    def test_no_session_mgr(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_no_session_mgr(self, tmp_path, pool):
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
+        _attach_metering(daemon, pool)
         daemon.session_mgr = None
 
-        result = daemon._build_history("any")
+        result = await daemon._build_history("any")
         assert result["events"] == []
-
-

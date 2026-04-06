@@ -9,8 +9,15 @@ import multiprocessing
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+# ─── PostgreSQL test constants ──────────────────────────────────
+# Used by all tests that access the database via the ``pool`` fixture.
+
+TEST_CLIENT_ID = "test"
+TEST_AGENT_ID = "test_agent"
 
 # ─── Force-exit after session completes ──────────────────────────
 # pytest-asyncio leaves a non-daemon thread alive after all tests pass,
@@ -326,3 +333,34 @@ def fs_workspace(tmp_path):
     yield tmp_path
     # Restore default after test
     filesystem.configure([])
+
+
+# ─── PostgreSQL pool fixture ────────────────────────────────────
+
+
+@pytest.fixture
+async def pool() -> Any:
+    """asyncpg pool connected to test Postgres, tables cleaned after each test."""
+    import asyncpg  # type: ignore[import-untyped]
+    import db as lucyd_db
+
+    dsn = os.environ.get(
+        "TEST_DATABASE_URL",
+        "postgres://lucyd:lucyd@localhost:5432/lucyd_test",
+    )
+    p: Any = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+    await lucyd_db.ensure_schema(p)
+    try:
+        yield p
+    finally:
+        async with p.acquire() as conn:
+            for schema in ("sessions", "knowledge", "metering", "search"):
+                tables = await conn.fetch(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = $1",
+                    schema,
+                )
+                for t in tables:
+                    await conn.execute(
+                        f"TRUNCATE {schema}.{t['tablename']} CASCADE"
+                    )
+        await p.close()

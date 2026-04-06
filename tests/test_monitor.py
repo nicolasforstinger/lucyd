@@ -130,13 +130,17 @@ def _make_daemon_for_monitor(tmp_path):
     session.last_input_tokens = 0
     session.needs_compaction = MagicMock(return_value=False)
     session.warned_about_compaction = False
-    session.add_user_message = MagicMock()
-    session.add_assistant_message = MagicMock()
-    session.add_tool_results = MagicMock()
-    session.save_state = MagicMock()
+    session.add_user_message = AsyncMock()
+    session.add_assistant_message = AsyncMock()
+    session.add_tool_results = AsyncMock()
+    session.save_state = AsyncMock()
 
     daemon.session_mgr = MagicMock()
-    daemon.session_mgr.get_or_create = MagicMock(return_value=session)
+    daemon.session_mgr.has_session = AsyncMock(return_value=False)
+    daemon.session_mgr.get_or_create = AsyncMock(return_value=session)
+    daemon.session_mgr.save_state = AsyncMock()
+    daemon.session_mgr.close_session = AsyncMock(return_value=False)
+    daemon.session_mgr.compact_session = AsyncMock()
 
     daemon.context_builder = MagicMock()
     daemon.context_builder.build = MagicMock(return_value=[])
@@ -169,7 +173,7 @@ def _make_daemon_for_monitor(tmp_path):
     daemon.config.raw = MagicMock(return_value=0.0)
 
     from metering import MeteringDB
-    daemon.metering_db = MeteringDB(str(tmp_path / "metering.db"))
+    daemon.metering_db = MeteringDB(MagicMock(), client_id="test", agent_id="test_agent")
 
     daemon._ensure_pipeline()
     return daemon, provider, session

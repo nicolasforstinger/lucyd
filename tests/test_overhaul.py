@@ -133,47 +133,58 @@ class TestToolModulesImportable:
 class TestSessionManagerPublicAPI:
     """SessionManager: has_session, list_contacts, session_count, save_state."""
 
-    def test_has_session_false_for_unknown(self, tmp_path):
-        from session import SessionManager
-        mgr = SessionManager(tmp_path / "sessions")
-        assert mgr.has_session("nobody") is False
+    TEST_CLIENT_ID = "test"
+    TEST_AGENT_ID = "test_agent"
 
-    def test_has_session_true_after_get_or_create(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_has_session_false_for_unknown(self, pool):
         from session import SessionManager
-        mgr = SessionManager(tmp_path / "sessions")
-        mgr.get_or_create("alice")
-        assert mgr.has_session("alice") is True
+        mgr = SessionManager(pool, self.TEST_CLIENT_ID, self.TEST_AGENT_ID)
+        assert await mgr.has_session("nobody") is False
 
-    def test_list_contacts_after_sessions(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_has_session_true_after_get_or_create(self, pool):
         from session import SessionManager
-        mgr = SessionManager(tmp_path / "sessions")
-        mgr.get_or_create("alice")
-        mgr.get_or_create("bob")
-        contacts = mgr.list_contacts()
+        mgr = SessionManager(pool, self.TEST_CLIENT_ID, self.TEST_AGENT_ID)
+        await mgr.get_or_create("alice")
+        assert await mgr.has_session("alice") is True
+
+    @pytest.mark.asyncio
+    async def test_list_contacts_after_sessions(self, pool):
+        from session import SessionManager
+        mgr = SessionManager(pool, self.TEST_CLIENT_ID, self.TEST_AGENT_ID)
+        await mgr.get_or_create("alice")
+        await mgr.get_or_create("bob")
+        contacts = await mgr.list_contacts()
         assert "alice" in contacts
         assert "bob" in contacts
         assert len(contacts) == 2
 
-    def test_session_count_matches_index(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_session_count_matches_index(self, pool):
         from session import SessionManager
-        mgr = SessionManager(tmp_path / "sessions")
-        assert mgr.session_count() == 0
-        mgr.get_or_create("alice")
-        assert mgr.session_count() == 1
-        mgr.get_or_create("bob")
-        assert mgr.session_count() == 2
+        mgr = SessionManager(pool, self.TEST_CLIENT_ID, self.TEST_AGENT_ID)
+        assert await mgr.session_count() == 0
+        await mgr.get_or_create("alice")
+        assert await mgr.session_count() == 1
+        await mgr.get_or_create("bob")
+        assert await mgr.session_count() == 2
 
-    def test_save_state_calls_session_save(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_save_state_persists_messages(self, pool):
         from session import SessionManager
-        mgr = SessionManager(tmp_path / "sessions")
-        session = mgr.get_or_create("alice")
+        mgr = SessionManager(pool, self.TEST_CLIENT_ID, self.TEST_AGENT_ID)
+        session = await mgr.get_or_create("alice")
         session.messages.append({"role": "user", "content": "hello"})
-        mgr.save_state(session)
-        # Verify the state file was written
-        assert session.state_path.exists()
-        state = json.loads(session.state_path.read_text())
-        assert len(state["messages"]) == 1
-        assert state["messages"][0]["content"] == "hello"
+        await mgr.save_state(session)
+        # Verify messages persisted to Postgres
+        rows = await pool.fetch(
+            "SELECT content FROM sessions.messages "
+            "WHERE session_id = $1 ORDER BY ordinal",
+            session.id,
+        )
+        assert len(rows) == 1
+        assert json.loads(rows[0]["content"])["content"] == "hello"
 
 
 # ─── 4. _MonitorWriter ──────────────────────────────────────────

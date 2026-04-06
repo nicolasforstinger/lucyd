@@ -1,7 +1,6 @@
 """Tests for consolidation.py — state tracking, serializer, fact/episode extraction."""
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,18 +18,9 @@ from consolidation import (
     serialize_messages,
     update_consolidation_state,
 )
-from memory_schema import ensure_schema
 
-
-@pytest.fixture
-def mem_conn(tmp_path):
-    """In-memory SQLite DB with structured memory schema."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    ensure_schema(conn)
-    yield conn
-    conn.close()
+TEST_CLIENT_ID = "test"
+TEST_AGENT_ID = "test_agent"
 
 
 def _make_provider(response_text: str):
@@ -63,66 +53,76 @@ def _make_provider(response_text: str):
 
 
 class TestGetUnprocessedRange:
-    def test_first_run_processes_everything(self, mem_conn):
+    @pytest.mark.asyncio
+    async def test_first_run_processes_everything(self, pool):
         messages = [{"role": "user"}, {"role": "assistant"}] * 3
-        start, end = get_unprocessed_range("sess1", messages, 0, mem_conn)
+        start, end = await get_unprocessed_range("sess1", messages, 0, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert start == 0
         assert end == 6
 
-    def test_returns_last_to_n_after_previous(self, mem_conn):
+    @pytest.mark.asyncio
+    async def test_returns_last_to_n_after_previous(self, pool):
         messages = [{"role": "user"}] * 10
-        update_consolidation_state("sess1", 0, 6, mem_conn)
+        await update_consolidation_state("sess1", 0, 6, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
 
-        start, end = get_unprocessed_range("sess1", messages, 0, mem_conn)
+        start, end = await get_unprocessed_range("sess1", messages, 0, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert start == 6
         assert end == 10
 
-    def test_after_compaction_skips_summary(self, mem_conn):
+    @pytest.mark.asyncio
+    async def test_after_compaction_skips_summary(self, pool):
         # compaction_count=0 was processed, now compaction_count=1
-        update_consolidation_state("sess1", 0, 10, mem_conn)
+        await update_consolidation_state("sess1", 0, 10, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         messages = [{"role": "assistant"}] * 5  # index 0 = summary
 
-        start, end = get_unprocessed_range("sess1", messages, 1, mem_conn)
+        start, end = await get_unprocessed_range("sess1", messages, 1, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert start == 1
         assert end == 5
 
-    def test_no_new_messages(self, mem_conn):
+    @pytest.mark.asyncio
+    async def test_no_new_messages(self, pool):
         messages = [{"role": "user"}] * 5
-        update_consolidation_state("sess1", 0, 5, mem_conn)
+        await update_consolidation_state("sess1", 0, 5, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
 
-        start, end = get_unprocessed_range("sess1", messages, 0, mem_conn)
+        start, end = await get_unprocessed_range("sess1", messages, 0, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert start == 0
         assert end == 0
 
 
 class TestUpdateConsolidationState:
-    def test_insert_new_state(self, mem_conn):
-        update_consolidation_state("sess1", 0, 10, mem_conn)
-        row = mem_conn.execute(
-            "SELECT * FROM consolidation_state WHERE session_id = ?",
-            ("sess1",),
-        ).fetchone()
+    @pytest.mark.asyncio
+    async def test_insert_new_state(self, pool):
+        await update_consolidation_state("sess1", 0, 10, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
+        row = await pool.fetchrow(
+            "SELECT * FROM knowledge.consolidation_state "
+            "WHERE client_id = $1 AND agent_id = $2 AND session_id = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "sess1",
+        )
         assert row["last_message_count"] == 10
         assert row["last_compaction_count"] == 0
 
-    def test_replace_existing_state(self, mem_conn):
-        update_consolidation_state("sess1", 0, 5, mem_conn)
-        update_consolidation_state("sess1", 0, 10, mem_conn)
-        rows = mem_conn.execute(
-            "SELECT * FROM consolidation_state WHERE session_id = ?",
-            ("sess1",),
-        ).fetchall()
+    @pytest.mark.asyncio
+    async def test_replace_existing_state(self, pool):
+        await update_consolidation_state("sess1", 0, 5, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
+        await update_consolidation_state("sess1", 0, 10, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
+        rows = await pool.fetch(
+            "SELECT * FROM knowledge.consolidation_state "
+            "WHERE client_id = $1 AND agent_id = $2 AND session_id = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "sess1",
+        )
         assert len(rows) == 1
         assert rows[0]["last_message_count"] == 10
 
-    def test_new_compaction_replaces_state(self, mem_conn):
+    @pytest.mark.asyncio
+    async def test_new_compaction_replaces_state(self, pool):
         """Single PK on session_id — new compaction replaces the row."""
-        update_consolidation_state("sess1", 0, 10, mem_conn)
-        update_consolidation_state("sess1", 1, 5, mem_conn)
-        row = mem_conn.execute(
-            "SELECT * FROM consolidation_state WHERE session_id = ?",
-            ("sess1",),
-        ).fetchone()
+        await update_consolidation_state("sess1", 0, 10, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
+        await update_consolidation_state("sess1", 1, 5, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
+        row = await pool.fetchrow(
+            "SELECT * FROM knowledge.consolidation_state "
+            "WHERE client_id = $1 AND agent_id = $2 AND session_id = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "sess1",
+        )
         assert row["last_compaction_count"] == 1
         assert row["last_message_count"] == 5
 
@@ -196,15 +196,18 @@ class TestHelpers:
         assert _normalize_entity("  Lucy  ") == "lucy"
         assert _normalize_entity("NICOLAS") == "nicolas"
 
-    def test_resolve_entity_with_alias(self, mem_conn):
-        mem_conn.execute(
-            "INSERT INTO entity_aliases (alias, canonical) VALUES (?, ?)",
-            ("alex_johnson", "alex"),
+    @pytest.mark.asyncio
+    async def test_resolve_entity_with_alias(self, pool):
+        await pool.execute(
+            "INSERT INTO knowledge.entity_aliases (client_id, agent_id, alias, canonical) "
+            "VALUES ($1, $2, $3, $4)",
+            TEST_CLIENT_ID, TEST_AGENT_ID, "alex_johnson", "alex",
         )
-        assert _resolve_entity("alex_johnson", mem_conn) == "alex"
+        assert await _resolve_entity("alex_johnson", pool, TEST_CLIENT_ID, TEST_AGENT_ID) == "alex"
 
-    def test_resolve_entity_no_alias(self, mem_conn):
-        assert _resolve_entity("unknown_entity", mem_conn) == "unknown_entity"
+    @pytest.mark.asyncio
+    async def test_resolve_entity_no_alias(self, pool):
+        assert await _resolve_entity("unknown_entity", pool, TEST_CLIENT_ID, TEST_AGENT_ID) == "unknown_entity"
 
     def test_strip_json_fences(self):
         assert _strip_json_fences('```json\n{"a":1}\n```') == '{"a":1}'
@@ -217,7 +220,7 @@ class TestHelpers:
 
 class TestExtractFacts:
     @pytest.mark.asyncio
-    async def test_valid_json_stores_facts(self, mem_conn):
+    async def test_valid_json_stores_facts(self, pool):
         response = json.dumps({
             "facts": [
                 {"entity": "nicolas", "attribute": "lives_in", "value": "Austria", "confidence": 0.9},
@@ -227,22 +230,24 @@ class TestExtractFacts:
         })
         provider = _make_provider(response)
 
-        count, _ = await extract_facts("test text", "sess1", provider, mem_conn)
+        count, _ = await extract_facts("test text", "sess1", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 2
 
-        rows = mem_conn.execute(
-            "SELECT entity, attribute, value FROM facts WHERE invalidated_at IS NULL"
-        ).fetchall()
+        rows = await pool.fetch(
+            "SELECT entity, attribute, value FROM knowledge.facts "
+            "WHERE client_id = $1 AND agent_id = $2 AND invalidated_at IS NULL",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
         assert len(rows) == 2
 
     @pytest.mark.asyncio
-    async def test_duplicate_fact_skipped(self, mem_conn):
+    async def test_duplicate_fact_skipped(self, pool):
         # Insert existing fact
-        mem_conn.execute(
-            "INSERT INTO facts (entity, attribute, value, confidence, source_session) "
-            "VALUES ('nicolas', 'lives_in', 'Austria', 0.9, 'test')"
+        await pool.execute(
+            "INSERT INTO knowledge.facts (client_id, agent_id, entity, attribute, value, confidence, source_session) "
+            "VALUES ($1, $2, 'nicolas', 'lives_in', 'Austria', 0.9, 'test')",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
         )
-        mem_conn.commit()
 
         response = json.dumps({
             "facts": [
@@ -252,16 +257,16 @@ class TestExtractFacts:
         })
         provider = _make_provider(response)
 
-        count, _ = await extract_facts("test text", "sess1", provider, mem_conn)
+        count, _ = await extract_facts("test text", "sess1", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 0  # duplicate, just touches accessed_at
 
     @pytest.mark.asyncio
-    async def test_changed_value_invalidates_old(self, mem_conn):
-        mem_conn.execute(
-            "INSERT INTO facts (entity, attribute, value, confidence, source_session) "
-            "VALUES ('nicolas', 'lives_in', 'Germany', 0.9, 'test')"
+    async def test_changed_value_invalidates_old(self, pool):
+        await pool.execute(
+            "INSERT INTO knowledge.facts (client_id, agent_id, entity, attribute, value, confidence, source_session) "
+            "VALUES ($1, $2, 'nicolas', 'lives_in', 'Germany', 0.9, 'test')",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
         )
-        mem_conn.commit()
 
         response = json.dumps({
             "facts": [
@@ -271,24 +276,28 @@ class TestExtractFacts:
         })
         provider = _make_provider(response)
 
-        count, _ = await extract_facts("test text", "sess1", provider, mem_conn)
+        count, _ = await extract_facts("test text", "sess1", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 1
 
         # Old fact should be invalidated
-        old = mem_conn.execute(
-            "SELECT invalidated_at FROM facts WHERE value = 'Germany'"
-        ).fetchone()
-        assert old[0] is not None
+        old = await pool.fetchrow(
+            "SELECT invalidated_at FROM knowledge.facts "
+            "WHERE client_id = $1 AND agent_id = $2 AND value = 'Germany'",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        assert old["invalidated_at"] is not None
 
         # New fact should exist
-        new = mem_conn.execute(
-            "SELECT value FROM facts WHERE entity = 'nicolas' "
-            "AND attribute = 'lives_in' AND invalidated_at IS NULL"
-        ).fetchone()
-        assert new[0] == "Austria"
+        new = await pool.fetchrow(
+            "SELECT value FROM knowledge.facts "
+            "WHERE client_id = $1 AND agent_id = $2 "
+            "AND entity = 'nicolas' AND attribute = 'lives_in' AND invalidated_at IS NULL",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        assert new["value"] == "Austria"
 
     @pytest.mark.asyncio
-    async def test_below_confidence_dropped(self, mem_conn):
+    async def test_below_confidence_dropped(self, pool):
         response = json.dumps({
             "facts": [
                 {"entity": "test", "attribute": "weak_fact", "value": "maybe", "confidence": 0.3},
@@ -297,17 +306,17 @@ class TestExtractFacts:
         })
         provider = _make_provider(response)
 
-        count, _ = await extract_facts("text", "sess1", provider, mem_conn, confidence_threshold=0.6)
+        count, _ = await extract_facts("text", "sess1", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID, confidence_threshold=0.6)
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_malformed_json_returns_zero(self, mem_conn):
+    async def test_malformed_json_returns_zero(self, pool):
         provider = _make_provider("this is not json at all")
-        count, _ = await extract_facts("text", "sess1", provider, mem_conn)
+        count, _ = await extract_facts("text", "sess1", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_aliases_stored(self, mem_conn):
+    async def test_aliases_stored(self, pool):
         response = json.dumps({
             "facts": [
                 {"entity": "uncle_charles", "attribute": "relation", "value": "uncle", "confidence": 1.0},
@@ -319,15 +328,17 @@ class TestExtractFacts:
         })
         provider = _make_provider(response)
 
-        await extract_facts("text", "sess1", provider, mem_conn)
+        await extract_facts("text", "sess1", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
 
-        alias = mem_conn.execute(
-            "SELECT canonical FROM entity_aliases WHERE alias = 'charles'"
-        ).fetchone()
-        assert alias[0] == "uncle_charles"
+        alias = await pool.fetchrow(
+            "SELECT canonical FROM knowledge.entity_aliases "
+            "WHERE client_id = $1 AND agent_id = $2 AND alias = 'charles'",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        assert alias["canonical"] == "uncle_charles"
 
     @pytest.mark.asyncio
-    async def test_alias_resolution_in_same_batch(self, mem_conn):
+    async def test_alias_resolution_in_same_batch(self, pool):
         """Aliases stored first, so facts in same batch resolve through them."""
         response = json.dumps({
             "facts": [
@@ -339,29 +350,32 @@ class TestExtractFacts:
         })
         provider = _make_provider(response)
 
-        await extract_facts("text", "sess1", provider, mem_conn)
+        await extract_facts("text", "sess1", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
 
-        fact = mem_conn.execute(
-            "SELECT entity FROM facts WHERE attribute = 'age' AND invalidated_at IS NULL"
-        ).fetchone()
-        assert fact[0] == "uncle_charles"
+        fact = await pool.fetchrow(
+            "SELECT entity FROM knowledge.facts "
+            "WHERE client_id = $1 AND agent_id = $2 "
+            "AND attribute = 'age' AND invalidated_at IS NULL",
+            TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        assert fact["entity"] == "uncle_charles"
 
     @pytest.mark.asyncio
-    async def test_provider_error_returns_zero(self, mem_conn):
+    async def test_provider_error_returns_zero(self, pool):
         provider = _make_provider("")
         provider.complete.side_effect = RuntimeError("API error")
-        count, _ = await extract_facts("text", "sess1", provider, mem_conn)
+        count, _ = await extract_facts("text", "sess1", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_strips_json_fences(self, mem_conn):
+    async def test_strips_json_fences(self, pool):
         response = '```json\n' + json.dumps({
             "facts": [{"entity": "test", "attribute": "a", "value": "b", "confidence": 1.0}],
             "aliases": [],
         }) + '\n```'
         provider = _make_provider(response)
 
-        count, _ = await extract_facts("text", "sess1", provider, mem_conn)
+        count, _ = await extract_facts("text", "sess1", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 1
 
 
@@ -370,7 +384,7 @@ class TestExtractFacts:
 
 class TestExtractEpisode:
     @pytest.mark.asyncio
-    async def test_valid_episode_stored(self, mem_conn):
+    async def test_valid_episode_stored(self, pool):
         response = json.dumps({
             "episode": {
                 "topics": ["memory system", "testing"],
@@ -386,19 +400,20 @@ class TestExtractEpisode:
 
         _, episode_id, _ = await extract_structured_data(
             "test text", "sess1", provider,
-            [{"text": "I am Lucy."}], mem_conn,
+            [{"text": "I am Lucy."}], pool, TEST_CLIENT_ID, TEST_AGENT_ID,
         )
         assert episode_id is not None
 
-        ep = mem_conn.execute(
-            "SELECT summary, emotional_tone FROM episodes WHERE id = ?",
-            (episode_id,),
-        ).fetchone()
-        assert "memory system" in ep[0]
-        assert ep[1] == "productive"
+        ep = await pool.fetchrow(
+            "SELECT summary, emotional_tone FROM knowledge.episodes "
+            "WHERE client_id = $1 AND agent_id = $2 AND id = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, episode_id,
+        )
+        assert "memory system" in ep["summary"]
+        assert ep["emotional_tone"] == "productive"
 
     @pytest.mark.asyncio
-    async def test_commitments_linked_to_episode(self, mem_conn):
+    async def test_commitments_linked_to_episode(self, pool):
         response = json.dumps({
             "episode": {
                 "topics": ["planning"],
@@ -414,18 +429,19 @@ class TestExtractEpisode:
         provider = _make_provider(response)
 
         _, episode_id, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], mem_conn,
+            "text", "sess1", provider, [{"text": "persona"}], pool, TEST_CLIENT_ID, TEST_AGENT_ID,
         )
 
-        commits = mem_conn.execute(
-            "SELECT who, what, deadline FROM commitments WHERE episode_id = ?",
-            (episode_id,),
-        ).fetchall()
+        commits = await pool.fetch(
+            "SELECT who, what, deadline FROM knowledge.commitments "
+            "WHERE client_id = $1 AND agent_id = $2 AND episode_id = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, episode_id,
+        )
         assert len(commits) == 2
         assert commits[0]["who"] == "lucy"
 
     @pytest.mark.asyncio
-    async def test_trivial_episode_returns_none(self, mem_conn):
+    async def test_trivial_episode_returns_none(self, pool):
         response = json.dumps({
             "episode": {
                 "topics": [],
@@ -438,29 +454,29 @@ class TestExtractEpisode:
         provider = _make_provider(response)
 
         _, result, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], mem_conn,
+            "text", "sess1", provider, [{"text": "persona"}], pool, TEST_CLIENT_ID, TEST_AGENT_ID,
         )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_malformed_json_returns_none(self, mem_conn):
+    async def test_malformed_json_returns_none(self, pool):
         provider = _make_provider("not json")
         _, result, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], mem_conn,
+            "text", "sess1", provider, [{"text": "persona"}], pool, TEST_CLIENT_ID, TEST_AGENT_ID,
         )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_provider_error_returns_none(self, mem_conn):
+    async def test_provider_error_returns_none(self, pool):
         provider = _make_provider("")
         provider.complete.side_effect = RuntimeError("API fail")
         _, result, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], mem_conn,
+            "text", "sess1", provider, [{"text": "persona"}], pool, TEST_CLIENT_ID, TEST_AGENT_ID,
         )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_null_deadline_handled(self, mem_conn):
+    async def test_null_deadline_handled(self, pool):
         """deadline: 'null' (string) should be stored as None."""
         response = json.dumps({
             "episode": {
@@ -476,12 +492,13 @@ class TestExtractEpisode:
         provider = _make_provider(response)
 
         _, episode_id, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], mem_conn,
+            "text", "sess1", provider, [{"text": "persona"}], pool, TEST_CLIENT_ID, TEST_AGENT_ID,
         )
-        commit = mem_conn.execute(
-            "SELECT deadline FROM commitments WHERE episode_id = ?",
-            (episode_id,),
-        ).fetchone()
+        commit = await pool.fetchrow(
+            "SELECT deadline FROM knowledge.commitments "
+            "WHERE client_id = $1 AND agent_id = $2 AND episode_id = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, episode_id,
+        )
         assert commit["deadline"] is None
 
 
@@ -490,7 +507,7 @@ class TestExtractEpisode:
 
 class TestExtractFromFile:
     @pytest.mark.asyncio
-    async def test_new_file_extracted(self, mem_conn, tmp_path):
+    async def test_new_file_extracted(self, pool, tmp_path):
         f = tmp_path / "test.md"
         f.write_text("# Nicolas lives in Austria.\n")
 
@@ -501,18 +518,19 @@ class TestExtractFromFile:
         })
         provider = _make_provider(response)
 
-        count = await extract_from_file(str(f), provider, mem_conn)
+        count = await extract_from_file(str(f), provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 1
 
         # Hash stored
-        row = mem_conn.execute(
-            "SELECT content_hash FROM consolidation_file_hashes WHERE file_path = ?",
-            (str(f),),
-        ).fetchone()
+        row = await pool.fetchrow(
+            "SELECT content_hash FROM knowledge.consolidation_file_hashes "
+            "WHERE client_id = $1 AND agent_id = $2 AND file_path = $3",
+            TEST_CLIENT_ID, TEST_AGENT_ID, str(f),
+        )
         assert row is not None
 
     @pytest.mark.asyncio
-    async def test_unchanged_file_skipped(self, mem_conn, tmp_path):
+    async def test_unchanged_file_skipped(self, pool, tmp_path):
         f = tmp_path / "test.md"
         f.write_text("# Some content\n")
 
@@ -520,22 +538,22 @@ class TestExtractFromFile:
         provider = _make_provider(response)
 
         # First run
-        await extract_from_file(str(f), provider, mem_conn)
+        await extract_from_file(str(f), provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         # Second run — same content, should skip
         provider.complete.reset_mock()
-        count = await extract_from_file(str(f), provider, mem_conn)
+        count = await extract_from_file(str(f), provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 0
         provider.complete.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_changed_file_reextracted(self, mem_conn, tmp_path):
+    async def test_changed_file_reextracted(self, pool, tmp_path):
         f = tmp_path / "test.md"
         f.write_text("# Version 1\n")
 
         response = json.dumps({"facts": [], "aliases": []})
         provider = _make_provider(response)
 
-        await extract_from_file(str(f), provider, mem_conn)
+        await extract_from_file(str(f), provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
 
         # Change file content
         f.write_text("# Version 2\n")
@@ -547,14 +565,14 @@ class TestExtractFromFile:
         })
         provider2 = _make_provider(response2)
 
-        await extract_from_file(str(f), provider2, mem_conn)
+        await extract_from_file(str(f), provider2, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         # Provider was called (file changed)
         provider2.complete.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_nonexistent_file_returns_zero(self, mem_conn):
+    async def test_nonexistent_file_returns_zero(self, pool):
         provider = _make_provider("")
-        count = await extract_from_file("/nonexistent/path.md", provider, mem_conn)
+        count = await extract_from_file("/nonexistent/path.md", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 0
 
 
@@ -563,7 +581,7 @@ class TestExtractFromFile:
 
 class TestConsolidateSession:
     @pytest.mark.asyncio
-    async def test_full_pipeline(self, mem_conn):
+    async def test_full_pipeline(self, pool):
         messages = [
             {"role": "user", "content": "Nicolas lives in Austria"},
             {"role": "assistant", "content": "Noted!"},
@@ -604,14 +622,16 @@ class TestConsolidateSession:
             config=FakeConfig(),
             provider=provider,
             context_builder=FakeContextBuilder(),
-            conn=mem_conn,
+            pool=pool,
+            client_id=TEST_CLIENT_ID,
+            agent_id=TEST_AGENT_ID,
         )
 
         assert result["facts_added"] == 2
         assert result["episode_id"] is not None
 
     @pytest.mark.asyncio
-    async def test_too_few_messages_skips(self, mem_conn):
+    async def test_too_few_messages_skips(self, pool):
         messages = [{"role": "user", "content": "hi"}]
 
         class FakeConfig:
@@ -624,7 +644,9 @@ class TestConsolidateSession:
             config=FakeConfig(),
             provider=_make_provider(""),
             context_builder=type("CB", (), {"build_stable": lambda self: []})(),
-            conn=mem_conn,
+            pool=pool,
+            client_id=TEST_CLIENT_ID,
+            agent_id=TEST_AGENT_ID,
         )
 
         assert result["facts_added"] == 0
@@ -632,11 +654,11 @@ class TestConsolidateSession:
 
 
 class TestExtractThenLookupRoundTrip:
-    """End-to-end: extract writes to real SQLite, recall reads them back."""
+    """End-to-end: extract writes to real PostgreSQL, recall reads them back."""
 
     @pytest.mark.asyncio
-    async def test_facts_round_trip(self, mem_conn):
-        """extract_facts → lookup_facts returns matching facts."""
+    async def test_facts_round_trip(self, pool):
+        """extract_facts -> lookup_facts returns matching facts."""
         from memory import lookup_facts
 
         response = json.dumps({
@@ -647,17 +669,17 @@ class TestExtractThenLookupRoundTrip:
             "aliases": [],
         })
         provider = _make_provider(response)
-        count, _ = await extract_facts("test conversation", "sess-rt", provider, mem_conn)
+        count, _ = await extract_facts("test conversation", "sess-rt", provider, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert count == 2
 
-        facts = lookup_facts({"nicolas"}, mem_conn)
+        facts = await lookup_facts({"nicolas"}, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert len(facts) == 2
         attrs = {f["attribute"] for f in facts}
         assert attrs == {"lives_in", "cat_name"}
 
     @pytest.mark.asyncio
-    async def test_episodes_round_trip(self, mem_conn):
-        """extract_structured_data → search_episodes returns the episode."""
+    async def test_episodes_round_trip(self, pool):
+        """extract_structured_data -> search_episodes returns the episode."""
         from memory import search_episodes
 
         response = json.dumps({
@@ -672,18 +694,18 @@ class TestExtractThenLookupRoundTrip:
         provider = _make_provider(response)
         _, episode_id, _ = await extract_structured_data(
             "test text", "sess-rt", provider,
-            [{"text": "I am an agent."}], mem_conn,
+            [{"text": "I am an agent."}], pool, TEST_CLIENT_ID, TEST_AGENT_ID,
         )
         assert episode_id is not None
 
-        episodes = search_episodes(["memory"], mem_conn)
+        episodes = await search_episodes(["memory"], pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert len(episodes) >= 1
         summaries = [e["summary"] for e in episodes]
         assert any("memory" in s.lower() for s in summaries)
 
     @pytest.mark.asyncio
-    async def test_commitments_round_trip(self, mem_conn):
-        """extract_structured_data with commitments → get_open_commitments returns them."""
+    async def test_commitments_round_trip(self, pool):
+        """extract_structured_data with commitments -> get_open_commitments returns them."""
         from memory import get_open_commitments
 
         response = json.dumps({
@@ -700,10 +722,10 @@ class TestExtractThenLookupRoundTrip:
         provider = _make_provider(response)
         _, episode_id, _ = await extract_structured_data(
             "text", "sess-rt", provider,
-            [{"text": "persona"}], mem_conn,
+            [{"text": "persona"}], pool, TEST_CLIENT_ID, TEST_AGENT_ID,
         )
         assert episode_id is not None
 
-        commits = get_open_commitments(mem_conn)
+        commits = await get_open_commitments(pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert len(commits) >= 1
         assert any(c["what"] == "review the PR" for c in commits)

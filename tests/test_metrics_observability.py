@@ -293,28 +293,27 @@ class TestMessageOutcome:
 
 
 class TestSessionOpenMetric:
-    def test_new_session_increments_counter(self, tmp_path: object) -> None:
-        from pathlib import Path
+    @pytest.mark.asyncio
+    async def test_new_session_increments_counter(self, pool: object) -> None:
         from session import SessionManager
 
         before = _sample_value(metrics.SESSION_OPEN_TOTAL)
-        mgr = SessionManager(Path(str(tmp_path)) / "sessions")
-        mgr.get_or_create("user-1", model="test-model")
+        mgr = SessionManager(pool, "test", "test_agent")
+        await mgr.get_or_create("user-1", model="test-model")
         after = _sample_value(metrics.SESSION_OPEN_TOTAL)
 
         assert after - before == 1, "New session should increment SESSION_OPEN_TOTAL by 1"
 
-    def test_existing_session_no_increment(self, tmp_path: object) -> None:
-        from pathlib import Path
+    @pytest.mark.asyncio
+    async def test_existing_session_no_increment(self, pool: object) -> None:
         from session import SessionManager
 
-        sessions_dir = Path(str(tmp_path)) / "sessions"
-        mgr = SessionManager(sessions_dir)
-        mgr.get_or_create("user-1", model="test-model")
+        mgr = SessionManager(pool, "test", "test_agent")
+        await mgr.get_or_create("user-1", model="test-model")
 
         # Capture value after first create, then call again
         before = _sample_value(metrics.SESSION_OPEN_TOTAL)
-        mgr.get_or_create("user-1", model="test-model")
+        await mgr.get_or_create("user-1", model="test-model")
         after = _sample_value(metrics.SESSION_OPEN_TOTAL)
 
         assert after == before, "Existing session should not increment SESSION_OPEN_TOTAL"
@@ -330,59 +329,37 @@ class TestMemorySearchDuration:
     }
 
     @pytest.mark.asyncio
-    async def test_fts_search_records_duration(self, tmp_path: object) -> None:
+    async def test_fts_search_records_duration(self, pool: object) -> None:
         from memory import MemoryInterface
 
         _clear_metric(metrics.MEMORY_SEARCH_DURATION)
 
-        db_path = f"{tmp_path}/memory.db"
         mem = MemoryInterface(
-            db_path=db_path, embedding_api_key="",
+            pool, "test", "test_agent",
+            embedding_api_key="",
             embedding_model="", embedding_base_url="",
             **self._MEM_KWARGS,
         )
 
-        # Create the FTS table so search doesn't crash
-        import sqlite3
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks
-            USING fts5(id, text, source, metadata, tokenize='porter')
-        """)
-        conn.commit()
-        conn.close()
-
+        # search.chunks table created by ensure_schema via pool fixture
         await mem.search("test query")
 
         count = _sample_value(metrics.MEMORY_SEARCH_DURATION, {"search_type": "fts"})
         assert count == 1, "FTS search should record 1 observation with search_type=fts"
 
     @pytest.mark.asyncio
-    async def test_combined_search_records_duration(self, tmp_path: object) -> None:
+    async def test_combined_search_records_duration(self, pool: object) -> None:
         from memory import MemoryInterface
 
         _clear_metric(metrics.MEMORY_SEARCH_DURATION)
 
-        db_path = f"{tmp_path}/memory.db"
         kw = {**self._MEM_KWARGS, "fts_min_results": 999}
         mem = MemoryInterface(
-            db_path=db_path, embedding_api_key="test-key",
+            pool, "test", "test_agent",
+            embedding_api_key="test-key",
             embedding_model="test", embedding_base_url="http://localhost:0",
             **kw,
         )
-
-        import sqlite3
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks
-            USING fts5(id, text, source, metadata, tokenize='porter')
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS memory_vectors
-            (id TEXT PRIMARY KEY, embedding BLOB)
-        """)
-        conn.commit()
-        conn.close()
 
         # Mock the vector search to avoid network call
         with patch.object(mem, "_vector_search", new_callable=AsyncMock, return_value=[]):

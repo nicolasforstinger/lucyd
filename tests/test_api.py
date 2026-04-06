@@ -1613,9 +1613,12 @@ class TestSessions:
 
 class TestCost:
     @pytest.fixture
-    def metering_db(self, tmp_path):
+    def metering_db(self):
+        from unittest.mock import AsyncMock
         from metering import MeteringDB
-        return MeteringDB(str(tmp_path / "metering.db"))
+        mock_pool = AsyncMock()
+        mock_pool.fetch.return_value = []
+        return MeteringDB(mock_pool, client_id="test", agent_id="test_agent")
 
     @pytest.mark.asyncio
     async def test_returns_records(self, queue, auth_headers, metering_db):
