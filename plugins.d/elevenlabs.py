@@ -28,8 +28,8 @@ try:
     from elevenlabs.client import AsyncElevenLabs
     from elevenlabs.types import VoiceSettings
 except ImportError:
-    AsyncElevenLabs = None
-    VoiceSettings = None
+    AsyncElevenLabs = None  # type: ignore[misc,assignment]
+    VoiceSettings = None  # type: ignore[misc,assignment]
 
 # Sentinel for metering — no tokens for TTS, only character-based cost.
 _ZERO_USAGE = types.SimpleNamespace(

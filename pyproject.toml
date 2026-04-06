@@ -72,7 +72,6 @@ module = [
     "openai",
     "openai.*",
     "mistralai",
-    "mistralai.*",
     "elevenlabs",
     "elevenlabs.*",
     "PIL",
@@ -86,7 +85,6 @@ module = [
     "aiohttp",
     "aiohttp.*",
     "asyncpg",
-    "asyncpg.*",
 ]
 ignore_missing_imports = true
 
