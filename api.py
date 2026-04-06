@@ -665,20 +665,20 @@ class HTTPApi:
                                 content_type="text/plain")
         # Update gauges that are only refreshed on scrape
         if self._get_status:
-            self._get_status()  # triggers gauge updates in _build_status
+            await self._get_status()  # triggers gauge updates in _build_status
         body = m.generate_latest()  # type: ignore[attr-defined]  # conditional export from try/except
         return web.Response(body=body, content_type="text/plain",
                             charset="utf-8")
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         """GET /api/v1/status — health check + stats."""
-        status = self._get_status() if self._get_status else {"status": "ok"}
+        status = (await self._get_status()) if self._get_status else {"status": "ok"}
 
         return self._json_response(status, status=200)
 
     async def _handle_sessions(self, request: web.Request) -> web.Response:
         """GET /api/v1/sessions — list active sessions."""
-        sessions = self._get_sessions() if self._get_sessions else []
+        sessions = (await self._get_sessions()) if self._get_sessions else []
 
         return self._json_response({"sessions": sessions}, status=200)
 
@@ -688,7 +688,7 @@ class HTTPApi:
         period = request.query.get("period", _time.strftime("%Y-%m"))
         if not self._metering_db:
             return self._json_response({"error": "metering not available"}, status=400)
-        return self._json_response(self._metering_db.get_records(period))
+        return self._json_response(await self._metering_db.get_records(period))
 
     async def _handle_monitor(self, request: web.Request) -> web.Response:
         """GET /api/v1/monitor — live agentic loop state."""
@@ -744,7 +744,7 @@ class HTTPApi:
         full = request.query.get("full", "").lower() in ("true", "1", "yes")
 
         if self._get_history:
-            history_data = self._get_history(session_id, full)
+            history_data = await self._get_history(session_id, full)
         else:
             history_data = {"session_id": session_id, "events": []}
 

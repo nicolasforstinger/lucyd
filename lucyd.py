@@ -623,12 +623,12 @@ class LucydDaemon:
         from config import today_start_ts
 
         today_cost = 0.0
-        rows = self.metering_db.query(
-            "SELECT SUM(cost) FROM costs WHERE timestamp >= ?",
-            (today_start_ts(),),
+        rows = await self.metering_db.query(
+            "SELECT SUM(cost) AS total FROM metering.costs WHERE timestamp >= to_timestamp($1)",
+            today_start_ts(),
         )
-        if rows and rows[0][0]:
-            today_cost = rows[0][0]
+        if rows and rows[0]["total"]:
+            today_cost = float(rows[0]["total"])
 
         active_sessions = 0
         if self.session_mgr:
