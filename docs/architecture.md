@@ -17,12 +17,12 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `api.py` | HTTP API server. 17 endpoints. Envelope extraction, auth, rate limiting. |
 | `config.py` | TOML config loader with env overrides. `_SCHEMA`-based typed properties + `raw()` for plugin config. |
 | `context.py` | System prompt builder. Three cache tiers (stable/semi-stable/dynamic). Token budget enforcement. |
-| `session.py` | Session manager. Dual storage: JSONL audit trail + atomic state snapshots. Compaction via LLM. |
-| `memory.py` | Long-term memory. FTS5 keyword search + vector similarity. Structured recall (facts, episodes, commitments). |
-| `memory_schema.py` | SQLite schema for memory tables. Safe to call on every startup. |
+| `db.py` | PostgreSQL connection pool (asyncpg) + forward-only schema versioning from `schema/*.sql`. |
+| `session.py` | Session manager. PostgreSQL-backed sessions, messages, events. Compaction via LLM. |
+| `memory.py` | Long-term memory. PostgreSQL tsvector FTS + pgvector similarity. Structured recall (facts, episodes, commitments). |
 | `consolidation.py` | Structured data extraction from sessions via LLM. Facts, episodes, commitments, aliases. |
 | `skills.py` | Skill loader + `load_skill` tool. Markdown with YAML frontmatter. |
-| `metering.py` | Per-call cost recording to SQLite. Billing periods, EUR currency. |
+| `metering.py` | Per-call cost recording to PostgreSQL. Billing periods, EUR currency. |
 | `metrics.py` | Prometheus metrics. 29 metric families, graceful no-op if `prometheus_client` not installed. |
 | `attachments.py` | `Attachment` type, image fitting (`fit_image`), document text extraction (`extract_document_text`), scanned PDF rendering (`render_pdf_pages`). Pure functions. |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
@@ -242,7 +242,7 @@ Token budget enforcement trims dynamic first, then semi-stable. Stable tier is n
 
 ## Memory
 
-SQLite FTS5 + vector similarity at `$DATA_DIR/memory/main.sqlite`.
+PostgreSQL tsvector FTS + pgvector similarity (knowledge + search schemas).
 
 **Structured memory:** Facts (entity-attribute-value), episodes (session summaries), commitments (trackable promises). Extracted on session close via `consolidation.py` and written directly by agent tools (`memory_write`, `commitment_update`).
 

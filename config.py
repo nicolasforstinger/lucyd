@@ -89,8 +89,11 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     "http_status_rate_limit":    (("http", "status_rate_limit"),   int,   60),
     "http_trust_localhost":      (("http", "trust_localhost"),     bool,  False),
 
+    # ── Database ─────────────────────────────────────────────────
+    "database_pool_min":    (("database", "pool_min"),             int,   2),
+    "database_pool_max":    (("database", "pool_max"),             int,   10),
+
     # ── Memory ───────────────────────────────────────────────────
-    "memory_db":            (("memory", "db"),                     str,   ""),
     "memory_top_k":         (("memory", "search_top_k"),           int,   10),
     "vector_search_limit":  (("memory", "vector_search_limit"),    int,   10000),
 
@@ -158,7 +161,6 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     "silent_tokens":            (("behavior", "silent_tokens"),            list,  ["NO_REPLY"]),
     "typing_indicators":        (("behavior", "typing_indicators"),        bool,  True),
     "error_message":            (("behavior", "error_message"),            str,   "connection error"),
-    "sqlite_timeout":           (("behavior", "sqlite_timeout"),           int,   30),
     "api_retries":              (("behavior", "api_retries"),              int,   2),
     "api_retry_base_delay":     (("behavior", "api_retry_base_delay"),     float, 2.0),
     "message_retries":          (("behavior", "message_retries"),          int,   2),
@@ -176,6 +178,7 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     "diary_prompt":             (("behavior", "compaction", "diary_prompt"),           str,   ""),
     # ── Agent Identity ─────────────────────────────────────────
     "agent_id":                 (("agent", "id"),                    str, ""),
+    "client_id":                (("agent", "client_id"),             str, ""),
 
     # ── Model Routing ────────────────────────────────────────────
     # Override model role for specific tasks. "" = use primary.
@@ -187,7 +190,6 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     # Empty string = derive from data_dir at resolution time.
     "state_dir":    (("paths", "state_dir"),    Path, ""),
     "sessions_dir": (("paths", "sessions_dir"), Path, ""),
-    "metering_db":           (("paths", "metering_db"),          Path, ""),
     "log_file":              (("paths", "log_file"),             Path, ""),
 
     # ── Metering ───────────────────────────────────────────────
@@ -313,7 +315,6 @@ class Config:
         path_defaults = {
             "state_dir":        self._data_dir,
             "sessions_dir":     self._data_dir / "sessions",
-            "metering_db":      self._data_dir / "metering.db",
             "log_file":         self._data_dir / "logs" / "lucyd.log",
         }
         for name, default_path in path_defaults.items():
@@ -324,7 +325,7 @@ class Config:
             self._values["http_download_dir"] = str(self._data_dir / "downloads")
 
         # Validate all resolved paths are absolute (catches misconfigured data_dir)
-        for name in ("state_dir", "sessions_dir", "metering_db", "log_file"):
+        for name in ("state_dir", "sessions_dir", "log_file"):
             val = self._values.get(name)
             if isinstance(val, Path) and not val.is_absolute():
                 log.warning("Resolved path '%s' is not absolute: %s — may indicate misconfigured data_dir", name, val)
@@ -403,6 +404,12 @@ class Config:
         return self._config_dir
 
     # ── Custom Properties (complex logic) ────────────────────────
+
+    @property
+    def database_url(self) -> str:
+        """Resolve database URL from env var named by [database] url_env."""
+        env = _deep_get(self._data, "database", "url_env", default="")
+        return os.environ.get(env, "") if env else ""
 
     @property
     def http_auth_token(self) -> str:

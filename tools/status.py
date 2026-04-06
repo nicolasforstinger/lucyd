@@ -15,26 +15,21 @@ _session_manager: Any = None
 _metering: Any = None  # MeteringDB instance
 _daemon_start_time: float = 0.0
 _session_getter: Any = None  # Callback returning current session
-_sqlite_timeout: int = 30
 
 MAX_CONTEXT_TOKENS = 0
 
 
 def configure(session_manager: Any = None,
               start_time: float = 0.0, max_context_tokens: int = 0,
-              sqlite_timeout: int = 30, session_getter: Any = None,
+              session_getter: Any = None,
               config: Any = None, provider: Any = None,
               metering: Any = None, **_: Any) -> None:
     global _session_manager, _metering, _daemon_start_time
-    global MAX_CONTEXT_TOKENS, _sqlite_timeout, _session_getter
+    global MAX_CONTEXT_TOKENS, _session_getter
     if session_manager is not None:
         _session_manager = session_manager
     if metering is not None:
         _metering = metering
-    if config is not None:
-        _sqlite_timeout = config.sqlite_timeout
-    else:
-        _sqlite_timeout = sqlite_timeout
     # Prefer provider.capabilities for max_context_tokens
     if provider is not None and hasattr(provider, "capabilities"):
         mct = provider.capabilities.max_context_tokens

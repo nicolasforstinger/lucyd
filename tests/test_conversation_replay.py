@@ -108,7 +108,6 @@ class TestConversationReplay:
                 timeout=60.0,
                 api_retries=0,
                 api_retry_base_delay=0,
-                sqlite_timeout=30,
             ),
         )
 

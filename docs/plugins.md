@@ -79,8 +79,10 @@ Available dependencies:
 | `session_manager` | `SessionManager` | Alias for `session_mgr` |
 | `tool_registry` | `ToolRegistry` | Tool registry (for introspection) |
 | `skill_loader` | `SkillLoader` | Skill loader |
-| `memory` | `sqlite3.Connection` | Memory DB connection (if memory is configured) |
-| `conn` | `sqlite3.Connection` | Alias for `memory` |
+| `memory` | `MemoryInterface` | Memory interface (if memory is configured) |
+| `pool` | `asyncpg.Pool` | PostgreSQL connection pool |
+| `client_id` | `str` | Tenant client identifier |
+| `agent_id` | `str` | Agent identifier |
 | `get_provider` | `callable` | `get_provider(role)` — get provider by role |
 | `session_getter` | `callable` | Returns current session (lambda) |
 | `start_time` | `float` | Daemon start timestamp |

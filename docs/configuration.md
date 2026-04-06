@@ -180,13 +180,12 @@ Long-term memory configuration.
 
 ```toml
 [memory]
-db = "~/.lucyd/memory/main.sqlite"            # SQLite DB with FTS5 + embeddings
 search_top_k = 10                             # Default result limit for memory searches
 embedding_timeout = 15                        # Embedding API request timeout (seconds)
 vector_search_limit = 10000                   # Raw DB query cap for vector search
 ```
 
-The memory DB is optional. If the path is empty or the file does not exist, memory tools are not registered.
+Memory uses the shared PostgreSQL database configured in `[database]`. Memory tools are registered when a database connection is available.
 
 ### [memory.consolidation]
 
@@ -358,7 +357,6 @@ api_retries = 2                                                        # Retry a
 api_retry_base_delay = 2.0                                             # Initial backoff delay in seconds (exponential with jitter). Default: 2.0
 message_retries = 2                                                    # Message-level retries on persistent failure (default: 2)
 message_retry_base_delay = 30                                          # Base delay between message retries in seconds (default: 30)
-sqlite_timeout = 30                                                    # SQLite connection timeout in seconds for all DBs (default: 30)
 notify_target = ""                                                    # Route all notifications to this sender's session (default: "" = disabled)
 # max_context_for_tools = 0                                             # Inject wrap-up hint when context exceeds this during tool use (0 = disabled)
 # thinking_concise_hint = false                                         # Inject "respond concisely" hint after tool results to reduce thinking overhead
@@ -442,8 +440,6 @@ File paths for runtime state. All paths derive from `data_dir` by default.
 [paths]
 data_dir = "/data"                     # Root for all persistent state (env: LUCYD_DATA_DIR, default: /data)
 state_dir = "/data"                    # Default: $data_dir
-sessions_dir = "/data/sessions"        # Default: $data_dir/sessions
-metering_db = "/data/metering.db"      # Default: $data_dir/metering.db (cost metering)
 log_file = "/data/logs/lucyd.log"      # Default: $data_dir/logs/lucyd.log
 ```
 

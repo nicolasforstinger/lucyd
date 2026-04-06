@@ -213,7 +213,9 @@ class MessagePipeline:
         tool_registry: ToolRegistry,
         skill_loader: SkillLoader | None,
         metering_db: MeteringDB | None,
-        get_memory_conn: Callable[[], Any],
+        pool: Any,  # asyncpg.Pool — no stubs available
+        client_id: str,
+        agent_id: str,
         preprocessors: list[dict[str, Any]],
         queue: asyncio.Queue[dict[str, Any]],
         on_pre_close: Callable[[str], None] | None = None,
@@ -228,7 +230,9 @@ class MessagePipeline:
         self._skill_loader = skill_loader
         self._metering_db = metering_db
         self._converter = converter
-        self._get_memory_conn = get_memory_conn
+        self._pool = pool
+        self._client_id = client_id
+        self._agent_id = agent_id
         self._preprocessors = preprocessors
         self._queue = queue
         self._on_pre_close = on_pre_close
@@ -406,11 +410,11 @@ class MessagePipeline:
         # Track whether session pre-existed (for auto-close decision).
         # Notifications routed to the primary session must not close it.
         ctx.session_preexisted = (
-            self._session_mgr.has_session(ctx.session_key)
+            await self._session_mgr.has_session(ctx.session_key)
         )
 
         # Get or create session (keyed by channel_id:sender)
-        session = self._session_mgr.get_or_create(ctx.session_key)
+        session = await self._session_mgr.get_or_create(ctx.session_key)
         ctx.session = session
 
         # Status tool reads session via callback (configured in _init_tools)
@@ -420,14 +424,14 @@ class MessagePipeline:
         ctx.text, warning_consumed = _inject_warning(ctx.text, session.pending_system_warning)
         if warning_consumed:
             session.pending_system_warning = ""
-            self._session_mgr.save_state(session)  # Persist cleared warning before agentic loop
+            await self._session_mgr.save_state(session)  # Persist cleared warning before agentic loop
 
         # Inject timestamp so the agent always knows the current time
         timestamp = time.strftime("[%a, %d. %b %Y - %H:%M %Z]")
         ctx.text = f"{timestamp}\n{ctx.text}"
 
         session.trace_id = ctx.trace_id
-        session.add_user_message(ctx.text, sender=ctx.sender, source=ctx.source)
+        await session.add_user_message(ctx.text, sender=ctx.sender, source=ctx.source)
 
         # Transiently inject image content blocks for the API call
         ctx.user_msg_idx = len(session.messages) - 1
@@ -456,9 +460,11 @@ class MessagePipeline:
         if not self._config.consolidation_enabled:
             return ""
         try:
-            conn = self._get_memory_conn()
-            result = get_session_start_context(
-                conn=conn, config=self._config,
+            result = await get_session_start_context(
+                pool=self._pool,
+                client_id=self._client_id,
+                agent_id=self._agent_id,
+                config=self._config,
                 max_facts=self._config.recall_max_facts,
                 max_episodes=self._config.recall_max_episodes_at_start,
                 max_tokens=self._config.recall_max_dynamic_tokens,
@@ -567,7 +573,6 @@ class MessagePipeline:
                     timeout=self._config.agent_timeout,
                     api_retries=self._config.api_retries,
                     api_retry_base_delay=self._config.api_retry_base_delay,
-                    sqlite_timeout=self._config.sqlite_timeout,
                     max_cost=float(max_cost),
                     max_context_for_tools=self._config.max_context_for_tools,
                     tool_call_retry=self._config.tool_call_retry,
@@ -638,7 +643,7 @@ class MessagePipeline:
         # Remove orphaned user message to prevent consecutive-user corruption
         if session.messages and session.messages[-1]["role"] == "user":
             session.messages.pop()
-        self._session_mgr.save_state(session)
+        await self._session_mgr.save_state(session)
         _resolve({"error": str(error), "session_id": session.id})
         # Auto-close ephemeral sessions even on error — but only if the
         # session was created by this event (not a pre-existing session).
@@ -656,23 +661,23 @@ class MessagePipeline:
 
     async def _finalize_response(self, ctx: _MessageState, _resolve: Any) -> None:
         """Post-loop work: persist, deliver, compact."""
-        self._persist_response(ctx)
+        await self._persist_response(ctx)
         await self._deliver_reply(ctx, _resolve)
-        self._check_compaction_warning(ctx)
+        await self._check_compaction_warning(ctx)
         await self._run_compaction_if_needed(ctx)
         await self._auto_close_if_ephemeral(ctx)
 
-    def _persist_response(self, ctx: _MessageState) -> None:
+    async def _persist_response(self, ctx: _MessageState) -> None:
         """Persist new messages and restore text-only content."""
         session = ctx.session
         for msg in session.messages[ctx.msg_count_before:]:
             if msg["role"] == "assistant":
-                session.add_assistant_message(msg, persist_only=True)
+                await session.add_assistant_message(msg, persist_only=True)
             elif msg["role"] == "tool_results":
-                session.add_tool_results(msg["results"], persist_only=True)
+                await session.add_tool_results(msg["results"], persist_only=True)
         if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
             session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
-        self._session_mgr.save_state(session)
+        await self._session_mgr.save_state(session)
 
     async def _deliver_reply(self, ctx: _MessageState, _resolve: Any) -> None:
         """Resolve HTTP future with reply content.
@@ -728,7 +733,7 @@ class MessagePipeline:
             _resolve({"reply": reply, "session_id": session.id,
                        "tokens": token_info, "attachments": reply_attachments})
 
-    def _check_compaction_warning(self, ctx: _MessageState) -> None:
+    async def _check_compaction_warning(self, ctx: _MessageState) -> None:
         """Inject context-pressure warning at 80% threshold."""
         session = ctx.session
         if _should_warn_context(
@@ -747,7 +752,7 @@ class MessagePipeline:
                 f"to memory files, then continue the conversation normally.]"
             )
             session.warned_about_compaction = True
-            self._session_mgr.save_state(session)
+            await self._session_mgr.save_state(session)
             log.info("Compaction warning set for session %s at %d tokens",
                      session.id, session.last_input_tokens)
 
@@ -760,7 +765,6 @@ class MessagePipeline:
             return
         if self._config.consolidation_enabled:
             try:
-                conn = self._get_memory_conn()
                 result = await consolidation_mod.consolidate_session(
                     session_id=session.id,
                     messages=session.messages,
@@ -768,7 +772,9 @@ class MessagePipeline:
                     config=self._config,
                     provider=self._get_provider("consolidation"),
                     context_builder=self._context_builder,
-                    conn=conn,
+                    pool=self._pool,
+                    client_id=self._client_id,
+                    agent_id=self._agent_id,
                     metering=self._metering_db,
                     trace_id=ctx.trace_id,
                     converter=self._converter,

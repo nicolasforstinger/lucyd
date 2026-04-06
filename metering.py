@@ -1,17 +1,15 @@
 """Cost metering with billing period support.
 
-Records API call costs with billing period segmentation and EUR currency.
-Agent identity is set once at init.  Consumers (CLI, Grafana, jq) handle
-aggregation — the daemon only emits raw records.
+Records API call costs to PostgreSQL with billing period segmentation and
+EUR currency.  Agent and client identity are set once at init.  Consumers
+(CLI, Grafana, psql) handle aggregation — the daemon only emits raw records.
 """
 
 from __future__ import annotations
 
 import datetime
 import logging
-import sqlite3
 import time
-from pathlib import Path
 from typing import Any
 
 import metrics
@@ -25,73 +23,27 @@ def _current_billing_period() -> str:
 
 
 class MeteringDB:
-    """Cost tracking database.
+    """Cost tracking backed by PostgreSQL.
 
     Records API call costs with billing periods and provider attribution.
-    Agent identity is set once at construction and used for all records.
+    Client and agent identity are set once at construction and used for all
+    records.  Requires an asyncpg connection pool.
     """
 
-    def __init__(self, db_path: str, *, agent_id: str = "", sqlite_timeout: float = 5.0):
-        if not db_path:
-            raise ValueError("MeteringDB requires a db_path")
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._path = db_path
+    def __init__(
+        self,
+        pool: Any,  # asyncpg.Pool — no stubs available
+        *,
+        client_id: str = "",
+        agent_id: str = "",
+    ) -> None:
+        self._pool = pool
+        self._client_id = client_id
         self._agent_id = agent_id
-        self._timeout = sqlite_timeout
-        self._conn: sqlite3.Connection | None = None
-        self._ensure_schema()
-
-    @property
-    def path(self) -> str:
-        return self._path
-
-    def _connect(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(self._path, timeout=self._timeout)
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
-
-    def close(self) -> None:
-        """Close the persistent connection."""
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-
-    def _ensure_schema(self) -> None:
-        conn = self._connect()
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA wal_autocheckpoint=1000")
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS costs (
-                timestamp       INTEGER NOT NULL,
-                agent_id     TEXT    NOT NULL,
-                session_id      TEXT    NOT NULL,
-                model           TEXT    NOT NULL,
-                provider        TEXT    NOT NULL DEFAULT '',
-                input_tokens    INTEGER NOT NULL DEFAULT 0,
-                output_tokens   INTEGER NOT NULL DEFAULT 0,
-                cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
-                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-                cost            REAL    NOT NULL DEFAULT 0.0,
-                currency        TEXT    NOT NULL DEFAULT 'EUR',
-                call_type       TEXT    NOT NULL DEFAULT 'agentic',
-                trace_id        TEXT,
-                billing_period  TEXT    NOT NULL,
-                latency_ms      INTEGER,
-                success         INTEGER NOT NULL DEFAULT 1,
-                error_type      TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_costs_agent
-                ON costs(agent_id);
-            CREATE INDEX IF NOT EXISTS idx_costs_billing
-                ON costs(agent_id, billing_period);
-        """)
-        conn.commit()
 
     # ── Recording ─────────────────────────────────────────────────
 
-    def record(
+    async def record(
         self,
         session_id: str,
         model: str,
@@ -129,7 +81,7 @@ class MeteringDB:
                 + usage.cache_write_tokens * cache_write_rate / 1_000_000
             )
 
-        # Convert to EUR if the provider bills in a different currency
+        # Convert to EUR if the provider bills in a different currency.
         if converter is not None and currency != "EUR":
             cost_val = converter.convert(cost_val, currency)
 
@@ -137,24 +89,28 @@ class MeteringDB:
         billing_period = _current_billing_period()
 
         try:
-            conn = self._connect()
-            conn.execute(
-                """INSERT INTO costs (
-                    timestamp, agent_id, session_id, model, provider,
-                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            await self._pool.execute(
+                """INSERT INTO metering.costs (
+                    client_id, agent_id, timestamp,
+                    session_id, model, provider,
+                    input_tokens, output_tokens,
+                    cache_read_tokens, cache_write_tokens,
                     cost, currency, call_type, trace_id,
                     billing_period, latency_ms, success, error_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    now, self._agent_id, session_id, model, provider,
-                    usage.input_tokens, usage.output_tokens,
-                    usage.cache_read_tokens, usage.cache_write_tokens,
-                    cost_val, currency, call_type, trace_id,
-                    billing_period, latency_ms,
-                    1 if success else 0, error_type,
-                ),
+                ) VALUES (
+                    $1, $2, to_timestamp($3),
+                    $4, $5, $6,
+                    $7, $8, $9, $10,
+                    $11, $12, $13, $14,
+                    $15, $16, $17, $18
+                )""",
+                self._client_id, self._agent_id, now,
+                session_id, model, provider,
+                usage.input_tokens, usage.output_tokens,
+                usage.cache_read_tokens, usage.cache_write_tokens,
+                cost_val, currency, call_type, trace_id,
+                billing_period, latency_ms, success, error_type,
             )
-            conn.commit()
         except Exception as e:
             log.warning("Failed to record cost: %s", e, exc_info=True)
 
@@ -168,49 +124,51 @@ class MeteringDB:
 
     # ── Queries ───────────────────────────────────────────────────
 
-    def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[Any]:
-        """Read-only query.  Returns [] on error or missing DB."""
-        if not Path(self._path).exists():
-            return []
+    async def query(self, sql: str, *args: Any) -> list[Any]:
+        """Read-only query.  Returns [] on error."""
         try:
-            return self._connect().execute(sql, params).fetchall()
+            rows: list[Any] = await self._pool.fetch(sql, *args)
+            return rows
         except Exception:
             log.warning("Metering query failed", exc_info=True)
             return []
 
-    def month_total(self, billing_period: str = "") -> float:
+    async def month_total(self, billing_period: str = "") -> float:
         """Total cost for current agent in a billing period.  Default: current month."""
         if not billing_period:
             billing_period = _current_billing_period()
-        rows = self.query(
-            "SELECT COALESCE(SUM(cost), 0.0) AS total FROM costs "
-            "WHERE agent_id = ? AND billing_period = ? AND success = 1",
-            (self._agent_id, billing_period),
+        val = await self._pool.fetchval(
+            "SELECT COALESCE(SUM(cost), 0.0) FROM metering.costs "
+            "WHERE client_id = $1 AND agent_id = $2 "
+            "AND billing_period = $3 AND success = TRUE",
+            self._client_id, self._agent_id, billing_period,
         )
-        return float(rows[0]["total"]) if rows else 0.0
+        return float(val) if val is not None else 0.0
 
     # ── Records ─────────────────────────────────────────────────────
 
-    def get_records(self, billing_period: str = "") -> dict[str, Any]:
+    async def get_records(self, billing_period: str = "") -> dict[str, Any]:
         """Return raw cost records for a billing period.
 
-        No aggregation — consumers (jq, Grafana, scripts) do that.
+        No aggregation — consumers (psql, Grafana, scripts) do that.
         Default period: current month.
         """
         if not billing_period:
             billing_period = _current_billing_period()
-        rows = self.query(
+        rows = await self.query(
             """SELECT timestamp, model, provider, call_type,
                       input_tokens, output_tokens,
                       cache_read_tokens, cache_write_tokens,
                       cost, currency, session_id, trace_id,
                       latency_ms, success, error_type
-               FROM costs
-               WHERE agent_id = ? AND billing_period = ?
+               FROM metering.costs
+               WHERE client_id = $1 AND agent_id = $2
+               AND billing_period = $3
                ORDER BY timestamp""",
-            (self._agent_id, billing_period),
+            self._client_id, self._agent_id, billing_period,
         )
         return {
+            "client_id": self._client_id,
             "agent_id": self._agent_id,
             "billing_period": billing_period,
             "currency": "EUR",
@@ -219,7 +177,7 @@ class MeteringDB:
 
     # ── Maintenance ───────────────────────────────────────────────
 
-    def enforce_retention(self, max_months: int = 12) -> int:
+    async def enforce_retention(self, max_months: int = 12) -> int:
         """Delete records older than max_months.  Returns count deleted."""
         today = datetime.date.today()
         month = today.month - max_months
@@ -229,13 +187,15 @@ class MeteringDB:
             year -= 1
         cutoff_ts = int(time.mktime(datetime.date(year, month, 1).timetuple()))
 
-        conn = self._connect()
-        cursor = conn.execute("DELETE FROM costs WHERE timestamp < ?", (cutoff_ts,))
-        deleted = cursor.rowcount
-        conn.commit()
+        result: str = await self._pool.execute(
+            "DELETE FROM metering.costs WHERE timestamp < to_timestamp($1)",
+            cutoff_ts,
+        )
+        # asyncpg returns "DELETE N" where N is the count.
+        deleted = int(result.split()[-1]) if result else 0
         if deleted > 0:
-            log.info("Metering retention: deleted %d records older than %d months",
-                     deleted, max_months)
+            log.info(
+                "Metering retention: deleted %d records older than %d months",
+                deleted, max_months,
+            )
         return deleted
-
-

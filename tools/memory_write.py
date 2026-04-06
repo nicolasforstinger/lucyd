@@ -1,13 +1,12 @@
 """Structured memory tools — memory_write, memory_forget, commitment_update.
 
 Agent-facing tools for direct fact management and commitment tracking.
-Delegates to the same SQLite DB used by consolidation and recall.
+Delegates to the same PostgreSQL knowledge schema used by consolidation and recall.
 """
 
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
 import metrics
@@ -19,41 +18,52 @@ from consolidation import upsert_fact
 
 log = logging.getLogger(__name__)
 
-_conn: sqlite3.Connection | None = None
+_pool: Any = None
+_client_id: str = ""
+_agent_id: str = ""
 
 
-def configure(conn: sqlite3.Connection | None = None, **_: Any) -> None:
-    global _conn
-    _conn = conn
+def configure(
+    pool: Any = None,
+    client_id: str = "",
+    agent_id: str = "",
+    **_: Any,
+) -> None:
+    global _pool, _client_id, _agent_id
+    _pool = pool
+    _client_id = client_id
+    _agent_id = agent_id
 
 
-def _resolve_entity(entity: str) -> str:
+async def _resolve_entity(entity: str) -> str:
     """Resolve entity through alias table, falling back to normalization."""
     from memory import resolve_entity
-    if _conn is None:
+    if _pool is None:
         return _normalize(entity)
-    return resolve_entity(entity, _conn)
+    return await resolve_entity(entity, _pool, _client_id, _agent_id)
 
 
-def handle_memory_write(entity: str, attribute: str, value: str) -> str:
+async def handle_memory_write(entity: str, attribute: str, value: str) -> str:
     """Store a fact in structured memory."""
-    if _conn is None:
+    if _pool is None:
         return "Error: Structured memory not configured in this deployment. Use memory_search for vector lookup instead."
 
-    entity = _resolve_entity(entity)
+    entity = await _resolve_entity(entity)
     attribute = _normalize(attribute)
 
     # Capture old value for reporting before upsert
-    existing = _conn.execute(
-        "SELECT value FROM facts WHERE entity = ? "
-        "AND attribute = ? AND invalidated_at IS NULL",
-        (entity, attribute),
-    ).fetchone()
-    old_value = existing[0] if existing else None
+    existing = await _pool.fetchrow(
+        "SELECT value FROM knowledge.facts "
+        "WHERE client_id = $1 AND agent_id = $2 "
+        "AND entity = $3 AND attribute = $4 AND invalidated_at IS NULL",
+        _client_id, _agent_id, entity, attribute,
+    )
+    old_value = existing["value"] if existing else None
 
-    result = upsert_fact(entity, attribute, value, _conn,
-                         confidence=1.0, source_session="agent")
-    _conn.commit()
+    result = await upsert_fact(
+        entity, attribute, value, _pool, _client_id, _agent_id,
+        confidence=1.0, source_session="agent",
+    )
 
     if result == "unchanged":
         return f"Already known: {entity}.{attribute} = {value}"
@@ -64,39 +74,41 @@ def handle_memory_write(entity: str, attribute: str, value: str) -> str:
     return f"Stored: {entity}.{attribute} = {value}"
 
 
-def handle_memory_forget(entity: str, attribute: str) -> str:
+async def handle_memory_forget(entity: str, attribute: str) -> str:
     """Mark a fact as no longer current."""
-    if _conn is None:
+    if _pool is None:
         return "Error: Structured memory not configured in this deployment. Use memory_search for vector lookup instead."
 
-    entity = _resolve_entity(entity)
+    entity = await _resolve_entity(entity)
     attribute = _normalize(attribute)
 
-    cursor = _conn.execute(
-        "UPDATE facts SET invalidated_at = datetime('now') "
-        "WHERE entity = ? AND attribute = ? AND invalidated_at IS NULL",
-        (entity, attribute),
+    result: str = await _pool.execute(
+        "UPDATE knowledge.facts SET invalidated_at = now() "
+        "WHERE client_id = $1 AND agent_id = $2 "
+        "AND entity = $3 AND attribute = $4 AND invalidated_at IS NULL",
+        _client_id, _agent_id, entity, attribute,
     )
-    _conn.commit()
+    updated = int(result.split()[-1]) if result else 0
 
-    if cursor.rowcount > 0:
+    if updated > 0:
         return f"Forgotten: {entity}.{attribute}"
     return f"No current fact found for {entity}.{attribute}"
 
 
-def handle_commitment_update(commitment_id: int, status: str) -> str:
+async def handle_commitment_update(commitment_id: int, status: str) -> str:
     """Update a commitment's status."""
-    if _conn is None:
+    if _pool is None:
         return "Error: Structured memory not configured in this deployment. Use memory_search for vector lookup instead."
 
-    cursor = _conn.execute(
-        "UPDATE commitments SET status = ? "
-        "WHERE id = ? AND status = 'open'",
-        (status, commitment_id),
+    result: str = await _pool.execute(
+        "UPDATE knowledge.commitments SET status = $1 "
+        "WHERE client_id = $2 AND agent_id = $3 "
+        "AND id = $4 AND status = 'open'",
+        status, _client_id, _agent_id, commitment_id,
     )
-    _conn.commit()
+    updated = int(result.split()[-1]) if result else 0
 
-    if cursor.rowcount > 0:
+    if updated > 0:
         if metrics.ENABLED:
             metrics.MEMORY_OPS_TOTAL.labels(operation="commitment_updated").inc()
         return f"Commitment #{commitment_id} marked as {status}"

@@ -24,7 +24,6 @@ _LOOP_CONFIG = LoopConfig(
     timeout=600.0,
     api_retries=0,
     api_retry_base_delay=0.1,
-    sqlite_timeout=30,
 )
 
 
@@ -365,7 +364,6 @@ class TestSubagentRouting:
         config.subagent_timeout = 30.0
         config.api_retries = 0
         config.api_retry_base_delay = 0.1
-        config.sqlite_timeout = 30
         config.subagent_model = ""
         config.model_config.return_value = {"model": "test", "cost_per_mtok": []}
 

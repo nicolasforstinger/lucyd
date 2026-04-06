@@ -153,7 +153,6 @@ def minimal_toml_data():
             },
         },
         "memory": {
-            "db": "",
             "search_top_k": 10,
             "vector_search_limit": 10000,
             "embedding_timeout": 15,
@@ -221,7 +220,6 @@ def minimal_toml_data():
             "silent_tokens": ["NO_REPLY"],
             "typing_indicators": True,
             "error_message": "connection error",
-            "sqlite_timeout": 30,
             "api_retries": 2,
             "api_retry_base_delay": 2.0,
             "message_retries": 2,
@@ -247,16 +245,6 @@ def minimal_toml_data():
             "log_file": "/tmp/test-lucyd.log",
         },
     }
-
-
-@pytest.fixture
-def cost_db(tmp_path):
-    """Initialized metering DB for cost tracking tests."""
-    from metering import MeteringDB
-
-    db_path = tmp_path / "metering.db"
-    db = MeteringDB(str(db_path))
-    return db
 
 
 @pytest.fixture

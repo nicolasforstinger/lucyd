@@ -1,15 +1,13 @@
-"""Memory indexer — scan workspace, chunk, embed, write to SQLite.
+"""Memory indexer — scan workspace, chunk, embed, write to PostgreSQL.
 
 Incremental and idempotent. Designed to run from cron.
-Populates the same SQLite DB that memory.py reads from.
+Populates the same Postgres tables that memory.py reads from.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -38,17 +36,31 @@ _CONVERTER: Any = None
 _COST_RATES: list[float] = []
 _CURRENCY: str = "EUR"
 
+# Pool + tenant (set by configure, used by index_workspace)
+_POOL: Any = None
+_CLIENT_ID: str = ""
+_AGENT_ID: str = ""
 
-def configure(chunk_size: int = 1600, chunk_overlap: int = 320,
-              embed_batch_limit: int = 100,
-              embedding_model: str = "", embedding_base_url: str = "",
-              metering: Any = None, converter: Any = None,
-              cost_rates: list[float] | None = None,
-              currency: str = "EUR") -> None:
+
+def configure(
+    chunk_size: int = 1600,
+    chunk_overlap: int = 320,
+    embed_batch_limit: int = 100,
+    embedding_model: str = "",
+    embedding_base_url: str = "",
+    metering: Any = None,
+    converter: Any = None,
+    cost_rates: list[float] | None = None,
+    currency: str = "EUR",
+    pool: Any = None,
+    client_id: str = "",
+    agent_id: str = "",
+) -> None:
     """Set indexer config from lucyd.toml values."""
     global CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, _EMBED_BATCH_LIMIT
     global EMBEDDING_MODEL, EMBEDDING_BASE_URL
     global _METERING, _CONVERTER, _COST_RATES, _CURRENCY
+    global _POOL, _CLIENT_ID, _AGENT_ID
     CHUNK_SIZE_CHARS = chunk_size
     CHUNK_OVERLAP_CHARS = chunk_overlap
     _EMBED_BATCH_LIMIT = embed_batch_limit
@@ -58,6 +70,9 @@ def configure(chunk_size: int = 1600, chunk_overlap: int = 320,
     _CONVERTER = converter
     _COST_RATES = cost_rates or []
     _CURRENCY = currency
+    _POOL = pool
+    _CLIENT_ID = client_id
+    _AGENT_ID = agent_id
 
 
 # ─── Pure Functions ──────────────────────────────────────────────
@@ -95,14 +110,12 @@ def chunk_file(
     start_idx = 0
 
     while start_idx < len(lines):
-        # Build chunk: add lines until chunk_size exceeded
         chunk_lines: list[str] = []
         char_count = 0
         end_idx = start_idx
 
         while end_idx < len(lines):
             line = lines[end_idx]
-            # Newline separator between lines
             added = len(line) + (1 if chunk_lines else 0)
             if char_count + added > chunk_size and chunk_lines:
                 break
@@ -113,24 +126,22 @@ def chunk_file(
         text = "\n".join(chunk_lines)
         chunks.append({
             "text": text,
-            "start_line": start_idx + 1,       # 1-indexed
-            "end_line": start_idx + len(chunk_lines),  # inclusive
+            "start_line": start_idx + 1,
+            "end_line": start_idx + len(chunk_lines),
         })
 
         if end_idx >= len(lines):
             break
 
-        # Overlap rewind: walk backward from chunk end to find overlap start
         overlap_chars = 0
         overlap_start = end_idx
         for i in range(end_idx - 1, start_idx - 1, -1):
-            line_cost = len(lines[i]) + 1  # +1 for newline separator
+            line_cost = len(lines[i]) + 1
             if overlap_chars + line_cost > overlap:
                 break
             overlap_chars += line_cost
             overlap_start = i
 
-        # Guarantee forward progress
         start_idx = max(start_idx + 1, overlap_start)
 
     return chunks
@@ -153,7 +164,6 @@ def scan_workspace(
             if not p.is_file():
                 continue
             rel = str(p.relative_to(workspace))
-            # Normalize path separators
             rel = rel.replace("\\", "/")
             if any(rel.startswith(d + "/") for d in excludes):
                 continue
@@ -161,19 +171,25 @@ def scan_workspace(
     return sorted(results.items())
 
 
-# ─── DB Functions ────────────────────────────────────────────────
+# ─── DB Functions (async, PostgreSQL) ────────────────────────────
 
-def get_indexed_files(conn: sqlite3.Connection) -> dict[str, str]:
-    """Returns {path: content_hash} from files table."""
+async def get_indexed_files(pool: Any, client_id: str, agent_id: str) -> dict[str, str]:
+    """Returns {path: content_hash} from search.files table."""
     try:
-        rows = conn.execute("SELECT path, hash FROM files").fetchall()
-        return {row[0]: row[1] for row in rows}
-    except sqlite3.OperationalError:
+        rows = await pool.fetch(
+            "SELECT path, hash FROM search.files "
+            "WHERE client_id = $1 AND agent_id = $2",
+            client_id, agent_id,
+        )
+        return {row["path"]: row["hash"] for row in rows}
+    except Exception:
         return {}
 
 
-def update_chunks(
-    conn: sqlite3.Connection,
+async def update_chunks(
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     path: str,
     source: str,
     chunks: list[dict[str, Any]],
@@ -182,69 +198,89 @@ def update_chunks(
     file_mtime: int,
     file_size: int,
 ) -> int:
-    """Replace all chunks for a file. FTS is rebuilt separately.
+    """Replace all chunks for a file. tsvector is auto-maintained.
 
     Returns count of chunks inserted.
     """
-    now = int(time.time() * 1000)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Remove old chunks for this path
+            await conn.execute(
+                "DELETE FROM search.chunks "
+                "WHERE client_id = $1 AND agent_id = $2 AND path = $3",
+                client_id, agent_id, path,
+            )
 
-    # Remove old chunks for this path
-    conn.execute("DELETE FROM chunks WHERE path = ?", (path,))
+            # Insert new chunks
+            for chunk in chunks:
+                chunk_id = compute_chunk_id(path, chunk["text"])
+                chunk_hash = compute_file_hash(chunk["text"])
+                embedding = chunk.get("embedding")
+                embedding_str: str | None = None
+                if embedding:
+                    embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
 
-    # Insert new chunks
-    for chunk in chunks:
-        chunk_id = compute_chunk_id(path, chunk["text"])
-        chunk_hash = compute_file_hash(chunk["text"])
-        embedding_json = json.dumps(chunk["embedding"]) if chunk.get("embedding") else "[]"
-        conn.execute(
-            "INSERT INTO chunks (id, path, source, start_line, end_line, "
-            "hash, model, text, embedding, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (chunk_id, path, source, chunk["start_line"], chunk["end_line"],
-             chunk_hash, model, chunk["text"], embedding_json, now),
-        )
+                await conn.execute(
+                    """INSERT INTO search.chunks
+                       (client_id, agent_id, id, path, source,
+                        start_line, end_line, hash, model, text,
+                        embedding, updated_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                               $11::vector, now())""",
+                    client_id, agent_id, chunk_id, path, source,
+                    chunk["start_line"], chunk["end_line"],
+                    chunk_hash, model, chunk["text"],
+                    embedding_str,
+                )
 
-    # Update files table
-    conn.execute(
-        "INSERT OR REPLACE INTO files (path, source, hash, mtime, size) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (path, source, file_hash, file_mtime, file_size),
-    )
+            # Upsert files table
+            await conn.execute(
+                """INSERT INTO search.files (client_id, agent_id, path, source, hash, mtime, size)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                   ON CONFLICT (client_id, agent_id, path)
+                   DO UPDATE SET hash = EXCLUDED.hash,
+                                 mtime = EXCLUDED.mtime,
+                                 size = EXCLUDED.size""",
+                client_id, agent_id, path, source, file_hash, file_mtime, file_size,
+            )
 
     return len(chunks)
 
 
-def remove_stale_files(
-    conn: sqlite3.Connection,
+async def remove_stale_files(
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     current_paths: set[str],
 ) -> list[str]:
     """Remove files and chunks not in current_paths. Returns removed paths."""
-    try:
-        db_paths = conn.execute("SELECT path FROM files").fetchall()
-    except sqlite3.OperationalError:
-        return []
-
+    rows = await pool.fetch(
+        "SELECT path FROM search.files WHERE client_id = $1 AND agent_id = $2",
+        client_id, agent_id,
+    )
     removed = []
-    for (db_path,) in db_paths:
+    for row in rows:
+        db_path: str = row["path"]
         if db_path not in current_paths:
-            conn.execute("DELETE FROM chunks WHERE path = ?", (db_path,))
-            conn.execute("DELETE FROM files WHERE path = ?", (db_path,))
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        "DELETE FROM search.chunks "
+                        "WHERE client_id = $1 AND agent_id = $2 AND path = $3",
+                        client_id, agent_id, db_path,
+                    )
+                    await conn.execute(
+                        "DELETE FROM search.files "
+                        "WHERE client_id = $1 AND agent_id = $2 AND path = $3",
+                        client_id, agent_id, db_path,
+                    )
             removed.append(db_path)
     return removed
 
 
-def rebuild_fts(conn: sqlite3.Connection) -> None:
-    """Full FTS rebuild from chunks table. Called once after all changes."""
-    conn.execute("DELETE FROM chunks_fts")
-    conn.execute(
-        "INSERT INTO chunks_fts(rowid, text, id, path, source, model, start_line, end_line) "
-        "SELECT rowid, text, id, path, source, model, start_line, end_line FROM chunks",
-    )
-
-
 # ─── Embedding Functions ────────────────────────────────────────
 
-def embed_batch(
+async def embed_batch(
     texts: list[str],
     api_key: str,
     base_url: str | None = None,
@@ -294,7 +330,7 @@ def embed_batch(
                 model or "", EMBEDDING_PROVIDER, usage,
             )
             if _METERING and _COST_RATES:
-                _METERING.record(
+                await _METERING.record(
                     session_id="indexer", model=model or "",
                     provider=EMBEDDING_PROVIDER,
                     usage=usage, cost_rates=_COST_RATES,
@@ -302,13 +338,14 @@ def embed_batch(
                     currency=_CURRENCY,
                 )
 
-    # Sort by original index to preserve order
     all_embeddings.sort(key=lambda x: x[0])
     return [emb for _, emb in all_embeddings]
 
 
-def cache_embeddings(
-    conn: sqlite3.Connection,
+async def cache_embeddings(
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     texts: list[str],
     embeddings: list[list[float]],
     model: str | None = None,
@@ -317,33 +354,37 @@ def cache_embeddings(
     """Populate embedding_cache so memory.py runtime hits cache."""
     model = model if model is not None else EMBEDDING_MODEL
     provider = provider if provider is not None else EMBEDDING_PROVIDER
-    now = int(time.time() * 1000)
     for text, embedding in zip(texts, embeddings, strict=True):
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        conn.execute(
-            "INSERT OR REPLACE INTO embedding_cache "
-            "(provider, model, provider_key, hash, embedding, dims, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (provider, model, "", text_hash, json.dumps(embedding),
-             len(embedding), now),
+        embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
+        await pool.execute(
+            """INSERT INTO search.embedding_cache
+               (client_id, agent_id, provider, model, provider_key,
+                hash, embedding, dims, updated_at)
+               VALUES ($1, $2, $3, $4, '', $5, $6::vector, $7, now())
+               ON CONFLICT (client_id, agent_id, provider, model, provider_key, hash)
+               DO UPDATE SET embedding = EXCLUDED.embedding,
+                             dims = EXCLUDED.dims,
+                             updated_at = now()""",
+            client_id, agent_id, provider, model,
+            text_hash, embedding_str, len(embedding),
         )
 
 
 # ─── Main Entry Point ───────────────────────────────────────────
 
-def index_workspace(
+async def index_workspace(
     workspace: Path,
-    db_path: Path,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     api_key: str,
     base_url: str | None = None,
     model: str | None = None,
     force: bool = False,
     embedding_timeout: int = 15,
-    sqlite_timeout: int = 30,
 ) -> dict[str, Any]:
-    """Scan workspace, chunk changed files, embed, and write to DB.
-
-    All DB operations happen in one transaction — atomic commit.
+    """Scan workspace, chunk changed files, embed, and write to Postgres.
 
     Returns summary dict with indexed/skipped/removed counts.
     """
@@ -357,139 +398,123 @@ def index_workspace(
     file_list = scan_workspace(workspace)
     scanned_paths = {rel for rel, _ in file_list}
 
-    # 2. Connect to DB and ensure schema exists
-    conn = sqlite3.connect(str(db_path), timeout=sqlite_timeout)
-    conn.execute("PRAGMA journal_mode=WAL")
+    # 2. Get current index state
+    indexed = await get_indexed_files(pool, client_id, agent_id)
 
-    from memory_schema import ensure_schema
-    ensure_schema(conn)
+    summary: dict[str, Any] = {
+        "indexed": [],
+        "skipped": 0,
+        "removed": [],
+        "errors": [],
+        "total_files": 0,
+        "total_chunks": 0,
+    }
 
-    try:
-        # 3. Get current index state
-        indexed = get_indexed_files(conn)
+    # 3. Process each file
+    for rel_path, abs_path in file_list:
+        try:
+            content = abs_path.read_text(encoding="utf-8")
+        except OSError as e:
+            log.error("Failed to read %s: %s", rel_path, e)
+            summary["errors"].append(f"{rel_path}: read error: {e}")
+            continue
 
-        summary: dict[str, Any] = {
-            "indexed": [],      # [(path, chunk_count)]
-            "skipped": 0,
-            "removed": [],
-            "errors": [],
-            "total_files": 0,
-            "total_chunks": 0,
-        }
+        file_hash = compute_file_hash(content)
 
-        # 4. Process each file
-        for rel_path, abs_path in file_list:
-            try:
-                content = abs_path.read_text(encoding="utf-8")
-            except OSError as e:
-                log.error("Failed to read %s: %s", rel_path, e)
-                summary["errors"].append(f"{rel_path}: read error: {e}")
-                continue
+        if not force and rel_path in indexed and indexed[rel_path] == file_hash:
+            summary["skipped"] += 1
+            continue
 
-            file_hash = compute_file_hash(content)
+        lines = content.splitlines()
+        chunks = chunk_file(lines)
 
-            # Skip unchanged files (unless force)
-            if not force and rel_path in indexed and indexed[rel_path] == file_hash:
-                summary["skipped"] += 1
-                continue
+        if not chunks:
+            summary["skipped"] += 1
+            continue
 
-            # Chunk the file
-            lines = content.splitlines()
-            chunks = chunk_file(lines)
-
-            if not chunks:
-                summary["skipped"] += 1
-                continue
-
-            # Embed all chunk texts
-            chunk_texts = [c["text"] for c in chunks]
-            try:
-                embeddings = embed_batch(chunk_texts, api_key, base_url, model,
-                                        embedding_timeout=embedding_timeout)
-                for i, emb in enumerate(embeddings):
-                    chunks[i]["embedding"] = emb
-            except Exception as e:
-                log.error("Embedding failed for %s: %s", rel_path, e, exc_info=True)
-                summary["errors"].append(f"{rel_path}: embedding error: {e}")
-                continue
-
-            # Write chunks to DB
-            stat = abs_path.stat()
-            count = update_chunks(
-                conn, rel_path, SOURCE, chunks, model,
-                file_hash, int(stat.st_mtime * 1000), stat.st_size,
+        # Embed all chunk texts
+        chunk_texts = [c["text"] for c in chunks]
+        try:
+            embeddings = await embed_batch(
+                chunk_texts, api_key, base_url, model,
+                embedding_timeout=embedding_timeout,
             )
-            summary["indexed"].append((rel_path, count))
+            for i, emb in enumerate(embeddings):
+                chunks[i]["embedding"] = emb
+        except Exception as e:
+            log.error("Embedding failed for %s: %s", rel_path, e, exc_info=True)
+            summary["errors"].append(f"{rel_path}: embedding error: {e}")
+            continue
 
-            # Cache embeddings for runtime
-            cache_embeddings(conn, chunk_texts, embeddings, model)
+        # Write chunks to DB
+        stat = abs_path.stat()
+        count = await update_chunks(
+            pool, client_id, agent_id,
+            rel_path, SOURCE, chunks, model,
+            file_hash, int(stat.st_mtime * 1000), stat.st_size,
+        )
+        summary["indexed"].append((rel_path, count))
 
-        # 5. Remove stale files
-        removed = remove_stale_files(conn, scanned_paths)
-        summary["removed"] = removed
+        # Cache embeddings for runtime
+        await cache_embeddings(pool, client_id, agent_id, chunk_texts, embeddings, model)
 
-        # 6. Rebuild FTS
-        rebuild_fts(conn)
+    # 4. Remove stale files
+    removed = await remove_stale_files(pool, client_id, agent_id, scanned_paths)
+    summary["removed"] = removed
 
-        # 7. Atomic commit
-        conn.commit()
+    # 5. Final counts (no FTS rebuild needed — tsvector is auto-maintained)
+    total_chunks = await pool.fetchval(
+        "SELECT COUNT(*) FROM search.chunks WHERE client_id = $1 AND agent_id = $2",
+        client_id, agent_id,
+    )
+    total_files = await pool.fetchval(
+        "SELECT COUNT(*) FROM search.files WHERE client_id = $1 AND agent_id = $2",
+        client_id, agent_id,
+    )
+    summary["total_files"] = total_files or 0
+    summary["total_chunks"] = total_chunks or 0
 
-        # Final counts
-        total_chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        summary["total_files"] = total_files
-        summary["total_chunks"] = total_chunks
-
-        return summary
-
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    return summary
 
 
-def get_index_status(db_path: Path, workspace: Path) -> dict[str, Any]:
+async def get_index_status(
+    pool: Any,
+    client_id: str,
+    agent_id: str,
+    workspace: Path,
+) -> dict[str, Any]:
     """Get current index status without modifying anything."""
     status: dict[str, Any] = {
-        "db_exists": db_path.exists(),
+        "db_exists": True,  # Always true with Postgres
         "indexed_files": 0,
         "total_chunks": 0,
         "pending_files": [],
         "stale_files": [],
     }
 
-    if not db_path.exists():
-        return status
+    indexed = await get_indexed_files(pool, client_id, agent_id)
+    status["indexed_files"] = len(indexed)
 
-    conn = sqlite3.connect(str(db_path), timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    try:
-        indexed = get_indexed_files(conn)
-        status["indexed_files"] = len(indexed)
+    total = await pool.fetchval(
+        "SELECT COUNT(*) FROM search.chunks WHERE client_id = $1 AND agent_id = $2",
+        client_id, agent_id,
+    )
+    status["total_chunks"] = total or 0
 
-        total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        status["total_chunks"] = total
+    file_list = scan_workspace(workspace)
+    scanned_paths = {rel for rel, _ in file_list}
 
-        # Check for pending/changed files
-        file_list = scan_workspace(workspace)
-        scanned_paths = {rel for rel, _ in file_list}
+    for rel_path, abs_path in file_list:
+        try:
+            content = abs_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        file_hash = compute_file_hash(content)
+        if rel_path not in indexed or indexed[rel_path] != file_hash:
+            status["pending_files"].append(rel_path)
 
-        for rel_path, abs_path in file_list:
-            try:
-                content = abs_path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            file_hash = compute_file_hash(content)
-            if rel_path not in indexed or indexed[rel_path] != file_hash:
-                status["pending_files"].append(rel_path)
-
-        # Stale files in DB but not on disk
-        for db_path_str in indexed:
-            if db_path_str not in scanned_paths:
-                status["stale_files"].append(db_path_str)
-
-    finally:
-        conn.close()
+    for db_path_str in indexed:
+        if db_path_str not in scanned_paths:
+            status["stale_files"].append(db_path_str)
 
     return status

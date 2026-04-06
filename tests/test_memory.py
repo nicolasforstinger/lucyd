@@ -14,7 +14,6 @@ _MEM_DEFAULTS = dict(
     top_k=10,
     vector_search_limit=10000,
     fts_min_results=3,
-    sqlite_timeout=30,
 )
 
 

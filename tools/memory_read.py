@@ -8,7 +8,6 @@ with vector fallback. memory_get reads chunks by file path.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
 import metrics
@@ -19,18 +18,28 @@ log = logging.getLogger(__name__)
 
 # Set once at daemon startup via configure()
 _memory: Any = None
-_conn: sqlite3.Connection | None = None
+_pool: Any = None
+_client_id: str = ""
+_agent_id: str = ""
 _config: Any = None
 
 
-def configure(memory: Any = None, conn: sqlite3.Connection | None = None,
-              config: Any = None, **_: Any) -> None:
+def configure(
+    memory: Any = None,
+    pool: Any = None,
+    client_id: str = "",
+    agent_id: str = "",
+    config: Any = None,
+    **_: Any,
+) -> None:
     """Configure memory tools. Called once at init."""
-    global _memory, _conn, _config
+    global _memory, _pool, _client_id, _agent_id, _config
     if memory is not None:
         _memory = memory
-    if conn is not None:
-        _conn = conn
+    if pool is not None:
+        _pool = pool
+    _client_id = client_id
+    _agent_id = agent_id
     if config is not None:
         _config = config
 
@@ -45,11 +54,14 @@ async def tool_memory_search(query: str, top_k: int = 10) -> str:
     top_k = max(1, min(top_k, _MAX_TOP_K))
 
     # Try structured recall if configured
-    if _conn is not None and _config is not None:
+    if _pool is not None and _config is not None:
         try:
             from memory import EMPTY_RECALL_FALLBACK, inject_recall, recall
             max_tokens = getattr(_config, "recall_max_dynamic_tokens", 1000)
-            blocks = await recall(query, _conn, _memory, _config, top_k)
+            blocks = await recall(
+                query, _pool, _client_id, _agent_id,
+                _memory, _config, top_k,
+            )
             result = inject_recall(blocks, max_tokens)
             if metrics.ENABLED:
                 metrics.MEMORY_OPS_TOTAL.labels(operation="recall_triggered").inc()

@@ -1,6 +1,7 @@
 # Lucyd — production dependencies
 # Both provider SDKs are optional. Install only what your providers.d/ config needs.
 
+asyncpg>=0.30,<1     # PostgreSQL async driver (core dependency)
 tiktoken>=0.7,<1     # Token counting (cl100k_base). Falls back to byte estimate if absent.
 anthropic>=0.45      # Required if using provider = "anthropic"
 openai>=2.0,<3       # Required if using provider = "openai" or memory embeddings

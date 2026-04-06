@@ -30,7 +30,6 @@ _LOOP_CONFIG = LoopConfig(
     timeout=600.0,
     api_retries=2,
     api_retry_base_delay=0.01,
-    sqlite_timeout=30,
 )
 
 
@@ -328,7 +327,6 @@ class TestMemorySearchDuration:
     _MEM_KWARGS: dict[str, int] = {
         "embedding_timeout": 15, "top_k": 10,
         "vector_search_limit": 10000, "fts_min_results": 3,
-        "sqlite_timeout": 30,
     }
 
     @pytest.mark.asyncio

@@ -42,7 +42,6 @@ class LoopConfig:
     timeout: float = 120.0
     api_retries: int = 3
     api_retry_base_delay: float = 1.0
-    sqlite_timeout: int = 30
     max_cost: float = 0.0
     max_context_for_tools: int = 0
     tool_call_retry: bool = False
@@ -146,7 +145,7 @@ async def run_single_shot(
 
     if cc.metering and cc.cost_rates:
         latency = getattr(response, "_api_latency_ms", None)
-        response.total_cost = cc.metering.record(
+        response.total_cost = await cc.metering.record(
             session_id=cc.session_id,
             model=cc.model_name, provider=cc.provider_name,
             usage=response.usage, cost_rates=cc.cost_rates,
@@ -356,7 +355,7 @@ async def run_agentic_loop(
         # Track cost (Prometheus emission happens inside metering.record)
         if cc.metering and cc.cost_rates:
             latency = getattr(response, "_api_latency_ms", None)
-            turn_cost = cc.metering.record(
+            turn_cost = await cc.metering.record(
                 session_id=cc.session_id,
                 model=cc.model_name, provider=cc.provider_name,
                 usage=response.usage, cost_rates=cc.cost_rates,

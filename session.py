@@ -1,6 +1,8 @@
 """Session manager — persistence, routing, and compaction.
 
-Dual storage: JSONL audit trail (append-only) + state file (atomic snapshots).
+Sessions stored in PostgreSQL: sessions.sessions, sessions.messages,
+sessions.events. Messages loaded into RAM during processing and
+persisted back to Postgres on state changes.
 """
 
 from __future__ import annotations
@@ -8,11 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 import uuid
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 import metrics
@@ -53,43 +53,29 @@ def _validate_turn_structure(messages: list[Message]) -> None:
     while i >= 0:
         msg = messages[i]
         if msg["role"] == "assistant" and msg.get("tool_calls"):
-            # Check if followed by tool_results (possibly with user hints between)
             has_results = False
             for j in range(i + 1, len(messages)):
                 if messages[j]["role"] == "tool_results":
                     has_results = True
                     break
                 if messages[j]["role"] == "assistant":
-                    break  # next assistant turn — no results for this one
+                    break
             if not has_results:
                 msg.pop("tool_calls", None)
                 log.warning("Stripped orphaned tool_calls from assistant at index %d", i)
         elif msg["role"] == "tool_results":
-            # Check if the immediately preceding assistant (skipping user
-            # hints) has tool_calls.  Stop at any assistant or tool_results
-            # — those are turn boundaries that break the pairing.
             has_call = False
             for j in range(i - 1, -1, -1):
                 if messages[j]["role"] == "assistant":
                     if messages[j].get("tool_calls"):
                         has_call = True
-                    break  # nearest assistant — stop regardless
+                    break
                 if messages[j]["role"] == "tool_results":
-                    break  # previous tool_results — no call for this one
+                    break
             if not has_call:
                 messages.pop(i)
                 log.warning("Removed orphaned tool_results at index %d", i)
         i -= 1
-
-
-def _atomic_write(path: Path, data: str) -> None:
-    """Write to temp file then rename — atomic on POSIX."""
-    tmp = path.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    tmp.rename(path)
 
 
 def _context_tokens_from_usage(usage: dict[str, Any]) -> int:
@@ -105,15 +91,21 @@ def _context_tokens_from_usage(usage: dict[str, Any]) -> int:
 
 
 class Session:
-    """A single conversation session with dual storage."""
+    """A single conversation session backed by PostgreSQL."""
 
-    def __init__(self, session_id: str, sessions_dir: Path, model: str = "",
-                 contact: str = ""):
+    def __init__(
+        self,
+        session_id: str,
+        pool: Any,
+        client_id: str,
+        agent_id: str,
+        model: str = "",
+        contact: str = "",
+    ) -> None:
         self.id = session_id
-        self.dir = sessions_dir
-        self.dir.mkdir(parents=True, exist_ok=True)
-        self.jsonl_path = self.dir / f"{session_id}.jsonl"
-        self.state_path = self.dir / f"{session_id}.state.json"
+        self._pool = pool
+        self._client_id = client_id
+        self._agent_id = agent_id
         self.messages: list[Message] = []
         self.model = model
         self.contact = contact
@@ -123,80 +115,95 @@ class Session:
         self.compaction_count = 0
         self.warned_about_compaction = False
         self.pending_system_warning = ""
-        self.trace_id = ""  # Set per-message by _process_message; included in JSONL events
+        self.trace_id = ""  # Set per-message; included in events
 
-    def _dated_jsonl_path(self) -> Path:
-        """JSONL path for today's date."""
-        today = time.strftime("%Y-%m-%d")
-        return self.dir / f"{self.id}.{today}.jsonl"
-
-    def load(self) -> bool:
-        """Load from state file if it exists, return True if loaded."""
-        if not self.state_path.exists():
-            return False
-        try:
-            with self.state_path.open(encoding="utf-8") as f:
-                state = json.load(f)
-            self.messages = state.get("messages", [])
-            _validate_turn_structure(self.messages)
-            self.model = state.get("model", self.model)
-            self.contact = state.get("contact", self.contact)
-            self.created_at = state.get("created_at", self.created_at)
-            self.total_input_tokens = state.get("total_input_tokens", 0)
-            self.total_output_tokens = state.get("total_output_tokens", 0)
-            self.compaction_count = state.get("compaction_count", 0)
-            self.warned_about_compaction = state.get("warned_about_compaction", False)
-            self.pending_system_warning = state.get("pending_system_warning", "")
-            log.info("Resumed session %s (%d messages)", self.id, len(self.messages))
-            return True
-        except (json.JSONDecodeError, KeyError) as e:
-            log.warning("Corrupt state file for %s, starting fresh: %s", self.id, e)
+    async def load(self) -> bool:
+        """Load session state and messages from Postgres. Return True if loaded."""
+        row = await self._pool.fetchrow(
+            "SELECT * FROM sessions.sessions WHERE id = $1",
+            self.id,
+        )
+        if not row:
             return False
 
-    def save_state(self) -> None:
-        """Atomically save current state."""
-        state = {
-            "id": self.id,
-            "model": self.model,
-            "contact": self.contact,
-            "messages": [
-                {k: v for k, v in m.items() if not k.startswith("_")}
-                for m in self.messages
-            ],
-            "created_at": self.created_at,
-            "total_input_tokens": self.total_input_tokens,
-            "total_output_tokens": self.total_output_tokens,
-            "compaction_count": self.compaction_count,
-            "warned_about_compaction": self.warned_about_compaction,
-            "pending_system_warning": self.pending_system_warning,
-            "updated_at": time.time(),
-        }
-        _atomic_write(self.state_path, json.dumps(state, ensure_ascii=False))
+        self.model = row["model"]
+        self.contact = row["contact"]
+        self.created_at = row["created_at"].timestamp()
+        self.total_input_tokens = row["total_input_tokens"]
+        self.total_output_tokens = row["total_output_tokens"]
+        self.compaction_count = row["compaction_count"]
+        self.warned_about_compaction = row["warned_about_compaction"]
+        self.pending_system_warning = row["pending_system_warning"]
 
-    def append_event(self, event: dict[str, Any]) -> None:
-        """Append event to dated JSONL audit trail.
+        # Load messages ordered by ordinal
+        msg_rows = await self._pool.fetch(
+            "SELECT content FROM sessions.messages "
+            "WHERE session_id = $1 ORDER BY ordinal",
+            self.id,
+        )
+        self.messages = [json.loads(r["content"]) for r in msg_rows]
+        _validate_turn_structure(self.messages)
 
-        No fsync — the JSONL is an audit trail, not the recovery mechanism.
-        The state file (_atomic_write) handles durability.
-        """
+        log.info("Resumed session %s (%d messages)", self.id, len(self.messages))
+        return True
+
+    async def save_state(self) -> None:
+        """Persist session state + messages to Postgres."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """UPDATE sessions.sessions SET
+                       model = $2, updated_at = now(),
+                       total_input_tokens = $3, total_output_tokens = $4,
+                       compaction_count = $5, warned_about_compaction = $6,
+                       pending_system_warning = $7
+                       WHERE id = $1""",
+                    self.id, self.model,
+                    self.total_input_tokens, self.total_output_tokens,
+                    self.compaction_count, self.warned_about_compaction,
+                    self.pending_system_warning,
+                )
+                # Replace all messages atomically
+                await conn.execute(
+                    "DELETE FROM sessions.messages WHERE session_id = $1",
+                    self.id,
+                )
+                for i, msg in enumerate(self.messages):
+                    content = {k: v for k, v in msg.items() if not k.startswith("_")}
+                    await conn.execute(
+                        """INSERT INTO sessions.messages
+                           (client_id, agent_id, session_id, role, content, ordinal)
+                           VALUES ($1, $2, $3, $4, $5::jsonb, $6)""",
+                        self._client_id, self._agent_id, self.id,
+                        msg["role"], json.dumps(content, ensure_ascii=False), i,
+                    )
+
+    async def append_event(self, event: dict[str, Any]) -> None:
+        """Append event to sessions.events table."""
         event["timestamp"] = time.time()
         if self.trace_id:
             event["trace_id"] = self.trace_id
-        path = self._dated_jsonl_path()
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        await self._pool.execute(
+            """INSERT INTO sessions.events
+               (client_id, agent_id, session_id, event_type, payload, trace_id)
+               VALUES ($1, $2, $3, $4, $5::jsonb, $6)""",
+            self._client_id, self._agent_id, self.id,
+            event.get("type", "unknown"),
+            json.dumps(event, ensure_ascii=False),
+            event.get("trace_id"),
+        )
 
-    def add_user_message(self, text: str, sender: str = "", source: str = "") -> None:
+    async def add_user_message(self, text: str, sender: str = "", source: str = "") -> None:
         """Add user message to session."""
         user_msg: UserMessage = {"role": "user", "content": text}
         self.messages.append(user_msg)
-        self.append_event({
+        await self.append_event({
             "type": "message", "role": "user", "content": text,
             "from": sender, "source": source,
         })
-        self.save_state()
+        await self.save_state()
 
-    def add_assistant_message(self, msg: AssistantMessage, persist_only: bool = False) -> None:
+    async def add_assistant_message(self, msg: AssistantMessage, persist_only: bool = False) -> None:
         """Add assistant response (from LLMResponse.to_internal_message()).
 
         When persist_only=True, skip appending to self.messages (use when the
@@ -207,11 +214,11 @@ class Session:
         usage = msg.get("usage", {})
         self.total_input_tokens += usage.get("input_tokens", 0)
         self.total_output_tokens += usage.get("output_tokens", 0)
-        self.append_event({"type": "message", **msg})
+        await self.append_event({"type": "message", **msg})
         if not persist_only:
-            self.save_state()
+            await self.save_state()
 
-    def add_tool_results(self, results: list[dict[str, Any]], persist_only: bool = False) -> None:
+    async def add_tool_results(self, results: list[dict[str, Any]], persist_only: bool = False) -> None:
         """Add tool results to session.
 
         When persist_only=True, skip appending to self.messages (use when the
@@ -221,13 +228,13 @@ class Session:
             tr_msg: ToolResultsMessage = {"role": "tool_results", "results": results}
             self.messages.append(tr_msg)
         for r in results:
-            self.append_event({
+            await self.append_event({
                 "type": "tool_result",
                 "tool_use_id": r.get("tool_call_id", ""),
                 "content": _text_from_content(r.get("content", ""))[:AUDIT_TRUNCATION_LIMIT],
             })
         if not persist_only:
-            self.save_state()
+            await self.save_state()
 
     @property
     def last_input_tokens(self) -> int:
@@ -243,87 +250,119 @@ class Session:
 
 
 class SessionManager:
-    """Manages session routing and lifecycle."""
+    """Manages session routing and lifecycle via PostgreSQL."""
 
-    def __init__(self, sessions_dir: Path, agent_name: str = "Assistant"):
-        self.dir = sessions_dir
-        self.dir.mkdir(parents=True, exist_ok=True)
-        self.index_path = self.dir / "sessions.json"
+    def __init__(
+        self,
+        pool: Any,
+        client_id: str,
+        agent_id: str,
+        agent_name: str = "Assistant",
+    ) -> None:
+        self._pool = pool
+        self._client_id = client_id
+        self._agent_id = agent_id
         self.agent_name = agent_name
-        self._index: dict[str, dict[str, Any]] = {}
         self._sessions: dict[str, Session] = {}
         self._on_close_callbacks: list[Callable[..., Any]] = []
-        self._load_index()
 
-    def _load_index(self) -> None:
-        """Load session index mapping contacts to session IDs."""
-        if self.index_path.exists():
-            try:
-                with self.index_path.open(encoding="utf-8") as f:
-                    self._index = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                self._index = {}
+    # ── Public API ───────────────────────────────────────────────
 
-    def _save_index(self) -> None:
-        """Save session index."""
-        _atomic_write(self.index_path, json.dumps(self._index, ensure_ascii=False, indent=2))
+    async def has_session(self, sender: str) -> bool:
+        """Check if a sender has an active session."""
+        if sender in self._sessions:
+            return True
+        row = await self._pool.fetchval(
+            "SELECT 1 FROM sessions.sessions "
+            "WHERE client_id = $1 AND agent_id = $2 AND contact = $3 "
+            "AND closed_at IS NULL",
+            self._client_id, self._agent_id, sender,
+        )
+        return row is not None
 
-    # ── Public API (used by daemon instead of accessing _sessions/_index) ──
-
-    def has_session(self, sender: str) -> bool:
-        """Check if a sender has an active or indexed session."""
-        return sender in self._sessions or sender in self._index
-
-    def list_contacts(self) -> list[str]:
-        """Return list of contacts with indexed sessions."""
-        return list(self._index.keys())
+    async def list_contacts(self) -> list[str]:
+        """Return list of contacts with active sessions."""
+        rows = await self._pool.fetch(
+            "SELECT DISTINCT contact FROM sessions.sessions "
+            "WHERE client_id = $1 AND agent_id = $2 AND closed_at IS NULL",
+            self._client_id, self._agent_id,
+        )
+        return [r["contact"] for r in rows]
 
     def list_sessions(self) -> list[Session]:
         """Return list of currently loaded sessions."""
         return list(self._sessions.values())
 
-    def session_count(self) -> int:
-        """Number of indexed sessions."""
-        return len(self._index)
+    async def session_count(self) -> int:
+        """Number of active sessions."""
+        val = await self._pool.fetchval(
+            "SELECT COUNT(*) FROM sessions.sessions "
+            "WHERE client_id = $1 AND agent_id = $2 AND closed_at IS NULL",
+            self._client_id, self._agent_id,
+        )
+        return val or 0
 
-    def get_index(self) -> dict[str, dict[str, Any]]:
-        """Return a copy of the session index."""
-        return dict(self._index)
+    async def get_index(self) -> dict[str, dict[str, Any]]:
+        """Return session index: contact → {session_id, created_at}."""
+        rows = await self._pool.fetch(
+            "SELECT contact, id, created_at FROM sessions.sessions "
+            "WHERE client_id = $1 AND agent_id = $2 AND closed_at IS NULL",
+            self._client_id, self._agent_id,
+        )
+        return {
+            r["contact"]: {"session_id": r["id"], "created_at": r["created_at"].timestamp()}
+            for r in rows
+        }
 
     def get_loaded(self, contact: str) -> Session | None:
         """Return loaded session for contact, or None if not loaded."""
         return self._sessions.get(contact)
 
-    def save_state(self, session: Session) -> None:
-        """Persist session state to disk."""
-        session.save_state()
+    async def save_state(self, session: Session) -> None:
+        """Persist session state to Postgres."""
+        await session.save_state()
 
-    def get_or_create(self, contact: str, model: str = "") -> Session:
+    async def get_or_create(self, contact: str, model: str = "") -> Session:
         """Get existing session for contact, or create new one."""
         if contact in self._sessions:
             return self._sessions[contact]
 
-        entry = self._index.get(contact, {})
-        session_id = entry.get("session_id", "")
+        # Check for existing active session in DB
+        row = await self._pool.fetchrow(
+            "SELECT id FROM sessions.sessions "
+            "WHERE client_id = $1 AND agent_id = $2 AND contact = $3 "
+            "AND closed_at IS NULL",
+            self._client_id, self._agent_id, contact,
+        )
 
-        if session_id:
-            session = Session(session_id, self.dir, model=model, contact=contact)
-            if session.load():
+        if row:
+            session = Session(
+                row["id"], self._pool, self._client_id, self._agent_id,
+                model=model, contact=contact,
+            )
+            if await session.load():
                 self._sessions[contact] = session
                 return session
 
         # Create new session
         session_id = str(uuid.uuid4())
-        session = Session(session_id, self.dir, model=model, contact=contact)
-        session.append_event({
+        session = Session(
+            session_id, self._pool, self._client_id, self._agent_id,
+            model=model, contact=contact,
+        )
+
+        await self._pool.execute(
+            """INSERT INTO sessions.sessions
+               (id, client_id, agent_id, contact, model)
+               VALUES ($1, $2, $3, $4, $5)""",
+            session_id, self._client_id, self._agent_id, contact, model,
+        )
+
+        await session.append_event({
             "type": "session", "id": session_id, "model": model,
             "contact": contact,
         })
-        self._index[contact] = {
-            "session_id": session_id,
-            "created_at": time.time(),
-        }
-        self._save_index()
+
         self._sessions[contact] = session
         log.info("Created session %s for %s", session_id, contact)
         if metrics.ENABLED:
@@ -334,23 +373,29 @@ class SessionManager:
         """Register a callback for session close.
 
         Callback signature: async def cb(session) or def cb(session).
-        Callbacks fire before archiving — messages still accessible.
+        Callbacks fire before closing — messages still accessible.
         """
         self._on_close_callbacks.append(callback)
 
     async def close_session(self, contact: str) -> bool:
-        """Close and archive the session for a contact. Next message starts fresh."""
+        """Close the session for a contact. Next message starts fresh."""
         session = self._sessions.pop(contact, None)
 
-        entry = self._index.pop(contact, None)
-        if not entry:
+        # Find session in DB
+        row = await self._pool.fetchrow(
+            "SELECT id FROM sessions.sessions "
+            "WHERE client_id = $1 AND agent_id = $2 AND contact = $3 "
+            "AND closed_at IS NULL",
+            self._client_id, self._agent_id, contact,
+        )
+        if not row:
             return False
 
-        session_id = entry["session_id"]
-
-        # Update index FIRST — session disappears from --sessions immediately,
-        # before slow callbacks (consolidation LLM calls) run.
-        self._save_index()
+        # Mark as closed in DB
+        await self._pool.execute(
+            "UPDATE sessions.sessions SET closed_at = now() WHERE id = $1",
+            row["id"],
+        )
 
         # Fire callbacks (consolidation). Session object still valid in memory.
         if session:
@@ -362,20 +407,19 @@ class SessionManager:
                 except Exception:
                     log.exception("on_close callback failed")
 
-        # Archive session files (don't delete — move to .archive/)
-        archive = self.dir / ".archive"
-        archive.mkdir(exist_ok=True)
-        for f in self.dir.glob(f"{session_id}*"):
-            f.rename(archive / f.name)
-
         return True
 
     async def close_session_by_id(self, session_id: str) -> bool:
-        """Close a session by its UUID (linear scan over index)."""
-        for contact, entry in self._index.items():
-            if entry.get("session_id") == session_id:
-                return await self.close_session(contact)
-        return False
+        """Close a session by its UUID."""
+        row = await self._pool.fetchrow(
+            "SELECT contact FROM sessions.sessions "
+            "WHERE id = $1 AND client_id = $2 AND agent_id = $3 "
+            "AND closed_at IS NULL",
+            session_id, self._client_id, self._agent_id,
+        )
+        if not row:
+            return False
+        return await self.close_session(row["contact"])
 
     async def compact_session(
         self,
@@ -396,6 +440,7 @@ class SessionManager:
         """Compact old messages using a summarization model."""
         metering = None
         converter = None
+        provider_name = ""
         currency = "EUR"
         if cost is not None:
             metering = cost.metering
@@ -407,13 +452,8 @@ class SessionManager:
         if len(session.messages) < min_messages:
             return
 
-        # Summarize older messages, keep newest fraction verbatim
         split_point = int(len(session.messages) * (1 - keep_recent_pct))
 
-        # Ensure split doesn't orphan tool_results — each tool_result
-        # needs a matching tool_use in the preceding assistant message.
-        # After compaction, the preceding message is a user (marker), so
-        # any tool_results at the boundary would break the API contract.
         while (split_point < len(session.messages) - 1
                and session.messages[split_point]["role"] == "tool_results"):
             split_point += 1
@@ -421,7 +461,6 @@ class SessionManager:
         old_messages = session.messages[:split_point]
         recent_messages = session.messages[split_point:]
 
-        # Build summary prompt — include tool calls and results for context
         conversation_text = ""
         for msg in old_messages:
             if msg["role"] == "user":
@@ -432,7 +471,6 @@ class SessionManager:
                 text = msg.get("text", "")
                 if text:
                     conversation_text += f"assistant: {text}\n\n"
-                # Include tool calls in compaction context
                 for tc in msg.get("tool_calls", []):
                     tc_name = tc.get("name", "unknown")
                     tc_args = str(tc.get("arguments", {}))[:tool_result_max_chars]
@@ -466,7 +504,7 @@ class SessionManager:
         fmt_messages = provider.format_messages(summary_messages)
 
         try:
-            kwargs = {}
+            kwargs: dict[str, Any] = {}
             if max_tokens > 0:
                 kwargs["max_tokens"] = max_tokens
             response = await provider.complete(fmt_system, fmt_messages, [], **kwargs)
@@ -477,7 +515,7 @@ class SessionManager:
 
         # Record compaction cost
         if metering and cost_rates and response.usage:
-            metering.record(
+            await metering.record(
                 session_id=session.id,
                 model=model_name, provider=provider_name,
                 usage=response.usage, cost_rates=cost_rates,
@@ -502,16 +540,14 @@ class SessionManager:
         ]
         session.messages = prefix + recent_messages
 
-        # Invalidate stale usage — context_tokens no longer reflects
-        # post-compaction state.  Accurate stats resume on next API call.
         for msg in session.messages:
             if msg["role"] == "assistant":
                 msg.pop("usage", None)
 
         session.compaction_count += 1
         session.warned_about_compaction = False
-        session.save_state()
-        session.append_event({
+        await session.save_state()
+        await session.append_event({
             "type": "compaction",
             "summary_tokens": response.usage.output_tokens,
             "removed_messages": len(old_messages),
@@ -525,8 +561,10 @@ class SessionManager:
 # ─── Shared Query Functions ──────────────────────────────────────
 
 
-def build_session_info(
-    sessions_dir: Path,
+async def build_session_info(
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     session_id: str,
     session: Session | None = None,
     max_context_tokens: int = 0,
@@ -535,31 +573,32 @@ def build_session_info(
     """Build enriched session info dict. Used by both CLI and HTTP API.
 
     Returns dict with: session_id, context_tokens, context_pct, cost,
-    message_count, compaction_count, log_files, log_bytes.
+    message_count, compaction_count, event_count.
     """
     info: dict[str, Any] = {"session_id": session_id}
 
-    # Load from live session or state file
     messages: list[Message] = []
     compaction_count = 0
     if session:
         messages = session.messages
         compaction_count = session.compaction_count
     else:
-        state_path = sessions_dir / f"{session_id}.state.json"
-        if state_path.exists():
-            try:
-                with state_path.open(encoding="utf-8") as f:
-                    state = json.load(f)
-                messages = state.get("messages", [])
-                compaction_count = state.get("compaction_count", 0)
-            except (json.JSONDecodeError, OSError):
-                pass
+        row = await pool.fetchrow(
+            "SELECT compaction_count FROM sessions.sessions WHERE id = $1",
+            session_id,
+        )
+        if row:
+            compaction_count = row["compaction_count"]
+        msg_rows = await pool.fetch(
+            "SELECT content FROM sessions.messages "
+            "WHERE session_id = $1 ORDER BY ordinal",
+            session_id,
+        )
+        messages = [json.loads(r["content"]) for r in msg_rows]
 
     info["message_count"] = len(messages)
     info["compaction_count"] = compaction_count
 
-    # Context tokens from last assistant message (normalized by provider)
     context_tokens = 0
     for msg in reversed(messages):
         if msg["role"] == "assistant":
@@ -574,94 +613,68 @@ def build_session_info(
     # Per-session cost
     session_cost = 0.0
     if metering:
-        rows = metering.query(
-            "SELECT SUM(cost) FROM costs WHERE session_id = ?",
-            (session_id,),
+        rows = await metering.query(
+            "SELECT SUM(cost) AS total FROM metering.costs "
+            "WHERE client_id = $1 AND agent_id = $2 AND session_id = $3",
+            client_id, agent_id, session_id,
         )
-        if rows and rows[0][0]:
-            session_cost = rows[0][0]
+        if rows and rows[0]["total"]:
+            session_cost = float(rows[0]["total"])
     info["cost"] = round(session_cost, 6)
 
-    # Log file metadata
-    log_files = sorted(sessions_dir.glob(f"{session_id}.????-??-??.jsonl"))
-    info["log_files"] = len(log_files)
-    info["log_bytes"] = sum(f.stat().st_size for f in log_files)
+    # Event count
+    event_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM sessions.events WHERE session_id = $1",
+        session_id,
+    )
+    info["event_count"] = event_count or 0
 
     return info
 
 
-def read_history_events(
-    sessions_dir: Path,
+async def read_history_events(
+    pool: Any,
     session_id: str,
     full: bool = False,
 ) -> list[dict[str, Any]]:
-    """Read session history from JSONL files.
+    """Read session history from events table.
 
-    Globs active + archive directories. Deduplicates by timestamp.
     When full=False, returns only message events (user + assistant text).
-    When full=True, includes tool calls/results and session metadata.
+    When full=True, includes all events.
     Returns chronological list[dict].
     """
-    archive_dir = sessions_dir / ".archive"
-    all_files: list[Path] = []
+    if full:
+        rows = await pool.fetch(
+            "SELECT payload FROM sessions.events "
+            "WHERE session_id = $1 ORDER BY created_at",
+            session_id,
+        )
+        return [json.loads(r["payload"]) for r in rows]
 
-    # Active session logs
-    all_files.extend(sorted(sessions_dir.glob(f"{session_id}.????-??-??.jsonl")))
-    # Archived session logs
-    if archive_dir.exists():
-        all_files.extend(sorted(archive_dir.glob(f"{session_id}.????-??-??.jsonl")))
-
-    if not all_files:
-        return []
-
-    seen_ts: set[float] = set()
+    # Messages only
+    rows = await pool.fetch(
+        "SELECT payload FROM sessions.events "
+        "WHERE session_id = $1 AND event_type = 'message' "
+        "ORDER BY created_at",
+        session_id,
+    )
     events: list[dict[str, Any]] = []
-
-    for path in all_files:
-        try:
-            with path.open(encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    # Deduplicate by timestamp
-                    ts = event.get("timestamp", 0)
-                    if ts and ts in seen_ts:
-                        continue
-                    if ts:
-                        seen_ts.add(ts)
-
-                    if full:
-                        events.append(event)
-                    else:
-                        etype = event.get("type", "")
-                        if etype == "message":
-                            role = event.get("role", "")
-                            if role == "user":
-                                events.append({
-                                    "type": "message",
-                                    "role": "user",
-                                    "content": _text_from_content(
-                                        event.get("content", ""),
-                                    ),
-                                    "from": event.get("from", ""),
-                                    "timestamp": ts,
-                                })
-                            elif role == "assistant":
-                                events.append({
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "text": event.get("text", ""),
-                                    "timestamp": ts,
-                                })
-        except OSError:
-            continue
-
-    # Sort chronologically
-    events.sort(key=lambda e: e.get("timestamp", 0))
+    for r in rows:
+        event = json.loads(r["payload"])
+        role = event.get("role", "")
+        if role == "user":
+            events.append({
+                "type": "message",
+                "role": "user",
+                "content": _text_from_content(event.get("content", "")),
+                "from": event.get("from", ""),
+                "timestamp": event.get("timestamp", 0),
+            })
+        elif role == "assistant":
+            events.append({
+                "type": "message",
+                "role": "assistant",
+                "text": event.get("text", ""),
+                "timestamp": event.get("timestamp", 0),
+            })
     return events

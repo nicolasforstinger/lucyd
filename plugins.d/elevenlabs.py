@@ -181,7 +181,7 @@ async def tool_tts(text: str, voice_id: str = "",
 
     if _metering and _cost_per_1k_chars > 0:
         cost = len(text) / 1000 * _cost_per_1k_chars
-        _metering.record(
+        await _metering.record(
             session_id="", model=model_id, provider="elevenlabs",
             usage=_ZERO_USAGE, cost_rates=[],
             call_type="tts", cost_override=cost,

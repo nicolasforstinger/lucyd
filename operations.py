@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
 import subprocess
 import time
 import uuid
@@ -32,28 +31,33 @@ log = logging.getLogger("lucyd")
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
-def get_evolution_state(
+async def get_evolution_state(
     file_path: str,
-    conn: sqlite3.Connection,
+    pool: Any,  # asyncpg.Pool — no stubs available
+    client_id: str,
+    agent_id: str,
 ) -> dict[str, Any] | None:
     """Return evolution state for *file_path*, or None if never evolved."""
-    row = conn.execute(
+    row = await pool.fetchrow(
         "SELECT last_evolved_at, content_hash, logs_through "
-        "FROM evolution_state WHERE file_path = ?",
-        (file_path,),
-    ).fetchone()
+        "FROM knowledge.evolution_state "
+        "WHERE client_id = $1 AND agent_id = $2 AND file_path = $3",
+        client_id, agent_id, file_path,
+    )
     if row is None:
         return None
     return {
-        "last_evolved_at": row[0],
-        "content_hash": row[1],
-        "logs_through": row[2],
+        "last_evolved_at": row["last_evolved_at"],
+        "content_hash": row["content_hash"],
+        "logs_through": row["logs_through"],
     }
 
 
-def check_new_logs_exist(
+async def check_new_logs_exist(
     workspace: Path,
-    conn: sqlite3.Connection,
+    pool: Any,  # asyncpg.Pool — no stubs available
+    client_id: str,
+    agent_id: str,
     reference_file: str = "MEMORY.md",
 ) -> tuple[bool, str]:
     """Check whether new daily logs exist since the last evolution.
@@ -64,7 +68,7 @@ def check_new_logs_exist(
     Returns ``(has_new_logs, since_date)`` where *since_date* is the
     ``logs_through`` value (empty string if never evolved).
     """
-    state = get_evolution_state(reference_file, conn)
+    state = await get_evolution_state(reference_file, pool, client_id, agent_id)
     since_date = state["logs_through"] if state else ""
 
     memory_dir = workspace / "memory"
@@ -143,7 +147,9 @@ def validate_evolution(config: Config) -> bool:
 async def consolidate_on_close(
     session: Any,
     config: Config,
-    get_memory_conn: Callable[[], Any],
+    pool: Any,  # asyncpg.Pool — no stubs available
+    client_id: str,
+    agent_id: str,
     get_provider: Callable[[str], Any],
     context_builder: ContextBuilder,
     metering_db: MeteringDB | None,
@@ -151,9 +157,9 @@ async def consolidate_on_close(
     """Consolidation callback fired before session archival."""
     try:
         import consolidation
-        conn = get_memory_conn()
-        start_idx, end_idx = consolidation.get_unprocessed_range(
-            session.id, session.messages, session.compaction_count, conn,
+        start_idx, end_idx = await consolidation.get_unprocessed_range(
+            session.id, session.messages, session.compaction_count,
+            pool, client_id, agent_id,
         )
         if end_idx > start_idx:
             await consolidation.consolidate_session(
@@ -163,7 +169,9 @@ async def consolidate_on_close(
                 config=config,
                 provider=get_provider("consolidation"),
                 context_builder=context_builder,
-                conn=conn,
+                pool=pool,
+                client_id=client_id,
+                agent_id=agent_id,
                 metering=metering_db,
             )
     except Exception:
@@ -177,20 +185,20 @@ async def handle_evolve(
     *,
     force: bool,
     config: Config,
-    get_memory_conn: Callable[[], Any],
+    pool: Any,  # asyncpg.Pool — no stubs available
+    client_id: str,
+    agent_id: str,
     queue: Any,
     set_rollback_tag: Callable[[str], None],
 ) -> dict[str, Any]:
     """Handle evolution request — snapshot, push to queue, validate after."""
     if not force:
         try:
-            db_path = config.memory_db
-            workspace = config.workspace
-            if db_path and Path(db_path).exists():
-                conn = get_memory_conn()
-                has_new, since_date = check_new_logs_exist(workspace, conn)
-                if not has_new:
-                    return {"status": "skipped", "reason": f"no new daily logs since {since_date or 'ever'}"}
+            has_new, since_date = await check_new_logs_exist(
+                config.workspace, pool, client_id, agent_id,
+            )
+            if not has_new:
+                return {"status": "skipped", "reason": f"no new daily logs since {since_date or 'ever'}"}
         except Exception:
             log.warning("Evolution pre-check failed, proceeding anyway", exc_info=True)
 
@@ -217,12 +225,14 @@ async def handle_evolve(
 
 async def handle_index(
     config: Config,
+    pool: Any,  # asyncpg.Pool — no stubs available
+    client_id: str,
+    agent_id: str,
     full: bool = False,
     metering: Any = None,
     converter: Any = None,
 ) -> dict[str, Any]:
-    """Run workspace indexing in a blocking thread."""
-    from async_utils import run_blocking
+    """Run workspace indexing."""
     from tools.indexer import configure as indexer_configure
     from tools.indexer import index_workspace
 
@@ -238,22 +248,27 @@ async def handle_index(
         currency=config.embedding_currency,
     )
 
-    summary: dict[str, Any] = await run_blocking(
-        index_workspace,
+    summary: dict[str, Any] = await index_workspace(
         workspace=config.workspace,
-        db_path=config.memory_db,
+        pool=pool,
+        client_id=client_id,
+        agent_id=agent_id,
         api_key=config.embedding_api_key,
         force=full,
         embedding_timeout=config.embedding_timeout,
-        sqlite_timeout=config.sqlite_timeout,
     )
     return summary
 
 
-def handle_index_status(config: Config) -> dict[str, Any]:
+async def handle_index_status(
+    config: Config,
+    pool: Any,  # asyncpg.Pool — no stubs available
+    client_id: str,
+    agent_id: str,
+) -> dict[str, Any]:
     """Return workspace index status."""
     from tools.indexer import get_index_status
-    return get_index_status(config.memory_db, config.workspace)
+    return await get_index_status(pool, client_id, agent_id, config.workspace)
 
 
 # ─── Consolidation ──────────────────────────────────────────────
@@ -261,13 +276,14 @@ def handle_index_status(config: Config) -> dict[str, Any]:
 
 async def handle_consolidate(
     config: Config,
-    get_memory_conn: Callable[[], Any],
+    pool: Any,  # asyncpg.Pool — no stubs available
+    client_id: str,
+    agent_id: str,
     get_provider: Callable[[str], Any],
     metering_db: MeteringDB | None,
     converter: Any = None,
 ) -> dict[str, Any]:
     """Run memory consolidation — extract facts from workspace files."""
-    conn = get_memory_conn()
     from consolidation import extract_from_file
     from tools.indexer import scan_workspace
 
@@ -288,7 +304,7 @@ async def handle_consolidate(
     for rel_path, abs_path in file_list:
         try:
             count = await extract_from_file(
-                str(abs_path), provider, conn,
+                str(abs_path), provider, pool, client_id, agent_id,
                 config.consolidation_confidence_threshold,
                 model_name=model_name,
                 cost_rates=cost_rates,
@@ -312,22 +328,20 @@ async def handle_consolidate(
 
 async def handle_maintain(
     config: Config,
-    get_memory_conn: Callable[[], Any],
+    pool: Any,  # asyncpg.Pool — no stubs available
+    client_id: str,
+    agent_id: str,
     metering_db: MeteringDB | None,
 ) -> dict[str, Any]:
     """Run memory maintenance + metering retention."""
-    from async_utils import run_blocking
     from memory import run_maintenance
 
-    conn = get_memory_conn()
-
-    def _run() -> dict[str, Any]:
-        return run_maintenance(conn, config.maintenance_stale_threshold_days)
-
-    stats: dict[str, Any] = await run_blocking(_run)
+    stats: dict[str, Any] = await run_maintenance(
+        pool, client_id, agent_id, config.maintenance_stale_threshold_days,
+    )
 
     if metering_db:
-        stats["metering_deleted"] = metering_db.enforce_retention(
+        stats["metering_deleted"] = await metering_db.enforce_retention(
             config.metering_retention_months,
         )
     else:

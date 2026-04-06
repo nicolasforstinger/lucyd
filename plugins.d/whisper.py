@@ -196,7 +196,7 @@ async def _transcribe_openai(file_path: str, content_type: str) -> str:
 
     if _metering and _cost_per_minute > 0 and duration_seconds > 0:
         cost = (duration_seconds / 60) * _cost_per_minute
-        _metering.record(
+        await _metering.record(
             session_id="", model=_model, provider="openai",
             usage=_ZERO_USAGE, cost_rates=[],
             call_type="transcription", cost_override=cost,

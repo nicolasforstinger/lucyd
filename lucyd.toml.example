@@ -12,6 +12,8 @@
 [agent]
 name = "YourAgent"                                             # REQUIRED — agent display name
 workspace = "~/.lucyd/workspace"                               # REQUIRED — workspace root for context files
+# client_id = "your-org"                                       # Tenant identifier — shared across agents for the same client
+# id = ""                                                      # Agent identifier for metering ("" = use agent name)
 
 # Context files are injected into the system prompt and consume the model's context window.
 # Stable + semi-stable + tool schemas + recall = system prompt size. The remainder is available
@@ -51,10 +53,18 @@ rate_window = 60                                           # Rate limit window (
 status_rate_limit = 60                                     # Max /status requests per rate_window
 # max_attachment_bytes = 52428800                              # Max attachment size (50 MB)
 
+# ─── Database (REQUIRED) ─────────────────────────────────────────
+# PostgreSQL connection. Requires pgvector/pgvector:pg17 image (Postgres 17 + pgvector).
+# Schema applied automatically on startup via schema/ SQL files.
+
+[database]
+url_env = "LUCYD_DATABASE_URL"                             # Env var containing postgres://user:pass@host:5432/lucyd
+pool_min = 2                                               # Minimum connections in pool
+pool_max = 10                                              # Maximum connections in pool
+
 # ─── Memory ──────────────────────────────────────────────────────
 
 [memory]
-db = "~/.lucyd/memory/main.sqlite"
 search_top_k = 10                                          # Default result limit for memory searches
 embedding_timeout = 15                                     # Embedding API request timeout (seconds)
 vector_search_limit = 10000                                # Raw DB query cap for vector search
@@ -161,7 +171,6 @@ api_retries = 2                                            # API-level retries f
 api_retry_base_delay = 2.0                                 # Initial backoff delay for API retries (seconds)
 message_retries = 2                                        # Message-level retries on persistent failure
 message_retry_base_delay = 30                              # Base delay between message retries (seconds)
-sqlite_timeout = 30                                        # SQLite connection timeout (seconds) for all DBs
 notify_target = ""                                        # Route notifications to this sender's session ("" = disabled)
 # max_context_for_tools = 0                                  # Inject wrap-up hint when context exceeds this during tool use (0 = disabled, auto-set by local profiles)
 # thinking_concise_hint = false                              # Inject "respond concisely" hint after tool results to reduce thinking overhead
@@ -194,13 +203,7 @@ suppress = ["httpx", "httpcore", "anthropic", "openai"]    # Third-party loggers
 [paths]
 # data_dir = "/data"                                            # Root data directory (env: LUCYD_DATA_DIR). Docker default: /data, local: derived from state_dir.
 state_dir = "~/.lucyd"
-sessions_dir = "~/.lucyd/sessions"
-# metering_db = "~/.lucyd/metering.db"                          # Metering DB (default: $data_dir/metering.db)
 log_file = "~/.lucyd/lucyd.log"
-
-# ─── Agent Identity (OPTIONAL) ────────────────────────────────────
-# [agent]
-# id = ""                                                      # Agent identifier for metering ("" = use agent name)
 
 # ─── Metering (OPTIONAL) ──────────────────────────────────────────
 # [metering]

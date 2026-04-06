@@ -120,7 +120,6 @@ def _make_config(tmp_path, **overrides):
                    },
         "behavior": {
             "silent_tokens": ["NO_REPLY"], "typing_indicators": True,
-            "error_message": "connection error", "sqlite_timeout": 30,
             "api_retries": 2, "api_retry_base_delay": 2.0,
             "message_retries": 2, "message_retry_base_delay": 30.0,
             "agent_timeout_seconds": 600,
@@ -1098,7 +1097,6 @@ class TestMessageLoopDebounce:
         daemon.config.message_retries = 0
         daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
-        daemon.config.sqlite_timeout = 30
         daemon.config.notify_target = ""
         # Very short debounce for fast tests
         daemon.config.debounce_ms = 50

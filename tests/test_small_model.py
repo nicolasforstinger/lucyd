@@ -302,7 +302,6 @@ class TestAgenticLoopEfficiency:
                 timeout=60,
                 api_retries=0,
                 api_retry_base_delay=0,
-                sqlite_timeout=30,
                 max_context_for_tools=15000,  # lower than the 20k tokens
             ),
         )
@@ -356,7 +355,6 @@ class TestAgenticLoopEfficiency:
                 timeout=60,
                 api_retries=0,
                 api_retry_base_delay=0,
-                sqlite_timeout=30,
                 tool_call_retry=True,
             ),
         )

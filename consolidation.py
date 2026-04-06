@@ -2,16 +2,14 @@
 
 Extracts facts (entity-attribute-value), episodes (narrative summaries),
 and commitments (trackable promises) from session transcripts. Stores
-in SQLite tables managed by memory_schema.py.
+in PostgreSQL knowledge schema tables.
 """
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -27,16 +25,17 @@ MAX_EXTRACTION_CHARS = 50_000  # ~12k tokens; configurable via [memory.consolida
 
 # ─── State Tracking ─────────────────────────────────────────────
 
-def get_unprocessed_range(
+async def get_unprocessed_range(
     session_id: str,
     messages: list[Message],
     compaction_count: int,
-    conn: sqlite3.Connection,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
 ) -> tuple[int, int]:
     """Return (start_idx, end_idx) of messages needing consolidation.
 
-    Uses consolidation_state with composite PK (session_id, compaction_count).
-    Queries the latest row for this session to determine what's been processed.
+    Uses consolidation_state to determine what's been processed.
 
     Handles all lifecycle states:
     - First run: process everything
@@ -44,42 +43,48 @@ def get_unprocessed_range(
     - Post-compaction: skip summary message (index 0), process rest
     - No new content: return (0, 0)
     """
-    state = conn.execute(
+    state = await pool.fetchrow(
         "SELECT last_compaction_count, last_message_count "
-        "FROM consolidation_state WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
+        "FROM knowledge.consolidation_state "
+        "WHERE client_id = $1 AND agent_id = $2 AND session_id = $3",
+        client_id, agent_id, session_id,
+    )
 
     if state is None:
         return (0, len(messages))
 
-    last_compaction = state[0]
-    last_end = state[1]
+    last_compaction = state["last_compaction_count"]
+    last_end = state["last_message_count"]
 
     if compaction_count > last_compaction:
-        # Compaction happened since last consolidation.
-        # Index 0 is the summary of already-processed content. Skip it.
         return (1, len(messages))
 
     if len(messages) > last_end:
-        # New messages since last consolidation.
         return (last_end, len(messages))
 
-    # Nothing new.
     return (0, 0)
 
 
-def update_consolidation_state(
+async def update_consolidation_state(
     session_id: str,
     compaction_count: int,
     message_count: int,
-    conn: sqlite3.Connection,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
 ) -> None:
-    conn.execute("""
-        INSERT OR REPLACE INTO consolidation_state
-            (session_id, last_compaction_count, last_message_count, last_consolidated_at)
-        VALUES (?, ?, ?, datetime('now'))
-    """, (session_id, compaction_count, message_count))
+    await pool.execute(
+        """INSERT INTO knowledge.consolidation_state
+           (client_id, agent_id, session_id,
+            last_compaction_count, last_message_count, last_consolidated_at)
+           VALUES ($1, $2, $3, $4, $5, now())
+           ON CONFLICT (client_id, agent_id, session_id)
+           DO UPDATE SET last_compaction_count = EXCLUDED.last_compaction_count,
+                         last_message_count = EXCLUDED.last_message_count,
+                         last_consolidated_at = now()""",
+        client_id, agent_id, session_id,
+        compaction_count, message_count,
+    )
 
 
 # ─── Message Serializer ─────────────────────────────────────────
@@ -88,45 +93,34 @@ def serialize_messages(
     messages: list[Message],
     start_idx: int,
     end_idx: int,
-    max_tool_output: int = 2000,
-    max_chars: int = MAX_EXTRACTION_CHARS,
+    max_chars: int = 50_000,
 ) -> str:
-    """Serialize a range of session messages to text for extraction.
+    """Convert messages to a text block for LLM extraction.
 
-    If total output exceeds max_chars, drops oldest messages in the
-    range (keeping most recent).
+    Keeps only user and assistant text content (no tool results),
+    and respects a character budget.
     """
-    if start_idx >= end_idx or start_idx >= len(messages):
-        return ""
-
-    parts = []
+    parts: list[str] = []
+    chars = 0
     for msg in messages[start_idx:end_idx]:
-        if msg["role"] == "user":
-            content = _text_from_content(msg["content"])
-            parts.append(f"Human: {content}")
-        elif msg["role"] == "assistant":
+        role = msg.get("role", "")
+        if role not in ("user", "assistant"):
+            continue
+        if role == "assistant":
             text = msg.get("text", "")
-            if text:
-                parts.append(f"Assistant: {text}")
-            for tc in msg.get("tool_calls", []):
-                tc_name = tc.get("name", "unknown")
-                tc_args = str(tc.get("arguments", {}))[:max_tool_output]
-                parts.append(f"Tool call: {tc_name}({tc_args})")
-        elif msg["role"] == "tool_results":
-            for r in msg["results"]:
-                content = r.get("content", "")[:max_tool_output]
-                parts.append(f"Tool result: {content}")
-
-    if not parts:
-        return ""
-
-    # If over budget, drop oldest messages first (keep most recent)
-    result = "\n\n".join(parts)
-    while len(result) > max_chars and len(parts) > 1:
-        parts.pop(0)
-        result = "\n\n".join(parts)
-
-    return result
+        else:
+            text = _text_from_content(msg.get("content", ""))
+        if not text:
+            continue
+        line = f"{role}: {text}"
+        if chars + len(line) > max_chars:
+            remaining = max_chars - chars
+            if remaining > 100:
+                parts.append(line[:remaining])
+            break
+        parts.append(line)
+        chars += len(line)
+    return "\n".join(parts)
 
 
 # ─── Shared Helpers ──────────────────────────────────────────────
@@ -135,11 +129,13 @@ def _normalize_entity(name: str) -> str:
     return name.lower().strip().replace(" ", "_")
 
 
-def upsert_fact(
+async def upsert_fact(
     entity: str,
     attribute: str,
     value: str,
-    conn: sqlite3.Connection,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     confidence: float = 1.0,
     source_session: str = "",
 ) -> str:
@@ -149,28 +145,30 @@ def upsert_fact(
     Handles dedup, invalidation-on-change, and accessed_at touch.
     Caller must normalize entity/attribute and resolve aliases beforehand.
     """
-    existing = conn.execute(
-        "SELECT id, value FROM facts WHERE entity = ? "
-        "AND attribute = ? AND invalidated_at IS NULL",
-        (entity, attribute),
-    ).fetchone()
+    existing = await pool.fetchrow(
+        "SELECT id, value FROM knowledge.facts "
+        "WHERE client_id = $1 AND agent_id = $2 "
+        "AND entity = $3 AND attribute = $4 AND invalidated_at IS NULL",
+        client_id, agent_id, entity, attribute,
+    )
 
     if existing:
-        if existing[1] == value:
-            conn.execute(
-                "UPDATE facts SET accessed_at = datetime('now') WHERE id = ?",
-                (existing[0],),
+        if existing["value"] == value:
+            await pool.execute(
+                "UPDATE knowledge.facts SET accessed_at = now() WHERE id = $1",
+                existing["id"],
             )
             return "unchanged"
-        conn.execute(
-            "UPDATE facts SET invalidated_at = datetime('now') WHERE id = ?",
-            (existing[0],),
+        await pool.execute(
+            "UPDATE knowledge.facts SET invalidated_at = now() WHERE id = $1",
+            existing["id"],
         )
 
-    conn.execute(
-        "INSERT INTO facts (entity, attribute, value, confidence, source_session) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (entity, attribute, value, confidence, source_session),
+    await pool.execute(
+        "INSERT INTO knowledge.facts "
+        "(client_id, agent_id, entity, attribute, value, confidence, source_session) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        client_id, agent_id, entity, attribute, value, confidence, source_session,
     )
     return "updated" if existing else "new"
 
@@ -187,10 +185,12 @@ def _strip_json_fences(text: str) -> str:
     return text.strip()
 
 
-def _store_facts(
+async def _store_facts(
     data: dict[str, Any],
     session_id: str,
-    conn: sqlite3.Connection,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     confidence_threshold: float,
 ) -> int:
     """Store extracted facts and aliases in DB. Returns count of new/updated facts."""
@@ -200,9 +200,12 @@ def _store_facts(
         alias = _normalize_entity(alias_entry.get("alias", ""))
         canonical = _normalize_entity(alias_entry.get("canonical", ""))
         if alias and canonical and alias != canonical:
-            conn.execute(
-                "INSERT OR IGNORE INTO entity_aliases (alias, canonical) VALUES (?, ?)",
-                (alias, canonical),
+            await pool.execute(
+                """INSERT INTO knowledge.entity_aliases
+                   (client_id, agent_id, alias, canonical)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (client_id, agent_id, alias) DO NOTHING""",
+                client_id, agent_id, alias, canonical,
             )
 
     count = 0
@@ -218,10 +221,12 @@ def _store_facts(
             continue
 
         from memory import resolve_entity
-        entity = resolve_entity(entity, conn)
+        entity = await resolve_entity(entity, pool, client_id, agent_id)
 
-        result = upsert_fact(entity, attribute, value, conn,
-                             confidence=confidence, source_session=session_id)
+        result = await upsert_fact(
+            entity, attribute, value, pool, client_id, agent_id,
+            confidence=confidence, source_session=session_id,
+        )
         if result != "unchanged":
             count += 1
 
@@ -230,10 +235,12 @@ def _store_facts(
     return count
 
 
-def _store_episode(
+async def _store_episode(
     data: dict[str, Any],
     session_id: str,
-    conn: sqlite3.Connection,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
 ) -> int | None:
     """Store extracted episode in DB. Returns episode ID or None."""
     episode = data.get("episode", {})
@@ -243,7 +250,6 @@ def _store_episode(
     summary = episode.get("summary", "")
     emotional_tone = episode.get("emotional_tone", "")
 
-    # Skip trivial episodes
     if (not topics and not decisions and not commitments
             and emotional_tone == "neutral"):
         return None
@@ -251,19 +257,16 @@ def _store_episode(
     if not summary:
         return None
 
-    cursor = conn.execute(
-        "INSERT INTO episodes (session_id, topics, decisions, commitments, "
-        "summary, emotional_tone) VALUES (?, ?, ?, ?, ?, ?)",
-        (
-            session_id,
-            json.dumps(topics),
-            json.dumps(decisions),
-            json.dumps(commitments),
-            summary,
-            emotional_tone,
-        ),
+    episode_id: int | None = await pool.fetchval(
+        """INSERT INTO knowledge.episodes
+           (client_id, agent_id, session_id, topics, decisions,
+            commitments, summary, emotional_tone)
+           VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8)
+           RETURNING id""",
+        client_id, agent_id, session_id,
+        json.dumps(topics), json.dumps(decisions),
+        json.dumps(commitments), summary, emotional_tone,
     )
-    episode_id = cursor.lastrowid
     if metrics.ENABLED:
         metrics.MEMORY_OPS_TOTAL.labels(operation="episode_created").inc()
 
@@ -274,10 +277,11 @@ def _store_episode(
         if deadline == "null":
             deadline = None
         if who and what:
-            conn.execute(
-                "INSERT INTO commitments (episode_id, who, what, deadline) "
-                "VALUES (?, ?, ?, ?)",
-                (episode_id, who, what, deadline),
+            await pool.execute(
+                "INSERT INTO knowledge.commitments "
+                "(client_id, agent_id, episode_id, who, what, deadline) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                client_id, agent_id, episode_id, who, what, deadline,
             )
 
     return episode_id
@@ -357,7 +361,9 @@ async def extract_facts(
     text: str,
     session_id: str,
     provider: Any,
-    conn: sqlite3.Connection,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     confidence_threshold: float = 0.6,
 ) -> tuple[int, Any]:
     """Extract facts from text and store in DB (facts-only path for files).
@@ -369,7 +375,7 @@ async def extract_facts(
     if data is None:
         return 0, usage
 
-    count = _store_facts(data, session_id, conn, confidence_threshold)
+    count = await _store_facts(data, session_id, pool, client_id, agent_id, confidence_threshold)
     return count, usage
 
 
@@ -421,7 +427,9 @@ async def extract_structured_data(
     session_id: str,
     provider: Any,
     system_blocks: list[dict[str, str]],
-    conn: sqlite3.Connection,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     confidence_threshold: float = 0.6,
 ) -> tuple[int, int | None, Any]:
     """Extract facts and episode from text in a single LLM call.
@@ -440,16 +448,15 @@ async def extract_structured_data(
     if data is None:
         return 0, None, usage
 
-    facts_added = _store_facts(data, session_id, conn, confidence_threshold)
-    episode_id = _store_episode(data, session_id, conn)
+    facts_added = await _store_facts(data, session_id, pool, client_id, agent_id, confidence_threshold)
+    episode_id = await _store_episode(data, session_id, pool, client_id, agent_id)
 
     return facts_added, episode_id, usage
 
 
-
 # ─── Cost Recording ──────────────────────────────────────────────
 
-def _record_extraction_cost(
+async def _record_extraction_cost(
     usage: Any,
     *,
     metering: Any = None,
@@ -464,7 +471,7 @@ def _record_extraction_cost(
     if not usage or not cost_rates:
         return
     if metering:
-        metering.record(
+        await metering.record(
             session_id=session_id,
             model=model_name, provider="",
             usage=usage, cost_rates=cost_rates,
@@ -482,7 +489,9 @@ async def consolidate_session(
     config: Any,
     provider: Any,
     context_builder: Any,
-    conn: sqlite3.Connection,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     trace_id: str = "",
     metering: Any = None,
     converter: Any = None,
@@ -492,8 +501,8 @@ async def consolidate_session(
     Uses a single LLM call to extract both facts and episode.
     Returns {"facts_added": int, "episode_id": int | None}
     """
-    start_idx, end_idx = get_unprocessed_range(
-        session_id, messages, compaction_count, conn,
+    start_idx, end_idx = await get_unprocessed_range(
+        session_id, messages, compaction_count, pool, client_id, agent_id,
     )
     if end_idx <= start_idx:
         return {"facts_added": 0, "episode_id": None}
@@ -508,32 +517,27 @@ async def consolidate_session(
 
     threshold = getattr(config, "consolidation_confidence_threshold", 0.6)
 
-    try:
-        persona_blocks = context_builder.build_stable()
-        _cons_start = time.time()
-        facts_added, episode_id, usage = await extract_structured_data(
-            text, session_id, provider, persona_blocks, conn, threshold,
-        )
-        if metrics.ENABLED:
-            metrics.CONSOLIDATION_DURATION.observe(time.time() - _cons_start)
+    persona_blocks = context_builder.build_stable()
+    _cons_start = time.time()
+    facts_added, episode_id, usage = await extract_structured_data(
+        text, session_id, provider, persona_blocks,
+        pool, client_id, agent_id, threshold,
+    )
+    if metrics.ENABLED:
+        metrics.CONSOLIDATION_DURATION.observe(time.time() - _cons_start)
 
-        update_consolidation_state(
-            session_id, compaction_count, len(messages), conn,
-        )
+    await update_consolidation_state(
+        session_id, compaction_count, len(messages),
+        pool, client_id, agent_id,
+    )
 
-        conn.commit()
-    except Exception:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        raise
-
-    # Record consolidation cost (after commit — non-critical)
+    # Record consolidation cost (non-critical)
     model_role = "primary"
     model_cfg = config.model_config(model_role) if hasattr(config, "model_config") else {}
     cost_rates = model_cfg.get("cost_per_mtok")
     display_name = model_cfg.get("model", model_role)
     currency = model_cfg.get("currency", "EUR")
-    _record_extraction_cost(
+    await _record_extraction_cost(
         usage, metering=metering, session_id=session_id,
         model_name=display_name, cost_rates=cost_rates, trace_id=trace_id,
         converter=converter, currency=currency,
@@ -547,7 +551,9 @@ async def consolidate_session(
 async def extract_from_file(
     file_path: str,
     provider: Any,
-    conn: sqlite3.Connection,
+    pool: Any,
+    client_id: str,
+    agent_id: str,
     confidence_threshold: float = 0.6,
     model_name: str = "",
     cost_rates: list[float] | None = None,
@@ -570,32 +576,31 @@ async def extract_from_file(
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     # Check if already processed this version
-    existing = conn.execute(
-        "SELECT content_hash FROM consolidation_file_hashes WHERE file_path = ?",
-        (file_path,),
-    ).fetchone()
+    existing = await pool.fetchrow(
+        "SELECT content_hash FROM knowledge.consolidation_file_hashes "
+        "WHERE client_id = $1 AND agent_id = $2 AND file_path = $3",
+        client_id, agent_id, file_path,
+    )
 
-    if existing and existing[0] == content_hash:
+    if existing and existing["content_hash"] == content_hash:
         return 0
 
-    try:
-        count, usage = await extract_facts(
-            content, f"file:{file_path}", provider, conn, confidence_threshold,
-        )
+    count, usage = await extract_facts(
+        content, f"file:{file_path}", provider,
+        pool, client_id, agent_id, confidence_threshold,
+    )
 
-        conn.execute(
-            "INSERT OR REPLACE INTO consolidation_file_hashes "
-            "(file_path, content_hash, last_processed_at) "
-            "VALUES (?, ?, datetime('now'))",
-            (file_path, content_hash),
-        )
-        conn.commit()
-    except Exception:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        raise
+    await pool.execute(
+        """INSERT INTO knowledge.consolidation_file_hashes
+           (client_id, agent_id, file_path, content_hash, last_processed_at)
+           VALUES ($1, $2, $3, $4, now())
+           ON CONFLICT (client_id, agent_id, file_path)
+           DO UPDATE SET content_hash = EXCLUDED.content_hash,
+                         last_processed_at = now()""",
+        client_id, agent_id, file_path, content_hash,
+    )
 
-    _record_extraction_cost(
+    await _record_extraction_cost(
         usage, metering=metering,
         session_id=f"file:{file_path}",
         model_name=model_name, cost_rates=cost_rates,

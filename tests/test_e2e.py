@@ -82,7 +82,6 @@ def _make_e2e_config(tmp_path: Path) -> Config:
                     "jpeg_quality_steps": [85, 60, 40]},
         "behavior": {
             "silent_tokens": [], "typing_indicators": False,
-            "error_message": "error", "sqlite_timeout": 5,
             "api_retries": 0, "api_retry_base_delay": 0,
             "message_retries": 0, "message_retry_base_delay": 0,
             "agent_timeout_seconds": 30,

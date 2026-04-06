@@ -101,7 +101,6 @@ def _make_config(tmp_path, **overrides):
                    },
         "behavior": {
             "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error", "debounce_ms": 500,
-            "sqlite_timeout": 30,
             "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
             "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
@@ -207,10 +206,8 @@ def _make_daemon(tmp_path):
     daemon.config.agent_name = "TestAgent"
     daemon.config.consolidation_enabled = False
     daemon.config.notify_target = ""
-    daemon.config.sqlite_timeout = 30
 
-    from metering import MeteringDB
-    daemon.metering_db = MeteringDB(str(tmp_path / "metering.db"))
+    daemon.metering_db = None
 
     return daemon, provider, session
 

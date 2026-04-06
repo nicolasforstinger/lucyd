@@ -195,7 +195,6 @@ async def tool_sessions_spawn(
             timeout=timeout,
             api_retries=_config.api_retries,
             api_retry_base_delay=_config.api_retry_base_delay,
-            sqlite_timeout=_config.sqlite_timeout,
         )
         response = await run_agentic_loop(
             provider=provider,

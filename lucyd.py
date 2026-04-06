@@ -16,7 +16,6 @@ import logging.handlers
 import os
 import re
 import signal
-import sqlite3
 import sys
 import time
 import uuid
@@ -26,6 +25,7 @@ from typing import Any
 # Add lucyd directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
+import db as lucyd_db
 from config import Config, ConfigError, load_config
 from context import ContextBuilder
 from log_utils import _log_safe
@@ -108,7 +108,7 @@ class LucydDaemon:
         self.skill_loader: SkillLoader | None = None
         self.tool_registry: ToolRegistry = None  # type: ignore[assignment]  # set in _init_tools
         self._http_api: Any = None
-        self._memory_conn: Any = None
+        self.pool: Any = None  # asyncpg.Pool — set in run()
         self.metering_db: Any = None
         self.converter: Any = None
         self._evolve_rollback_tag: str | None = None
@@ -208,7 +208,9 @@ class LucydDaemon:
 
     def _init_sessions(self) -> None:
         self.session_mgr = SessionManager(
-            self.config.sessions_dir,
+            pool=self.pool,
+            client_id=self.config.client_id or self.config.agent_name,
+            agent_id=self.config.agent_id or self.config.agent_name,
             agent_name=self.config.agent_name,
         )
 
@@ -248,14 +250,17 @@ class LucydDaemon:
 
         # Shared resources — created once, passed to modules that need them
         memory = None
-        conn = None
-        if self.config.memory_db and (enabled & {
+        client_id = self.config.client_id or self.config.agent_name
+        agent_id = self.config.agent_id or self.config.agent_name
+        if self.pool and (enabled & {
             "memory_search", "memory_get",
             "memory_write", "memory_forget", "commitment_update",
         }):
             from memory import MemoryInterface
             memory = MemoryInterface(
-                db_path=str(Path(self.config.memory_db).expanduser()),
+                pool=self.pool,
+                client_id=client_id,
+                agent_id=agent_id,
                 embedding_api_key=self.config.embedding_api_key,
                 embedding_model=self.config.embedding_model,
                 embedding_base_url=self.config.embedding_base_url,
@@ -265,15 +270,12 @@ class LucydDaemon:
                 top_k=self.config.memory_top_k,
                 vector_search_limit=self.config.vector_search_limit,
                 fts_min_results=self.config.fts_min_results,
-                sqlite_timeout=self.config.sqlite_timeout,
             )
             # Wire metering + conversion for embedding cost tracking
             if self.metering_db:
                 memory.metering = self.metering_db
             if self.converter:
                 memory.converter = self.converter
-            if self.config.consolidation_enabled:
-                conn = self._get_memory_conn()
 
         # Dependency dict — configure() pulls what it needs by parameter name
         deps = {
@@ -284,7 +286,9 @@ class LucydDaemon:
             "tool_registry": self.tool_registry,
             "skill_loader": self.skill_loader,
             "memory": memory,
-            "conn": conn,
+            "pool": self.pool,
+            "client_id": client_id,
+            "agent_id": agent_id,
             "get_provider": self.get_provider,
             "session_getter": lambda: self.pipeline.current_session if self.pipeline else None,
             "start_time": self.start_time,
@@ -362,23 +366,9 @@ class LucydDaemon:
             log.info("Registered preprocessors: %s",
                      ", ".join(pp["name"] for pp in self._preprocessors))
 
-    def _get_memory_conn(self) -> Any:
-        """Get or create the memory DB connection.
-
-        Connection is created once and reused for the daemon's lifetime.
-        Uses WAL mode and Row factory.
-        """
-        if self._memory_conn is None:
-            import sqlite3
-
-            from memory_schema import ensure_schema
-            self._memory_conn = sqlite3.connect(
-                self.config.memory_db, timeout=self.config.sqlite_timeout,
-            )
-            self._memory_conn.execute("PRAGMA journal_mode=WAL")
-            self._memory_conn.row_factory = sqlite3.Row
-            ensure_schema(self._memory_conn)
-        return self._memory_conn
+    def _get_pool(self) -> Any:
+        """Return the asyncpg connection pool."""
+        return self.pool
 
     def _init_context(self) -> None:
         self.context_builder = ContextBuilder(
@@ -397,12 +387,10 @@ class LucydDaemon:
 
     def _init_metering(self) -> None:
         """Initialize metering DB."""
-        metering_path = str(self.config.metering_db)
-        agent_id = self.config.agent_id or self.config.agent_name
-
         self.metering_db = MeteringDB(
-            metering_path, agent_id=agent_id,
-            sqlite_timeout=self.config.sqlite_timeout,
+            pool=self.pool,
+            client_id=self.config.client_id or self.config.agent_name,
+            agent_id=self.config.agent_id or self.config.agent_name,
         )
 
     def _init_conversion(self) -> None:
@@ -439,7 +427,9 @@ class LucydDaemon:
             tool_registry=self.tool_registry,
             skill_loader=self.skill_loader,
             metering_db=self.metering_db,
-            get_memory_conn=self._get_memory_conn,
+            pool=self.pool,
+            client_id=self.config.client_id or self.config.agent_name,
+            agent_id=self.config.agent_id or self.config.agent_name,
             preprocessors=self._preprocessors,
             queue=self.queue,
             on_pre_close=self._pre_close_hook,
@@ -475,7 +465,9 @@ class LucydDaemon:
     async def _consolidate_on_close(self, session: Any) -> None:
         import operations as ops
         await ops.consolidate_on_close(
-            session, self.config, self._get_memory_conn,
+            session, self.config, self.pool,
+            self.config.client_id or self.config.agent_name,
+            self.config.agent_id or self.config.agent_name,
             self.get_provider, self.context_builder, self.metering_db,
         )
 
@@ -490,7 +482,7 @@ class LucydDaemon:
             return {"reset": False, "reason": "no session manager"}
 
         if target == "all":
-            contacts = self.session_mgr.list_contacts()
+            contacts = await self.session_mgr.list_contacts()
             for contact in contacts:
                 await self.session_mgr.close_session(contact)
             if metrics.ENABLED:
@@ -507,7 +499,7 @@ class LucydDaemon:
 
         # "user" shortcut: find primary operator contact (non-HTTP channel)
         if target == "user":
-            for contact in self.session_mgr.list_contacts():
+            for contact in await self.session_mgr.list_contacts():
                 # Skip HTTP API senders (automations, webhooks, system tasks)
                 if contact.startswith("http:"):
                     continue
@@ -550,7 +542,7 @@ class LucydDaemon:
             if item.get("type") == "reset":
                 await self._process_reset_item(item)
 
-    def _build_sessions(self) -> list[dict[str, Any]]:
+    async def _build_sessions(self) -> list[dict[str, Any]]:
         """Build session list for HTTP /sessions."""
         from session import build_session_info
 
@@ -560,11 +552,13 @@ class LucydDaemon:
         max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
 
         result = []
-        for contact, entry in self.session_mgr.get_index().items():
+        for contact, entry in (await self.session_mgr.get_index()).items():
             session_id = entry.get("session_id", "")
             live = self.session_mgr.get_loaded(contact)
-            info = build_session_info(
-                sessions_dir=self.session_mgr.dir,
+            info = await build_session_info(
+                pool=self.pool,
+                client_id=self.config.client_id or self.config.agent_name,
+                agent_id=self.config.agent_id or self.config.agent_name,
                 session_id=session_id,
                 session=live,
                 metering=self.metering_db,
@@ -599,7 +593,7 @@ class LucydDaemon:
         """Build monitor data for HTTP /monitor."""
         return dict(self.pipeline.monitor_state) if self.pipeline else {"state": "idle"}
 
-    def _build_history(self, target: str, full: bool = False) -> dict[str, Any]:
+    async def _build_history(self, target: str, full: bool = False) -> dict[str, Any]:
         """Build session history for HTTP /sessions/{target}/history.
 
         Target can be a session UUID or a contact name (case-insensitive).
@@ -611,7 +605,7 @@ class LucydDaemon:
 
         # Resolve contact name to session ID
         session_id = target
-        index = self.session_mgr.get_index()
+        index = await self.session_mgr.get_index()
         if target in index:
             session_id = index[target].get("session_id", target)
         else:
@@ -621,10 +615,10 @@ class LucydDaemon:
                     session_id = entry.get("session_id", target)
                     break
 
-        events = read_history_events(self.session_mgr.dir, session_id, full=full)
+        events = await read_history_events(self.pool, session_id, full=full)
         return {"session_id": session_id, "events": events}
 
-    def _build_status(self) -> dict[str, Any]:
+    async def _build_status(self) -> dict[str, Any]:
         """Build status dict for HTTP /status."""
         from config import today_start_ts
 
@@ -638,7 +632,7 @@ class LucydDaemon:
 
         active_sessions = 0
         if self.session_mgr:
-            active_sessions = self.session_mgr.session_count()
+            active_sessions = await self.session_mgr.session_count()
 
         # Update Prometheus gauges
         if metrics.ENABLED:
@@ -681,25 +675,38 @@ class LucydDaemon:
 
         return await ops.handle_evolve(
             force=force, config=self.config,
-            get_memory_conn=self._get_memory_conn,
+            pool=self.pool,
+            client_id=self.config.client_id or self.config.agent_name,
+            agent_id=self.config.agent_id or self.config.agent_name,
             queue=self.queue, set_rollback_tag=_set_tag,
         )
 
     async def _handle_index(self, full: bool = False) -> dict[str, Any]:
         import operations as ops
         return await ops.handle_index(
-            self.config, full=full,
+            self.config,
+            pool=self.pool,
+            client_id=self.config.client_id or self.config.agent_name,
+            agent_id=self.config.agent_id or self.config.agent_name,
+            full=full,
             metering=self.metering_db, converter=self.converter,
         )
 
     async def _handle_index_status(self) -> dict[str, Any]:
         import operations as ops
-        return ops.handle_index_status(self.config)
+        return await ops.handle_index_status(
+            self.config,
+            pool=self.pool,
+            client_id=self.config.client_id or self.config.agent_name,
+            agent_id=self.config.agent_id or self.config.agent_name,
+        )
 
     async def _handle_consolidate(self) -> dict[str, Any]:
         import operations as ops
         return await ops.handle_consolidate(
-            self.config, self._get_memory_conn,
+            self.config, self.pool,
+            self.config.client_id or self.config.agent_name,
+            self.config.agent_id or self.config.agent_name,
             self.get_provider, self.metering_db,
             converter=self.converter,
         )
@@ -707,7 +714,10 @@ class LucydDaemon:
     async def _handle_maintain(self) -> dict[str, Any]:
         import operations as ops
         return await ops.handle_maintain(
-            self.config, self._get_memory_conn, self.metering_db,
+            self.config, self.pool,
+            self.config.client_id or self.config.agent_name,
+            self.config.agent_id or self.config.agent_name,
+            self.metering_db,
         )
 
     async def _message_loop(self) -> None:
@@ -830,7 +840,7 @@ class LucydDaemon:
             if item.get("notify") and self.config.notify_target:
                 notify_target = self.config.notify_target
                 # Find operator's existing session key (e.g., "telegram:Nicolas")
-                for contact in self.session_mgr.list_contacts():
+                for contact in await self.session_mgr.list_contacts():
                     if contact.endswith(f":{notify_target}"):
                         sender = contact.split(":", 1)[1]
                         item["channel_id"] = contact.split(":", 1)[0]
@@ -900,6 +910,19 @@ class LucydDaemon:
         _acquire_pid_file(pid_path)
 
         try:
+            # Database pool — must be first, all modules depend on it
+            if cfg.database_url:
+                self.pool = await lucyd_db.create_pool(
+                    cfg.database_url,
+                    min_size=cfg.database_pool_min,
+                    max_size=cfg.database_pool_max,
+                )
+                await lucyd_db.ensure_schema(self.pool)
+                log.info("Database pool created (%d-%d connections)",
+                         cfg.database_pool_min, cfg.database_pool_max)
+            else:
+                log.warning("No [database] url_env configured — running without database")
+
             self._init_provider()
             self._init_sessions()
             self._init_skills()
@@ -907,6 +930,9 @@ class LucydDaemon:
             self._init_metering()
             self._init_conversion()
             self._init_tools()
+
+            client_id = cfg.client_id or cfg.agent_name
+            agent_id = cfg.agent_id or cfg.agent_name
 
             # Create message pipeline — the core runtime path
             from pipeline import MessagePipeline
@@ -919,7 +945,9 @@ class LucydDaemon:
                 tool_registry=self.tool_registry,
                 skill_loader=self.skill_loader,
                 metering_db=self.metering_db,
-                get_memory_conn=self._get_memory_conn,
+                pool=self.pool,
+                client_id=client_id,
+                agent_id=agent_id,
                 preprocessors=self._preprocessors,
                 queue=self.queue,
                 on_pre_close=self._pre_close_hook,
@@ -989,20 +1017,16 @@ class LucydDaemon:
             # Persist active session state before cleanup.
             # Does NOT call close_session() (which triggers LLM consolidation
             # callbacks and archival — wrong during shutdown). Sessions resume
-            # from state files on next startup via get_or_create().
+            # from Postgres on next startup via get_or_create().
             if self.session_mgr:
                 for session in self.session_mgr.list_sessions():
                     with contextlib.suppress(Exception):  # session state persist on shutdown; failure is benign
-                        self.session_mgr.save_state(session)
+                        await self.session_mgr.save_state(session)
 
-            # Close metering DB connection
-            if self.metering_db:
-                with contextlib.suppress(Exception):  # DB close on shutdown; failure is benign
-                    self.metering_db.close()
-            # Close memory DB connection
-            if self._memory_conn is not None:
-                with contextlib.suppress(Exception):  # DB close on shutdown; failure is benign
-                    self._memory_conn.close()
+            # Close database pool
+            if self.pool is not None:
+                with contextlib.suppress(Exception):  # pool close on shutdown; failure is benign
+                    await lucyd_db.close_pool(self.pool)
             _release_pid_file(pid_path)
             log.info("Lucyd daemon stopped")
 

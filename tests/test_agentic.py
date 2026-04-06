@@ -22,7 +22,6 @@ _LOOP_CONFIG = LoopConfig(
     timeout=600.0,
     api_retries=2,
     api_retry_base_delay=2.0,
-    sqlite_timeout=30,
 )
 
 _TEST_COST = CostContext(
@@ -889,7 +888,6 @@ class TestRetryLogic:
         resp = await run_agentic_loop(
             provider=provider, system=[], messages=messages,
             tools=[], tool_executor=reg,
-            config=LoopConfig(max_turns=1, timeout=600.0, api_retries=2, api_retry_base_delay=0.01, sqlite_timeout=30),
         )
         assert resp.text == "Recovered"
         assert call_count[0] == 2
@@ -913,7 +911,6 @@ class TestRetryLogic:
             await run_agentic_loop(
                 provider=provider, system=[], messages=messages,
                 tools=[], tool_executor=reg,
-                config=LoopConfig(max_turns=1, timeout=600.0, api_retries=3, api_retry_base_delay=0.01, sqlite_timeout=30),
             )
         assert call_count[0] == 1  # No retry
 
@@ -934,7 +931,6 @@ class TestRetryLogic:
             await run_agentic_loop(
                 provider=provider, system=[], messages=messages,
                 tools=[], tool_executor=reg,
-                config=LoopConfig(max_turns=1, timeout=600.0, api_retries=2, api_retry_base_delay=0.01, sqlite_timeout=30),
             )
 
 
