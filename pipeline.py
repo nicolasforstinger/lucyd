@@ -21,7 +21,7 @@ import random
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -218,7 +218,7 @@ class MessagePipeline:
         agent_id: str,
         preprocessors: list[dict[str, Any]],
         queue: asyncio.Queue[dict[str, Any]],
-        on_pre_close: Callable[[str], None] | None = None,
+        on_pre_close: Callable[[str], Awaitable[None]] | None = None,
         converter: Any = None,
     ) -> None:
         self._config = config
@@ -818,7 +818,7 @@ class MessagePipeline:
         if ctx.task_type in ("task", "system") and not ctx.force_compact and not ctx.session_preexisted:
             # Fire pre-close hook (e.g., evolution validation + rollback)
             if self._on_pre_close is not None:
-                self._on_pre_close(ctx.sender)
+                await self._on_pre_close(ctx.sender)
             try:
                 await self._session_mgr.close_session(ctx.session_key)
                 log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))

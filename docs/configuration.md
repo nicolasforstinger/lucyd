@@ -271,7 +271,7 @@ subagent_timeout = 0         # Timeout for sub-agents in seconds (0 = use agent_
 
 The `subagent_deny` list controls which tools are blocked for sub-agents spawned via `sessions_spawn`. When omitted, the default deny-list applies: `sessions_spawn` (prevents recursion). Sub-agents CAN load skills by default. Set to `[]` to allow all tools.
 
-Tools are only registered if they appear in `enabled` AND their dependencies are met (e.g., `memory_search` requires a configured `memory.db`).
+Tools are only registered if they appear in `enabled` AND their dependencies are met (e.g., `memory_search` requires a configured database).
 
 ### [tools.filesystem]
 

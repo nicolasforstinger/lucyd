@@ -10,6 +10,7 @@ or session lifecycle events. They are independent of the message pipeline.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import subprocess
@@ -51,6 +52,48 @@ async def get_evolution_state(
         "content_hash": row["content_hash"],
         "logs_through": row["logs_through"],
     }
+
+
+async def update_evolution_state(
+    config: Config,
+    pool: Any,  # asyncpg.Pool — no stubs available
+    client_id: str,
+    agent_id: str,
+) -> dict[str, str]:
+    """Record evolution completion for MEMORY.md and USER.md.
+
+    Computes content hashes and finds the latest daily log date,
+    then upserts into ``knowledge.evolution_state``.
+    """
+    workspace = config.workspace
+
+    # Find latest daily log date
+    memory_dir = workspace / "memory"
+    latest = ""
+    if memory_dir.is_dir():
+        for entry in memory_dir.iterdir():
+            if entry.is_file() and entry.suffix == ".md":
+                m = _DATE_RE.search(entry.stem)
+                if m and m.group(1) > latest:
+                    latest = m.group(1)
+
+    updated: dict[str, str] = {}
+    for fname in ("MEMORY.md", "USER.md"):
+        fpath = workspace / fname
+        content = fpath.read_text() if fpath.exists() else ""
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        await pool.execute(
+            "INSERT INTO knowledge.evolution_state "
+            "(client_id, agent_id, file_path, content_hash, logs_through) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (client_id, agent_id, file_path) DO UPDATE SET "
+            "last_evolved_at = now(), content_hash = $4, logs_through = $5",
+            client_id, agent_id, fname, content_hash, latest,
+        )
+        updated[fname] = content_hash
+
+    log.info("Evolution state updated: logs through %s", latest or "none")
+    return updated
 
 
 async def check_new_logs_exist(

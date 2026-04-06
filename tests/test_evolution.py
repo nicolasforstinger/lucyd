@@ -1,10 +1,15 @@
 """Tests for evolution state tracking and pre-check logic (asyncpg)."""
 
+import hashlib
+from pathlib import Path
+from unittest.mock import MagicMock
+
 import pytest
 
 from operations import (
     check_new_logs_exist,
     get_evolution_state,
+    update_evolution_state,
 )
 
 TEST_CLIENT_ID = "test"
@@ -138,3 +143,73 @@ class TestCheckNewLogsExist:
             reference_file="USER.md",
         )
         assert has_new is False
+
+
+# ── TestUpdateEvolutionState ───────────────────────────────────
+
+
+def _make_config(workspace: Path) -> MagicMock:
+    """Build a minimal Config mock with the workspace property."""
+    cfg = MagicMock()
+    cfg.workspace = workspace
+    return cfg
+
+
+class TestUpdateEvolutionState:
+    @pytest.mark.asyncio
+    async def test_inserts_state_for_both_files(self, workspace, pool):
+        """First call inserts rows for MEMORY.md and USER.md."""
+        config = _make_config(workspace)
+        result = await update_evolution_state(
+            config, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        assert "MEMORY.md" in result
+        assert "USER.md" in result
+
+        for fname in ("MEMORY.md", "USER.md"):
+            state = await get_evolution_state(
+                fname, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+            )
+            assert state is not None
+            expected_hash = hashlib.sha256(
+                (workspace / fname).read_text().encode(),
+            ).hexdigest()
+            assert state["content_hash"] == expected_hash
+            assert state["logs_through"] == "2026-02-22"
+
+    @pytest.mark.asyncio
+    async def test_upserts_on_second_call(self, workspace, pool):
+        """Second call updates existing rows rather than failing."""
+        config = _make_config(workspace)
+        await update_evolution_state(config, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
+
+        # Modify MEMORY.md and re-run
+        (workspace / "MEMORY.md").write_text("# Updated memory\n")
+        result = await update_evolution_state(
+            config, pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+
+        state = await get_evolution_state(
+            "MEMORY.md", pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        assert state is not None
+        assert state["content_hash"] == result["MEMORY.md"]
+        expected = hashlib.sha256(b"# Updated memory\n").hexdigest()
+        assert state["content_hash"] == expected
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_memory_dir(self, tmp_path, pool):
+        """No memory/ dir — logs_through is empty string."""
+        ws = tmp_path / "bare"
+        ws.mkdir()
+        (ws / "MEMORY.md").write_text("x")
+        (ws / "USER.md").write_text("y")
+
+        config = _make_config(ws)
+        await update_evolution_state(config, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
+
+        state = await get_evolution_state(
+            "MEMORY.md", pool, TEST_CLIENT_ID, TEST_AGENT_ID,
+        )
+        assert state is not None
+        assert state["logs_through"] == ""

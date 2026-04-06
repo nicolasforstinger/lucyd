@@ -353,10 +353,10 @@ These are installed automatically by the Docker entrypoint:
 
 | Schedule | Job | Command |
 |---|---|---|
-| `10 * * * *` | Memory indexer | `lucyd-index` |
-| `15 * * * *` | Memory consolidation | `lucyd-consolidate` |
+| `10 * * * *` | Memory indexer | `lucydctl --index` |
+| `15 * * * *` | Memory consolidation | `lucydctl --consolidate` |
 | `50 3 * * *` | Diary write + compaction | `lucydctl --compact` |
-| `5 4 * * *` | Memory maintenance | `lucyd-consolidate --maintain` |
+| `5 4 * * *` | Memory maintenance | `lucydctl --maintain` |
 | `20 4 * * *` | Memory evolution | `lucydctl --evolve` |
 
 ### Suggested operator cron (not in entrypoint.sh)
@@ -367,7 +367,6 @@ Optional jobs for production deployments — add to host or container crontab as
 |---|---|---|
 | `5 * * * *` | Git auto-commit workspace | `cd workspace && git add -A && git commit -m "auto" && git push` |
 | `5 3 * * *` | Trash cleanup | `find .trash/ -mtime +30 -delete` |
-| `5 4 * * 0` | DB integrity check | `sqlite3 memory/main.sqlite "PRAGMA integrity_check"` |
 
 ## Troubleshooting
 

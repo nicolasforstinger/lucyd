@@ -670,7 +670,7 @@ flowchart LR
         SKILLS["skills/<br/>loadable skill files"]
     end
 
-    MEMDB["[memory] db<br/>default: ~/.lucyd/memory/main.sqlite<br/>(configured independently)"]
+    MEMDB["[database] url_env<br/>PostgreSQL (asyncpg)"]
 ```
 
 ### Path resolution
@@ -681,14 +681,13 @@ flowchart LR
 |------|---------|--------|
 | `state_dir` | `$DATA_DIR` | `[paths] state_dir` |
 | `sessions_dir` | `$DATA_DIR/sessions` | `[paths] sessions_dir` |
-| `metering_db` | `$DATA_DIR/metering.db` | `[paths] metering_db` |
 | `log_file` | `$DATA_DIR/logs/lucyd.log` | `[paths] log_file` |
 | `http_download_dir` | `$DATA_DIR/downloads` | `[http] download_dir` |
 | `lucyd.pid` | `$DATA_DIR/lucyd.pid` | derived from `state_dir` |
 
 ### Independently configured
 
-- **Memory DB** (`[memory] db`): SQLite with FTS5 + vector tables. Default `~/.lucyd/memory/main.sqlite`. Not under `$DATA_DIR`.
+- **Memory DB** (`[database] url_env`): PostgreSQL via asyncpg with tsvector FTS + pgvector. Configured via `LUCYD_DATABASE_URL` env var.
 - **Workspace** (`[agent] workspace`): personality files, MEMORY.md, skills. Read by `ContextBuilder` and `SkillLoader`. Not under `$DATA_DIR`.
 
 ### Session files

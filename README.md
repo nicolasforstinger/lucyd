@@ -60,14 +60,13 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 - **LLMProvider Protocol** — Swap providers with config, not code. Provider SDKs are optional; framework runs on `aiohttp` + `httpx` alone
 - **Four-layer error boundaries** — tool → API retry → message rollback → session self-healing
 - **Persistent sessions** — JSONL audit trail + atomic state snapshots, survives restarts
-- **Long-term memory** — SQLite FTS5 + vector similarity search (pluggable embedding provider)
+- **Long-term memory** — PostgreSQL tsvector FTS + pgvector similarity search (pluggable embedding provider)
 - **Structured memory** — Facts, episodes, commitments with automatic consolidation from sessions
 - **Budget-aware context** — Priority-tiered recall with token budget management
 - **Compaction** — Automatic conversation summarization when context fills up
 - **Skill system** — Markdown skill files with YAML frontmatter, loaded on demand
-- **Cost tracking** — Per-call cost recording in SQLite (EUR). Query via `lucydctl --cost` or `GET /api/v1/cost`
+- **Cost tracking** — Per-call cost recording in PostgreSQL (EUR). Query via `lucydctl --cost` or `GET /api/v1/cost`
 - **Sub-agents** — Spawn sub-sessions with scoped tools and deny-lists
-- **Voice transcription** — Automatic Whisper transcription of voice messages
 - **Live monitoring** — Real-time agentic loop state via `lucydctl --monitor` and HTTP endpoints
 - **Memory evolution** — Daily rewriting of workspace understanding files via cron
 - **Plugin system** — Drop `.py` files in `plugins.d/` for custom tools and preprocessors
@@ -97,7 +96,6 @@ All configuration lives in `lucyd.toml`. API keys go in `.env`. See [configurati
 |---------|---------|
 | `python3` (>= 3.13) | Daemon runtime |
 | `python3-venv` | Virtual environment for pip deps |
-| `sqlite3` | Full SQLite with FTS5 (memory search, cost tracking) |
 | `poppler-utils` | PDF page rendering for scanned documents (`pdftoppm`) |
 
 ### Python packages

@@ -446,10 +446,10 @@ class LucydDaemon:
 
     # ── Pre-close hook (evolution validation) ──────────────────────
 
-    def _pre_close_hook(self, sender: str) -> None:
+    async def _pre_close_hook(self, sender: str) -> None:
         """Called by the pipeline before closing ephemeral sessions.
 
-        Handles evolution-specific validation and rollback.
+        Handles evolution-specific validation, rollback, and state update.
         """
         if sender == "evolution" and self._evolve_rollback_tag:
             tag = self._evolve_rollback_tag
@@ -457,6 +457,17 @@ class LucydDaemon:
             if not self._validate_evolution():
                 self._git_rollback(tag)
                 log.error("Evolution rolled back to %s due to validation failure", tag)
+                return
+            # Record successful evolution in Postgres
+            try:
+                import operations as ops
+                await ops.update_evolution_state(
+                    self.config, self.pool,
+                    self.config.client_id or self.config.agent_name,
+                    self.config.agent_id or self.config.agent_name,
+                )
+            except Exception:
+                log.exception("Failed to update evolution state")
 
     def _validate_evolution(self) -> bool:
         import operations as ops
