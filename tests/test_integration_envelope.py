@@ -149,7 +149,7 @@ async def test_envelope_channel_id_in_session_key(tmp_path, pool):
     assert "Acknowledged" in result.get("reply", "")
 
     # Session should be keyed as "test:test-user"
-    contacts = daemon.session_mgr.list_contacts()
+    contacts = await daemon.session_mgr.list_contacts()
     assert "test:test-user" in contacts
 
 
@@ -169,7 +169,7 @@ async def test_task_type_auto_close(tmp_path, pool):
     assert "Acknowledged" in result.get("reply", "")
 
     # Session should have been auto-closed
-    contacts = daemon.session_mgr.list_contacts()
+    contacts = await daemon.session_mgr.list_contacts()
     assert "test:ephemeral-user" not in contacts
 
 
@@ -189,7 +189,7 @@ async def test_conversational_session_stays_open(tmp_path, pool):
     assert "Acknowledged" in result.get("reply", "")
 
     # Session should still be open
-    contacts = daemon.session_mgr.list_contacts()
+    contacts = await daemon.session_mgr.list_contacts()
     assert "telegram:persistent-user" in contacts
 
 
@@ -208,7 +208,7 @@ async def test_default_envelope_values(tmp_path, pool):
     assert "Acknowledged" in result.get("reply", "")
 
     # Defaults: channel_id="http", so key is "http:bare-user"
-    contacts = daemon.session_mgr.list_contacts()
+    contacts = await daemon.session_mgr.list_contacts()
     assert "http:bare-user" in contacts
 
 
@@ -302,7 +302,7 @@ async def test_reply_to_redirect(tmp_path, pool):
         "channel_id": "test",
         "task_type": "conversational",
     })
-    assert "test:target-user" in daemon.session_mgr.list_contacts()
+    assert "test:target-user" in await daemon.session_mgr.list_contacts()
 
     # Now send a message with reply_to pointing to the target
     result = await _send_and_process(daemon, {
@@ -346,5 +346,5 @@ async def test_message_with_system_task_type(tmp_path, pool):
     assert "Acknowledged" in result.get("reply", "")
 
     # Session should have been auto-closed (same as old /system behavior)
-    contacts = daemon.session_mgr.list_contacts()
+    contacts = await daemon.session_mgr.list_contacts()
     assert "test:system-user" not in contacts
