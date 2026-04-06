@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Build, push, and deploy Lucyd agent containers.
+#
+# Usage:
+#   bin/deploy --build                           # Build + push image only
+#   bin/deploy --client nicolas --agent lucy     # Deploy one agent
+#   bin/deploy --client nicolas                  # Deploy all agents for a client
+#   bin/deploy --all                             # Deploy every agent
+#   bin/deploy --build --all                     # Build + push + deploy everything
+
+set -euo pipefail
+
+CLIENTS_DIR="/srv/clients"
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+IMAGE="ghcr.io/nicolasforstinger/lucyd:latest"
+
+BUILD=false
+ALL=false
+CLIENT=""
+AGENT=""
+
+# ── Argument parsing ─────────────────────────────────────────────────
+
+usage() {
+    echo "Usage: $0 [--build] [--client NAME [--agent NAME] | --all]"
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --build)   BUILD=true;  shift ;;
+        --all)     ALL=true;    shift ;;
+        --client)  CLIENT="$2"; shift 2 ;;
+        --agent)   AGENT="$2";  shift 2 ;;
+        -h|--help) usage ;;
+        *) echo "Unknown option: $1"; usage ;;
+    esac
+done
+
+# Must specify at least one action.
+if ! $BUILD && [[ -z "$CLIENT" ]] && ! $ALL; then
+    usage
+fi
+
+# ── Build + Push ─────────────────────────────────────────────────────
+
+if $BUILD; then
+    echo "==> Building image"
+    docker build -t "$IMAGE" "$REPO_DIR"
+
+    echo "==> Pushing to GHCR"
+    docker push "$IMAGE"
+
+    echo "--- Image pushed: ${IMAGE}"
+fi
+
+# ── Discover agents ──────────────────────────────────────────────────
+
+AGENTS=()
+
+if $ALL; then
+    for compose in "${CLIENTS_DIR}"/*/agents/*/docker-compose.yml; do
+        [[ -f "$compose" ]] && AGENTS+=("$(dirname "$compose")")
+    done
+elif [[ -n "$CLIENT" && -n "$AGENT" ]]; then
+    dir="${CLIENTS_DIR}/${CLIENT}/agents/${AGENT}"
+    if [[ ! -f "${dir}/docker-compose.yml" ]]; then
+        echo "ERROR: Agent not found: ${dir}" >&2
+        exit 1
+    fi
+    AGENTS+=("$dir")
+elif [[ -n "$CLIENT" ]]; then
+    for compose in "${CLIENTS_DIR}/${CLIENT}"/agents/*/docker-compose.yml; do
+        [[ -f "$compose" ]] && AGENTS+=("$(dirname "$compose")")
+    done
+fi
+
+if [[ ${#AGENTS[@]} -eq 0 ]]; then
+    if $BUILD; then
+        echo "--- Build complete (no agents to deploy)"
+        exit 0
+    fi
+    echo "ERROR: No agents found to deploy" >&2
+    exit 1
+fi
+
+echo "==> Deploying ${#AGENTS[@]} agent(s)"
+
+# ── Deploy each agent ────────────────────────────────────────────────
+
+RESULTS=()
+
+for agent_dir in "${AGENTS[@]}"; do
+    client="$(basename "$(dirname "$(dirname "$agent_dir")")")"
+    agent="$(basename "$agent_dir")"
+    container="${client}-${agent}"
+
+    echo "--- Deploying ${client}/${agent}"
+    cd "$agent_dir"
+
+    docker compose pull -q 2>/dev/null
+    docker compose up -d --force-recreate 2>/dev/null
+
+    RESULTS+=("${client}/${agent}")
+done
+
+# ── Health check ─────────────────────────────────────────────────────
+
+echo ""
+echo "==> Waiting for health checks"
+
+FAILED=0
+for agent_dir in "${AGENTS[@]}"; do
+    client="$(basename "$(dirname "$(dirname "$agent_dir")")")"
+    agent="$(basename "$agent_dir")"
+    container="${client}-${agent}"
+
+    healthy=false
+    for i in $(seq 1 30); do
+        status="$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "missing")"
+        if [[ "$status" == "healthy" ]]; then
+            healthy=true
+            break
+        fi
+        sleep 2
+    done
+
+    if $healthy; then
+        echo "  ${client}/${agent}  ✓"
+    else
+        echo "  ${client}/${agent}  ✗  (status: ${status})"
+        FAILED=$((FAILED + 1))
+    fi
+done
+
+# ── Summary ──────────────────────────────────────────────────────────
+
+echo ""
+echo "Deployed ${#RESULTS[@]} agent(s), ${FAILED} failed."
+
+exit $FAILED
