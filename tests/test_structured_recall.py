@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from conftest import TEST_AGENT_ID, TEST_CLIENT_ID
 from memory import (
     EMPTY_RECALL_FALLBACK,
     RECALL_PRIORITY_COMMITMENTS,
@@ -24,6 +23,9 @@ from memory import (
     resolve_entity,
     search_episodes,
 )
+
+TEST_CLIENT_ID = "test"
+TEST_AGENT_ID = "test_agent"
 
 
 @pytest.fixture

@@ -2,11 +2,13 @@
 
 import pytest
 
-from conftest import TEST_AGENT_ID, TEST_CLIENT_ID
 from operations import (
     check_new_logs_exist,
     get_evolution_state,
 )
+
+TEST_CLIENT_ID = "test"
+TEST_AGENT_ID = "test_agent"
 
 # ── Helpers ─────────────────────────────────────────────────────
 
