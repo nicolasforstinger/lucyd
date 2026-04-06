@@ -1,0 +1,34 @@
+.git
+.venv
+.env
+.env.*
+__pycache__
+*.pyc
+*.log
+
+# Tests & dev
+tests/
+audit/
+docs/
+.coverage
+.pytest_cache/
+.mutmut-cache/
+mutants/
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+ruff.toml
+
+# Deployment-specific
+lucyd.toml
+lucyd.service
+providers.d/*.toml
+plugins.d/*
+!plugins.d/.gitkeep
+
+# Scratch
+build/
+CLAUDE.md
+.claude/
+*.egg-info/
+dist/
