@@ -369,11 +369,7 @@ async def run_agentic_loop(
             log.warning("[%s] Cost limit reached: $%.4f > $%.2f (turn %d)",
                         trace_id[:8], accumulated_cost, max_cost, turn)
             response.cost_limited = True
-            # When tools produced attachments, suppress text (attachment
-            # is the reply).  Otherwise fall back to intermediate text.
-            if all_attachments:
-                response.text = ""
-            elif not response.text and fallback_text:
+            if not response.text and fallback_text:
                 response.text = "\n\n".join(fallback_text)
             response.attachments = all_attachments
             response.turns = turn + 1
@@ -418,13 +414,7 @@ async def run_agentic_loop(
         # tool_calls alongside text are treated as the final response.
         # This prevents re-entering the loop when the model intended to stop.
         if not response.tool_calls or response.stop_reason == "end_turn":
-            # When tools produced attachments (e.g. TTS audio), the
-            # attachment is the reply.  Suppress both fallback text and
-            # the final turn's text — the latter is just the model
-            # commenting on the tool result, not an independent reply.
-            if all_attachments:
-                response.text = ""
-            elif not response.text and fallback_text:
+            if not response.text and fallback_text:
                 response.text = "\n\n".join(fallback_text)
             response.attachments = all_attachments
             response.turns = turn + 1
@@ -546,9 +536,7 @@ async def run_agentic_loop(
                 trace_id[:8], max_turns, cc.session_id)
     if response is not None:
         stop_msg = f"\n[Stopped: maximum tool-use turns ({max_turns}) reached]"
-        if all_attachments:
-            response.text = ""
-        elif response.text:
+        if response.text:
             response.text += stop_msg
         elif fallback_text:
             response.text = "\n\n".join(fallback_text) + stop_msg
