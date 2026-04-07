@@ -178,7 +178,7 @@ class MeteringDB:
 
     # ── Maintenance ───────────────────────────────────────────────
 
-    async def enforce_retention(self, max_months: int = 12) -> int:
+    async def enforce_retention(self, max_months: int = 84) -> int:
         """Delete records older than max_months.  Returns count deleted."""
         today = datetime.date.today()
         month = today.month - max_months

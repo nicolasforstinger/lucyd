@@ -193,7 +193,7 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     "log_file":              (("paths", "log_file"),             Path, ""),
 
     # ── Metering ───────────────────────────────────────────────
-    "metering_retention_months": (("metering", "retention_months"), int, 12),
+    "metering_retention_months": (("metering", "retention_months"), int, 84),  # 7 years (BAO §132)
 
     # ── Conversion ──────────────────────────────────────────────
     "conversion_api_url":     (("conversion", "api_url"),     str,   ""),

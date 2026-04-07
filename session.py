@@ -116,6 +116,7 @@ class Session:
         self.warned_about_compaction = False
         self.pending_system_warning = ""
         self.trace_id = ""  # Set per-message; included in events
+        self._persisted_count = 0  # Messages already in DB; append-only beyond this
 
     async def load(self) -> bool:
         """Load session state and messages from Postgres. Return True if loaded."""
@@ -142,28 +143,57 @@ class Session:
             self.id,
         )
         self.messages = [json.loads(r["content"]) for r in msg_rows]
+        self._persisted_count = len(self.messages)
         _validate_turn_structure(self.messages)
 
         log.info("Resumed session %s (%d messages)", self.id, len(self.messages))
         return True
 
+    async def _save_session_meta(self, conn: Any) -> None:
+        """Update session metadata row."""
+        await conn.execute(
+            """UPDATE sessions.sessions SET
+               model = $2, updated_at = now(),
+               total_input_tokens = $3, total_output_tokens = $4,
+               compaction_count = $5, warned_about_compaction = $6,
+               pending_system_warning = $7
+               WHERE id = $1""",
+            self.id, self.model,
+            self.total_input_tokens, self.total_output_tokens,
+            self.compaction_count, self.warned_about_compaction,
+            self.pending_system_warning,
+        )
+
     async def save_state(self) -> None:
-        """Persist session state + messages to Postgres."""
+        """Persist session state + append new messages to Postgres.
+
+        Only inserts messages beyond ``_persisted_count`` — existing
+        rows keep their original ``created_at`` timestamps.
+        """
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    """UPDATE sessions.sessions SET
-                       model = $2, updated_at = now(),
-                       total_input_tokens = $3, total_output_tokens = $4,
-                       compaction_count = $5, warned_about_compaction = $6,
-                       pending_system_warning = $7
-                       WHERE id = $1""",
-                    self.id, self.model,
-                    self.total_input_tokens, self.total_output_tokens,
-                    self.compaction_count, self.warned_about_compaction,
-                    self.pending_system_warning,
-                )
-                # Replace all messages atomically
+                await self._save_session_meta(conn)
+                for i in range(self._persisted_count, len(self.messages)):
+                    msg = self.messages[i]
+                    content = {k: v for k, v in msg.items() if not k.startswith("_")}
+                    await conn.execute(
+                        """INSERT INTO sessions.messages
+                           (client_id, agent_id, session_id, role, content, ordinal)
+                           VALUES ($1, $2, $3, $4, $5::jsonb, $6)""",
+                        self._client_id, self._agent_id, self.id,
+                        msg["role"], json.dumps(content, ensure_ascii=False), i,
+                    )
+                self._persisted_count = len(self.messages)
+
+    async def replace_all_messages(self) -> None:
+        """Delete and re-insert all messages atomically.
+
+        Used by compaction which rewrites the entire message list.
+        Normal message flow uses ``save_state()`` (append-only).
+        """
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await self._save_session_meta(conn)
                 await conn.execute(
                     "DELETE FROM sessions.messages WHERE session_id = $1",
                     self.id,
@@ -177,6 +207,7 @@ class Session:
                         self._client_id, self._agent_id, self.id,
                         msg["role"], json.dumps(content, ensure_ascii=False), i,
                     )
+                self._persisted_count = len(self.messages)
 
     async def append_event(self, event: dict[str, Any]) -> None:
         """Append event to sessions.events table."""
@@ -546,7 +577,7 @@ class SessionManager:
 
         session.compaction_count += 1
         session.warned_about_compaction = False
-        await session.save_state()
+        await session.replace_all_messages()
         await session.append_event({
             "type": "compaction",
             "summary_tokens": response.usage.output_tokens,
