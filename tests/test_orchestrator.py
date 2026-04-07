@@ -828,7 +828,7 @@ class TestMessagePersistence:
 
         async def fake_loop(**kwargs):
             # Simulate agentic loop appending messages
-            kwargs["messages"].append({"role": "assistant", "content": "reply"})
+            kwargs["messages"].append({"role": "agent", "content": "reply"})
             return response
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
@@ -837,7 +837,7 @@ class TestMessagePersistence:
             )
 
         session.add_assistant_message.assert_called_once_with(
-            {"role": "assistant", "content": "reply"}, persist_only=True
+            {"role": "agent", "content": "reply"}, persist_only=True
         )
 
     @pytest.mark.asyncio
@@ -848,10 +848,10 @@ class TestMessagePersistence:
 
         async def fake_loop(**kwargs):
             kwargs["messages"].append({
-                "role": "tool_results",
+                "role": "tool_result",
                 "results": [{"tool_use_id": "tc-1", "content": "done"}],
             })
-            kwargs["messages"].append({"role": "assistant", "content": "reply"})
+            kwargs["messages"].append({"role": "agent", "content": "reply"})
             return response
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
@@ -940,7 +940,7 @@ class TestMemoryV2Wiring:
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.consolidation_enabled = True
         # Simulate existing messages (not first message)
-        session.messages = [{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}]
+        session.messages = [{"role": "user", "content": "prior"}, {"role": "agent", "content": "reply"}]
         response = _make_response()
 
         async def fake_loop(**kwargs):
@@ -1140,7 +1140,7 @@ class TestErrorRecoveryOrphanedMessages:
         # Pre-populate with a valid exchange
         session.messages = [
             {"role": "user", "content": "first"},
-            {"role": "assistant", "content": "reply"},
+            {"role": "agent", "content": "reply"},
         ]
 
         def fake_add_user(text, sender="", source=""):
@@ -1157,7 +1157,7 @@ class TestErrorRecoveryOrphanedMessages:
 
         # Prior exchange intact, orphaned user message removed
         assert len(session.messages) == 2
-        assert session.messages[-1]["role"] == "assistant"
+        assert session.messages[-1]["role"] == "agent"
 
     @pytest.mark.asyncio
     async def test_error_with_image_blocks_cleans_up(self, tmp_path):
@@ -1281,7 +1281,7 @@ class TestConsecutiveUserMessageMerge:
 
         session.messages = [
             {"role": "user", "content": "first"},
-            {"role": "assistant", "content": "reply"},
+            {"role": "agent", "content": "reply"},
         ]
 
         def fake_add_user(text, sender="", source=""):

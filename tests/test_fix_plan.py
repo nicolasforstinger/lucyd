@@ -90,14 +90,14 @@ class TestTurnGroupEnd:
         msgs = [
             {"role": "user", "content": "first"},
             {"role": "user", "content": "second"},
-            {"role": "assistant", "text": "hi"},
+            {"role": "agent", "text": "hi"},
         ]
         assert _turn_group_end(msgs, 1) == 2
 
     def test_assistant_without_tool_calls(self):
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "hello"},
+            {"role": "agent", "text": "hello"},
             {"role": "user", "content": "bye"},
         ]
         assert _turn_group_end(msgs, 1) == 2
@@ -105,28 +105,28 @@ class TestTurnGroupEnd:
     def test_assistant_with_tool_calls_includes_tool_results(self):
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "1"}]},
-            {"role": "tool_results", "results": [{"tool_call_id": "1"}]},
-            {"role": "assistant", "text": "done"},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "1"}]},
+            {"role": "tool_result", "results": [{"tool_call_id": "1"}]},
+            {"role": "agent", "text": "done"},
         ]
-        assert _turn_group_end(msgs, 1) == 3  # assistant + tool_results
+        assert _turn_group_end(msgs, 1) == 3  # assistant + tool_result
 
     def test_assistant_with_system_hint_between(self):
-        """System user hints between assistant and tool_results are included."""
+        """System user hints between assistant and tool_result are included."""
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "1"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "1"}]},
             {"role": "user", "content": "[system: context pressure]"},
-            {"role": "tool_results", "results": [{"tool_call_id": "1"}]},
-            {"role": "assistant", "text": "done"},
+            {"role": "tool_result", "results": [{"tool_call_id": "1"}]},
+            {"role": "agent", "text": "done"},
         ]
-        assert _turn_group_end(msgs, 1) == 4  # assistant + hint + tool_results
+        assert _turn_group_end(msgs, 1) == 4  # assistant + hint + tool_result
 
     def test_assistant_with_tool_calls_no_results(self):
-        """Missing tool_results means group is just the assistant."""
+        """Missing tool_result means group is just the assistant."""
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "1"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "1"}]},
         ]
         assert _turn_group_end(msgs, 1) == 2
 
@@ -136,17 +136,17 @@ class TestTurnGroupTrimming:
 
     @pytest.mark.asyncio
     async def test_trim_preserves_turn_structure(self):
-        """After trimming, no orphaned tool_results remain."""
+        """After trimming, no orphaned tool_result remain."""
         provider = MockProvider([_end_turn("Done")])
         reg = _make_registry()
 
-        # Build messages with assistant+tool_results pairs that need trimming
+        # Build messages with assistant+tool_result pairs that need trimming
         messages = [
             {"role": "user", "content": "first"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "tc-1", "name": "echo", "arguments": {}}]},
-            {"role": "tool_results", "results": [{"tool_call_id": "tc-1", "content": "ok"}]},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "tc-2", "name": "echo", "arguments": {}}]},
-            {"role": "tool_results", "results": [{"tool_call_id": "tc-2", "content": "ok"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "tc-1", "name": "echo", "arguments": {}}]},
+            {"role": "tool_result", "results": [{"tool_call_id": "tc-1", "content": "ok"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "tc-2", "name": "echo", "arguments": {}}]},
+            {"role": "tool_result", "results": [{"tool_call_id": "tc-2", "content": "ok"}]},
             {"role": "user", "content": "question"},
         ]
 
@@ -160,19 +160,19 @@ class TestTurnGroupTrimming:
             config=replace(_LOOP_CONFIG, max_turns=1),
         )
 
-        # Verify no orphaned tool_results
+        # Verify no orphaned tool_result
         for i, msg in enumerate(messages):
-            if msg.get("role") == "tool_results":
+            if msg.get("role") == "tool_result":
                 # Must be preceded by an assistant with tool_calls
                 assert i > 0
                 found = False
                 for j in range(i - 1, -1, -1):
-                    if messages[j].get("role") == "assistant" and messages[j].get("tool_calls"):
+                    if messages[j].get("role") == "agent" and messages[j].get("tool_calls"):
                         found = True
                         break
-                    if messages[j].get("role") == "tool_results":
+                    if messages[j].get("role") == "tool_result":
                         break
-                assert found, f"Orphaned tool_results at index {i}"
+                assert found, f"Orphaned tool_result at index {i}"
 
 
 class TestValidateTurnStructure:
@@ -181,7 +181,7 @@ class TestValidateTurnStructure:
     def test_strips_orphaned_tool_calls(self):
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "thinking", "tool_calls": [{"id": "1"}]},
+            {"role": "agent", "text": "thinking", "tool_calls": [{"id": "1"}]},
         ]
         _validate_turn_structure(msgs)
         assert "tool_calls" not in msgs[1]
@@ -189,21 +189,21 @@ class TestValidateTurnStructure:
     def test_removes_orphaned_tool_results(self):
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "tool_results", "results": [{"tool_call_id": "1", "content": "x"}]},
-            {"role": "assistant", "text": "done"},
+            {"role": "tool_result", "results": [{"tool_call_id": "1", "content": "x"}]},
+            {"role": "agent", "text": "done"},
         ]
         _validate_turn_structure(msgs)
-        # tool_results should be removed
+        # tool_result should be removed
         assert len(msgs) == 2
         assert msgs[0]["role"] == "user"
-        assert msgs[1]["role"] == "assistant"
+        assert msgs[1]["role"] == "agent"
 
     def test_valid_structure_unchanged(self):
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "1"}]},
-            {"role": "tool_results", "results": [{"tool_call_id": "1"}]},
-            {"role": "assistant", "text": "done"},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "1"}]},
+            {"role": "tool_result", "results": [{"tool_call_id": "1"}]},
+            {"role": "agent", "text": "done"},
         ]
         _validate_turn_structure(msgs)
         assert len(msgs) == 4
@@ -227,10 +227,10 @@ class TestPreRetrySnapshot:
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:
-                    # Return tool use — loop will execute and append tool_results
+                    # Return tool use — loop will execute and append tool_result
                     return _tool_use()
                 if call_count == 2:
-                    # Fail on second LLM call (after tool_results appended)
+                    # Fail on second LLM call (after tool_result appended)
                     raise ConnectionError("transient")
                 # Third call (after retry) — succeed
                 return _end_turn("Final answer")
@@ -240,7 +240,7 @@ class TestPreRetrySnapshot:
         messages = [{"role": "user", "content": "test"}]
 
         # The agentic loop will:
-        # Call 1: tool_use → execute tool → append tool_results
+        # Call 1: tool_use → execute tool → append tool_result
         # Call 2: ConnectionError → retry
         # But we need message-level retry, not API-level retry.
         # The API-level retry in the loop will raise after exhausting api_retries=0.
@@ -256,7 +256,7 @@ class TestPreRetrySnapshot:
             )
 
         # After the error, messages should have the partial state:
-        # [user, assistant(tool_use), tool_results]
+        # [user, assistant(tool_use), tool_result]
         # The daemon's _run_agentic_with_retries would truncate back.
         # Here we verify the loop left partial state (which the daemon cleans).
         assert len(messages) > 1  # loop added messages before failing
@@ -499,14 +499,14 @@ class TestTurnGroupEndStopsAtAssistant:
     """Finding 4: _turn_group_end must not scan past a later assistant."""
 
     def test_orphan_tool_calls_do_not_consume_later_turn(self):
-        """assistant(orphan tc) -> user -> assistant(valid tc) -> tool_results
+        """assistant(orphan tc) -> user -> assistant(valid tc) -> tool_result
         must NOT return index 4 — the orphan assistant is standalone."""
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "orphan"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "orphan"}]},
             {"role": "user", "content": "retry"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "valid"}]},
-            {"role": "tool_results", "results": [{"tool_call_id": "valid"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "valid"}]},
+            {"role": "tool_result", "results": [{"tool_call_id": "valid"}]},
         ]
         # Group starting at index 1 (orphan assistant) should be standalone
         assert _turn_group_end(msgs, 1) == 2
@@ -515,44 +515,44 @@ class TestTurnGroupEndStopsAtAssistant:
         """The later valid assistant still correctly groups with its results."""
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "orphan"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "orphan"}]},
             {"role": "user", "content": "retry"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "valid"}]},
-            {"role": "tool_results", "results": [{"tool_call_id": "valid"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "valid"}]},
+            {"role": "tool_result", "results": [{"tool_call_id": "valid"}]},
         ]
-        # Group starting at index 3 (valid assistant) includes tool_results
+        # Group starting at index 3 (valid assistant) includes tool_result
         assert _turn_group_end(msgs, 3) == 5
 
 
 class TestValidateAcrossTurnBoundaries:
-    """Finding 3: tool_results must pair with the nearest assistant, not an
+    """Finding 3: tool_result must pair with the nearest assistant, not an
     older one across intervening turns."""
 
     def test_tool_results_across_plain_assistant_is_orphaned(self):
-        """assistant(tc1) -> user -> assistant(no tc) -> tool_results(tc2)
-        must remove the dangling tool_results."""
+        """assistant(tc1) -> user -> assistant(no tc) -> tool_result(tc2)
+        must remove the dangling tool_result."""
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "tc1"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "tc1"}]},
             {"role": "user", "content": "hmm"},
-            {"role": "assistant", "text": "thinking"},
-            {"role": "tool_results", "results": [{"tool_call_id": "tc2"}]},
+            {"role": "agent", "text": "thinking"},
+            {"role": "tool_result", "results": [{"tool_call_id": "tc2"}]},
         ]
         _validate_turn_structure(msgs)
-        # The tool_results should be removed (nearest assistant has no tc)
+        # The tool_result should be removed (nearest assistant has no tc)
         roles = [m.get("role") for m in msgs]
-        assert "tool_results" not in roles
+        assert "tool_result" not in roles
         # And tc1 on the first assistant should be stripped (no matching results)
         assert "tool_calls" not in msgs[1]
 
     def test_valid_pairing_across_user_hint_preserved(self):
-        """assistant(tc) -> user(system hint) -> tool_results is valid."""
+        """assistant(tc) -> user(system hint) -> tool_result is valid."""
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "text": "", "tool_calls": [{"id": "tc1"}]},
+            {"role": "agent", "text": "", "tool_calls": [{"id": "tc1"}]},
             {"role": "user", "content": "[system: context pressure]"},
-            {"role": "tool_results", "results": [{"tool_call_id": "tc1"}]},
-            {"role": "assistant", "text": "done"},
+            {"role": "tool_result", "results": [{"tool_call_id": "tc1"}]},
+            {"role": "agent", "text": "done"},
         ]
         _validate_turn_structure(msgs)
         assert len(msgs) == 5  # nothing removed

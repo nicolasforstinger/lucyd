@@ -52,25 +52,25 @@ def _validate_turn_structure(messages: list[Message]) -> None:
     i = len(messages) - 1
     while i >= 0:
         msg = messages[i]
-        if msg["role"] == "assistant" and msg.get("tool_calls"):
+        if msg["role"] == "agent" and msg.get("tool_calls"):
             has_results = False
             for j in range(i + 1, len(messages)):
-                if messages[j]["role"] == "tool_results":
+                if messages[j]["role"] == "tool_result":
                     has_results = True
                     break
-                if messages[j]["role"] == "assistant":
+                if messages[j]["role"] == "agent":
                     break
             if not has_results:
                 msg.pop("tool_calls", None)
                 log.warning("Stripped orphaned tool_calls from assistant at index %d", i)
-        elif msg["role"] == "tool_results":
+        elif msg["role"] == "tool_result":
             has_call = False
             for j in range(i - 1, -1, -1):
-                if messages[j]["role"] == "assistant":
+                if messages[j]["role"] == "agent":
                     if messages[j].get("tool_calls"):
                         has_call = True
                     break
-                if messages[j]["role"] == "tool_results":
+                if messages[j]["role"] == "tool_result":
                     break
             if not has_call:
                 messages.pop(i)
@@ -225,7 +225,7 @@ class Session:
         agentic loop already appended to session.messages in-place).
         """
         if not persist_only:
-            tr_msg: ToolResultsMessage = {"role": "tool_results", "results": results}
+            tr_msg: ToolResultsMessage = {"role": "tool_result", "results": results}
             self.messages.append(tr_msg)
         for r in results:
             await self.append_event({
@@ -240,7 +240,7 @@ class Session:
     def last_input_tokens(self) -> int:
         """Total context tokens from most recent assistant message."""
         for msg in reversed(self.messages):
-            if msg["role"] == "assistant":
+            if msg["role"] == "agent":
                 return _context_tokens_from_usage(msg.get("usage", {}))
         return 0
 
@@ -455,7 +455,7 @@ class SessionManager:
         split_point = int(len(session.messages) * (1 - keep_recent_pct))
 
         while (split_point < len(session.messages) - 1
-               and session.messages[split_point]["role"] == "tool_results"):
+               and session.messages[split_point]["role"] == "tool_result"):
             split_point += 1
 
         old_messages = session.messages[:split_point]
@@ -467,7 +467,7 @@ class SessionManager:
                 text = msg["content"]
                 if text:
                     conversation_text += f"user: {text}\n\n"
-            elif msg["role"] == "assistant":
+            elif msg["role"] == "agent":
                 text = msg.get("text", "")
                 if text:
                     conversation_text += f"assistant: {text}\n\n"
@@ -475,7 +475,7 @@ class SessionManager:
                     tc_name = tc.get("name", "unknown")
                     tc_args = str(tc.get("arguments", {}))[:tool_result_max_chars]
                     conversation_text += f"assistant [tool_call]: {tc_name}({tc_args})\n\n"
-            elif msg["role"] == "tool_results":
+            elif msg["role"] == "tool_result":
                 for r in msg["results"]:
                     content = _text_from_content(r.get("content", ""))[:tool_result_max_chars]
                     conversation_text += f"tool_result: {content}\n\n"
@@ -541,7 +541,7 @@ class SessionManager:
         session.messages = prefix + recent_messages
 
         for msg in session.messages:
-            if msg["role"] == "assistant":
+            if msg["role"] == "agent":
                 msg.pop("usage", None)
 
         session.compaction_count += 1
@@ -601,7 +601,7 @@ async def build_session_info(
 
     context_tokens = 0
     for msg in reversed(messages):
-        if msg["role"] == "assistant":
+        if msg["role"] == "agent":
             context_tokens = _context_tokens_from_usage(msg.get("usage", {}))
             break
     info["context_tokens"] = context_tokens
@@ -670,10 +670,10 @@ async def read_history_events(
                 "from": event.get("from", ""),
                 "timestamp": event.get("timestamp", 0),
             })
-        elif role == "assistant":
+        elif role == "agent":
             events.append({
                 "type": "message",
-                "role": "assistant",
+                "role": "agent",
                 "text": event.get("text", ""),
                 "timestamp": event.get("timestamp", 0),
             })

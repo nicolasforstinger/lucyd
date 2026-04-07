@@ -191,7 +191,7 @@ class TestSessionManagerPublicAPI:
 
 
 class TestMonitorWriter:
-    """_MonitorWriter: write, on_response, on_tool_results."""
+    """_MonitorWriter: write, on_response, on_tool_result."""
 
     def _make_writer(self):
         from pipeline import _MonitorWriter
@@ -231,7 +231,7 @@ class TestMonitorWriter:
     def test_on_tool_results_increments_turn_counter(self):
         writer, state = self._make_writer()
         assert writer._turn == 1
-        writer.on_tool_results({"role": "tool_results", "results": []})
+        writer.on_tool_results({"role": "tool_result", "results": []})
         assert writer._turn == 2
         assert state["state"] == "thinking"
 

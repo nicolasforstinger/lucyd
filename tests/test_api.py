@@ -2287,7 +2287,7 @@ class TestHistoryEndpoint:
                 "session_id": session_id,
                 "events": [
                     {"type": "message", "role": "user", "content": "hello"},
-                    {"type": "message", "role": "assistant", "text": "hi there"},
+                    {"type": "message", "role": "agent", "text": "hi there"},
                 ],
             }
         return HTTPApi(

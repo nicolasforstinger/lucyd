@@ -212,7 +212,7 @@ def _make_tool_call(name, call_id="tc-1"):
 
 
 class TestMonitorCallbacksWiring:
-    """Verify that _process_message wires on_response and on_tool_results
+    """Verify that _process_message wires on_response and on_tool_result
     callbacks into run_agentic_loop and updates daemon.pipeline.monitor_state."""
 
     @pytest.mark.asyncio
@@ -239,7 +239,7 @@ class TestMonitorCallbacksWiring:
 
     @pytest.mark.asyncio
     async def test_callbacks_passed_to_agentic_loop(self, tmp_path):
-        """on_response and on_tool_results are passed as callables to run_agentic_loop."""
+        """on_response and on_tool_result are passed as callables to run_agentic_loop."""
         daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         response = _make_response()
@@ -301,7 +301,7 @@ class TestMonitorCallbacksWiring:
 
     @pytest.mark.asyncio
     async def test_on_tool_results_increments_turn_and_writes_thinking(self, tmp_path):
-        """on_tool_results increments turn counter and writes state=thinking."""
+        """on_tool_result increments turn counter and writes state=thinking."""
         daemon, provider, session = _make_daemon_for_monitor(tmp_path)
 
         tc = _make_tool_call("exec")
@@ -314,7 +314,7 @@ class TestMonitorCallbacksWiring:
             # Turn 1: API response with tool use
             on_resp(tool_response)
             # Tool execution completes
-            on_tool({"role": "tool_results", "results": []})
+            on_tool({"role": "tool_result", "results": []})
             data = daemon.pipeline.monitor_state
             assert data["state"] == "thinking"
             assert data["turn"] == 2
@@ -342,7 +342,7 @@ class TestMonitorCallbacksWiring:
             on_resp = kwargs["on_response"]
             on_tool = kwargs["on_tool_results"]
             on_resp(resp1)
-            on_tool({"role": "tool_results", "results": []})
+            on_tool({"role": "tool_result", "results": []})
             on_resp(resp2)
 
             data = daemon.pipeline.monitor_state
@@ -522,7 +522,7 @@ class TestMonitorCallbacksWiring:
             on_resp(resp1)
             states_seen.append(daemon.pipeline.monitor_state["state"])
 
-            on_tool({"role": "tool_results", "results": []})
+            on_tool({"role": "tool_result", "results": []})
             data = daemon.pipeline.monitor_state
             states_seen.append(data["state"])
             assert data["turn"] == 2
@@ -531,7 +531,7 @@ class TestMonitorCallbacksWiring:
             on_resp(resp2)
             states_seen.append(daemon.pipeline.monitor_state["state"])
 
-            on_tool({"role": "tool_results", "results": []})
+            on_tool({"role": "tool_result", "results": []})
             data = daemon.pipeline.monitor_state
             states_seen.append(data["state"])
             assert data["turn"] == 3

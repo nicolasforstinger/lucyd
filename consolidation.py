@@ -104,9 +104,9 @@ def serialize_messages(
     chars = 0
     for msg in messages[start_idx:end_idx]:
         role = msg.get("role", "")
-        if role not in ("user", "assistant"):
+        if role not in ("user", "agent"):
             continue
-        if role == "assistant":
+        if role == "agent":
             text = msg.get("text", "")
         else:
             text = _text_from_content(msg.get("content", ""))

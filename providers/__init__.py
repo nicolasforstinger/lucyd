@@ -98,7 +98,7 @@ class LLMResponse:
 
     def to_internal_message(self) -> AssistantMessage:
         """Convert to internal message format for session storage."""
-        msg: AssistantMessage = {"role": "assistant"}
+        msg: AssistantMessage = {"role": "agent"}
         if self.text:
             msg["text"] = self.text
         if self.tool_calls:

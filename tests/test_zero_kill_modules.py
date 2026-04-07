@@ -35,7 +35,7 @@ class TestToolSessionStatus:
         original = (mod._session_getter, mod._daemon_start_time, mod.MAX_CONTEXT_TOKENS)
         session = MagicMock()
         session.last_input_tokens = 50000
-        session.messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "text": "hello"}]
+        session.messages = [{"role": "user", "content": "hi"}, {"role": "agent", "text": "hello"}]
         session.compaction_count = 2
         mod._session_getter = lambda: session
         mod._daemon_start_time = 0.0

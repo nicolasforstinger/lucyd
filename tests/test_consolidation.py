@@ -55,7 +55,7 @@ def _make_provider(response_text: str):
 class TestGetUnprocessedRange:
     @pytest.mark.asyncio
     async def test_first_run_processes_everything(self, pool):
-        messages = [{"role": "user"}, {"role": "assistant"}] * 3
+        messages = [{"role": "user"}, {"role": "agent"}] * 3
         start, end = await get_unprocessed_range("sess1", messages, 0, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert start == 0
         assert end == 6
@@ -73,7 +73,7 @@ class TestGetUnprocessedRange:
     async def test_after_compaction_skips_summary(self, pool):
         # compaction_count=0 was processed, now compaction_count=1
         await update_consolidation_state("sess1", 0, 10, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
-        messages = [{"role": "assistant"}] * 5  # index 0 = summary
+        messages = [{"role": "agent"}] * 5  # index 0 = summary
 
         start, end = await get_unprocessed_range("sess1", messages, 1, pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         assert start == 1
@@ -134,7 +134,7 @@ class TestSerializeMessages:
     def test_basic_serialization(self):
         messages = [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "text": "world"},
+            {"role": "agent", "text": "world"},
         ]
         result = serialize_messages(messages, 0, 2)
         assert "user: hello" in result
@@ -155,12 +155,12 @@ class TestSerializeMessages:
 
     def test_skips_tool_results(self):
         messages = [
-            {"role": "tool_results", "results": [
+            {"role": "tool_result", "results": [
                 {"content": "X" * 5000}
             ]},
         ]
         result = serialize_messages(messages, 0, 1)
-        assert result == ""  # tool_results are excluded from serialization
+        assert result == ""  # tool_result messages are excluded from serialization
 
     def test_empty_range_returns_empty(self):
         messages = [{"role": "user", "content": "test"}]
@@ -182,7 +182,7 @@ class TestSerializeMessages:
 
     def test_serializes_assistant_text_field(self):
         messages = [
-            {"role": "assistant", "text": "thinking about tools",
+            {"role": "agent", "text": "thinking about tools",
              "tool_calls": [{"name": "web_search", "arguments": {"query": "test"}}]},
         ]
         result = serialize_messages(messages, 0, 1)
@@ -587,9 +587,9 @@ class TestConsolidateSession:
     async def test_full_pipeline(self, pool):
         messages = [
             {"role": "user", "content": "Nicolas lives in Austria"},
-            {"role": "assistant", "content": "Noted!"},
+            {"role": "agent", "content": "Noted!"},
             {"role": "user", "content": "And he has a cat named Miso"},
-            {"role": "assistant", "content": "Got it."},
+            {"role": "agent", "content": "Got it."},
             {"role": "user", "content": "Can you remember that?"},
         ]
 

@@ -47,7 +47,7 @@ class TestLLMResponse:
             usage=Usage(input_tokens=10, output_tokens=5),
         )
         msg = resp.to_internal_message()
-        assert msg["role"] == "assistant"
+        assert msg["role"] == "agent"
         assert msg["text"] == "Hello"
         assert "tool_calls" not in msg
 
@@ -144,7 +144,7 @@ class TestAnthropicFormatMessages:
 
     def test_assistant_with_thinking(self):
         p = _make_anthropic()
-        msgs = [{"role": "assistant", "text": "Reply", "thinking": "hmm"}]
+        msgs = [{"role": "agent", "text": "Reply", "thinking": "hmm"}]
         result = p.format_messages(msgs)
         content = result[0]["content"]
         types = [b["type"] for b in content]
@@ -153,7 +153,7 @@ class TestAnthropicFormatMessages:
 
     def test_assistant_with_tool_calls(self):
         p = _make_anthropic()
-        msgs = [{"role": "assistant", "tool_calls": [
+        msgs = [{"role": "agent", "tool_calls": [
             {"id": "tc1", "name": "read", "arguments": {"path": "/tmp"}}
         ]}]
         result = p.format_messages(msgs)
@@ -163,7 +163,7 @@ class TestAnthropicFormatMessages:
 
     def test_tool_results_become_user_role(self):
         p = _make_anthropic()
-        msgs = [{"role": "tool_results", "results": [
+        msgs = [{"role": "tool_result", "results": [
             {"tool_call_id": "tc1", "content": "file contents"}
         ]}]
         result = p.format_messages(msgs)
@@ -331,7 +331,7 @@ class TestOpenAIFormatMessages:
 
     def test_assistant_with_tool_calls(self):
         p = _make_openai()
-        msgs = [{"role": "assistant", "text": "", "tool_calls": [
+        msgs = [{"role": "agent", "text": "", "tool_calls": [
             {"id": "tc1", "name": "exec", "arguments": {"cmd": "ls"}}
         ]}]
         result = p.format_messages(msgs)
@@ -343,7 +343,7 @@ class TestOpenAIFormatMessages:
 
     def test_tool_results_expanded(self):
         p = _make_openai()
-        msgs = [{"role": "tool_results", "results": [
+        msgs = [{"role": "tool_result", "results": [
             {"tool_call_id": "tc1", "content": "output1"},
             {"tool_call_id": "tc2", "content": "output2"},
         ]}]
@@ -697,7 +697,7 @@ class TestLLMResponseEdgeCases:
             usage=Usage(input_tokens=5, output_tokens=2),
         )
         msg = resp.to_internal_message()
-        assert msg["role"] == "assistant"
+        assert msg["role"] == "agent"
         assert "text" not in msg
         assert "tool_calls" not in msg
         assert msg["usage"]["input_tokens"] == 5
@@ -815,7 +815,7 @@ class TestAnthropicFormatMessagesExtended:
         """Thinking block with signature is preserved in formatted output."""
         p = _make_anthropic()
         msgs = [{
-            "role": "assistant",
+            "role": "agent",
             "text": "Answer",
             "thinking_block": {
                 "type": "thinking",
@@ -835,23 +835,23 @@ class TestAnthropicFormatMessagesExtended:
         assert p.format_messages([]) == []
 
     def test_mixed_conversation(self):
-        """Full conversation with user, assistant, tool_results formats correctly."""
+        """Full conversation with user, assistant, tool_result formats correctly."""
         p = _make_anthropic()
         msgs = [
             {"role": "user", "content": "Read /tmp/x"},
-            {"role": "assistant", "text": "", "tool_calls": [
+            {"role": "agent", "text": "", "tool_calls": [
                 {"id": "tc1", "name": "read", "arguments": {"path": "/tmp/x"}}
             ]},
-            {"role": "tool_results", "results": [
+            {"role": "tool_result", "results": [
                 {"tool_call_id": "tc1", "content": "file contents"}
             ]},
-            {"role": "assistant", "text": "Here is the file content."},
+            {"role": "agent", "text": "Here is the file content."},
         ]
         result = p.format_messages(msgs)
         assert len(result) == 4
         assert result[0]["role"] == "user"
         assert result[1]["role"] == "assistant"
-        assert result[2]["role"] == "user"  # tool_results -> user role
+        assert result[2]["role"] == "user"  # tool_result -> user role
         assert result[3]["role"] == "assistant"
 
     def test_user_message_with_neutral_image_blocks(self):
@@ -1283,7 +1283,7 @@ class TestMistralFormatMessages:
 
     def test_assistant_with_tool_calls(self) -> None:
         p = _make_mistral()
-        msgs = [{"role": "assistant", "text": "", "tool_calls": [
+        msgs = [{"role": "agent", "text": "", "tool_calls": [
             {"id": "tc1", "name": "exec", "arguments": {"cmd": "ls"}}
         ]}]
         result = p.format_messages(msgs)
@@ -1294,7 +1294,7 @@ class TestMistralFormatMessages:
 
     def test_tool_results_expanded(self) -> None:
         p = _make_mistral()
-        msgs = [{"role": "tool_results", "results": [
+        msgs = [{"role": "tool_result", "results": [
             {"tool_call_id": "tc1", "content": "output1"},
             {"tool_call_id": "tc2", "content": "output2"},
         ]}]
@@ -1307,7 +1307,7 @@ class TestMistralFormatMessages:
     def test_empty_assistant_has_content(self) -> None:
         """Assistant with no text and no tools still gets content key."""
         p = _make_mistral()
-        msgs = [{"role": "assistant"}]
+        msgs = [{"role": "agent"}]
         result = p.format_messages(msgs)
         assert result[0]["content"] == ""
 
@@ -1329,13 +1329,13 @@ class TestMistralFormatMessages:
         p = _make_mistral()
         msgs = [
             {"role": "user", "content": "Read /tmp/x"},
-            {"role": "assistant", "text": "", "tool_calls": [
+            {"role": "agent", "text": "", "tool_calls": [
                 {"id": "tc1", "name": "read", "arguments": {"path": "/tmp/x"}}
             ]},
-            {"role": "tool_results", "results": [
+            {"role": "tool_result", "results": [
                 {"tool_call_id": "tc1", "content": "file contents"}
             ]},
-            {"role": "assistant", "text": "Here is the file content."},
+            {"role": "agent", "text": "Here is the file content."},
         ]
         result = p.format_messages(msgs)
         assert len(result) == 4

@@ -360,7 +360,7 @@ class TestAgenticLoopEfficiency:
         )
         # Tool result should contain retry guidance
         tool_results = [
-            m for m in messages if m.get("role") == "tool_results"
+            m for m in messages if m.get("role") == "tool_result"
         ]
         assert len(tool_results) >= 1
         content = tool_results[0]["results"][0]["content"]

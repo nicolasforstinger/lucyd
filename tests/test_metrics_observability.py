@@ -232,7 +232,7 @@ class TestContextTrimMetrics:
         # Messages that exceed the 500-token context budget
         messages: list[dict[str, object]] = [
             {"role": "user", "content": "x" * 2000},
-            {"role": "assistant", "content": "y" * 2000},
+            {"role": "agent", "content": "y" * 2000},
             {"role": "user", "content": "z" * 2000},
         ]
 

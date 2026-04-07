@@ -845,11 +845,11 @@ class TestProcessMessageIntegration:
         # Simulate the agentic loop appending messages to session.messages
         def mock_agentic_loop(**kwargs):
             msgs = kwargs["messages"]
-            msgs.append({"role": "assistant", "content": "Let me check that."})
-            msgs.append({"role": "tool_results", "results": [
+            msgs.append({"role": "agent", "content": "Let me check that."})
+            msgs.append({"role": "tool_result", "results": [
                 {"tool_use_id": "t1", "content": "result data"},
             ]})
-            msgs.append({"role": "assistant", "content": "Here is the result."})
+            msgs.append({"role": "agent", "content": "Here is the result."})
 
             return _mock_response(text="Here is the result.", input_tokens=4000, output_tokens=300)
 
@@ -1431,7 +1431,7 @@ class TestBuildSessions:
         daemon.session_mgr._index = the_index
         daemon.session_mgr.get_index = AsyncMock(return_value=the_index)
         live_session = MagicMock()
-        live_session.messages = [{"role": "user"}, {"role": "assistant"}]
+        live_session.messages = [{"role": "user"}, {"role": "agent"}]
         live_session.compaction_count = 1
         live_session.model = "primary"
         the_sessions = {"alice": live_session}

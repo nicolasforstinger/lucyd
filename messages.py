@@ -3,8 +3,8 @@
 Three roles, discriminated by the ``role`` field:
 
 - **UserMessage**: ``{"role": "user", "content": str}``
-- **AssistantMessage**: ``{"role": "assistant", "text": ..., "tool_calls": ..., "usage": ...}``
-- **ToolResultsMessage**: ``{"role": "tool_results", "results": [...]}``
+- **AssistantMessage**: ``{"role": "agent", "text": ..., "tool_calls": ..., "usage": ...}``
+- **ToolResultsMessage**: ``{"role": "tool_result", "results": [...]}``
 
 The union ``Message = UserMessage | AssistantMessage | ToolResultsMessage``
 is narrowed by mypy via ``msg["role"] == "user"`` checks.
@@ -39,7 +39,7 @@ class AssistantMessage(TypedDict):
     ``usage`` stripped during compaction.
     """
 
-    role: Literal["assistant"]
+    role: Literal["agent"]
     text: NotRequired[str]
     tool_calls: NotRequired[list[dict[str, Any]]]
     thinking: NotRequired[str]
@@ -48,9 +48,12 @@ class AssistantMessage(TypedDict):
 
 
 class ToolResultsMessage(TypedDict):
-    """Tool execution results, paired with a preceding assistant's ``tool_calls``."""
+    """Tool execution results, paired with a preceding assistant's ``tool_calls``.
 
-    role: Literal["tool_results"]
+    Each result dict contains ``tool_call_id``, ``tool_name``, and ``content``.
+    """
+
+    role: Literal["tool_result"]
     results: list[dict[str, Any]]
 
 

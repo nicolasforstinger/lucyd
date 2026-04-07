@@ -93,6 +93,7 @@ def configure(config: Any = None, metering: Any = None,
 
     if config is not None:
         _output_dir = str(config.http_download_dir)
+        Path(_output_dir).mkdir(parents=True, exist_ok=True)
 
     # Create SDK client
     if AsyncElevenLabs is None:

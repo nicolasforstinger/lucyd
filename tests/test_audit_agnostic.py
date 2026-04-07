@@ -153,7 +153,7 @@ class TestInterfaceParity:
 
         session.messages = [
             {"role": "user", "content": "test"},
-            {"role": "assistant", "text": "ok", "usage": {
+            {"role": "agent", "text": "ok", "usage": {
                 "input_tokens": 1000, "output_tokens": 200,
                 "cache_read_tokens": 300, "cache_write_tokens": 100,
             }},
@@ -225,7 +225,7 @@ class TestInterfaceParity:
         # Populate with known state
         session.messages = [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "text": "hi", "usage": {
+            {"role": "agent", "text": "hi", "usage": {
                 "input_tokens": 2000, "output_tokens": 500,
                 "cache_read_tokens": 800, "cache_write_tokens": 200,
             }},

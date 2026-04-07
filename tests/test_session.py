@@ -187,7 +187,7 @@ class TestCompactionWarning:
     def test_needs_compaction_above_threshold(self):
         session = Session("test-warn", None, TEST_CLIENT_ID, TEST_AGENT_ID)
         session.messages = [{
-            "role": "assistant",
+            "role": "agent",
             "text": "response",
             "usage": {"input_tokens": 160000, "output_tokens": 500},
         }]
@@ -196,7 +196,7 @@ class TestCompactionWarning:
     def test_no_compaction_below_threshold(self):
         session = Session("test-ok", None, TEST_CLIENT_ID, TEST_AGENT_ID)
         session.messages = [{
-            "role": "assistant",
+            "role": "agent",
             "text": "response",
             "usage": {"input_tokens": 100000, "output_tokens": 500},
         }]
@@ -216,7 +216,7 @@ class TestPersistMethods:
         assert session.total_output_tokens == 0
 
         msg = {
-            "role": "assistant", "text": "hello",
+            "role": "agent", "text": "hello",
             "usage": {"input_tokens": 1000, "output_tokens": 200},
         }
         await session.add_assistant_message(msg, persist_only=True)
@@ -230,7 +230,7 @@ class TestPersistMethods:
     async def test_persist_assistant_message_writes_event(self, pool):
         session = await _create_session(pool, "test-persist-j")
         msg = {
-            "role": "assistant", "text": "hi",
+            "role": "agent", "text": "hi",
             "usage": {"input_tokens": 10, "output_tokens": 5},
         }
         await session.add_assistant_message(msg, persist_only=True)
@@ -242,7 +242,7 @@ class TestPersistMethods:
         assert len(rows) == 1
         event = json.loads(rows[0]["payload"])
         assert event["type"] == "message"
-        assert event["role"] == "assistant"
+        assert event["role"] == "agent"
 
     @pytest.mark.asyncio
     async def test_persist_tool_results_writes_events(self, pool):
@@ -333,13 +333,13 @@ class TestMessageOrder:
         session = await _create_session(pool, "test-order")
         await session.add_user_message("hello", sender="test", source="cli")
         session.messages.append({
-            "role": "assistant", "text": "hi back",
+            "role": "agent", "text": "hi back",
             "usage": {"input_tokens": 10, "output_tokens": 5},
         })
 
         assert session.messages[0]["role"] == "user"
         assert session.messages[0]["content"] == "hello"
-        assert session.messages[1]["role"] == "assistant"
+        assert session.messages[1]["role"] == "agent"
         assert session.messages[1]["text"] == "hi back"
 
 
@@ -359,7 +359,7 @@ class TestCompactionEndToEnd:
             )
             session.messages.append(
                 {
-                    "role": "assistant",
+                    "role": "agent",
                     "text": f"assistant reply {i}",
                     "usage": {"input_tokens": 100 * (i + 1), "output_tokens": 50 * (i + 1)},
                 }
@@ -390,7 +390,7 @@ class TestCompactionEndToEnd:
         # Recent messages preserved
         assert session.messages[2]["role"] == "user"
         assert session.messages[2]["content"] == "user message 2"
-        assert session.messages[3]["role"] == "assistant"
+        assert session.messages[3]["role"] == "agent"
         assert session.messages[3]["text"] == "assistant reply 2"
 
     @pytest.mark.asyncio
@@ -466,7 +466,7 @@ class TestCompactionEndToEnd:
         session = await _create_session(pool, "test-skip-compact")
         session.messages = [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "text": "hi", "usage": {"input_tokens": 10, "output_tokens": 5}},
+            {"role": "agent", "text": "hi", "usage": {"input_tokens": 10, "output_tokens": 5}},
             {"role": "user", "content": "bye"},
         ]
         mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID)
@@ -504,7 +504,7 @@ class TestCompactionEndToEnd:
         for i in range(10):
             session.messages.append({"role": "user", "content": f"msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply {i}",
+                "role": "agent", "text": f"reply {i}",
                 "usage": {"input_tokens": 100, "output_tokens": 50},
             })
         assert len(session.messages) == 20
@@ -534,7 +534,7 @@ class TestCompactionEndToEnd:
         for i in range(10):
             session.messages.append({"role": "user", "content": f"msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply {i}",
+                "role": "agent", "text": f"reply {i}",
                 "usage": {"input_tokens": 100, "output_tokens": 50},
             })
         mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID)
@@ -550,40 +550,40 @@ class TestCompactionEndToEnd:
 
     @pytest.mark.asyncio
     async def test_compact_skips_orphaned_tool_results(self, pool):
-        """Compaction split must not leave tool_results without matching tool_use."""
+        """Compaction split must not leave tool_result without matching tool_use."""
         session = await _create_session(pool, "test-tool-boundary")
         # Build: 8 user/assistant pairs + 1 tool exchange + 1 user/assistant
         for i in range(8):
             session.messages.append({"role": "user", "content": f"msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply {i}",
+                "role": "agent", "text": f"reply {i}",
                 "tool_calls": [], "usage": {"input_tokens": 100, "output_tokens": 50},
             })
         # Tool exchange at positions 16-18
         session.messages.append({
-            "role": "assistant", "text": "",
+            "role": "agent", "text": "",
             "tool_calls": [{"id": "tool_1", "name": "tts", "arguments": {"text": "hi"}}],
             "usage": {"input_tokens": 100, "output_tokens": 50},
         })
         session.messages.append({
-            "role": "tool_results",
+            "role": "tool_result",
             "results": [{"tool_call_id": "tool_1", "content": "sent"}],
         })
         session.messages.append({
-            "role": "assistant", "text": "done",
+            "role": "agent", "text": "done",
             "usage": {"input_tokens": 100, "output_tokens": 50},
         })
         # Final pair at 19-20
         session.messages.append({"role": "user", "content": "last msg"})
         session.messages.append({
-            "role": "assistant", "text": "last reply",
+            "role": "agent", "text": "last reply",
             "usage": {"input_tokens": 100, "output_tokens": 50},
         })
         # 21 messages total. keep_recent_pct=0.25 -> split at int(21*0.75)=15
-        # Position 15 is an assistant (reply 7). No tool_results -> split unchanged.
-        # But if we force split to land on tool_results (index 17):
+        # Position 15 is an assistant (reply 7). No tool_result -> split unchanged.
+        # But if we force split to land on tool_result (index 17):
         # keep_recent_pct such that split = 17 -> 17/21 = 0.81 -> 1-pct = 0.19
-        # split_point = int(21 * 0.81) = 17 -> message[17] is tool_results
+        # split_point = int(21 * 0.81) = 17 -> message[17] is tool_result
         mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         mock_provider = MockCompactionProvider(summary_text="Summary.")
 
@@ -591,17 +591,17 @@ class TestCompactionEndToEnd:
             session, mock_provider, "Summarize.",
             cost=_TEST_COST, **{**_TEST_COMPACTION, "keep_recent_pct": 0.19},
         )
-        # Split should skip past tool_results at index 17 to index 18 (assistant)
+        # Split should skip past tool_result at index 17 to index 18 (assistant)
         # old=18, recent=3 -> summary + marker + 3 = 5
-        # Verify no tool_results in first position of recent messages
+        # Verify no tool_result in first position of recent messages
         assert session.messages[0]["content"].startswith("[Previous conversation summary]")
         for msg in session.messages[2:]:
-            if msg.get("role") == "tool_results":
-                # Any remaining tool_results must have a preceding assistant with tool_use
+            if msg.get("role") == "tool_result":
+                # Any remaining tool_result must have a preceding assistant with tool_use
                 idx = session.messages.index(msg)
                 prev = session.messages[idx - 1]
-                assert prev.get("role") == "assistant"
-                assert prev.get("tool_calls"), "tool_results without preceding tool_use"
+                assert prev.get("role") == "agent"
+                assert prev.get("tool_calls"), "tool_result without preceding tool_use"
 
 
 # ─── Compaction Round-Trip ──────────────────────────────────────────
@@ -617,7 +617,7 @@ class TestCompactionRoundTrip:
         for i in range(15):
             session.messages.append({"role": "user", "content": f"user msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply {i}",
+                "role": "agent", "text": f"reply {i}",
                 "content": f"reply {i}",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             })
@@ -682,7 +682,7 @@ class TestCompactionRoundTrip:
         for i in range(15):
             session.messages.append({"role": "user", "content": f"r1 msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"r1 reply {i}",
+                "role": "agent", "text": f"r1 reply {i}",
                 "content": f"r1 reply {i}",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             })
@@ -701,7 +701,7 @@ class TestCompactionRoundTrip:
         for i in range(15):
             session.messages.append({"role": "user", "content": f"r2 msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"r2 reply {i}",
+                "role": "agent", "text": f"r2 reply {i}",
                 "content": f"r2 reply {i}",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             })
@@ -767,7 +767,7 @@ class TestCompactionReplacesMessages:
         for i in range(10):
             session.messages.append({"role": "user", "content": f"msg-{i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply-{i}",
+                "role": "agent", "text": f"reply-{i}",
                 "usage": {"context_tokens": 50000, "input_tokens": 40000,
                           "output_tokens": 200, "cache_read_tokens": 10000},
             })
@@ -780,7 +780,7 @@ class TestCompactionReplacesMessages:
 
         # No surviving assistant message should carry usage
         for msg in session.messages:
-            if msg.get("role") == "assistant":
+            if msg.get("role") == "agent":
                 assert "usage" not in msg, "Stale usage not stripped after compaction"
         # last_input_tokens should return 0 (no usage data)
         assert session.last_input_tokens == 0
@@ -847,7 +847,7 @@ class TestSessionAddMessages:
     async def test_add_assistant_message_updates_tokens(self, pool):
         session = await _create_session(pool, "test-add-asst")
         msg = {
-            "role": "assistant", "text": "hi",
+            "role": "agent", "text": "hi",
             "usage": {"input_tokens": 500, "output_tokens": 100},
         }
         await session.add_assistant_message(msg)
@@ -975,13 +975,13 @@ class TestCompactionWithContentBlocks:
                 {"type": "text", "text": "what is in this photo"},
                 {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
             ]},
-            {"role": "assistant", "text": "I see a cat.",
+            {"role": "agent", "text": "I see a cat.",
              "usage": {"input_tokens": 500, "output_tokens": 50}},
             {"role": "user", "content": "thanks"},
-            {"role": "assistant", "text": "you're welcome",
+            {"role": "agent", "text": "you're welcome",
              "usage": {"input_tokens": 600, "output_tokens": 30}},
             {"role": "user", "content": "another question"},
-            {"role": "assistant", "text": "another answer",
+            {"role": "agent", "text": "another answer",
              "usage": {"input_tokens": 700, "output_tokens": 40}},
         ]
         mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID)
@@ -1011,7 +1011,7 @@ class TestCompactionAntiHallucination:
         for i in range(6):
             session.messages.append({"role": "user", "content": f"user msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply {i}",
+                "role": "agent", "text": f"reply {i}",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             })
 
@@ -1050,7 +1050,7 @@ class TestCompactionAntiHallucination:
         for i in range(6):
             session.messages.append({"role": "user", "content": f"msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply {i}",
+                "role": "agent", "text": f"reply {i}",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             })
 
@@ -1095,7 +1095,7 @@ class TestCompactionStatePersistenceOrder:
         for i in range(15):
             session.messages.append({"role": "user", "content": f"msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply {i}",
+                "role": "agent", "text": f"reply {i}",
                 "content": f"reply {i}",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             })
@@ -1142,7 +1142,7 @@ class TestBuildSessionInfo:
         session = await _create_session(pool, "sess-1", model="primary", contact="alice")
         session.messages = [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "text": "hi", "usage": {
+            {"role": "agent", "text": "hi", "usage": {
                 "input_tokens": 500, "output_tokens": 100,
                 "cache_read_tokens": 200, "cache_write_tokens": 50,
             }},
@@ -1168,7 +1168,7 @@ class TestBuildSessionInfo:
         session = await _create_session(pool, "sess-2")
         session.messages = [
             {"role": "user", "content": "test"},
-            {"role": "assistant", "text": "ok", "usage": {"input_tokens": 300}},
+            {"role": "agent", "text": "ok", "usage": {"input_tokens": 300}},
         ]
         session.compaction_count = 1
         await session.save_state()
@@ -1212,7 +1212,7 @@ class TestReadHistoryEvents:
             "type": "message", "role": "user", "content": "hello", "from": "alice",
         })
         await session.append_event({
-            "type": "message", "role": "assistant", "text": "hi there",
+            "type": "message", "role": "agent", "text": "hi there",
         })
         await session.append_event({
             "type": "tool_result", "tool_use_id": "t1", "content": "ok",
@@ -1224,7 +1224,7 @@ class TestReadHistoryEvents:
         assert result[0]["role"] == "user"
         assert result[0]["content"] == "hello"
         assert result[0]["from"] == "alice"
-        assert result[1]["role"] == "assistant"
+        assert result[1]["role"] == "agent"
         assert result[1]["text"] == "hi there"
 
     @pytest.mark.asyncio
@@ -1239,7 +1239,7 @@ class TestReadHistoryEvents:
             "type": "tool_result", "tool_use_id": "t1", "content": "ok",
         })
         await session.append_event({
-            "type": "message", "role": "assistant", "text": "done",
+            "type": "message", "role": "agent", "text": "done",
         })
 
         result = await read_history_events(pool, "s-full", full=True)
@@ -1284,7 +1284,7 @@ class TestCompactionIdentity:
         for i in range(6):
             session.messages.append({"role": "user", "content": f"msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply {i}",
+                "role": "agent", "text": f"reply {i}",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             })
 
@@ -1317,7 +1317,7 @@ class TestCompactionIdentity:
         for i in range(6):
             session.messages.append({"role": "user", "content": f"msg {i}"})
             session.messages.append({
-                "role": "assistant", "text": f"reply {i}",
+                "role": "agent", "text": f"reply {i}",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             })
 

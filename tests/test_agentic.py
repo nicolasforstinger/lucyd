@@ -152,7 +152,7 @@ class TestAgenticLoop:
         )
         assert resp.text == "Pong"
         # Messages should have been mutated in-place:
-        # user + assistant(tool_use) + tool_results + assistant(end_turn)
+        # user + assistant(tool_use) + tool_result + assistant(end_turn)
         assert len(messages) == 4
 
     @pytest.mark.asyncio
@@ -189,8 +189,8 @@ class TestAgenticLoop:
             tools=reg.get_schemas(), tool_executor=reg,
             config=replace(_LOOP_CONFIG, max_turns=5),
         )
-        # The tool error should be in the tool_results message
-        tool_results = [m for m in messages if m.get("role") == "tool_results"]
+        # The tool error should be in the tool_result message
+        tool_results = [m for m in messages if m.get("role") == "tool_result"]
         assert len(tool_results) >= 1
         assert "Error:" in tool_results[0]["results"][0]["content"]
 
@@ -451,8 +451,8 @@ class TestToolResultDictKeys:
             tools=reg.get_schemas(), tool_executor=reg,
             config=replace(_LOOP_CONFIG, max_turns=5),
         )
-        # Find tool_results in messages
-        tool_results = [m for m in messages if m.get("role") == "tool_results"]
+        # Find tool_result in messages
+        tool_results = [m for m in messages if m.get("role") == "tool_result"]
         assert len(tool_results) >= 1
         result = tool_results[0]["results"][0]
         assert "tool_call_id" in result
@@ -496,7 +496,7 @@ class TestReturnExceptions:
         # Should reach end_turn, not crash
         assert resp.text == "Done"
         # Tool results should contain both — error string and success
-        tool_results = [m for m in messages if m.get("role") == "tool_results"]
+        tool_results = [m for m in messages if m.get("role") == "tool_result"]
         assert len(tool_results) >= 1
         results = tool_results[0]["results"]
         assert len(results) == 2
@@ -657,7 +657,7 @@ class TestMaxTokensWithToolCalls:
         assert resp.text == "Done"
         assert provider._call_count == 2
         # Tool results from the executed tool call are in the history
-        tool_results = [m for m in messages if m.get("role") == "tool_results"]
+        tool_results = [m for m in messages if m.get("role") == "tool_result"]
         assert len(tool_results) == 1
         assert tool_results[0]["results"][0]["tool_call_id"] == "tc-trunc"
         assert "echo:x" in tool_results[0]["results"][0]["content"]
@@ -1029,7 +1029,7 @@ class TestContextTrimming:
         reg = ToolRegistry()
         messages = [
             {"role": "user", "content": "first"},
-            {"role": "assistant", "content": "A " * 500},
+            {"role": "agent", "content": "A " * 500},
             {"role": "user", "content": "B " * 500},
             {"role": "user", "content": "latest"},
         ]
@@ -1049,7 +1049,7 @@ class TestContextTrimming:
         reg = ToolRegistry()
         messages = [
             {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi"},
+            {"role": "agent", "content": "Hi"},
             {"role": "user", "content": "test"},
         ]
         resp = await run_agentic_loop(

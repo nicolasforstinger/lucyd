@@ -130,7 +130,7 @@ class MistralProvider:
                     "content": self._convert_content_blocks(content),
                 })
 
-            elif msg["role"] == "assistant":
+            elif msg["role"] == "agent":
                 entry: dict[str, Any] = {"role": "assistant"}
                 text = msg.get("text", "")
                 tool_calls_raw = msg.get("tool_calls", [])
@@ -154,7 +154,7 @@ class MistralProvider:
                     entry["content"] = ""
                 result.append(entry)
 
-            elif msg["role"] == "tool_results":
+            elif msg["role"] == "tool_result":
                 for r in msg["results"]:
                     result.append({
                         "role": "tool",

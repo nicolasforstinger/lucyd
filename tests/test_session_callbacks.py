@@ -16,7 +16,7 @@ async def session_mgr(pool):
     mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID, agent_name="TestAgent")
     session = await mgr.get_or_create("test-user")
     await session.add_user_message("hello")
-    await session.add_assistant_message({"role": "assistant", "text": "hi there"})
+    await session.add_assistant_message({"role": "agent", "text": "hi there"})
     await session.save_state()
     return mgr
 

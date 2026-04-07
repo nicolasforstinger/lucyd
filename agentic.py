@@ -244,11 +244,11 @@ def _turn_group_end(messages: list[Message], start: int) -> int:
       are included in the group).  Stops at the next assistant turn
       to avoid consuming a later valid turn group.
     """
-    if messages[start]["role"] == "assistant" and messages[start].get("tool_calls"):
+    if messages[start]["role"] == "agent" and messages[start].get("tool_calls"):
         for j in range(start + 1, len(messages)):
-            if messages[j]["role"] == "tool_results":
+            if messages[j]["role"] == "tool_result":
                 return j + 1
-            if messages[j]["role"] == "assistant":
+            if messages[j]["role"] == "agent":
                 break  # next assistant turn — don't consume it
     return start + 1
 
@@ -380,9 +380,11 @@ async def run_agentic_loop(
             response.total_cost = accumulated_cost
             return response
 
-        # Add to messages
+        # Add to messages (skip empty post-attachment turns — no useful content)
         internal_msg = response.to_internal_message()
-        messages.append(internal_msg)
+        _has_content = internal_msg.get("text") or internal_msg.get("tool_calls")
+        if _has_content:
+            messages.append(internal_msg)
 
         if on_response:
             await on_response(response) if inspect.iscoroutinefunction(on_response) \
@@ -467,6 +469,7 @@ async def run_agentic_loop(
             # tool_result is {"text": str, "attachments": list[str]}
             return {
                 "tool_call_id": tc.id,
+                "tool_name": tc.name,
                 "content": tool_result["text"],
                 "_attachments": tool_result.get("attachments", []),
             }
@@ -485,6 +488,7 @@ async def run_agentic_loop(
                           trace_id[:8], tc.name, result)
                 final_results.append({
                     "tool_call_id": tc.id,
+                    "tool_name": tc.name,
                     "content": f"Error: {type(result).__name__}: {result}",
                 })
             else:
@@ -504,7 +508,7 @@ async def run_agentic_loop(
                         )
                 final_results.append(result)
 
-        results_msg: ToolResultsMessage = {"role": "tool_results", "results": final_results}
+        results_msg: ToolResultsMessage = {"role": "tool_result", "results": final_results}
         messages.append(results_msg)
 
         # Inject concise thinking hint after tool results

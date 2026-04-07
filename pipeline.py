@@ -511,7 +511,7 @@ class MessagePipeline:
             for m in session.messages:
                 if m["role"] == "user":
                     history_tokens += _estimate_tokens(m["content"])
-                elif m["role"] == "assistant":
+                elif m["role"] == "agent":
                     history_tokens += _estimate_tokens(m.get("text", ""))
             tool_def_tokens = sum(
                 _estimate_tokens(t["description"]) for t in self._tool_registry.get_schemas()
@@ -671,9 +671,9 @@ class MessagePipeline:
         """Persist new messages and restore text-only content."""
         session = ctx.session
         for msg in session.messages[ctx.msg_count_before:]:
-            if msg["role"] == "assistant":
+            if msg["role"] == "agent":
                 await session.add_assistant_message(msg, persist_only=True)
-            elif msg["role"] == "tool_results":
+            elif msg["role"] == "tool_result":
                 await session.add_tool_results(msg["results"], persist_only=True)
         if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
             session.messages[ctx.user_msg_idx].pop("_image_blocks", None)

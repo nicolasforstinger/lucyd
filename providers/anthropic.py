@@ -184,7 +184,7 @@ class AnthropicProvider:
                     content = image_blocks + [{"type": "text", "text": content if isinstance(content, str) else ""}]
                 result.append({"role": "user", "content": self._convert_content_blocks(content)})
 
-            elif msg["role"] == "assistant":
+            elif msg["role"] == "agent":
                 content_blocks: list[dict[str, Any]] = []
                 # Preserve thinking blocks with signature for API continuity
                 if msg.get("thinking_block"):
@@ -209,7 +209,7 @@ class AnthropicProvider:
                 if content_blocks:
                     result.append({"role": "assistant", "content": content_blocks})
 
-            elif msg["role"] == "tool_results":
+            elif msg["role"] == "tool_result":
                 tool_content: list[dict[str, Any]] = []
                 for r in msg["results"]:
                     tool_content.append({
