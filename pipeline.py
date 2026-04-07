@@ -702,23 +702,6 @@ class MessagePipeline:
         }
         reply_attachments = response.attachments or []
 
-        # Auto-TTS: if input was a voice message and agent didn't produce
-        # audio, pipe the text response through TTS automatically.
-        if (ctx.had_voice_input
-                and reply.strip()
-                and not reply_attachments
-                and "tts" in self._tool_registry.tool_names):
-            try:
-                tts_result = await self._tool_registry.execute("tts", {"text": reply})
-                auto_attachments = tts_result.get("attachments", [])
-                if auto_attachments:
-                    reply_attachments = auto_attachments
-                    reply = ""  # Voice is the reply — suppress duplicate text
-                    log.info("[%s] Auto-TTS: voice input → voice reply", ctx.trace_id[:8])
-            except Exception:
-                log.warning("[%s] Auto-TTS failed, delivering text", ctx.trace_id[:8],
-                            exc_info=True)
-
         # Route: silent — suppress delivery
         if ctx.reply_to == "silent":
             log.info("[%s] reply_to=silent — reply logged, not delivered", ctx.trace_id[:8])
