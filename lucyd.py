@@ -366,6 +366,12 @@ class LucydDaemon:
             log.info("Registered preprocessors: %s",
                      ", ".join(pp["name"] for pp in self._preprocessors))
 
+        # Pre-initialize tool metrics so all tools appear in dashboards from startup.
+        if metrics.ENABLED:
+            for name in self.tool_registry.tool_names:
+                metrics.TOOL_CALLS_TOTAL.labels(tool_name=name, status="success")
+                metrics.TOOL_CALLS_TOTAL.labels(tool_name=name, status="error")
+
     def _get_pool(self) -> Any:
         """Return the asyncpg connection pool."""
         return self.pool
@@ -756,8 +762,9 @@ class LucydDaemon:
             reply_to = first.get("reply_to", "")
             tid = str(uuid.uuid4())
             sk = f"{channel_id}:{sender}"
-            log.info("[%s] Processing message from %s (source=%s channel=%s)",
-                     tid[:8], _log_safe(sender), _log_safe(source), channel_id)
+            log.info("[%s] Processing message from %s (source=%s channel=%s): %s",
+                     tid[:8], _log_safe(sender), _log_safe(source), channel_id,
+                     _log_safe(combined_text[:300]))
             async with self.pipeline.get_session_lock(sk):
                 await self._process_message(
                     text=combined_text, sender=sender, source=source,

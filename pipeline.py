@@ -783,7 +783,7 @@ class MessagePipeline:
                     log.info("consolidation: %d facts, episode=%s",
                              result["facts_added"], result.get("episode_id"))
             except Exception:
-                log.exception("consolidation failed, continuing without")
+                log.warning("consolidation failed, continuing without", exc_info=True)
         prompt = self._config.compaction_prompt.replace(
             "{agent_name}", self._config.agent_name,
         ).replace("{max_tokens}", str(self._config.compaction_max_tokens))

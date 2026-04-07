@@ -342,7 +342,7 @@ async def _llm_extract_json(
     try:
         response = await provider.complete(fmt_system, fmt_messages, [])
     except Exception:
-        log.exception("%s LLM call failed", label.capitalize())
+        log.warning("%s LLM call failed", label.capitalize(), exc_info=True)
         return None, None
 
     raw = response.text or ""

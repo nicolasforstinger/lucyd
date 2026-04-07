@@ -218,7 +218,7 @@ async def consolidate_on_close(
                 metering=metering_db,
             )
     except Exception:
-        log.exception("consolidation on close failed")
+        log.warning("consolidation on close failed", exc_info=True)
 
 
 # ─── Evolution ───────────────────────────────────────────────────

@@ -349,7 +349,7 @@ async def run_agentic_loop(
             trace_id[:8], turn,
             (u.input_tokens + u.cache_read_tokens) // 1000,
             u.output_tokens, turn_elapsed,
-            f" thinking={response.thinking[:40]}..." if response.thinking else "",
+            f" thinking={response.thinking[:200]}..." if response.thinking else "",
         )
 
         # Track cost (Prometheus emission happens inside metering.record)
@@ -427,6 +427,8 @@ async def run_agentic_loop(
             response.attachments = all_attachments
             response.turns = turn + 1
             response.total_cost = accumulated_cost
+            _reply = response.text[:300] if response.text else "(attachment)" if all_attachments else "(empty)"
+            log.info("[%s] response: %s", trace_id[:8], _reply)
             return response
 
         # Context pressure check (Challenge 6): inject wrap-up hint
