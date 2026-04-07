@@ -26,6 +26,10 @@ plugins.d/*
 !plugins.d/elevenlabs.toml.example
 !plugins.d/whisper.py
 !plugins.d/whisper.toml.example
+!plugins.d/mistral_tts.py
+!plugins.d/mistral_tts.toml.example
+!plugins.d/mistral_stt.py
+!plugins.d/mistral_stt.toml.example
 
 # Testing
 .coverage
