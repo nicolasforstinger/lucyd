@@ -1,4 +1,4 @@
-# Lucyd
+# lucyd — Lucy's daemon
 
 AI agent framework. HTTP-core daemon with standalone channel bridges, agentic tool-use loop, persistent sessions, and structured long-term memory. Single-tenant: one container, one agent, one personality.
 
