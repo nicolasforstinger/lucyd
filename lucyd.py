@@ -224,6 +224,7 @@ class LucydDaemon:
         ("tools.agents",       {"sessions_spawn"}),
         ("skills",             {"load_skill"}),
         ("tools.status",       {"session_status"}),
+        ("tools.gdpr",         {"gdpr_search", "gdpr_redact"}),
     ]
 
     def _init_tools(self) -> None:
