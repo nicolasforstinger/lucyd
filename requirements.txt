@@ -14,3 +14,4 @@ elevenlabs>=1.0,<3   # Required if using plugins.d/elevenlabs.py (TTS)
 Pillow~=12.0         # Required if [vision] enabled (image processing)
 pypdf~=6.7.5         # Required if [documents] enabled (PDF text extraction). >=6.7.5 for CVE-2026-28804 fix.
 prometheus_client>=0.21,<1  # Required for Prometheus /metrics endpoint
+python-docx>=1.1,<2        # Required if using skills/docx (Word document creation/editing)
