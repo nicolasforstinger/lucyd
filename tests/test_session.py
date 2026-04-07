@@ -1102,12 +1102,12 @@ class TestCompactionStatePersistenceOrder:
         await session.save_state()
 
         call_order = []
-        orig_save = session.save_state
+        orig_replace = session.replace_all_messages
         orig_append = session.append_event
 
-        async def tracking_save():
-            call_order.append("save_state")
-            return await orig_save()
+        async def tracking_replace():
+            call_order.append("replace_all_messages")
+            return await orig_replace()
 
         async def tracking_append(event):
             call_order.append("append_event")
@@ -1116,18 +1116,18 @@ class TestCompactionStatePersistenceOrder:
         mgr = SessionManager(pool, TEST_CLIENT_ID, TEST_AGENT_ID)
         provider = MockCompactionProvider(summary_text="Summary.")
 
-        with patch.object(session, "save_state", tracking_save), \
+        with patch.object(session, "replace_all_messages", tracking_replace), \
              patch.object(session, "append_event", tracking_append):
             await mgr.compact_session(
                 session, provider, "Summarize.",
                 cost=_TEST_COST, **_TEST_COMPACTION,
             )
 
-        assert "save_state" in call_order
+        assert "replace_all_messages" in call_order
         assert "append_event" in call_order
-        save_idx = call_order.index("save_state")
+        replace_idx = call_order.index("replace_all_messages")
         append_idx = call_order.index("append_event")
-        assert save_idx < append_idx, "save_state must be called before append_event"
+        assert replace_idx < append_idx, "replace_all_messages must be called before append_event"
 
 
 # ─── build_session_info Tests ──────────────────────────────────────

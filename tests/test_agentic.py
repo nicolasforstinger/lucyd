@@ -586,8 +586,8 @@ class TestFallbackText:
             tools=reg.get_schemas(), tool_executor=reg,
             config=replace(_LOOP_CONFIG, max_turns=5),
         )
-        # Preamble "hier" must NOT become response.text
-        assert resp.text is None or resp.text == ""
+        # Text alongside attachments is preserved (not suppressed)
+        assert resp.text == "hier"
         # Attachment from tts must be present
         assert resp.attachments == ["/tmp/audio.mp3"]
 
