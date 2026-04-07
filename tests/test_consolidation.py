@@ -138,7 +138,7 @@ class TestSerializeMessages:
         ]
         result = serialize_messages(messages, 0, 2)
         assert "user: hello" in result
-        assert "assistant: world" in result
+        assert "agent: world" in result
 
     def test_respects_max_chars_truncates_at_budget(self):
         messages = [
