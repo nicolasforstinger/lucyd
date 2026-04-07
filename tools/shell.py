@@ -19,6 +19,9 @@ _MAX_TIMEOUT = 600
 _SECRET_PREFIXES = ("LUCYD_",)
 _SECRET_SUFFIXES = ("_KEY", "_KEY_ID", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIALS", "_CODE", "_PASS")
 
+# Paths the agent must not access via exec (credentials, config secrets)
+_DENIED_PATHS = ("/config/", "/proc/self/environ", "/proc/1/environ")
+
 
 def configure(default_timeout: int | None = None, max_timeout: int | None = None,
               config: Any = None, **_: Any) -> None:
@@ -48,6 +51,9 @@ def _safe_env() -> dict[str, str]:
 
 async def tool_exec(command: str, timeout: int | None = None) -> str:
     """Execute a shell command and return stdout + stderr."""
+    for denied in _DENIED_PATHS:
+        if denied in command:
+            return f"Error: Access denied — {denied} is not accessible from exec"
     if timeout is None:
         timeout = _DEFAULT_TIMEOUT
     timeout = min(timeout, _MAX_TIMEOUT)
