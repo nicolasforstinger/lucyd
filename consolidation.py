@@ -462,6 +462,7 @@ async def _record_extraction_cost(
     metering: Any = None,
     session_id: str = "",
     model_name: str = "",
+    provider_name: str = "",
     cost_rates: list[float] | None = None,
     trace_id: str = "",
     converter: Any = None,
@@ -473,7 +474,7 @@ async def _record_extraction_cost(
     if metering:
         await metering.record(
             session_id=session_id,
-            model=model_name, provider="",
+            model=model_name, provider=provider_name,
             usage=usage, cost_rates=cost_rates,
             call_type="consolidation", trace_id=trace_id,
             converter=converter, currency=currency,
@@ -536,10 +537,12 @@ async def consolidate_session(
     model_cfg = config.model_config(model_role) if hasattr(config, "model_config") else {}
     cost_rates = model_cfg.get("cost_per_mtok")
     display_name = model_cfg.get("model", model_role)
+    provider = model_cfg.get("provider", "")
     currency = model_cfg.get("currency", "EUR")
     await _record_extraction_cost(
         usage, metering=metering, session_id=session_id,
-        model_name=display_name, cost_rates=cost_rates, trace_id=trace_id,
+        model_name=display_name, provider_name=provider,
+        cost_rates=cost_rates, trace_id=trace_id,
         converter=converter, currency=currency,
     )
 
@@ -556,6 +559,7 @@ async def extract_from_file(
     agent_id: str,
     confidence_threshold: float = 0.6,
     model_name: str = "",
+    provider_name: str = "",
     cost_rates: list[float] | None = None,
     metering: Any = None,
     converter: Any = None,
@@ -603,7 +607,8 @@ async def extract_from_file(
     await _record_extraction_cost(
         usage, metering=metering,
         session_id=f"file:{file_path}",
-        model_name=model_name, cost_rates=cost_rates,
+        model_name=model_name, provider_name=provider_name,
+        cost_rates=cost_rates,
         converter=converter, currency=currency,
     )
 

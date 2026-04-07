@@ -333,6 +333,7 @@ async def handle_consolidate(
     provider = get_provider("consolidation")
     fact_model_cfg = config.model_config("primary")
     model_name = fact_model_cfg.get("model", "primary")
+    provider_name = fact_model_cfg.get("provider", "")
     cost_rates = fact_model_cfg.get("cost_per_mtok", [])
     currency = fact_model_cfg.get("currency", "EUR")
 
@@ -350,6 +351,7 @@ async def handle_consolidate(
                 str(abs_path), provider, pool, client_id, agent_id,
                 config.consolidation_confidence_threshold,
                 model_name=model_name,
+                provider_name=provider_name,
                 cost_rates=cost_rates,
                 metering=metering_db,
                 converter=converter,
