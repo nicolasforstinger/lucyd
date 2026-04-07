@@ -216,8 +216,9 @@ class LucydDaemon:
 
     # Built-in tool modules and the tool names they provide.
     _TOOL_MODULES = [
-        ("tools.filesystem",   {"read", "write", "edit"}),
+        ("tools.filesystem",   {"read", "write", "edit", "send_file"}),
         ("tools.shell",        {"exec"}),
+        ("tools.reminder",     {"reminder"}),
         ("tools.web",          {"web_search", "web_fetch"}),
         ("tools.memory_read",  {"memory_search", "memory_get"}),
         ("tools.memory_write", {"memory_write", "memory_forget", "commitment_update"}),

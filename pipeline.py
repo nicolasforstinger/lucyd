@@ -190,6 +190,7 @@ class _MessageState:
     msg_count_before: int = 0
     response: Any = None
     force_compact: bool = False
+    had_voice_input: bool = False
 
 
 # ─── Pipeline ────────────────────────────────────────────────────
@@ -701,6 +702,22 @@ class MessagePipeline:
         }
         reply_attachments = response.attachments or []
 
+        # Auto-TTS: if input was a voice message and agent didn't produce
+        # audio, pipe the text response through TTS automatically.
+        if (ctx.had_voice_input
+                and reply.strip()
+                and not reply_attachments
+                and "tts" in self._tool_registry.tool_names):
+            try:
+                tts_result = await self._tool_registry.execute("tts", {"text": reply})
+                auto_attachments = tts_result.get("attachments", [])
+                if auto_attachments:
+                    reply_attachments = auto_attachments
+                    log.info("[%s] Auto-TTS: voice input → voice reply", ctx.trace_id[:8])
+            except Exception:
+                log.warning("[%s] Auto-TTS failed, delivering text", ctx.trace_id[:8],
+                            exc_info=True)
+
         # Route: silent — suppress delivery
         if ctx.reply_to == "silent":
             log.info("[%s] reply_to=silent — reply logged, not delivered", ctx.trace_id[:8])
@@ -864,6 +881,11 @@ class MessagePipeline:
 
         model_cfg = self._config.model_config("primary")
 
+        # Detect voice messages before preprocessors consume them
+        _had_voice = bool(
+            attachments and any(getattr(a, "is_voice", False) for a in attachments)
+        )
+
         # Run preprocessors before core attachment handling
         text, attachments = await self._run_preprocessors(text, attachments)
 
@@ -890,6 +912,7 @@ class MessagePipeline:
             cost_rates=model_cfg.get("cost_per_mtok", []),
             currency=model_cfg.get("currency", "EUR"),
             force_compact=force_compact,
+            had_voice_input=_had_voice,
         )
 
         # Session setup: get/create, inject warnings, add user message

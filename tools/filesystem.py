@@ -141,6 +141,19 @@ def tool_edit(file_path: str, old_string: str, new_string: str,
     return f"Edited {file_path}"
 
 
+def tool_send_file(file_path: str) -> dict[str, Any]:
+    """Send a file as an attachment to the user."""
+    err = _check_path(file_path)
+    if err:
+        return {"text": err, "attachments": []}
+    p = Path(file_path)
+    if not p.exists():
+        return {"text": f"Error: File not found: {file_path}", "attachments": []}
+    if not p.is_file():
+        return {"text": f"Error: Not a file: {file_path}", "attachments": []}
+    return {"text": f"Sending {p.name} ({p.stat().st_size} bytes)", "attachments": [file_path]}
+
+
 TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="read",
@@ -186,5 +199,20 @@ TOOLS: list[ToolSpec] = [
             "required": ["file_path", "old_string", "new_string"],
         },
         function=tool_edit,
+    ),
+    ToolSpec(
+        name="send_file",
+        description=(
+            "Send a file to the user as an attachment. "
+            "Use after creating or converting a file that the user needs."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path to the file to send"},
+            },
+            "required": ["file_path"],
+        },
+        function=tool_send_file,
     ),
 ]
