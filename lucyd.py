@@ -762,9 +762,8 @@ class LucydDaemon:
             reply_to = first.get("reply_to", "")
             tid = str(uuid.uuid4())
             sk = f"{channel_id}:{sender}"
-            log.info("[%s] Processing message from %s (source=%s channel=%s): %s",
-                     tid[:8], _log_safe(sender), _log_safe(source), channel_id,
-                     _log_safe(combined_text[:300]))
+            log.info("[%s] Processing message from %s (source=%s channel=%s)",
+                     tid[:8], _log_safe(sender), _log_safe(source), channel_id)
             async with self.pipeline.get_session_lock(sk):
                 await self._process_message(
                     text=combined_text, sender=sender, source=source,
