@@ -1018,14 +1018,6 @@ class LucydDaemon:
             )
             await self._http_api.start()
 
-            # Scrub secrets from process environment so agent tools
-            # (exec, /proc/self/environ) cannot discover credentials.
-            _secret_suffixes = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD",
-                                "_CREDENTIALS", "_PASS", "_URL")
-            for key in list(os.environ):
-                if key.startswith("LUCYD_") or any(key.endswith(s) for s in _secret_suffixes):
-                    del os.environ[key]
-
             log.info("Lucyd daemon running (PID %d)", os.getpid())
 
             # Main message processing loop
