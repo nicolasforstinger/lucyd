@@ -713,6 +713,7 @@ class MessagePipeline:
                 auto_attachments = tts_result.get("attachments", [])
                 if auto_attachments:
                     reply_attachments = auto_attachments
+                    reply = ""  # Voice is the reply — suppress duplicate text
                     log.info("[%s] Auto-TTS: voice input → voice reply", ctx.trace_id[:8])
             except Exception:
                 log.warning("[%s] Auto-TTS failed, delivering text", ctx.trace_id[:8],
