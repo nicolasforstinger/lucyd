@@ -293,7 +293,17 @@ TOOLS: list[ToolSpec] = [
             "Use when a data subject requests deletion under GDPR Article 17. "
             "Searches: facts, episodes, aliases, commitments, messages, events, "
             "and workspace files. Case-insensitive. Provide all known identifiers "
-            "(name, email, phone, address) for a thorough sweep."
+            "(name, email, phone, address) for a thorough sweep.\n\n"
+            "CRITICAL PROTOCOL:\n"
+            "1. Search with ALL known identifiers in one call\n"
+            "2. Review each hit, decide delete/redact/skip\n"
+            "3. After all redactions, search AGAIN with the same terms — "
+            "this catches YOUR OWN messages about the deletion request\n"
+            "4. Redact those too — the request itself contains PII\n"
+            "5. Reply with ONLY a generic confirmation: "
+            "'Data subject erasure complete. N records processed.' "
+            "NEVER repeat the person's name, email, or any identifier in your response\n"
+            "6. Do NOT write any facts about the deletion to memory"
         ),
         input_schema={
             "type": "object",
