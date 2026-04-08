@@ -816,7 +816,7 @@ class TestProcessMessage:
 
         sent_paths: list[str] = []
 
-        async def capture_send(_chat_id: int, path: str) -> None:
+        async def capture_send(_chat_id: int, path: str, **kwargs: object) -> None:
             sent_paths.append(path)
 
         with (
@@ -1201,7 +1201,7 @@ class TestDeliveryFailureNotification:
 
         decoded_paths: list[str] = []
 
-        async def capture_and_check_send(_chat_id: int, path: str) -> None:
+        async def capture_and_check_send(_chat_id: int, path: str, **kwargs: object) -> None:
             decoded_paths.append(path)
             assert Path(path).exists(), "File should exist during send"
 
