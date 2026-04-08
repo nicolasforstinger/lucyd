@@ -118,10 +118,17 @@ class MeteringDB:
         # Emit cost to Prometheus — single point for all cost recording.
         # Call-level metrics (tokens, calls, latency) are emitted at the
         # actual call site via metrics.record_api_call().
+        # Note: cost is ALWAYS persisted to the database above, regardless
+        # of whether the Prometheus metric is emitted.  The guard below only
+        # prevents dashboard pollution from empty labels — it never drops cost.
         if metrics.ENABLED and provider:
             metrics.API_COST.labels(model=model, provider=provider).inc(cost_val)
         elif metrics.ENABLED:
-            log.warning("Skipping cost metric — empty provider label (model=%s)", model)
+            log.error(
+                "Cost recorded to DB but Prometheus metric skipped — "
+                "empty provider label (model=%s, cost=%.6f EUR). "
+                "Fix the provider config.", model, cost_val,
+            )
 
         return float(cost_val)
 

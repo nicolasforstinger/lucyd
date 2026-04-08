@@ -224,7 +224,12 @@ try:
         regardless of call type — appear in token/call/latency dashboards.
         """
         if not provider:
-            return  # Never emit metrics with empty labels — pollutes dashboards
+            # Cost still goes to DB via metering.record(); only Prometheus
+            # is skipped here to avoid orphaned label series on dashboards.
+            import logging as _log
+            _log.getLogger("lucyd.metrics").error(
+                "Skipping call metrics — empty provider (model=%s)", model)
+            return
         API_CALLS_TOTAL.labels(model=model, provider=provider, status="success").inc()
         in_tok = getattr(usage, "input_tokens", 0)
         out_tok = getattr(usage, "output_tokens", 0)
