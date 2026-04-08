@@ -161,25 +161,29 @@ async def send_text(chat_id: int, text: str) -> None:
         await tg_api("sendMessage", **params)
 
 
-async def send_attachment(chat_id: int, path: str) -> None:
+async def send_attachment(chat_id: int, path: str, *, caption: str = "") -> None:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Attachment not found: {path}")
     ext = p.suffix.lower()
+    params: dict[str, Any] = {"chat_id": chat_id}
+    if caption:
+        params["caption"] = caption
     if ext in (".ogg", ".mp3", ".m4a") or ext.startswith(".audio"):
         with p.open("rb") as f:
-            await tg_api("sendVoice", chat_id=chat_id, _files={"voice": (p.name, f, "audio/ogg")})
+            await tg_api("sendVoice", **params, _files={"voice": (p.name, f, "audio/ogg")})
     elif ext in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
         with p.open("rb") as f:
-            await tg_api("sendPhoto", chat_id=chat_id, _files={"photo": (p.name, f, "image/jpeg")})
+            await tg_api("sendPhoto", **params, _files={"photo": (p.name, f, "image/jpeg")})
     else:
         with p.open("rb") as f:
-            await tg_api("sendDocument", chat_id=chat_id, _files={"document": (p.name, f, "application/octet-stream")})
+            await tg_api("sendDocument", **params, _files={"document": (p.name, f, "application/octet-stream")})
 
 
-async def _send_with_retry(send_fn: Callable[[int, str], Awaitable[None]],
+async def _send_with_retry(send_fn: Callable[..., Awaitable[None]],
                            chat_id: int, payload: str, *,
-                           retries: int = 2, delay: float = 1.0) -> None:
+                           retries: int = 2, delay: float = 1.0,
+                           **kwargs: Any) -> None:
     """Call a Telegram send function with retry on transient failures.
 
     Raises the last exception if all attempts fail.
@@ -187,7 +191,7 @@ async def _send_with_retry(send_fn: Callable[[int, str], Awaitable[None]],
     last_exc: Exception | None = None
     for attempt in range(1 + retries):
         try:
-            await send_fn(chat_id, payload)
+            await send_fn(chat_id, payload, **kwargs)
             return
         except httpx.ConnectError as e:
             last_exc = e
@@ -430,6 +434,15 @@ async def process_message(message: dict[str, Any], download_dir: Path,
 
     # Deliver to Telegram (with retry + client reset on ConnectError)
     failures: list[str] = []
+    outbound_atts = data.get("attachments", [])
+
+    # When there's text + exactly one attachment, send as caption to avoid
+    # two separate notifications.  Caption is used up by the attachment.
+    caption_text = ""
+    if reply and len(outbound_atts) == 1:
+        caption_text = reply
+        reply = ""  # consumed — don't send as separate message
+
     if reply:
         try:
             await _send_with_retry(send_text, chat_id, reply)
@@ -437,11 +450,13 @@ async def process_message(message: dict[str, Any], download_dir: Path,
             log.error("Text delivery failed for %s: %s", sender, e)
             failures.append(f"text: {e}")
 
-    for att in data.get("attachments", []):
+    for att in outbound_atts:
         local_path: str | None = None
         try:
             local_path = _decode_outbound_attachment(att, download_dir)
-            await _send_with_retry(send_attachment, chat_id, local_path)
+            await _send_with_retry(send_attachment, chat_id, local_path,
+                                   caption=caption_text)
+            caption_text = ""  # only on first attachment
         except Exception as e:
             fname = att.get("filename", "?") if isinstance(att, dict) else att
             log.error("Attachment delivery failed for %s (%s): %s", sender, fname, e)
