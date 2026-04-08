@@ -382,6 +382,14 @@ class Config:
                     model_cfg.setdefault("base_url", base_url)
                 for k, v in extra_flags.items():
                     model_cfg.setdefault(k, v)
+                # Validate: every model must have a non-empty provider for
+                # accurate Prometheus labels.  Empty provider labels create
+                # orphaned metrics that pollute dashboards.
+                if not model_cfg.get("provider"):
+                    raise ConfigError(
+                        f"Model '{model_name}' in provider '{name}' has no "
+                        f"provider type — check 'type' in {provider_file}"
+                    )
                 self._data["models"][model_name] = model_cfg
 
             log.info("Loaded provider '%s': %s (%d models)",

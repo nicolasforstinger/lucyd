@@ -223,6 +223,8 @@ try:
         embedding paths (memory.py, indexer.py) so that all API calls —
         regardless of call type — appear in token/call/latency dashboards.
         """
+        if not provider:
+            return  # Never emit metrics with empty labels — pollutes dashboards
         API_CALLS_TOTAL.labels(model=model, provider=provider, status="success").inc()
         in_tok = getattr(usage, "input_tokens", 0)
         out_tok = getattr(usage, "output_tokens", 0)
