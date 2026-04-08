@@ -20,19 +20,23 @@ DATA_DIR="${LUCYD_DATA_DIR:-/data}"
 mkdir -p "${DATA_DIR}/sessions" "${DATA_DIR}/downloads" "${DATA_DIR}/logs"
 
 # ── Build cron environment ────────────────────────────────────────
-# Cron does NOT inherit the container's environment.  Forward all
-# LUCYD_* vars plus API keys so cron jobs (lucyd-index, lucydctl,
-# lucyd-consolidate) can resolve paths and authenticate.
+# Cron does NOT inherit the container's environment.  Forward the
+# subset of vars that cron jobs need: paths, DB URL, provider keys.
 CRON_ENV="SHELL=/bin/sh
 PATH=/usr/local/bin:/usr/bin:/bin
 LUCYD_DATA_DIR=${DATA_DIR}
 LUCYD_STATE_DIR=${STATE_DIR}
 LUCYD_CONFIG=${CONFIG}"
 
-# Forward API key env vars (set by compose env_file) into cron
-for var in $(env | grep -E '^(LUCYD_|OPENAI_|ANTHROPIC_|BRAVE_)' | cut -d= -f1); do
+# Forward env vars that cron jobs actually need.  Cron runs lucydctl
+# (index, consolidate, compact, maintain, evolve) which needs DB access
+# and LLM provider keys.  Channel tokens, HTTP auth, plugin keys, and
+# search API keys are runtime-only — keep them out of the cron file.
+CRON_EXCLUDE="LUCYD_TELEGRAM_TOKEN|LUCYD_EMAIL_PASSWORD|LUCYD_HTTP_TOKEN|LUCYD_ELEVENLABS_KEY|LUCYD_BRAVE_KEY|BRAVE_API_KEY"
+
+for var in $(env | grep -E '^(LUCYD_|OPENAI_|ANTHROPIC_)' | grep -vE "^(${CRON_EXCLUDE})=" | cut -d= -f1); do
     # Skip vars already written above
-    case "$var" in LUCYD_STATE_DIR|LUCYD_CONFIG) continue ;; esac
+    case "$var" in LUCYD_DATA_DIR|LUCYD_STATE_DIR|LUCYD_CONFIG) continue ;; esac
     eval "val=\$$var"
     CRON_ENV="${CRON_ENV}
 ${var}=${val}"
@@ -49,9 +53,11 @@ ${CRON_ENV}
 CRONTAB
 chmod 644 /etc/cron.d/lucyd
 
-# Start cron and atd in background
+# Start cron and atd in background.
+# atd failure is non-fatal — deferred tasks (at/batch) won't work but
+# the daemon, bridges, and cron jobs all run without it.
 cron
-atd
+atd || echo "WARNING: atd failed to start (exit $?) — 'at' scheduling unavailable" >&2
 
 # ── Parse arguments ──────────────────────────────────────────────
 DAEMON_ARGS=""
