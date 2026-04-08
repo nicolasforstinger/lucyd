@@ -49,6 +49,9 @@ ${CRON_ENV}
 CRONTAB
 chmod 644 /etc/cron.d/lucyd
 
+# Fix at spool ownership (may be wrong if host chown'd the Docker data root)
+chown daemon:daemon /var/spool/cron/atjobs /var/spool/cron/atjobs/.SEQ 2>/dev/null || true
+
 # Start cron and atd in background
 cron
 atd
