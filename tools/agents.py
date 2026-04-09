@@ -184,6 +184,7 @@ async def tool_sessions_spawn(
         session_id=f"sub-{parent_session_id}" if parent_session_id else "",
         model_name=model_name or model_cfg.get("model", ""),
         cost_rates=model_cfg.get("cost_per_mtok", []),
+        provider_name=model_cfg.get("provider", ""),
         currency=model_cfg.get("currency", "EUR"),
         converter=_converter,
     )
