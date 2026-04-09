@@ -134,7 +134,7 @@ async def check_new_logs_exist(
 def git_snapshot(workspace: Path, label: str) -> str | None:
     """Create a git checkpoint in the workspace. Returns tag name or None."""
     ws = str(workspace)
-    tag = f"pre-{label}-{int(time.time())}"
+    tag = f"pre-{label}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     try:
         subprocess.run(
             ["git", "-C", ws, "add", "-A"],
@@ -285,6 +285,7 @@ async def handle_index(
         embed_batch_limit=config.indexer_embed_batch_limit,
         embedding_model=config.embedding_model,
         embedding_base_url=config.embedding_base_url,
+        embedding_provider=config.embedding_provider,
         metering=metering,
         converter=converter,
         cost_rates=config.embedding_cost_rates,

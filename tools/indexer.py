@@ -48,6 +48,7 @@ def configure(
     embed_batch_limit: int = 100,
     embedding_model: str = "",
     embedding_base_url: str = "",
+    embedding_provider: str = "",
     metering: Any = None,
     converter: Any = None,
     cost_rates: list[float] | None = None,
@@ -58,7 +59,7 @@ def configure(
 ) -> None:
     """Set indexer config from lucyd.toml values."""
     global CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, _EMBED_BATCH_LIMIT
-    global EMBEDDING_MODEL, EMBEDDING_BASE_URL
+    global EMBEDDING_MODEL, EMBEDDING_BASE_URL, EMBEDDING_PROVIDER
     global _METERING, _CONVERTER, _COST_RATES, _CURRENCY
     global _POOL, _CLIENT_ID, _AGENT_ID
     CHUNK_SIZE_CHARS = chunk_size
@@ -66,6 +67,7 @@ def configure(
     _EMBED_BATCH_LIMIT = embed_batch_limit
     EMBEDDING_MODEL = embedding_model
     EMBEDDING_BASE_URL = embedding_base_url
+    EMBEDDING_PROVIDER = embedding_provider
     _METERING = metering
     _CONVERTER = converter
     _COST_RATES = cost_rates or []

@@ -7,6 +7,7 @@ Applied on startup via a ``public.schema_version`` table.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,9 @@ import asyncpg  # Core dependency — always installed. No type stubs.
 log = logging.getLogger(__name__)
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
+
+_CONNECT_RETRY_MAX = 5       # attempts before giving up
+_CONNECT_RETRY_BASE_S = 1.0  # initial backoff delay; doubles each retry
 
 
 # ---------------------------------------------------------------------------
@@ -30,14 +34,33 @@ async def create_pool(
 ) -> Any:
     """Create and return an ``asyncpg.Pool``.
 
-    Callers must call :func:`close_pool` on shutdown.
+    Retries with exponential backoff on transient errors (e.g. PostgreSQL
+    still starting up).  Callers must call :func:`close_pool` on shutdown.
     """
-    pool: Any = await asyncpg.create_pool(
-        dsn,
-        min_size=min_size,
-        max_size=max_size,
-    )
-    return pool
+    last_exc: Exception | None = None
+    for attempt in range(_CONNECT_RETRY_MAX):
+        try:
+            pool: Any = await asyncpg.create_pool(
+                dsn,
+                min_size=min_size,
+                max_size=max_size,
+            )
+            if attempt > 0:
+                log.info("Database connected after %d retries", attempt)
+            return pool
+        except (
+            OSError,                          # connection refused / reset
+            asyncpg.CannotConnectNowError,    # "the database system is starting up"
+        ) as exc:
+            last_exc = exc
+            delay = _CONNECT_RETRY_BASE_S * (2 ** attempt)
+            log.warning(
+                "Database not ready (attempt %d/%d): %s — retrying in %.0fs",
+                attempt + 1, _CONNECT_RETRY_MAX, exc, delay,
+            )
+            await asyncio.sleep(delay)
+    assert last_exc is not None  # loop always sets last_exc before exhausting
+    raise last_exc
 
 
 async def close_pool(pool: Any) -> None:

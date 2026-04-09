@@ -266,6 +266,7 @@ class LucydDaemon:
                 embedding_api_key=self.config.embedding_api_key,
                 embedding_model=self.config.embedding_model,
                 embedding_base_url=self.config.embedding_base_url,
+                embedding_provider=self.config.embedding_provider,
                 embedding_timeout=self.config.embedding_timeout,
                 embedding_cost_rates=self.config.embedding_cost_rates,
                 embedding_currency=self.config.embedding_currency,
