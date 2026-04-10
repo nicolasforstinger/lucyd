@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import imaplib
 import os
 import smtplib
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email import encoders
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -44,6 +47,29 @@ def _build_multipart_email(
     msg["Subject"] = subject
     msg.attach(MIMEText(text_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
+    return msg.as_bytes()
+
+
+def _build_email_with_attachment(
+    from_addr: str = "sender@example.com",
+    subject: str = "With Attachment",
+    text_body: str = "See attached",
+    att_filename: str = "test.pdf",
+    att_content_type: str = "application/pdf",
+    att_data: bytes = b"%PDF-fake-content",
+) -> bytes:
+    """Build a multipart/mixed email with a text body and one attachment."""
+    msg = MIMEMultipart("mixed")
+    msg["From"] = from_addr
+    msg["To"] = "me@example.com"
+    msg["Subject"] = subject
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    maintype, _, subtype = att_content_type.partition("/")
+    part = MIMEBase(maintype, subtype or "octet-stream")
+    part.set_payload(att_data)
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", "attachment", filename=att_filename)
+    msg.attach(part)
     return msg.as_bytes()
 
 
@@ -327,6 +353,46 @@ class TestFetchAndMark:
             result = email_mod.fetch_and_mark([])
         assert result[0]["body"] == "Body text here"
 
+    def test_extracts_attachments_from_multipart_email(self) -> None:
+        """fetch_and_mark() extracts MIME attachments as base64-encoded dicts."""
+        raw = _build_email_with_attachment(
+            text_body="Check this",
+            att_filename="report.pdf",
+            att_data=b"fake-pdf-bytes",
+        )
+        imap = _mock_imap(search_uids=b"30", messages={b"30": raw})
+        with patch.object(email_mod, "_imap_connect", return_value=imap):
+            result = email_mod.fetch_and_mark([])
+
+        assert len(result) == 1
+        assert result[0]["body"] == "Check this"
+        atts = result[0]["attachments"]
+        assert len(atts) == 1
+        assert atts[0]["filename"] == "report.pdf"
+        assert atts[0]["content_type"] == "application/pdf"
+        assert base64.b64decode(atts[0]["data"]) == b"fake-pdf-bytes"
+
+    def test_plain_email_has_empty_attachments_list(self) -> None:
+        """Non-multipart emails have an empty attachments list."""
+        raw = _build_plain_email(body="No attachments here")
+        imap = _mock_imap(search_uids=b"31", messages={b"31": raw})
+        with patch.object(email_mod, "_imap_connect", return_value=imap):
+            result = email_mod.fetch_and_mark([])
+
+        assert result[0]["attachments"] == []
+
+    def test_text_body_parts_not_extracted_as_attachments(self) -> None:
+        """text/plain and text/html body parts are not treated as attachments."""
+        raw = _build_multipart_email(
+            text_body="Plain text",
+            html_body="<p>HTML</p>",
+        )
+        imap = _mock_imap(search_uids=b"32", messages={b"32": raw})
+        with patch.object(email_mod, "_imap_connect", return_value=imap):
+            result = email_mod.fetch_and_mark([])
+
+        assert result[0]["attachments"] == []
+
     def test_non_utf8_body_decoded_with_replacement(self) -> None:
         """Non-UTF8 bytes in body are decoded with errors='replace'."""
         # Build raw email with Latin-1 encoded body but claim UTF-8
@@ -481,6 +547,36 @@ class TestSendReply:
         mock_smtp.login.assert_called_once_with("bot@example.com", "pass")
         mock_smtp.send_message.assert_called_once()
 
+    def test_sends_reply_with_attachments_as_multipart(self) -> None:
+        """send_reply() builds multipart/mixed when attachments are provided."""
+        email_mod.FROM_ADDR = "bot@example.com"
+        email_mod.USER = "bot@example.com"
+        email_mod.PASSWORD = "pass"
+        email_mod.SMTP_HOST = "smtp.example.com"
+        email_mod.SECURITY = "ssl"
+
+        mock_smtp = MagicMock(spec=smtplib.SMTP_SSL)
+        mock_smtp.__enter__ = MagicMock(return_value=mock_smtp)
+        mock_smtp.__exit__ = MagicMock(return_value=False)
+
+        attachments = [{
+            "content_type": "application/pdf",
+            "data": base64.b64encode(b"pdf-bytes").decode(),
+            "filename": "report.pdf",
+        }]
+
+        with patch("channels.email.smtplib.SMTP_SSL", return_value=mock_smtp):
+            email_mod.send_reply("user@example.com", "Re: Report", "Here you go", attachments)
+
+        mock_smtp.send_message.assert_called_once()
+        sent_msg = mock_smtp.send_message.call_args[0][0]
+        assert sent_msg.get_content_type() == "multipart/mixed"
+        parts = list(sent_msg.walk())
+        # multipart/mixed container, text/plain body, application/pdf attachment
+        content_types = [p.get_content_type() for p in parts]
+        assert "text/plain" in content_types
+        assert "application/pdf" in content_types
+
     def test_smtp_error_is_logged_and_reraised(self) -> None:
         """SMTP errors are logged and re-raised so callers can handle them."""
         email_mod.SMTP_HOST = "smtp.example.com"
@@ -559,7 +655,7 @@ class TestPollLoop:
         assert post_kwargs[1]["json"]["message"] == "Question?"
         assert post_kwargs[1]["json"]["channel_id"] == "email"
 
-        mock_send.assert_called_once_with("sender@example.com", "Re: Hello", "Answer!")
+        mock_send.assert_called_once_with("sender@example.com", "Re: Hello", "Answer!", None)
 
     async def test_empty_body_email_marked_read_without_posting(self) -> None:
         """Emails with empty body are marked as read, but not posted to daemon."""
@@ -649,6 +745,111 @@ class TestPollLoop:
         mock_send.assert_not_called()
         # UID should still be marked as processed (read)
         assert mock_fetch.call_args_list[1] == call([b"50"])
+
+    async def test_inbound_attachments_forwarded_to_daemon(self) -> None:
+        """Inbound email attachments are included in the POST to daemon."""
+        self._setup_globals()
+
+        inbound_att = {
+            "content_type": "image/png",
+            "data": base64.b64encode(b"png-bytes").decode(),
+            "filename": "photo.png",
+        }
+        fetched: list[dict[str, Any]] = [{
+            "uid": b"60",
+            "from": "sender@example.com",
+            "subject": "Photo",
+            "body": "See attached",
+            "attachments": [inbound_att],
+        }]
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"reply": "Got it!", "attachments": []}
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+
+        with (
+            patch.object(email_mod, "fetch_and_mark", side_effect=[fetched, []]),
+            patch.object(email_mod, "send_reply") as mock_send,
+            patch("channels.email.httpx.AsyncClient") as mock_ac,
+            patch("channels.email.asyncio.sleep", side_effect=asyncio.CancelledError),
+            patch("channels.email.asyncio.get_event_loop") as mock_loop,
+        ):
+            mock_ac.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_ac.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            async def _run_in_executor(
+                _pool: Any, fn: Any, *args: Any,
+            ) -> Any:
+                return fn(*args)
+            mock_loop.return_value.run_in_executor = AsyncMock(
+                side_effect=_run_in_executor,
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await email_mod.poll_loop()
+
+        # Verify attachments were included in POST
+        post_kwargs = mock_client.post.call_args
+        assert post_kwargs[1]["json"]["attachments"] == [inbound_att]
+
+        # Verify reply was sent (no outbound attachments)
+        mock_send.assert_called_once_with(
+            "sender@example.com", "Re: Photo", "Got it!", None,
+        )
+
+    async def test_outbound_attachments_passed_to_send_reply(self) -> None:
+        """Outbound attachments from daemon are passed to send_reply."""
+        self._setup_globals()
+
+        fetched: list[dict[str, Any]] = [{
+            "uid": b"61",
+            "from": "sender@example.com",
+            "subject": "Generate PDF",
+            "body": "Make me a report",
+            "attachments": [],
+        }]
+
+        outbound_att = {
+            "content_type": "application/pdf",
+            "data": base64.b64encode(b"pdf-content").decode(),
+            "filename": "report.pdf",
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "reply": "Here's your report",
+            "attachments": [outbound_att],
+        }
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+
+        with (
+            patch.object(email_mod, "fetch_and_mark", side_effect=[fetched, []]),
+            patch.object(email_mod, "send_reply") as mock_send,
+            patch("channels.email.httpx.AsyncClient") as mock_ac,
+            patch("channels.email.asyncio.sleep", side_effect=asyncio.CancelledError),
+            patch("channels.email.asyncio.get_event_loop") as mock_loop,
+        ):
+            mock_ac.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_ac.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            async def _run_in_executor(
+                _pool: Any, fn: Any, *args: Any,
+            ) -> Any:
+                return fn(*args)
+            mock_loop.return_value.run_in_executor = AsyncMock(
+                side_effect=_run_in_executor,
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await email_mod.poll_loop()
+
+        mock_send.assert_called_once_with(
+            "sender@example.com", "Re: Generate PDF",
+            "Here's your report", [outbound_att],
+        )
 
     async def test_reply_subject_gets_re_prefix(self) -> None:
         """Reply subject gets 'Re: ' prepended when not already present."""

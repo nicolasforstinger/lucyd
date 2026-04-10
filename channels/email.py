@@ -12,6 +12,7 @@ Config: LUCYD_EMAIL_CONFIG env var, or email.toml in working dir.
 from __future__ import annotations
 
 import asyncio
+import base64
 import email
 import email.utils
 import imaplib
@@ -19,6 +20,10 @@ import logging
 import os
 import smtplib
 import sys
+from email import encoders
+from email.message import Message
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.parser import BytesParser
 from typing import Any
@@ -128,11 +133,39 @@ def _imap_connect() -> imaplib.IMAP4:
     return imap
 
 
+def _extract_attachments(msg: Message) -> list[dict[str, str]]:
+    """Extract non-text MIME parts as base64-encoded attachment dicts.
+
+    Returns list of {"content_type", "data", "filename"} matching the
+    daemon's HTTP attachment format (same as the Telegram bridge).
+    """
+    attachments: list[dict[str, str]] = []
+    for part in msg.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        content_type = part.get_content_type()
+        disposition = str(part.get("Content-Disposition", ""))
+        # Skip text body parts (extracted separately), but keep text files
+        # that are explicitly attached
+        if content_type in ("text/plain", "text/html") and "attachment" not in disposition:
+            continue
+        payload = part.get_payload(decode=True)
+        if not isinstance(payload, bytes) or not payload:
+            continue
+        filename = part.get_filename() or "attachment"
+        attachments.append({
+            "content_type": content_type,
+            "data": base64.b64encode(payload).decode(),
+            "filename": filename,
+        })
+    return attachments
+
+
 def fetch_and_mark(processed_uids: list[bytes]) -> list[dict[str, Any]]:
     """Fetch unread emails and mark previously processed ones as read.
 
     Uses a single IMAP connection for both operations.
-    Returns list of {uid, from, subject, body}.
+    Returns list of {uid, from, subject, body, attachments}.
     """
     messages = []
     try:
@@ -172,12 +205,14 @@ def fetch_and_mark(processed_uids: list[bytes]) -> list[dict[str, Any]]:
 
                 from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
                 subject = msg.get("Subject", "(no subject)")
+                attachments = _extract_attachments(msg) if msg.is_multipart() else []
 
                 messages.append({
                     "uid": uid,
                     "from": from_addr,
                     "subject": subject,
                     "body": body.strip(),
+                    "attachments": attachments,
                 })
         finally:
             try:
@@ -191,14 +226,33 @@ def fetch_and_mark(processed_uids: list[bytes]) -> list[dict[str, Any]]:
     return messages
 
 
-def send_reply(to: str, subject: str, body: str) -> None:
-    """Send email reply via SMTP.
+def send_reply(
+    to: str,
+    subject: str,
+    body: str,
+    attachments: list[dict[str, str]] | None = None,
+) -> None:
+    """Send email reply via SMTP, optionally with file attachments.
 
     Raises on SMTP failure so the caller can handle it (e.g. skip marking
     the email as processed, notify the daemon).
     """
     try:
-        msg = MIMEText(body, "plain", "utf-8")
+        if attachments:
+            msg: MIMEMultipart | MIMEText = MIMEMultipart("mixed")
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+            for att in attachments:
+                maintype, _, subtype = att.get("content_type", "application/octet-stream").partition("/")
+                part = MIMEBase(maintype, subtype or "octet-stream")
+                part.set_payload(base64.b64decode(att.get("data", "")))
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition", "attachment",
+                    filename=att.get("filename", "attachment"),
+                )
+                msg.attach(part)
+        else:
+            msg = MIMEText(body, "plain", "utf-8")
         msg["From"] = FROM_ADDR
         msg["To"] = to
         msg["Subject"] = subject
@@ -236,7 +290,7 @@ async def poll_loop() -> None:
             processed_uids = []
 
             for msg in emails:
-                if not msg["body"]:
+                if not msg["body"] and not msg.get("attachments"):
                     processed_uids.append(msg["uid"])
                     continue
 
@@ -248,21 +302,29 @@ async def poll_loop() -> None:
                 log.info("Processing email from %s: %s", msg["from"], msg["subject"])
 
                 try:
-                    resp = await client.post(f"{URL}/api/v1/chat", json={
+                    request_body: dict[str, Any] = {
                         "message": msg["body"],
                         "sender": msg["from"],
                         "channel_id": "email",
-                    })
+                    }
+                    if msg.get("attachments"):
+                        request_body["attachments"] = msg["attachments"]
+
+                    resp = await client.post(
+                        f"{URL}/api/v1/chat", json=request_body,
+                    )
                     data = resp.json()
                     reply = data.get("reply", "")
+                    outbound_atts: list[dict[str, str]] = data.get("attachments", [])
 
-                    if reply:
+                    if reply or outbound_atts:
                         subject = msg["subject"]
                         if not subject.lower().startswith("re:"):
                             subject = f"Re: {subject}"
                         try:
                             await asyncio.get_event_loop().run_in_executor(
-                                None, send_reply, msg["from"], subject, reply,
+                                None, send_reply, msg["from"], subject,
+                                reply, outbound_atts or None,
                             )
                         except Exception as smtp_err:
                             await _notify_delivery_failure(
