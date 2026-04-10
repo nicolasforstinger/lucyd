@@ -42,6 +42,7 @@ FROM_ADDR = ""
 IMAP_PORT = 0
 SMTP_PORT = 0
 SECURITY = "ssl"  # "ssl" or "starttls"
+ALLOWED_SENDERS: list[str] = []  # empty = allow all
 
 
 def load_config() -> None:
@@ -51,7 +52,7 @@ def load_config() -> None:
     Falls back to env vars for backward compatibility.
     """
     global URL, IMAP_HOST, SMTP_HOST, USER, PASSWORD, FOLDER, POLL_INTERVAL, FROM_ADDR, \
-        IMAP_PORT, SMTP_PORT, SECURITY
+        IMAP_PORT, SMTP_PORT, SECURITY, ALLOWED_SENDERS
 
     config_path = os.environ.get("LUCYD_EMAIL_CONFIG", "")
     if not config_path:
@@ -87,6 +88,9 @@ def load_config() -> None:
             IMAP_PORT = em.get("imap_port", IMAP_PORT)
             SMTP_PORT = em.get("smtp_port", SMTP_PORT)
             SECURITY = em.get("security", SECURITY)
+            ALLOWED_SENDERS = [
+                s.lower() for s in em.get("allowed_senders", ALLOWED_SENDERS)
+            ]
 
             log.info("Loaded config from %s", config_path)
             return
@@ -106,6 +110,9 @@ def load_config() -> None:
     IMAP_PORT = int(os.environ.get("LUCYD_EMAIL_IMAP_PORT", str(IMAP_PORT)))
     SMTP_PORT = int(os.environ.get("LUCYD_EMAIL_SMTP_PORT", str(SMTP_PORT)))
     SECURITY = os.environ.get("LUCYD_EMAIL_SECURITY", SECURITY)
+    raw_senders = os.environ.get("LUCYD_EMAIL_ALLOWED_SENDERS", "")
+    if raw_senders:
+        ALLOWED_SENDERS = [s.strip().lower() for s in raw_senders.split(",") if s.strip()]
 
 
 def _imap_connect() -> imaplib.IMAP4:
@@ -230,6 +237,11 @@ async def poll_loop() -> None:
 
             for msg in emails:
                 if not msg["body"]:
+                    processed_uids.append(msg["uid"])
+                    continue
+
+                if ALLOWED_SENDERS and msg["from"].lower() not in ALLOWED_SENDERS:
+                    log.info("Ignoring email from unauthorized sender %s", msg["from"])
                     processed_uids.append(msg["uid"])
                     continue
 

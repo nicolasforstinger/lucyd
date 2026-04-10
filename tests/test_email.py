@@ -76,7 +76,7 @@ def _mock_imap(
 _GLOBALS = (
     "URL", "IMAP_HOST", "SMTP_HOST", "USER", "PASSWORD",
     "FOLDER", "POLL_INTERVAL", "FROM_ADDR",
-    "IMAP_PORT", "SMTP_PORT", "SECURITY",
+    "IMAP_PORT", "SMTP_PORT", "SECURITY", "ALLOWED_SENDERS",
 )
 
 
@@ -192,6 +192,21 @@ class TestLoadConfigToml:
         assert email_mod.IMAP_PORT == 1143
         assert email_mod.SMTP_PORT == 1025
         assert email_mod.SECURITY == "starttls"
+
+    def test_load_config_allowed_senders_from_toml(
+        self, tmp_path: Any, monkeypatch: Any,
+    ) -> None:
+        """load_config() reads allowed_senders from TOML and lowercases them."""
+        toml = tmp_path / "email.toml"
+        toml.write_text(
+            '[email]\n'
+            'imap_host = "imap.test.com"\n'
+            'smtp_host = "smtp.test.com"\n'
+            'allowed_senders = ["Alice@Example.COM", "bob@test.com"]\n'
+        )
+        monkeypatch.setenv("LUCYD_EMAIL_CONFIG", str(toml))
+        email_mod.load_config()
+        assert email_mod.ALLOWED_SENDERS == ["alice@example.com", "bob@test.com"]
 
     def test_malformed_toml_falls_back_to_env_vars(
         self, tmp_path: Any, monkeypatch: Any,
@@ -590,6 +605,50 @@ class TestPollLoop:
         mock_send.assert_not_called()
         # On second iteration, UID b"2" should have been passed as processed
         assert mock_fetch.call_args_list[1] == call([b"2"])
+
+    async def test_unauthorized_sender_ignored_and_marked_read(self) -> None:
+        """Emails from senders not in allowed_senders are skipped."""
+        self._setup_globals()
+        email_mod.ALLOWED_SENDERS = ["trusted@example.com"]
+
+        fetched: list[dict[str, Any]] = [{
+            "uid": b"50",
+            "from": "stranger@evil.com",
+            "subject": "Hello",
+            "body": "I want in",
+        }]
+
+        mock_client = AsyncMock()
+        sleep_effects: list[Any] = [None, asyncio.CancelledError()]
+
+        with (
+            patch.object(
+                email_mod, "fetch_and_mark",
+                side_effect=[fetched, []],
+            ) as mock_fetch,
+            patch.object(email_mod, "send_reply") as mock_send,
+            patch("channels.email.httpx.AsyncClient") as mock_ac,
+            patch("channels.email.asyncio.sleep", side_effect=sleep_effects),
+            patch("channels.email.asyncio.get_event_loop") as mock_loop,
+        ):
+            mock_ac.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_ac.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            async def _run_in_executor(
+                _pool: Any, fn: Any, *args: Any,
+            ) -> Any:
+                return fn(*args)
+            mock_loop.return_value.run_in_executor = AsyncMock(
+                side_effect=_run_in_executor,
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await email_mod.poll_loop()
+
+        mock_client.post.assert_not_called()
+        mock_send.assert_not_called()
+        # UID should still be marked as processed (read)
+        assert mock_fetch.call_args_list[1] == call([b"50"])
 
     async def test_reply_subject_gets_re_prefix(self) -> None:
         """Reply subject gets 'Re: ' prepended when not already present."""
