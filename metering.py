@@ -22,6 +22,15 @@ def _current_billing_period() -> str:
     return time.strftime("%Y-%m")
 
 
+def _serialize(v: Any) -> Any:
+    """Make a DB value JSON-serializable."""
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    if isinstance(v, __import__("decimal").Decimal):
+        return float(v)
+    return v
+
+
 class MeteringDB:
     """Cost tracking backed by PostgreSQL.
 
@@ -182,7 +191,10 @@ class MeteringDB:
             "agent_id": self._agent_id,
             "billing_period": billing_period,
             "currency": "EUR",
-            "records": [dict(r) for r in rows],
+            "records": [
+                {k: _serialize(v) for k, v in dict(r).items()}
+                for r in rows
+            ],
         }
 
     # ── Maintenance ───────────────────────────────────────────────

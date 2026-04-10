@@ -51,10 +51,13 @@ ALLOWED_SENDERS: list[str] = []  # empty = allow all
 
 
 def load_config() -> None:
-    """Load bridge config from standalone email.toml.
+    """Load bridge config from email.toml, lucyd.toml [email] section, or env vars.
 
-    Search order: LUCYD_EMAIL_CONFIG env var, email.toml, /config/email.toml.
-    Falls back to env vars for backward compatibility.
+    Search order:
+    1. LUCYD_EMAIL_CONFIG env var (explicit path)
+    2. email.toml / /config/email.toml (standalone bridge config)
+    3. LUCYD_CONFIG env var → lucyd.toml [email] section
+    4. Environment variables (backward compat)
     """
     global URL, IMAP_HOST, SMTP_HOST, USER, PASSWORD, FOLDER, POLL_INTERVAL, FROM_ADDR, \
         IMAP_PORT, SMTP_PORT, SECURITY, ALLOWED_SENDERS
@@ -65,6 +68,18 @@ def load_config() -> None:
             if Path(p).exists():
                 config_path = p
                 break
+    # Fall back to lucyd.toml if it has an [email] section
+    if not config_path:
+        lucyd_config = os.environ.get("LUCYD_CONFIG", "")
+        if lucyd_config and Path(lucyd_config).exists():
+            try:
+                import tomllib
+                with Path(lucyd_config).open("rb") as f:
+                    data = tomllib.load(f)
+                if "email" in data:
+                    config_path = lucyd_config
+            except Exception:
+                pass
 
     if config_path and Path(config_path).exists():
         try:
