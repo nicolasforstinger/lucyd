@@ -39,6 +39,9 @@ PASSWORD = ""
 FOLDER = "INBOX"
 POLL_INTERVAL = 60
 FROM_ADDR = ""
+IMAP_PORT = 0
+SMTP_PORT = 0
+SECURITY = "ssl"  # "ssl" or "starttls"
 
 
 def load_config() -> None:
@@ -47,7 +50,8 @@ def load_config() -> None:
     Search order: LUCYD_EMAIL_CONFIG env var, email.toml, /config/email.toml.
     Falls back to env vars for backward compatibility.
     """
-    global URL, IMAP_HOST, SMTP_HOST, USER, PASSWORD, FOLDER, POLL_INTERVAL, FROM_ADDR
+    global URL, IMAP_HOST, SMTP_HOST, USER, PASSWORD, FOLDER, POLL_INTERVAL, FROM_ADDR, \
+        IMAP_PORT, SMTP_PORT, SECURITY
 
     config_path = os.environ.get("LUCYD_EMAIL_CONFIG", "")
     if not config_path:
@@ -80,6 +84,9 @@ def load_config() -> None:
             FOLDER = em.get("folder", FOLDER)
             POLL_INTERVAL = em.get("poll_interval", POLL_INTERVAL)
             FROM_ADDR = em.get("from_address", "") or USER
+            IMAP_PORT = em.get("imap_port", IMAP_PORT)
+            SMTP_PORT = em.get("smtp_port", SMTP_PORT)
+            SECURITY = em.get("security", SECURITY)
 
             log.info("Loaded config from %s", config_path)
             return
@@ -96,11 +103,19 @@ def load_config() -> None:
     FOLDER = os.environ.get("LUCYD_EMAIL_FOLDER", FOLDER)
     POLL_INTERVAL = int(os.environ.get("LUCYD_EMAIL_POLL_INTERVAL", str(POLL_INTERVAL)))
     FROM_ADDR = os.environ.get("LUCYD_EMAIL_FROM", "") or USER
+    IMAP_PORT = int(os.environ.get("LUCYD_EMAIL_IMAP_PORT", str(IMAP_PORT)))
+    SMTP_PORT = int(os.environ.get("LUCYD_EMAIL_SMTP_PORT", str(SMTP_PORT)))
+    SECURITY = os.environ.get("LUCYD_EMAIL_SECURITY", SECURITY)
 
 
-def _imap_connect() -> imaplib.IMAP4_SSL:
+def _imap_connect() -> imaplib.IMAP4:
     """Open and authenticate an IMAP connection."""
-    imap = imaplib.IMAP4_SSL(IMAP_HOST)
+    imap_args = (IMAP_HOST, IMAP_PORT) if IMAP_PORT else (IMAP_HOST,)
+    if SECURITY == "starttls":
+        imap: imaplib.IMAP4 = imaplib.IMAP4(*imap_args)
+        imap.starttls()
+    else:
+        imap = imaplib.IMAP4_SSL(*imap_args)
     imap.login(USER, PASSWORD)
     imap.select(FOLDER)
     return imap
@@ -181,9 +196,16 @@ def send_reply(to: str, subject: str, body: str) -> None:
         msg["To"] = to
         msg["Subject"] = subject
 
-        with smtplib.SMTP_SSL(SMTP_HOST) as smtp:
-            smtp.login(USER, PASSWORD)
-            smtp.send_message(msg)
+        smtp_args = (SMTP_HOST, SMTP_PORT) if SMTP_PORT else (SMTP_HOST,)
+        if SECURITY == "starttls":
+            with smtplib.SMTP(*smtp_args) as smtp:
+                smtp.starttls()
+                smtp.login(USER, PASSWORD)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP_SSL(*smtp_args) as smtp:
+                smtp.login(USER, PASSWORD)
+                smtp.send_message(msg)
 
         log.info("Reply sent to %s", to)
     except Exception as e:

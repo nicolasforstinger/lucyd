@@ -13,8 +13,11 @@ token_env = "LUCYD_HTTP_TOKEN"          # Env var for bearer token (optional, lo
 # IMAP for receiving, SMTP for sending. Both use SSL.
 
 [email]
-imap_host = "imap.example.com"           # IMAP server (SSL)
-smtp_host = "smtp.example.com"           # SMTP server (SSL)
+imap_host = "imap.example.com"           # IMAP server
+smtp_host = "smtp.example.com"           # SMTP server
+# imap_port = 993                        # IMAP port (default: library default for security mode)
+# smtp_port = 465                        # SMTP port (default: library default for security mode)
+# security = "ssl"                       # "ssl" (default) or "starttls"
 user_env = "LUCYD_EMAIL_USER"            # Env var for email username
 password_env = "LUCYD_EMAIL_PASSWORD"    # Env var for email password
 folder = "INBOX"                         # IMAP folder to poll

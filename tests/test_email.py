@@ -76,6 +76,7 @@ def _mock_imap(
 _GLOBALS = (
     "URL", "IMAP_HOST", "SMTP_HOST", "USER", "PASSWORD",
     "FOLDER", "POLL_INTERVAL", "FROM_ADDR",
+    "IMAP_PORT", "SMTP_PORT", "SECURITY",
 )
 
 
@@ -173,6 +174,25 @@ class TestLoadConfigToml:
         assert email_mod.POLL_INTERVAL == 120
 
 
+    def test_load_config_starttls_and_ports_from_toml(
+        self, tmp_path: Any, monkeypatch: Any,
+    ) -> None:
+        """load_config() reads imap_port, smtp_port, and security from TOML."""
+        toml = tmp_path / "email.toml"
+        toml.write_text(
+            '[email]\n'
+            'imap_host = "imap.test.com"\n'
+            'smtp_host = "smtp.test.com"\n'
+            'imap_port = 1143\n'
+            'smtp_port = 1025\n'
+            'security = "starttls"\n'
+        )
+        monkeypatch.setenv("LUCYD_EMAIL_CONFIG", str(toml))
+        email_mod.load_config()
+        assert email_mod.IMAP_PORT == 1143
+        assert email_mod.SMTP_PORT == 1025
+        assert email_mod.SECURITY == "starttls"
+
     def test_malformed_toml_falls_back_to_env_vars(
         self, tmp_path: Any, monkeypatch: Any,
     ) -> None:
@@ -203,6 +223,9 @@ class TestLoadConfigEnvFallback:
         monkeypatch.setenv("LUCYD_EMAIL_FOLDER", "Sent")
         monkeypatch.setenv("LUCYD_EMAIL_POLL_INTERVAL", "45")
         monkeypatch.setenv("LUCYD_EMAIL_FROM", "from@env.com")
+        monkeypatch.setenv("LUCYD_EMAIL_IMAP_PORT", "1143")
+        monkeypatch.setenv("LUCYD_EMAIL_SMTP_PORT", "1025")
+        monkeypatch.setenv("LUCYD_EMAIL_SECURITY", "starttls")
 
         email_mod.load_config()
 
@@ -214,6 +237,9 @@ class TestLoadConfigEnvFallback:
         assert email_mod.FOLDER == "Sent"
         assert email_mod.POLL_INTERVAL == 45
         assert email_mod.FROM_ADDR == "from@env.com"
+        assert email_mod.IMAP_PORT == 1143
+        assert email_mod.SMTP_PORT == 1025
+        assert email_mod.SECURITY == "starttls"
 
 
 # ─── 2. IMAP fetch and mark ──────────────────────────────────────
@@ -345,6 +371,42 @@ class TestFetchAndMark:
             result = email_mod.fetch_and_mark([])
         assert result == []
 
+    def test_imap_connect_starttls_mode(self) -> None:
+        """_imap_connect() uses IMAP4 + starttls() when SECURITY is 'starttls'."""
+        email_mod.IMAP_HOST = "127.0.0.1"
+        email_mod.IMAP_PORT = 1143
+        email_mod.SECURITY = "starttls"
+        email_mod.USER = "user"
+        email_mod.PASSWORD = "pass"
+        email_mod.FOLDER = "INBOX"
+
+        mock_imap = MagicMock(spec=imaplib.IMAP4)
+        with patch("channels.email.imaplib.IMAP4", return_value=mock_imap) as mock_cls:
+            result = email_mod._imap_connect()
+
+        mock_cls.assert_called_once_with("127.0.0.1", 1143)
+        mock_imap.starttls.assert_called_once()
+        mock_imap.login.assert_called_once_with("user", "pass")
+        mock_imap.select.assert_called_once_with("INBOX")
+        assert result is mock_imap
+
+    def test_imap_connect_ssl_mode(self) -> None:
+        """_imap_connect() uses IMAP4_SSL when SECURITY is 'ssl' (default)."""
+        email_mod.IMAP_HOST = "imap.example.com"
+        email_mod.IMAP_PORT = 0
+        email_mod.SECURITY = "ssl"
+        email_mod.USER = "user"
+        email_mod.PASSWORD = "pass"
+        email_mod.FOLDER = "INBOX"
+
+        mock_imap = MagicMock(spec=imaplib.IMAP4_SSL)
+        with patch("channels.email.imaplib.IMAP4_SSL", return_value=mock_imap) as mock_cls:
+            result = email_mod._imap_connect()
+
+        mock_cls.assert_called_once_with("imap.example.com")
+        mock_imap.login.assert_called_once_with("user", "pass")
+        assert result is mock_imap
+
     def test_failed_mark_as_read_logs_warning_but_continues(self) -> None:
         """If marking a UID as read fails, processing continues."""
         raw = _build_plain_email(body="After mark error")
@@ -382,6 +444,27 @@ class TestSendReply:
         assert sent_msg["From"] == "bot@example.com"
         assert sent_msg["To"] == "user@example.com"
         assert sent_msg["Subject"] == "Re: Hello"
+
+    def test_sends_email_via_smtp_starttls(self) -> None:
+        """send_reply() uses SMTP + starttls() when SECURITY is 'starttls'."""
+        email_mod.FROM_ADDR = "bot@example.com"
+        email_mod.USER = "bot@example.com"
+        email_mod.PASSWORD = "pass"
+        email_mod.SMTP_HOST = "127.0.0.1"
+        email_mod.SMTP_PORT = 1025
+        email_mod.SECURITY = "starttls"
+
+        mock_smtp = MagicMock(spec=smtplib.SMTP)
+        mock_smtp.__enter__ = MagicMock(return_value=mock_smtp)
+        mock_smtp.__exit__ = MagicMock(return_value=False)
+
+        with patch("channels.email.smtplib.SMTP", return_value=mock_smtp) as mock_cls:
+            email_mod.send_reply("user@example.com", "Re: Hello", "Reply body")
+
+        mock_cls.assert_called_once_with("127.0.0.1", 1025)
+        mock_smtp.starttls.assert_called_once()
+        mock_smtp.login.assert_called_once_with("bot@example.com", "pass")
+        mock_smtp.send_message.assert_called_once()
 
     def test_smtp_error_is_logged_and_reraised(self) -> None:
         """SMTP errors are logged and re-raised so callers can handle them."""
