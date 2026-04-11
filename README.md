@@ -113,7 +113,7 @@ Lucyd uses a standalone Telegram bridge process (`channels/telegram.py`) that co
 1. Create a bot via [@BotFather](https://t.me/BotFather) on Telegram
 2. Copy the bot token to your `.env` file as `LUCYD_TELEGRAM_TOKEN`
 3. Find your Telegram user ID (send a message to [@userinfobot](https://t.me/userinfobot))
-4. Configure `telegram.toml`: copy `channels/telegram.toml.example`, add your user ID to `allow_from` and set contacts
+4. Add a `[telegram]` section to `lucyd.toml` with your user ID in `allow_from` and contacts
 5. Start the daemon, then start the bridge: `python3 channels/telegram.py`
 
 ## Testing

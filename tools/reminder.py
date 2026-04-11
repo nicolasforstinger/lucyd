@@ -42,7 +42,7 @@ async def tool_reminder(message: str, minutes: int = 5) -> str:
 
     # Escape double quotes in the message for JSON
     safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')
-    payload = f'{{"message": "Reminder: {safe_msg}", "sender": "system"}}'
+    payload = f'{{"message": "Reminder: {safe_msg}", "sender": "system", "task_type": "system"}}'
     curl_cmd = f'curl -s -X POST http://localhost:8100/api/v1/message {headers} -d \'{payload}\''
 
     cmd = f'echo \'{curl_cmd}\' | at now + {minutes} minutes'

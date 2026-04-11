@@ -639,8 +639,8 @@ No outbound push from daemon to bridges.
 
 | Bridge | File | channel_id | Config | Auth |
 |--------|------|------------|--------|------|
-| Telegram | `channels/telegram.py` | `"telegram"` | `telegram.toml` | Bearer token from `[daemon] token_env` |
-| Email | `channels/email.py` | `"email"` | `email.toml` | Bearer token from `[daemon] token_env` |
+| Telegram | `channels/telegram.py` | `"telegram"` | `lucyd.toml [telegram]` | Bearer token from `LUCYD_HTTP_TOKEN` |
+| Email | `channels/email.py` | `"email"` | `lucyd.toml [email]` | Bearer token from `LUCYD_HTTP_TOKEN` |
 | lucydctl | `bin/lucydctl` | `"lucydctl"` | env vars only | Bearer token from `LUCYD_HTTP_TOKEN` |
 
 ---

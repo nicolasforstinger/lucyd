@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import imaplib
-import os
 import smtplib
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -118,13 +117,11 @@ def _restore_globals() -> Any:
 # ─── 1. Config loading ───────────────────────────────────────────
 
 
-class TestLoadConfigToml:
-    def test_load_config_from_toml(self, tmp_path: Any, monkeypatch: Any) -> None:
-        """load_config() reads email.toml when LUCYD_EMAIL_CONFIG points to it."""
-        toml = tmp_path / "email.toml"
+class TestLoadConfig:
+    def test_load_config_reads_email_section(self, tmp_path: Any, monkeypatch: Any) -> None:
+        """load_config() reads [email] section from lucyd.toml via LUCYD_CONFIG."""
+        toml = tmp_path / "lucyd.toml"
         toml.write_text(
-            '[daemon]\n'
-            'url = "http://daemon:9000"\n'
             '[email]\n'
             'imap_host = "imap.test.com"\n'
             'smtp_host = "smtp.test.com"\n'
@@ -134,13 +131,12 @@ class TestLoadConfigToml:
             'user_env = "MY_USER"\n'
             'password_env = "MY_PASS"\n'
         )
-        monkeypatch.setenv("LUCYD_EMAIL_CONFIG", str(toml))
+        monkeypatch.setenv("LUCYD_CONFIG", str(toml))
         monkeypatch.setenv("MY_USER", "alice")
         monkeypatch.setenv("MY_PASS", "secret")
 
         email_mod.load_config()
 
-        assert email_mod.URL == "http://daemon:9000"
         assert email_mod.IMAP_HOST == "imap.test.com"
         assert email_mod.SMTP_HOST == "smtp.test.com"
         assert email_mod.FOLDER == "Archive"
@@ -149,38 +145,18 @@ class TestLoadConfigToml:
         assert email_mod.USER == "alice"
         assert email_mod.PASSWORD == "secret"
 
-    def test_load_config_daemon_token_env_sets_http_token(
-        self, tmp_path: Any, monkeypatch: Any,
-    ) -> None:
-        """When daemon.token_env is set, LUCYD_HTTP_TOKEN is populated."""
-        toml = tmp_path / "email.toml"
-        toml.write_text(
-            '[daemon]\n'
-            'token_env = "MY_SECRET_TOKEN"\n'
-            '[email]\n'
-            'imap_host = "imap.test.com"\n'
-            'smtp_host = "smtp.test.com"\n'
-        )
-        monkeypatch.setenv("LUCYD_EMAIL_CONFIG", str(toml))
-        monkeypatch.setenv("MY_SECRET_TOKEN", "tok-abc123")
-        monkeypatch.delenv("LUCYD_HTTP_TOKEN", raising=False)
-
-        email_mod.load_config()
-
-        assert os.environ.get("LUCYD_HTTP_TOKEN") == "tok-abc123"
-
     def test_load_config_from_address_overrides(
         self, tmp_path: Any, monkeypatch: Any,
     ) -> None:
         """from_address in TOML overrides the USER-based FROM_ADDR."""
-        toml = tmp_path / "email.toml"
+        toml = tmp_path / "lucyd.toml"
         toml.write_text(
             '[email]\n'
             'imap_host = "imap.test.com"\n'
             'smtp_host = "smtp.test.com"\n'
             'from_address = "noreply@example.com"\n'
         )
-        monkeypatch.setenv("LUCYD_EMAIL_CONFIG", str(toml))
+        monkeypatch.setenv("LUCYD_CONFIG", str(toml))
         email_mod.load_config()
         assert email_mod.FROM_ADDR == "noreply@example.com"
 
@@ -188,23 +164,22 @@ class TestLoadConfigToml:
         self, tmp_path: Any, monkeypatch: Any,
     ) -> None:
         """poll_interval in TOML is read correctly."""
-        toml = tmp_path / "email.toml"
+        toml = tmp_path / "lucyd.toml"
         toml.write_text(
             '[email]\n'
             'imap_host = "x"\n'
             'smtp_host = "x"\n'
             'poll_interval = 120\n'
         )
-        monkeypatch.setenv("LUCYD_EMAIL_CONFIG", str(toml))
+        monkeypatch.setenv("LUCYD_CONFIG", str(toml))
         email_mod.load_config()
         assert email_mod.POLL_INTERVAL == 120
 
-
-    def test_load_config_starttls_and_ports_from_toml(
+    def test_load_config_starttls_and_ports(
         self, tmp_path: Any, monkeypatch: Any,
     ) -> None:
         """load_config() reads imap_port, smtp_port, and security from TOML."""
-        toml = tmp_path / "email.toml"
+        toml = tmp_path / "lucyd.toml"
         toml.write_text(
             '[email]\n'
             'imap_host = "imap.test.com"\n'
@@ -213,74 +188,46 @@ class TestLoadConfigToml:
             'smtp_port = 1025\n'
             'security = "starttls"\n'
         )
-        monkeypatch.setenv("LUCYD_EMAIL_CONFIG", str(toml))
+        monkeypatch.setenv("LUCYD_CONFIG", str(toml))
         email_mod.load_config()
         assert email_mod.IMAP_PORT == 1143
         assert email_mod.SMTP_PORT == 1025
         assert email_mod.SECURITY == "starttls"
 
-    def test_load_config_allowed_senders_from_toml(
+    def test_load_config_allowed_senders_lowercased(
         self, tmp_path: Any, monkeypatch: Any,
     ) -> None:
         """load_config() reads allowed_senders from TOML and lowercases them."""
-        toml = tmp_path / "email.toml"
+        toml = tmp_path / "lucyd.toml"
         toml.write_text(
             '[email]\n'
             'imap_host = "imap.test.com"\n'
             'smtp_host = "smtp.test.com"\n'
             'allowed_senders = ["Alice@Example.COM", "bob@test.com"]\n'
         )
-        monkeypatch.setenv("LUCYD_EMAIL_CONFIG", str(toml))
+        monkeypatch.setenv("LUCYD_CONFIG", str(toml))
         email_mod.load_config()
         assert email_mod.ALLOWED_SENDERS == ["alice@example.com", "bob@test.com"]
 
-    def test_malformed_toml_falls_back_to_env_vars(
-        self, tmp_path: Any, monkeypatch: Any,
-    ) -> None:
-        """Malformed TOML file logs warning and falls back to env vars."""
-        toml = tmp_path / "email.toml"
-        toml.write_text("not valid toml [[[")
-        monkeypatch.setenv("LUCYD_EMAIL_CONFIG", str(toml))
-        monkeypatch.setenv("LUCYD_EMAIL_IMAP_HOST", "imap.fallback.com")
-        monkeypatch.setenv("LUCYD_EMAIL_SMTP_HOST", "smtp.fallback.com")
-        monkeypatch.setenv("LUCYD_EMAIL_USER", "fallback")
-        monkeypatch.setenv("LUCYD_EMAIL_PASSWORD", "pass")
-        email_mod.load_config()
-        assert email_mod.IMAP_HOST == "imap.fallback.com"
+    def test_exits_when_lucyd_config_not_set(self, monkeypatch: Any) -> None:
+        """load_config() exits when LUCYD_CONFIG is not set."""
+        monkeypatch.delenv("LUCYD_CONFIG", raising=False)
+        with pytest.raises(SystemExit):
+            email_mod.load_config()
 
+    def test_exits_when_config_file_missing(self, monkeypatch: Any) -> None:
+        """load_config() exits when LUCYD_CONFIG points to a non-existent file."""
+        monkeypatch.setenv("LUCYD_CONFIG", "/nonexistent/lucyd.toml")
+        with pytest.raises(SystemExit):
+            email_mod.load_config()
 
-class TestLoadConfigEnvFallback:
-    def test_load_config_falls_back_to_env_vars(self, monkeypatch: Any) -> None:
-        """When no TOML file exists, load_config() reads from env vars."""
-        monkeypatch.delenv("LUCYD_EMAIL_CONFIG", raising=False)
-        # Point away from any real email.toml that might exist
-        monkeypatch.chdir("/tmp")
-
-        monkeypatch.setenv("LUCYD_URL", "http://env-daemon:8000")
-        monkeypatch.setenv("LUCYD_EMAIL_IMAP_HOST", "imap.env.com")
-        monkeypatch.setenv("LUCYD_EMAIL_SMTP_HOST", "smtp.env.com")
-        monkeypatch.setenv("LUCYD_EMAIL_USER", "envuser")
-        monkeypatch.setenv("LUCYD_EMAIL_PASSWORD", "envpass")
-        monkeypatch.setenv("LUCYD_EMAIL_FOLDER", "Sent")
-        monkeypatch.setenv("LUCYD_EMAIL_POLL_INTERVAL", "45")
-        monkeypatch.setenv("LUCYD_EMAIL_FROM", "from@env.com")
-        monkeypatch.setenv("LUCYD_EMAIL_IMAP_PORT", "1143")
-        monkeypatch.setenv("LUCYD_EMAIL_SMTP_PORT", "1025")
-        monkeypatch.setenv("LUCYD_EMAIL_SECURITY", "starttls")
-
-        email_mod.load_config()
-
-        assert email_mod.URL == "http://env-daemon:8000"
-        assert email_mod.IMAP_HOST == "imap.env.com"
-        assert email_mod.SMTP_HOST == "smtp.env.com"
-        assert email_mod.USER == "envuser"
-        assert email_mod.PASSWORD == "envpass"
-        assert email_mod.FOLDER == "Sent"
-        assert email_mod.POLL_INTERVAL == 45
-        assert email_mod.FROM_ADDR == "from@env.com"
-        assert email_mod.IMAP_PORT == 1143
-        assert email_mod.SMTP_PORT == 1025
-        assert email_mod.SECURITY == "starttls"
+    def test_exits_when_no_email_section(self, tmp_path: Any, monkeypatch: Any) -> None:
+        """load_config() exits when lucyd.toml has no [email] section."""
+        toml = tmp_path / "lucyd.toml"
+        toml.write_text('[agent]\nname = "Test"\n')
+        monkeypatch.setenv("LUCYD_CONFIG", str(toml))
+        with pytest.raises(SystemExit):
+            email_mod.load_config()
 
 
 # ─── 2. IMAP fetch and mark ──────────────────────────────────────

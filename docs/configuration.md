@@ -54,11 +54,11 @@ token_env = "LUCYD_HTTP_TOKEN"       # Env var for API auth
 
 | Bridge | Config file | Env var override | Template |
 |--------|-------------|-----------------|----------|
-| Telegram | `telegram.toml` | `LUCYD_TELEGRAM_CONFIG` | `channels/telegram.toml.example` |
-| Email | `email.toml` | `LUCYD_EMAIL_CONFIG` | `channels/email.toml.example` |
+| Telegram | `lucyd.toml [telegram]` | `LUCYD_CONFIG` | — |
+| Email | `lucyd.toml [email]` | `LUCYD_CONFIG` | — |
 | CLI | env vars only | `LUCYD_URL` | — |
 
-All bridges fall back to environment variables if no config file is found. The `debounce_ms` setting in `[behavior]` controls message batching for queued messages on the daemon side.
+Both channel bridges read their config from sections in `lucyd.toml` via the `LUCYD_CONFIG` env var. The `debounce_ms` setting in `[behavior]` controls message batching for queued messages on the daemon side.
 
 ## [http]
 

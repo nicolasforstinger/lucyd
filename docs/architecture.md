@@ -27,9 +27,9 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `attachments.py` | `Attachment` type, image fitting (`fit_image`), document text extraction (`extract_document_text`), scanned PDF rendering (`render_pdf_pages`). Pure functions. |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
 | `async_utils.py` | `run_blocking()` for safe blocking I/O offload. |
-| `channels/telegram.py` | Telegram bridge. Polls getUpdates, POSTs to daemon, delivers replies. Standalone config: `telegram.toml`. |
+| `channels/telegram.py` | Telegram bridge. Polls getUpdates, POSTs to daemon, delivers replies. Config: `[telegram]` section in `lucyd.toml`. |
 | `bin/lucydctl` | CLI control client. HTTP wrapper for daemon endpoints. `lucydctl chat` for interactive SSE streaming. |
-| `channels/email.py` | Email bridge. IMAP polling, SMTP replies. Standalone config: `email.toml`. |
+| `channels/email.py` | Email bridge. IMAP polling, SMTP replies. Config: `[email]` section in `lucyd.toml`. |
 | `providers/__init__.py` | `LLMProvider` protocol, data types (`LLMResponse`, `StreamDelta`, `Usage`, `ModelCapabilities`), factory. |
 | `providers/anthropic.py` | Anthropic provider. Prompt caching, extended thinking, SDK or HTTP fallback. |
 | `providers/openai.py` | OpenAI-compatible provider. Embeddings, thinking detection, JSON repair. |

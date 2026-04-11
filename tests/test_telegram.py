@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -149,38 +148,23 @@ class TestExtractQuote:
 
 
 class TestLoadConfig:
-    def test_loads_config_from_toml_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        cfg = tmp_path / "telegram.toml"
+    def test_reads_telegram_section(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = tmp_path / "lucyd.toml"
         cfg.write_text(
             '[telegram]\n'
             'token_env = "MY_TG_TOKEN"\n'
             'text_chunk_limit = 2000\n'
             'poll_timeout = 15\n'
-            '\n'
-            '[daemon]\n'
-            'url = "http://daemon:9000"\n'
         )
-        monkeypatch.setenv("LUCYD_TELEGRAM_CONFIG", str(cfg))
+        monkeypatch.setenv("LUCYD_CONFIG", str(cfg))
         monkeypatch.setenv("MY_TG_TOKEN", "tok123")
         tg.load_config()
         assert tg.TOKEN == "tok123"
-        assert tg.DAEMON_URL == "http://daemon:9000"
         assert tg.CHUNK_LIMIT == 2000
         assert tg.POLL_TIMEOUT == 15
 
-    def test_fallback_to_env_vars_when_no_config_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LUCYD_TELEGRAM_TOKEN", "env-tok")
-        monkeypatch.setenv("LUCYD_URL", "http://env-daemon:8200")
-        monkeypatch.setenv("LUCYD_TELEGRAM_CONFIG", "")
-        # Ensure no config files found in default locations
-        monkeypatch.chdir("/tmp")
-        tg.load_config()
-        assert tg.TOKEN == "env-tok"
-        assert tg.DAEMON_URL == "http://env-daemon:8200"
-        assert tg.API_BASE == "https://api.telegram.org/botenv-tok"
-
     def test_contacts_section_populates_id_to_name(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        cfg = tmp_path / "telegram.toml"
+        cfg = tmp_path / "lucyd.toml"
         cfg.write_text(
             '[telegram]\n'
             'token_env = "TG_TOK"\n'
@@ -189,53 +173,41 @@ class TestLoadConfig:
             'Alice = 111\n'
             'Bob = 222\n'
         )
-        monkeypatch.setenv("LUCYD_TELEGRAM_CONFIG", str(cfg))
+        monkeypatch.setenv("LUCYD_CONFIG", str(cfg))
         monkeypatch.setenv("TG_TOK", "x")
         tg.ID_TO_NAME = {}
         tg.load_config()
         assert tg.ID_TO_NAME == {111: "Alice", 222: "Bob"}
 
     def test_allow_from_populates_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        cfg = tmp_path / "telegram.toml"
+        cfg = tmp_path / "lucyd.toml"
         cfg.write_text(
             '[telegram]\n'
             'token_env = "TG_TOK"\n'
             'allow_from = [111, 222]\n'
         )
-        monkeypatch.setenv("LUCYD_TELEGRAM_CONFIG", str(cfg))
+        monkeypatch.setenv("LUCYD_CONFIG", str(cfg))
         monkeypatch.setenv("TG_TOK", "x")
         tg.ALLOW_FROM = set()
         tg.load_config()
         assert tg.ALLOW_FROM == {111, 222}
 
-    def test_malformed_toml_falls_back_to_env_vars(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Malformed TOML file logs warning and falls back to env vars."""
-        cfg = tmp_path / "telegram.toml"
-        cfg.write_text("this is not valid toml [[[")
-        monkeypatch.setenv("LUCYD_TELEGRAM_CONFIG", str(cfg))
-        monkeypatch.setenv("LUCYD_TELEGRAM_TOKEN", "fallback-tok")
-        monkeypatch.setenv("LUCYD_URL", "http://fallback:8200")
-        tg.load_config()
-        assert tg.TOKEN == "fallback-tok"
-        assert tg.DAEMON_URL == "http://fallback:8200"
+    def test_exits_when_lucyd_config_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LUCYD_CONFIG", raising=False)
+        with pytest.raises(SystemExit):
+            tg.load_config()
 
-    def test_daemon_token_env_sets_lucyd_http_token(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        cfg = tmp_path / "telegram.toml"
-        cfg.write_text(
-            '[telegram]\n'
-            'token_env = "TG_TOK"\n'
-            '\n'
-            '[daemon]\n'
-            'token_env = "MY_DAEMON_TOKEN"\n'
-        )
-        monkeypatch.setenv("LUCYD_TELEGRAM_CONFIG", str(cfg))
-        monkeypatch.setenv("TG_TOK", "x")
-        monkeypatch.setenv("MY_DAEMON_TOKEN", "secret-daemon-tok")
-        monkeypatch.delenv("LUCYD_HTTP_TOKEN", raising=False)
-        tg.load_config()
-        assert os.environ.get("LUCYD_HTTP_TOKEN") == "secret-daemon-tok"
+    def test_exits_when_config_file_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LUCYD_CONFIG", "/nonexistent/lucyd.toml")
+        with pytest.raises(SystemExit):
+            tg.load_config()
+
+    def test_exits_when_no_telegram_section(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = tmp_path / "lucyd.toml"
+        cfg.write_text('[agent]\nname = "Test"\n')
+        monkeypatch.setenv("LUCYD_CONFIG", str(cfg))
+        with pytest.raises(SystemExit):
+            tg.load_config()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

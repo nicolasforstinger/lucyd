@@ -223,20 +223,14 @@ token_env = "LUCYD_TELEGRAM_TOKEN"
 allow_from = [123456789]
 ```
 
-Config search order (using Telegram as example):
-1. `LUCYD_TELEGRAM_CONFIG` env var
-2. `telegram.toml` in working directory
-3. `/config/telegram.toml` (container convention)
-4. Fall back to individual env vars
-
-Secrets are never in the TOML file — only env var *names* that point to secrets.
+Channel bridges read their config from sections in `lucyd.toml` (path from `LUCYD_CONFIG` env var). Secrets are never in the TOML file — only env var *names* that point to secrets.
 
 ### Reference Implementations
 
 | Channel | File | Config | Complexity |
 |---|---|---|---|
-| **Telegram** | `channels/telegram.py` | `telegram.toml` | Full-featured: long polling, reconnect backoff, media groups, photo albums, contacts |
-| **Email** | `channels/email.py` | `email.toml` | IMAP polling + SMTP reply |
+| **Telegram** | `channels/telegram.py` | `lucyd.toml [telegram]` | Full-featured: long polling, reconnect backoff, media groups, photo albums, contacts |
+| **Email** | `channels/email.py` | `lucyd.toml [email]` | IMAP polling + SMTP reply |
 
 `lucydctl chat` provides interactive CLI chat via SSE streaming — it's part of `bin/lucydctl`, not a separate channel bridge. Use Telegram as the reference for production channel patterns (error handling, reconnection, config structure).
 

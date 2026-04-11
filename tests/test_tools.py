@@ -1,6 +1,8 @@
-"""Tests for tools/__init__.py — ToolRegistry error handling."""
+"""Tests for tools/__init__.py — ToolRegistry error handling and tool contracts."""
 
+import json
 import logging
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -37,3 +39,34 @@ class TestToolErrorHandling:
         with caplog.at_level(logging.ERROR, logger="tools"):
             await reg.execute("explode", {})
         assert "detailed internal error info" in caplog.text
+
+
+# ─── Reminder tool ──────────────────────────────────────────────
+
+
+class TestReminderPayload:
+    """Reminder curl payload must include task_type: system for auto-close."""
+
+    @pytest.mark.asyncio
+    async def test_reminder_payload_includes_system_task_type(self) -> None:
+        """Reminder sends task_type 'system' so the session auto-closes."""
+        from tools.reminder import tool_reminder
+
+        captured_cmd: str = ""
+
+        async def fake_subprocess(cmd: str, **_: object) -> AsyncMock:
+            nonlocal captured_cmd
+            captured_cmd = cmd
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b"", b"job 1 at ..."))
+            proc.returncode = 0
+            return proc
+
+        with patch("shutil.which", return_value="/usr/bin/at"), \
+             patch("asyncio.create_subprocess_shell", side_effect=fake_subprocess):
+            result = await tool_reminder("check logs", minutes=10)
+
+        assert "Reminder set" in result
+        # Extract the JSON payload from the curl command
+        assert '"task_type": "system"' in captured_cmd
+        assert '"sender": "system"' in captured_cmd
