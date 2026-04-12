@@ -2,8 +2,7 @@
 
 Works with any model accessible through the Anthropic Messages API.
 Supports prompt caching (cache_control) and extended thinking
-(adaptive/budgeted).  Uses the Anthropic SDK when available and
-falls back to direct HTTP requests when it is not.
+(adaptive/budgeted).  Requires the Anthropic SDK.
 """
 
 from __future__ import annotations
@@ -13,7 +12,9 @@ import logging
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
+import anthropic
 import httpx
+from anthropic._exceptions import OverloadedError as _OverloadedError
 
 from async_utils import run_blocking, threaded_stream
 from messages import Message
@@ -30,36 +31,8 @@ from . import (
 
 log = logging.getLogger(__name__)
 
-try:
-    import anthropic
-    from anthropic._exceptions import OverloadedError as _OverloadedError
-except ImportError:
-    anthropic = None  # type: ignore[assignment]  # conditional import — module when installed, None otherwise
-    _OverloadedError = None  # type: ignore[assignment,misc]  # conditional import fallback
-
 
 _DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
-_ANTHROPIC_VERSION = "2023-06-01"
-
-
-# ── SDK-free compatibility exceptions for httpx fallback path ───
-
-class APIStatusError(Exception):
-    """SDK-free error carrying an HTTP status code."""
-
-    def __init__(self, message: str, *, status_code: int, body: Any = None, response: httpx.Response | None = None):
-        super().__init__(message)
-        self.status_code = status_code
-        self.body = body
-        self.response = response
-
-
-class APIConnectionError(Exception):
-    """Raised when the direct HTTP fallback cannot reach the API."""
-
-
-class APITimeoutError(Exception):
-    """Raised when the direct HTTP fallback times out."""
 
 
 # ── Helpers ─────────────────────────────────────────────────────
@@ -99,12 +72,10 @@ class AnthropicProvider:
         self.provider_name = provider_name
         self.api_key = api_key or "not-needed"
         self.base_url = base_url.rstrip("/")
-        self.client: Any = None  # Anthropic client when SDK installed, None otherwise
-        if anthropic is not None:
-            if self.base_url:
-                self.client = anthropic.Anthropic(api_key=self.api_key, base_url=self.base_url)
-            else:
-                self.client = anthropic.Anthropic(api_key=self.api_key)
+        kwargs: dict[str, Any] = {"api_key": self.api_key}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        self.client = anthropic.Anthropic(**kwargs)
         self.model = model
         self.max_tokens = max_tokens
         self.cache_control = cache_control
@@ -255,26 +226,6 @@ class AnthropicProvider:
             "budget_tokens": self.thinking_budget,
         }
 
-    # ── Direct HTTP fallback ────────────────────────────────────
-
-    def _headers(self) -> dict[str, str]:
-        headers = {
-            "anthropic-version": _ANTHROPIC_VERSION,
-            "content-type": "application/json",
-        }
-        if self.api_key and self.api_key != "not-needed":
-            headers["x-api-key"] = self.api_key
-        return headers
-
-    def _messages_url(self) -> str:
-        base = self.base_url or _DEFAULT_ANTHROPIC_BASE_URL
-        base = base.rstrip("/")
-        if base.endswith("/messages"):
-            return base
-        if base.endswith("/v1"):
-            return f"{base}/messages"
-        return f"{base}/v1/messages"
-
     # ── Response parsing ────────────────────────────────────────
 
     @staticmethod
@@ -282,8 +233,8 @@ class AnthropicProvider:
         """Convert an Anthropic SDK Message object to a plain dict.
 
         The SDK returns typed objects (TextBlock, ToolUseBlock,
-        ThinkingBlock, etc.).  We normalize to dicts so both the SDK
-        and httpx paths feed the same ``_response_to_llm()`` method.
+        ThinkingBlock, etc.).  We normalize to dicts so
+        ``_response_to_llm()`` works with a single format.
         """
         content = []
         for block in response.content:
@@ -374,41 +325,6 @@ class AnthropicProvider:
             _thinking_block=thinking_block,
         )
 
-    async def _complete_via_httpx(self, params: dict[str, Any]) -> LLMResponse:
-        """Direct HTTP fallback when the Anthropic SDK is not installed."""
-        timeout = max(float(params.get("timeout", 0) or 0), 600.0 if "thinking" in params else 60.0)
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    self._messages_url(),
-                    headers=self._headers(),
-                    json=params,
-                )
-                response.raise_for_status()
-        except httpx.TimeoutException as exc:
-            raise APITimeoutError(str(exc)) from exc
-        except httpx.HTTPStatusError as exc:
-            body = None
-            try:
-                body = exc.response.json()
-            except ValueError:
-                body = None
-            message = str(exc)
-            if isinstance(body, dict):
-                err = body.get("error", body)
-                if isinstance(err, dict) and err.get("message"):
-                    message = err["message"]
-            raise APIStatusError(
-                message,
-                status_code=exc.response.status_code,
-                body=body,
-                response=exc.response,
-            ) from exc
-        except httpx.RequestError as exc:
-            raise APIConnectionError(str(exc)) from exc
-
-        return self._response_to_llm(response.json())
-
     # ── Completion ──────────────────────────────────────────────
 
     async def complete(
@@ -427,9 +343,6 @@ class AnthropicProvider:
         thinking_param = self._build_thinking_param()
         if thinking_param:
             params["thinking"] = thinking_param
-
-        if self.client is None:
-            return await self._complete_via_httpx(params)
 
         if thinking_param:
             # Streaming required when thinking is enabled — SDK enforces this
@@ -489,11 +402,6 @@ class AnthropicProvider:
         Uses the SDK's ``messages.stream()`` context manager and yields
         StreamDelta chunks as events arrive.
         """
-        if self.client is None:
-            async for delta in stream_fallback(self, system, messages, tools, **kwargs):
-                yield delta
-            return
-
         params: dict[str, Any] = {
             "model": self.model,
             "max_tokens": kwargs.get("max_tokens", self.max_tokens),

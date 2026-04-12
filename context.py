@@ -11,52 +11,23 @@ import logging
 import time
 from pathlib import Path
 
+import tiktoken
+
 log = logging.getLogger(__name__)
+
+_tiktoken_enc = tiktoken.get_encoding("cl100k_base")
 
 
 def _estimate_tokens(text: str) -> int:
-    """Estimate token count using tiktoken cl100k_base (with byte-based fallback).
+    """Estimate token count using tiktoken cl100k_base.
 
-    Primary: tiktoken cl100k_base encoding — standard BPE tokenizer used by
-    GPT-4 and a reasonable cross-model approximation for Anthropic/local models.
+    Standard BPE tokenizer used by GPT-4 and a reasonable cross-model
+    approximation for Anthropic/local models.
     Margin of error: ±5% for English, ±15% for code, ±20% for CJK text.
-
-    Fallback (when tiktoken not installed): UTF-8 byte count / 3.3.
-    This is more accurate than len(text) // 4 for mixed content.
-    Margin of error: ±15% for English, ±25% for code/CJK.
     """
-    if not _tiktoken_loaded:
-        _load_tiktoken()
     if not isinstance(text, str):
         text = str(text) if text is not None else ""
-    return _tiktoken_count(text) if _tiktoken_enc is not None else _byte_estimate(text)
-
-
-# Lazy-load tiktoken encoding once
-_tiktoken_enc: object | None = None
-_tiktoken_loaded = False
-
-
-def _load_tiktoken() -> None:
-    global _tiktoken_enc, _tiktoken_loaded
-    if _tiktoken_loaded:
-        return
-    _tiktoken_loaded = True
-    try:
-        import tiktoken
-        _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
-        log.info("Token counting: tiktoken cl100k_base")
-    except (ImportError, Exception):
-        log.info("Token counting: byte-based fallback (install tiktoken for higher accuracy)")
-
-
-def _tiktoken_count(text: str) -> int:
-    return len(_tiktoken_enc.encode(text))  # type: ignore[union-attr]  # only called when tiktoken imported successfully
-
-
-def _byte_estimate(text: str) -> int:
-    """UTF-8 byte-length estimate: ~3.3 bytes per token (cl100k_base average)."""
-    return len(text.encode("utf-8")) * 10 // 33
+    return len(_tiktoken_enc.encode(text))
 
 
 class ContextBuilder:

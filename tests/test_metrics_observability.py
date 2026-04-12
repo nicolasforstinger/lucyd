@@ -208,44 +208,6 @@ class TestRetryMetric:
         assert val == 1, "One retry should be recorded"
 
 
-# ─── Context trims ───────────────────────────────────────────────
-
-
-class TestContextTrimMetrics:
-    @pytest.mark.asyncio
-    async def test_trim_records_count_and_tokens(self) -> None:
-        _clear_metric(metrics.CONTEXT_TRIMS_TOTAL)
-        _clear_metric(metrics.CONTEXT_TRIM_TOKENS)
-
-        # Provider with a small context window to force trimming
-        resp1 = LLMResponse(
-            text=None,
-            tool_calls=[ToolCall(id="tc-1", name="echo", arguments={"text": "x"})],
-            stop_reason="tool_use",
-            usage=Usage(input_tokens=100, output_tokens=50),
-        )
-        resp2 = _end_turn_response()
-        small_ctx = ModelCapabilities(max_context_tokens=500)
-        provider = MockProvider([resp1, resp2], caps=small_ctx)
-        reg = _make_registry()
-
-        # Messages that exceed the 500-token context budget
-        messages: list[dict[str, object]] = [
-            {"role": "user", "content": "x" * 2000},
-            {"role": "agent", "content": "y" * 2000},
-            {"role": "user", "content": "z" * 2000},
-        ]
-
-        await run_agentic_loop(
-            provider=provider, system=[], messages=messages,
-            tools=reg.get_schemas(), tool_executor=reg,
-            config=replace(_LOOP_CONFIG, max_turns=3),
-        )
-
-        trim_count = _sample_value(metrics.CONTEXT_TRIMS_TOTAL)
-        assert trim_count >= 1, "At least one context trim should be recorded"
-
-
 # ─── Message outcome ─────────────────────────────────────────────
 
 

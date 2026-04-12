@@ -31,9 +31,9 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `bin/lucydctl` | CLI control client. HTTP wrapper for daemon endpoints. `lucydctl chat` for interactive SSE streaming. |
 | `channels/email.py` | Email bridge. IMAP polling, SMTP replies. Config: `[email]` section in `lucyd.toml`. |
 | `providers/__init__.py` | `LLMProvider` protocol, data types (`LLMResponse`, `StreamDelta`, `Usage`, `ModelCapabilities`), factory. |
-| `providers/anthropic.py` | Anthropic provider. Prompt caching, extended thinking, SDK or HTTP fallback. |
-| `providers/openai.py` | OpenAI-compatible provider. Embeddings, thinking detection, JSON repair. |
-| `providers/mistral.py` | Mistral provider. Tool use, vision, streaming. SDK or HTTP fallback. |
+| `providers/anthropic.py` | Anthropic provider. Prompt caching, extended thinking. SDK required. |
+| `providers/openai.py` | OpenAI-compatible provider. Embeddings, thinking detection. SDK required. |
+| `providers/mistral.py` | Mistral provider. Tool use, vision, streaming. SDK required. |
 | `providers/smoke_local.py` | Deterministic test provider. No network. |
 | `tools/__init__.py` | `ToolRegistry`. Dispatch, error isolation, JSON-aware truncation. |
 | `tools/filesystem.py` | `read`, `write`, `edit`. Path allowlist enforcement. |
@@ -73,7 +73,8 @@ _process_message(text, sender, source, channel_id, task_type, reply_to, ...)
   |-- _setup_session              get_or_create(channel_id:sender), inject timestamp
   |-- _build_recall               structured memory recall (facts, episodes, commitments)
   |-- _build_context              system prompt: stable + semi-stable + dynamic tiers
-  |-- _run_agentic_with_retries   agentic loop with message-level retry
+  |-- _ensure_context_budget       pre-loop compaction if context > 80%
+  |-- _run_agentic                  agentic loop (API-level retry only)
   |     |
   |     +-- run_agentic_loop (agentic.py)
   |           provider.complete() or provider.stream()
@@ -117,7 +118,7 @@ LucydDaemon (lucyd.py)
   └── Delegates to:
         ├── MessagePipeline (pipeline.py)
         │     process_message → _build_recall → _build_context
-        │       → _run_agentic_with_retries → _finalize_response
+        │       → _ensure_context_budget → _run_agentic → _finalize_response
         │     Owns: session_mgr, tool_registry, context_builder,
         │           _memory_conn, metering_db, _preprocessors, error_counts
         └── operations.py

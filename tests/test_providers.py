@@ -14,7 +14,7 @@ from typing import Any
 
 from providers import (
     LLMResponse, ModelCapabilities, StreamDelta, ToolCall, Usage,
-    _repair_json, create_provider, stream_fallback,
+    _parse_json, create_provider, stream_fallback,
 )
 
 
@@ -192,109 +192,6 @@ class TestAnthropicThinkingParam:
         assert p._build_thinking_param() is None
 
 
-class TestAnthropicHttpFallback:
-    """Fallback path when the Anthropic SDK is unavailable."""
-
-    @pytest.mark.asyncio
-    async def test_complete_uses_direct_http_when_sdk_missing(self, monkeypatch):
-        import providers.anthropic as mod
-
-        monkeypatch.setattr(mod, "anthropic", None)
-        captured = {}
-
-        async def fake_post(self, url, headers=None, json=None):
-            captured["url"] = url
-            captured["headers"] = headers
-            captured["json"] = json
-            request = httpx.Request("POST", url)
-            return httpx.Response(
-                200,
-                json={
-                    "content": [
-                        {
-                            "type": "thinking",
-                            "thinking": "considering",
-                            "signature": "sig123",
-                        },
-                        {
-                            "type": "tool_use",
-                            "id": "tool-1",
-                            "name": "read",
-                            "input": {"path": "/tmp/test"},
-                        },
-                        {
-                            "type": "text",
-                            "text": "Done",
-                        },
-                    ],
-                    "stop_reason": "tool_use",
-                    "usage": {
-                        "input_tokens": 12,
-                        "output_tokens": 7,
-                        "cache_read_input_tokens": 3,
-                        "cache_creation_input_tokens": 2,
-                    },
-                },
-                request=request,
-            )
-
-        monkeypatch.setattr(mod.httpx.AsyncClient, "post", fake_post)
-
-        provider = _make_anthropic(thinking_mode="adaptive")
-        result = await provider.complete(
-            system=[{"type": "text", "text": "system prompt"}],
-            messages=[{"role": "user", "content": "hi"}],
-            tools=[{"name": "read"}],
-        )
-
-        assert captured["url"] == "https://api.anthropic.com/v1/messages"
-        assert captured["headers"]["x-api-key"] == "test-key"
-        assert captured["headers"]["anthropic-version"] == "2023-06-01"
-        assert captured["json"]["thinking"] == {"type": "adaptive"}
-        assert result.text == "Done"
-        assert result.stop_reason == "tool_use"
-        assert result.tool_calls[0].arguments == {"path": "/tmp/test"}
-        assert result.thinking == "considering"
-        assert result._thinking_block["signature"] == "sig123"
-        assert result.usage.input_tokens == 12
-        assert result.usage.output_tokens == 7
-        assert result.usage.cache_read_tokens == 3
-        assert result.usage.cache_write_tokens == 2
-
-    @pytest.mark.asyncio
-    async def test_stream_falls_back_to_complete_without_sdk(self, monkeypatch):
-        import providers.anthropic as mod
-
-        monkeypatch.setattr(mod, "anthropic", None)
-
-        async def fake_post(self, url, headers=None, json=None):
-            request = httpx.Request("POST", url)
-            return httpx.Response(
-                200,
-                json={
-                    "content": [{"type": "text", "text": "Streamless reply"}],
-                    "stop_reason": "end_turn",
-                    "usage": {"input_tokens": 4, "output_tokens": 2},
-                },
-                request=request,
-            )
-
-        monkeypatch.setattr(mod.httpx.AsyncClient, "post", fake_post)
-
-        provider = _make_anthropic()
-        deltas = [delta async for delta in provider.stream(
-            system=[{"type": "text", "text": "sys"}],
-            messages=[{"role": "user", "content": "hi"}],
-            tools=[],
-        )]
-
-        assert len(deltas) == 1
-        assert deltas[0].text == "Streamless reply"
-        assert deltas[0].stop_reason == "end_turn"
-        assert deltas[0].usage.input_tokens == 4
-        assert deltas[0].usage.output_tokens == 2
-
-
 # ─── OpenAI-Compat Provider ─────────────────────────────────────
 
 class TestOpenAIFormatTools:
@@ -390,69 +287,6 @@ class TestOpenAIFormatMessages:
         assert len(images) == 2
         assert "image/png" in images[0]["image_url"]["url"]
         assert "image/jpeg" in images[1]["image_url"]["url"]
-
-
-class TestOpenAIHttpFallback:
-    """Fallback path when the OpenAI SDK is unavailable."""
-
-    @pytest.mark.asyncio
-    async def test_complete_uses_direct_http_when_sdk_missing(self, monkeypatch):
-        import providers.openai as mod
-
-        monkeypatch.setattr(mod, "openai", None)
-        captured = {}
-
-        async def fake_post(self, url, headers=None, json=None):
-            captured["url"] = url
-            captured["headers"] = headers
-            captured["json"] = json
-            request = httpx.Request("POST", url)
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [{
-                        "message": {"content": "SMOKE_TEST_OK"},
-                        "finish_reason": "stop",
-                    }],
-                    "usage": {
-                        "prompt_tokens": 12,
-                        "completion_tokens": 3,
-                        "cached_tokens": 0,
-                    },
-                },
-                request=request,
-            )
-
-        monkeypatch.setattr(mod.httpx.AsyncClient, "post", fake_post)
-
-        provider = _make_openai(base_url="http://smoke.example/v1")
-        result = await provider.complete(
-            system="system prompt",
-            messages=[{"role": "user", "content": "hi"}],
-            tools=[],
-        )
-
-        assert captured["url"] == "http://smoke.example/v1/chat/completions"
-        assert captured["headers"]["Authorization"] == "Bearer test-key"
-        assert captured["json"]["messages"][0]["role"] == "system"
-        assert result.text == "SMOKE_TEST_OK"
-        assert result.stop_reason == "end_turn"
-        assert result.usage.input_tokens == 12
-        assert result.usage.output_tokens == 3
-
-    @pytest.mark.asyncio
-    async def test_complete_without_sdk_or_base_url_fails_fast(self, monkeypatch):
-        import providers.openai as mod
-
-        monkeypatch.setattr(mod, "openai", None)
-        provider = _make_openai(base_url="")
-
-        with pytest.raises(RuntimeError, match="base_url"):
-            await provider.complete(
-                system="system prompt",
-                messages=[{"role": "user", "content": "hi"}],
-                tools=[],
-            )
 
 
 class TestSmokeLocalProvider:
@@ -1563,32 +1397,32 @@ class TestMistralFactoryIntegration:
 
 # ─── Shared utility tests ───────────────────────────────────────
 
-class TestRepairJson:
-    """providers._repair_json — cross-provider JSON repair."""
+class TestParseJson:
+    """providers._parse_json — strict JSON parsing, no repair."""
 
     def test_valid_json_passthrough(self):
-        assert _repair_json('{"key": "value"}') == {"key": "value"}
+        assert _parse_json('{"key": "value"}') == {"key": "value"}
 
-    def test_trailing_comma_fixed(self):
-        assert _repair_json('{"a": 1, "b": 2,}') == {"a": 1, "b": 2}
+    def test_trailing_comma_rejected(self):
+        assert _parse_json('{"a": 1, "b": 2,}') is None
 
-    def test_single_quotes_fixed(self):
-        assert _repair_json("{'key': 'value'}") == {"key": "value"}
+    def test_single_quotes_rejected(self):
+        assert _parse_json("{'key': 'value'}") is None
 
-    def test_unquoted_keys_fixed(self):
-        assert _repair_json('{key: "value"}') == {"key": "value"}
+    def test_unquoted_keys_rejected(self):
+        assert _parse_json('{key: "value"}') is None
 
     def test_non_string_returns_none(self):
-        assert _repair_json(123) is None  # type: ignore[arg-type]
+        assert _parse_json(123) is None  # type: ignore[arg-type]
 
     def test_non_dict_json_returns_none(self):
-        assert _repair_json("[1, 2, 3]") is None
+        assert _parse_json("[1, 2, 3]") is None
 
-    def test_unfixable_returns_none(self):
-        assert _repair_json("not json at all {{{") is None
+    def test_invalid_returns_none(self):
+        assert _parse_json("not json at all {{{") is None
 
     def test_empty_string_returns_none(self):
-        assert _repair_json("") is None
+        assert _parse_json("") is None
 
 
 class TestStripThinking:

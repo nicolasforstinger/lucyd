@@ -93,12 +93,45 @@ import metrics
 
 # ─── Daemon ──────────────────────────────────────────────────────
 
+_PRIORITY_USER = 0
+_PRIORITY_SYSTEM = 1
+
+
+class PriorityMessageQueue:
+    """Two-tier priority queue: user messages before system tasks, FIFO within tier."""
+
+    def __init__(self, maxsize: int = 1000) -> None:
+        self._queue: asyncio.PriorityQueue[tuple[int, int, dict[str, Any]]] = (
+            asyncio.PriorityQueue(maxsize=maxsize)
+        )
+        self._seq = 0
+
+    async def put(self, item: dict[str, Any]) -> None:
+        task_type = item.get("task_type", "conversational")
+        priority = _PRIORITY_SYSTEM if task_type == "system" else _PRIORITY_USER
+        item["_queued_at"] = time.time()
+        item["_priority"] = priority
+        self._seq += 1
+        await self._queue.put((priority, self._seq, item))
+
+    async def get(self) -> dict[str, Any]:
+        _, _, item = await self._queue.get()
+        return item
+
+    def qsize(self) -> int:
+        return self._queue.qsize()
+
+    def get_nowait(self) -> dict[str, Any]:
+        _, _, item = self._queue.get_nowait()
+        return item
+
+
 class LucydDaemon:
     def __init__(self, config: Config):
         self.config = config
         self.running = True
         self.start_time = time.time()
-        self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
+        self.queue: PriorityMessageQueue = PriorityMessageQueue(maxsize=1000)
         self._control_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.provider: Any = None
         self._single_shot: bool = False
@@ -358,7 +391,12 @@ class LucydDaemon:
                         name = pp.get("name", plugin_file.stem)
                         fn = pp.get("fn")
                         if callable(fn):
-                            self._preprocessors.append({"name": name, "fn": fn})
+                            entry: dict[str, Any] = {"name": name, "fn": fn}
+                            if pp.get("critical"):
+                                entry["critical"] = True
+                            if pp.get("fallback_text"):
+                                entry["fallback_text"] = pp["fallback_text"]
+                            self._preprocessors.append(entry)
                             log.info("Plugin preprocessor registered: %s (from %s)", name, plugin_file.name)
 
                 except Exception:
@@ -817,6 +855,14 @@ class LucydDaemon:
                 continue
             except asyncio.CancelledError:
                 break
+
+            # Record queue wait time
+            if metrics.ENABLED and isinstance(item, dict):
+                queued_at = item.pop("_queued_at", None)
+                priority_label = "user" if item.pop("_priority", 0) == 0 else "system"
+                if queued_at is not None:
+                    metrics.QUEUE_WAIT_SECONDS.labels(priority=priority_label).observe(
+                        time.time() - queued_at)
 
             # Sentinel from channel reader — drain pending and exit
             if item is None:

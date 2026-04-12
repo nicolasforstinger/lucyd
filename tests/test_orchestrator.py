@@ -1010,8 +1010,8 @@ class TestMemoryV2Wiring:
         daemon.session_mgr.compact_session.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_pre_compaction_consolidation_failure_does_not_block_compaction(self, tmp_path):
-        """If pre-compaction consolidation fails, compaction still proceeds."""
+    async def test_consolidation_failure_blocks_compaction(self, tmp_path):
+        """If consolidation fails, compaction is skipped to prevent fact loss."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.consolidation_enabled = True
         session.needs_compaction = MagicMock(return_value=True)
@@ -1027,13 +1027,14 @@ class TestMemoryV2Wiring:
         daemon.pool = MagicMock()
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            with patch("consolidation.consolidate_session", new_callable=AsyncMock, side_effect=Exception("LLM timeout")):
+            with patch("consolidation.consolidate_session", new_callable=AsyncMock, side_effect=RuntimeError("LLM timeout")):
                 await daemon._process_message(
                     text="hello", sender="user", source="telegram",
                 )
 
-        # Compaction MUST still proceed despite consolidation failure
-        daemon.session_mgr.compact_session.assert_called_once()
+        # Compaction blocked — don't summarize unconsolidated messages
+        daemon.session_mgr.compact_session.assert_not_called()
+        assert session.consolidation_pending is True
 
     @pytest.mark.asyncio
     async def test_no_pre_compaction_consolidation_when_disabled(self, tmp_path):
@@ -1239,60 +1240,44 @@ class TestErrorRecoveryOrphanedMessages:
 # ─── Defense: Consecutive User Message Merge ─────────────────────
 
 
-class TestConsecutiveUserMessageMerge:
-    """Contract: consecutive user messages are merged before agentic loop."""
+class TestConsecutiveUserMessageRejection:
+    """Contract: consecutive user messages are rejected, not silently merged."""
 
     @pytest.mark.asyncio
-    async def test_consecutive_user_messages_merged(self, tmp_path):
-        """Two consecutive user messages → merged into one before API call."""
+    async def test_consecutive_user_message_rejected(self, tmp_path):
+        """Adding a user message when last is already user → rejected."""
         daemon, provider, session = _make_daemon(tmp_path)
 
-        # Pre-populate with orphaned user message from prior error
         session.messages = [{"role": "user", "content": "orphaned message"}]
 
-        def fake_add_user(text, sender="", source=""):
-            session.messages.append({"role": "user", "content": text})
+        from session import ConsecutiveRoleError
+
+        async def fake_add_user(text="", sender="", source=""):
+            raise ConsecutiveRoleError("test")
         session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
-        response = _make_response(text="ok")
-        captured_messages = []
-
-        async def fake_loop(**kwargs):
-            # Snapshot messages at time of API call
-            captured_messages.extend([m.copy() for m in kwargs["messages"]])
-            return response
-
-        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="new message", sender="user", source="telegram",
-            )
-
-        # Only one user message should reach the agentic loop
-        user_msgs = [m for m in captured_messages if m.get("role") == "user"]
-        assert len(user_msgs) == 1
-        # Both texts present in merged content
-        assert "orphaned message" in user_msgs[0]["content"]
-        assert "new message" in user_msgs[0]["content"]
+        result = await daemon._process_message(
+            text="new message", sender="user", source="telegram",
+            response_future=asyncio.get_event_loop().create_future(),
+        )
 
     @pytest.mark.asyncio
-    async def test_no_merge_when_alternating_roles(self, tmp_path):
-        """Normal alternating user/assistant → no merge."""
+    async def test_normal_alternation_works(self, tmp_path):
+        """Normal alternating user/assistant → message added successfully."""
         daemon, provider, session = _make_daemon(tmp_path)
 
         session.messages = [
             {"role": "user", "content": "first"},
-            {"role": "agent", "content": "reply"},
+            {"role": "agent", "text": "reply"},
         ]
 
-        def fake_add_user(text, sender="", source=""):
+        def fake_add_user(text="", sender="", source=""):
             session.messages.append({"role": "user", "content": text})
         session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         response = _make_response(text="ok")
-        captured_messages = []
 
         async def fake_loop(**kwargs):
-            captured_messages.extend([m.copy() for m in kwargs["messages"]])
             return response
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
@@ -1300,17 +1285,15 @@ class TestConsecutiveUserMessageMerge:
                 text="second", sender="user", source="telegram",
             )
 
-        # Three messages: user, assistant, user — no merge
-        user_msgs = [m for m in captured_messages if m.get("role") == "user"]
-        assert len(user_msgs) == 2
+        session.add_user_message.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_no_merge_on_first_message(self, tmp_path):
-        """First message in empty session → no merge attempt."""
+    async def test_first_message_in_empty_session(self, tmp_path):
+        """First message in empty session → no rejection."""
         daemon, provider, session = _make_daemon(tmp_path)
         session.messages = []
 
-        def fake_add_user(text, sender="", source=""):
+        def fake_add_user(text="", sender="", source=""):
             session.messages.append({"role": "user", "content": text})
         session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
@@ -1324,82 +1307,7 @@ class TestConsecutiveUserMessageMerge:
                 text="hello", sender="user", source="telegram",
             )
 
-        # Verify message was added to session
         session.add_user_message.assert_called_once()
-        assert len(session.messages) >= 1
-
-    @pytest.mark.asyncio
-    async def test_merge_handles_content_block_format(self, tmp_path):
-        """Merge extracts text from content block format (list of dicts)."""
-        daemon, provider, session = _make_daemon(tmp_path)
-
-        # Orphaned message with content block format (from prior image processing)
-        session.messages = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "image caption"},
-                {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
-            ],
-        }]
-
-        def fake_add_user(text, sender="", source=""):
-            session.messages.append({"role": "user", "content": text})
-        session.add_user_message = AsyncMock(side_effect=fake_add_user)
-
-        response = _make_response(text="ok")
-        captured_messages = []
-
-        async def fake_loop(**kwargs):
-            captured_messages.extend([m.copy() for m in kwargs["messages"]])
-            return response
-
-        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="follow up", sender="user", source="telegram",
-            )
-
-        # Should merge — one user message with text from both
-        user_msgs = [m for m in captured_messages if m.get("role") == "user"]
-        assert len(user_msgs) == 1
-        merged = user_msgs[0]["content"]
-        assert "image caption" in merged
-        assert "follow up" in merged
-
-    @pytest.mark.asyncio
-    async def test_merge_clears_deep_corruption(self, tmp_path):
-        """Multiple stacked orphaned user messages all merged in one pass."""
-        daemon, provider, session = _make_daemon(tmp_path)
-
-        # Simulate deep corruption: 4 orphaned user messages from repeated errors
-        session.messages = [
-            {"role": "user", "content": "msg1"},
-            {"role": "user", "content": "msg2"},
-            {"role": "user", "content": "msg3"},
-            {"role": "user", "content": "msg4"},
-        ]
-
-        def fake_add_user(text, sender="", source=""):
-            session.messages.append({"role": "user", "content": text})
-        session.add_user_message = AsyncMock(side_effect=fake_add_user)
-
-        response = _make_response(text="ok")
-        captured_messages = []
-
-        async def fake_loop(**kwargs):
-            captured_messages.extend([m.copy() for m in kwargs["messages"]])
-            return response
-
-        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="recovery msg", sender="user", source="telegram",
-            )
-
-        # All 5 user messages merged into one in a single pass
-        user_msgs = [m for m in captured_messages if m.get("role") == "user"]
-        assert len(user_msgs) == 1
-        merged = user_msgs[0]["content"]
-        for fragment in ("msg1", "msg2", "msg3", "msg4", "recovery msg"):
-            assert fragment in merged
 
 
 # ─── Image Dimension Check ───────────────────────────────────────
@@ -2098,168 +2006,6 @@ class TestImageFitting:
 
 
 # ─── Message-Level Retry ─────────────────────────────────────────
-
-
-class TestMessageLevelRetry:
-    """Contract: transient API failures trigger message-level retry."""
-
-    @pytest.mark.asyncio
-    async def test_retry_succeeds_on_second_attempt(self, tmp_path):
-        """Transient error on first loop call, success on second."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.message_retries = 2
-        daemon.config.message_retry_base_delay = 0.01
-
-        def fake_add_user(text, sender="", source=""):
-            session.messages.append({"role": "user", "content": text})
-        session.add_user_message = AsyncMock(side_effect=fake_add_user)
-
-        call_count = [0]
-        response = _make_response(text="recovered!")
-        InternalServerError = type("InternalServerError", (Exception,), {})
-
-        async def fake_loop(**kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise InternalServerError("500")
-            return response
-
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-
-        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="hello", sender="user", source="telegram",
-                response_future=future,
-            )
-
-        assert call_count[0] == 2
-        # Reply delivered, not the error message
-        result = future.result()
-        assert result["reply"] == "recovered!"
-
-    @pytest.mark.asyncio
-    async def test_non_transient_error_does_not_retry(self, tmp_path):
-        """Auth errors bypass retry — fail immediately."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.message_retries = 2
-        daemon.config.message_retry_base_delay = 0.01
-
-        def fake_add_user(text, sender="", source=""):
-            session.messages.append({"role": "user", "content": text})
-        session.add_user_message = AsyncMock(side_effect=fake_add_user)
-
-        call_count = [0]
-        AuthenticationError = type("AuthenticationError", (Exception,), {})
-
-        async def fake_loop(**kwargs):
-            call_count[0] += 1
-            raise AuthenticationError("bad key")
-
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-
-        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="hello", sender="user", source="telegram",
-                response_future=future,
-            )
-
-        assert call_count[0] == 1  # No retry
-        # Error returned via future
-        result = future.result()
-        assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_exhausted_retries_sends_error(self, tmp_path):
-        """All retries exhausted → error message sent, user message popped."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.message_retries = 2
-        daemon.config.message_retry_base_delay = 0.01
-
-        def fake_add_user(text, sender="", source=""):
-            session.messages.append({"role": "user", "content": text})
-        session.add_user_message = AsyncMock(side_effect=fake_add_user)
-
-        call_count = [0]
-        InternalServerError = type("InternalServerError", (Exception,), {})
-
-        async def fake_loop(**kwargs):
-            call_count[0] += 1
-            raise InternalServerError("500 always")
-
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-
-        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="hello", sender="user", source="telegram",
-                response_future=future,
-            )
-
-        assert call_count[0] == 3  # 1 initial + 2 retries
-        # Error returned via future, orphaned user message cleaned up
-        result = future.result()
-        assert "error" in result
-        assert not session.messages or session.messages[-1].get("role") != "user"
-
-    @pytest.mark.asyncio
-    async def test_image_blocks_reinjected_per_attempt(self, tmp_path):
-        """Image blocks restored before wait, re-injected before retry."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.message_retries = 1
-        daemon.config.message_retry_base_delay = 0.01
-        daemon.config.vision_max_image_bytes = 10 * 1024 * 1024
-        daemon.config.vision_max_dimension = 1568
-
-        def fake_add_user(text, sender="", source=""):
-            session.messages.append({"role": "user", "content": text})
-        session.add_user_message = AsyncMock(side_effect=fake_add_user)
-
-        call_count = [0]
-        content_snapshots = []
-        response = _make_response(text="I see!")
-        InternalServerError = type("InternalServerError", (Exception,), {})
-
-        async def fake_loop(**kwargs):
-            call_count[0] += 1
-            # Capture whether _image_blocks are present at API call time
-            user_msgs = [m for m in kwargs["messages"] if m.get("role") == "user"]
-            if user_msgs:
-                content_snapshots.append("_image_blocks" in user_msgs[-1])
-            if call_count[0] == 1:
-                raise InternalServerError("500")
-            return response
-
-        # Create a valid tiny PNG image
-        pytest.importorskip("PIL")
-        from PIL import Image
-        img_path = tmp_path / "test.png"
-        img = Image.new("RGB", (2, 2), color="red")
-        img.save(str(img_path), format="PNG")
-
-        from attachments import Attachment
-        att = Attachment(
-            content_type="image/png",
-            filename="test.png",
-            local_path=str(img_path),
-            size=img_path.stat().st_size,
-        )
-
-        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="look at this", sender="user", source="telegram",
-                attachments=[att],
-            )
-
-        assert call_count[0] == 2
-        # Both attempts should have had _image_blocks injected on the user message
-        assert all(content_snapshots), f"Expected _image_blocks on both attempts: {content_snapshots}"
-        # After completion, _image_blocks should be stripped and content remains str
-        user_msgs = [m for m in session.messages if m.get("role") == "user"]
-        if user_msgs:
-            assert isinstance(user_msgs[-1]["content"], str)
-            assert "_image_blocks" not in user_msgs[-1]
 
 
 # ─── Auto-close system sessions ─────────────────────────────────

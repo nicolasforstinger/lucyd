@@ -11,7 +11,7 @@ AI agent framework. HTTP-core daemon with standalone channel bridges, agentic to
 - **Single-tenant by design.** One container, one agent, one personality. No multi-tenant routing, no agent orchestration, no session multiplexing across identities. The complexity budget goes into making one agent excellent.
 - **Personality-first.** Identity files load first, cache longest, and survive context compression. The agent's character isn't a system prompt afterthought — it's the architectural foundation. Workspace files (SOUL.md, MEMORY.md, skills/) define who the agent is, not just what it can do.
 - **HTTP-core with bridge channels.** The daemon exposes one API boundary. Telegram, CLI, and email are standalone bridge processes that speak HTTP — they don't import framework code, share memory, or know about each other. Adding a channel means writing an HTTP client, not extending the daemon.
-- **Provider-agnostic.** `LLMProvider` Protocol — swap providers by editing a TOML load list. Provider SDKs are optional extras (`pip install lucyd[anthropic]`). Core runs on `aiohttp` + `httpx` alone, with SDK-free HTTP fallbacks for every provider.
+- **Provider-agnostic.** `LLMProvider` Protocol — swap providers by editing a TOML load list. Provider SDKs (anthropic, openai, mistralai) are required dependencies. One transport per provider (SDK only), no fallback paths.
 - **Default-secure.** HMAC Bearer token required on all endpoints. Localhost trust is opt-in via `http.trust_localhost` config, not assumed.
 - **No magic.** Flat module layout, single TOML config file, one daemon process. No dependency injection framework, no metaclass registration, no decorator-driven wiring. Extension points (tools, plugins, channels, providers) use plain Python conventions: export a `TOOLS` list, implement a Protocol, POST to an endpoint.
 
@@ -57,8 +57,9 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 - **Typed tool contract** — `ToolSpec` frozen dataclass replaces raw dicts for tool registration
 - **Streaming** — Provider to transport. SSE endpoint, CLI incremental print, Telegram progressive editing
 - **HTTP-core + bridge channels** — Telegram, CLI, Email as standalone bridge processes; HTTP API as the single boundary
-- **LLMProvider Protocol** — Swap providers with config, not code. Provider SDKs are optional; framework runs on `aiohttp` + `httpx` alone
-- **Four-layer error boundaries** — tool → API retry → message rollback → session self-healing
+- **LLMProvider Protocol** — Swap providers with config, not code. Provider SDKs required (anthropic, openai, mistralai)
+- **Error boundaries** — tool error → API retry → session persistence. No silent rollback or mutation
+- **Priority queue** — User messages processed before system tasks. FIFO within each tier
 - **Persistent sessions** — JSONL audit trail + atomic state snapshots, survives restarts
 - **Long-term memory** — PostgreSQL tsvector FTS + pgvector similarity search (pluggable embedding provider)
 - **Structured memory** — Facts, episodes, commitments with automatic consolidation from sessions

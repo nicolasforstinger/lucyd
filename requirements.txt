@@ -1,11 +1,10 @@
 # Lucyd — production dependencies
-# Both provider SDKs are optional. Install only what your providers.d/ config needs.
 
-asyncpg>=0.30,<1     # PostgreSQL async driver (core dependency)
-tiktoken>=0.7,<1     # Token counting (cl100k_base). Falls back to byte estimate if absent.
-anthropic>=0.45      # Required if using provider = "anthropic"
-openai>=2.0,<3       # Required if using provider = "openai" or memory embeddings
-mistralai>=1.0,<2    # Required if using provider = "mistral"
+asyncpg>=0.30,<1     # PostgreSQL async driver
+tiktoken>=0.7,<1     # Token counting (cl100k_base)
+anthropic>=0.45      # Anthropic SDK
+openai>=2.0,<3       # OpenAI SDK (also used for memory embeddings)
+mistralai>=1.0,<2    # Mistral SDK
 httpx>=0.27,<1       # Required for Whisper voice transcription (transitive dep of anthropic, but explicit for standalone use)
 aiohttp>=3.9,<4      # HTTP API server
 

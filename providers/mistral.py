@@ -24,7 +24,7 @@ from . import (
     SystemPrompt,
     ToolCall,
     Usage,
-    _repair_json,
+    _parse_json,
     stream_fallback,
 )
 
@@ -172,13 +172,14 @@ class MistralProvider:
         """Parse tool call arguments from Mistral response.
 
         Mistral returns arguments as ``Union[Dict, str]``.  Handle both
-        forms with JSON repair for malformed strings from small models.
+        forms. Invalid JSON surfaces as ``{"raw": ...}`` which the tool
+        executor rejects, triggering tool_call_retry.
         """
         if isinstance(raw, dict):
             return raw
         if isinstance(raw, str):
-            repaired = _repair_json(raw)
-            return repaired if repaired is not None else {"raw": raw}
+            parsed = _parse_json(raw)
+            return parsed if parsed is not None else {"raw": raw}
         return {"raw": str(raw)} if raw is not None else {}
 
     @staticmethod

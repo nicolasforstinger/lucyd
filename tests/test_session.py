@@ -9,7 +9,9 @@ from session import (
     AUDIT_TRUNCATION_LIMIT,
     Session,
     SessionManager,
+    _context_tokens_from_usage,
     _text_from_content,
+    _validate_turn_structure,
     build_session_info,
     read_history_events,
 )
@@ -856,6 +858,74 @@ class TestSessionAddMessages:
         assert len(session.messages) == 1
 
 
+# ─── _validate_turn_structure ────────────────────────────────────────
+
+
+class TestValidateTurnStructure:
+    """Turn structure validation detects corruption without mutating."""
+
+    def test_valid_structure_no_errors(self, caplog):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "agent", "tool_calls": [{"id": "tc1"}]},
+            {"role": "tool_result", "results": []},
+            {"role": "agent", "text": "done"},
+        ]
+        original = [dict(m) for m in messages]
+        _validate_turn_structure(messages)
+        assert messages == original
+        assert "corruption" not in caplog.text
+
+    def test_orphaned_tool_calls_detected_not_mutated(self, caplog):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "agent", "tool_calls": [{"id": "tc1"}]},
+            {"role": "user", "content": "interruption"},
+        ]
+        original_len = len(messages)
+        _validate_turn_structure(messages)
+        assert len(messages) == original_len  # NOT mutated
+        assert messages[1].get("tool_calls") is not None  # NOT stripped
+        assert "orphaned tool_calls at index 1" in caplog.text
+
+    def test_orphaned_tool_result_detected_not_removed(self, caplog):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "tool_result", "results": []},
+            {"role": "agent", "text": "ok"},
+        ]
+        original_len = len(messages)
+        _validate_turn_structure(messages)
+        assert len(messages) == original_len  # NOT removed
+        assert "orphaned tool_result at index 1" in caplog.text
+
+    def test_tool_calls_at_end_detected(self, caplog):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "agent", "tool_calls": [{"id": "tc1"}]},
+        ]
+        _validate_turn_structure(messages)
+        assert messages[1].get("tool_calls") is not None  # NOT stripped
+        assert "orphaned tool_calls" in caplog.text
+
+
+# ─── _context_tokens_from_usage ──────────────────────────────────────
+
+
+class TestContextTokensFromUsage:
+    """Tests for _context_tokens_from_usage helper."""
+
+    def test_reads_context_tokens_field(self):
+        usage = {"context_tokens": 500, "input_tokens": 300, "cache_read_tokens": 100}
+        assert _context_tokens_from_usage(usage) == 500
+
+    def test_missing_field_falls_through_with_warning(self, caplog):
+        usage = {"input_tokens": 300, "cache_read_tokens": 100}
+        result = _context_tokens_from_usage(usage)
+        assert result == 400
+        assert "missing context_tokens" in caplog.text
+
+
 # ─── _text_from_content ─────────────────────────────────────────────
 
 
@@ -871,46 +941,19 @@ class TestTextFromContent:
     def test_none_returns_empty(self):
         assert _text_from_content(None) == ""
 
-    def test_empty_list_returns_empty(self):
-        assert _text_from_content([]) == ""
-
-    def test_text_blocks_joined(self):
+    def test_list_content_coerced_with_warning(self, caplog):
+        """Non-string content is coerced but triggers a warning."""
         content = [
             {"type": "text", "text": "describe this"},
             {"type": "image", "media_type": "image/jpeg", "data": "base64data"},
         ]
-        assert _text_from_content(content) == "describe this"
+        result = _text_from_content(content)
+        assert result == "describe this"
+        assert "Non-string content detected" in caplog.text
 
-    def test_multiple_text_blocks(self):
-        content = [
-            {"type": "text", "text": "first"},
-            {"type": "text", "text": "second"},
-        ]
-        assert _text_from_content(content) == "first second"
-
-    def test_image_only_returns_empty(self):
-        content = [
-            {"type": "image", "media_type": "image/png", "data": "abc"},
-        ]
-        assert _text_from_content(content) == ""
-
-    def test_non_dict_items_skipped(self):
-        content = [
-            {"type": "text", "text": "valid"},
-            "stray string",
-            42,
-        ]
-        assert _text_from_content(content) == "valid"
-
-    def test_dict_without_type_skipped(self):
-        content = [
-            {"text": "no type field"},
-            {"type": "text", "text": "has type"},
-        ]
-        assert _text_from_content(content) == "has type"
-
-    def test_integer_returns_empty(self):
+    def test_integer_coerced_with_warning(self, caplog):
         assert _text_from_content(42) == ""
+        assert "Non-string content detected" in caplog.text
 
 
 # ─── Content Blocks in Audit ────────────────────────────────────────

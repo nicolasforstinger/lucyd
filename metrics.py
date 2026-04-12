@@ -144,6 +144,13 @@ try:
         "Message queue depth",
     )
 
+    QUEUE_WAIT_SECONDS = Histogram(
+        "lucyd_queue_wait_seconds",
+        "Time between queue entry and processing start",
+        ["priority"],
+        buckets=(0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60),
+    )
+
     UPTIME = Gauge(
         "lucyd_uptime_seconds",
         "Daemon uptime in seconds",
@@ -179,17 +186,6 @@ try:
         "lucyd_consolidation_duration_seconds",
         "Consolidation wall-clock duration including LLM extraction",
         buckets=(0.5, 1, 2, 5, 10, 20, 30, 60),
-    )
-
-    CONTEXT_TRIMS_TOTAL = Counter(
-        "lucyd_context_trims_total",
-        "Mid-loop context trim events",
-    )
-
-    CONTEXT_TRIM_TOKENS = Histogram(
-        "lucyd_context_trim_tokens",
-        "Tokens removed per context trim",
-        buckets=(500, 1000, 2500, 5000, 10000, 25000, 50000),
     )
 
     MEMORY_SEARCH_DURATION = Histogram(

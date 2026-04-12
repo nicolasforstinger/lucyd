@@ -28,8 +28,8 @@ try:
     from elevenlabs.client import AsyncElevenLabs
     from elevenlabs.types import VoiceSettings
 except ImportError:
-    AsyncElevenLabs = None  # type: ignore[misc,assignment]
-    VoiceSettings = None  # type: ignore[misc,assignment]
+    AsyncElevenLabs = None
+    VoiceSettings = None
 
 # Sentinel for metering — no tokens for TTS, only character-based cost.
 _ZERO_USAGE = types.SimpleNamespace(
@@ -189,7 +189,7 @@ async def tool_tts(text: str, voice_id: str = "",
             currency=_cost_currency, converter=_converter,
         )
 
-    return {"text": f"Generated audio ({len(audio)} bytes)", "attachments": [output_file]}
+    return {"text": f"Voice message sent ({len(audio)} bytes)", "attachments": [output_file]}
 
 
 # ─── Tool registration ──────────────────────────────────────────
@@ -197,10 +197,7 @@ async def tool_tts(text: str, voice_id: str = "",
 TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="tts",
-        description=(
-            "Generate speech audio from text. "
-            "The audio file is included in the reply as an attachment."
-        ),
+        description="Generate and send a voice message.",
         input_schema={
             "type": "object",
             "properties": {

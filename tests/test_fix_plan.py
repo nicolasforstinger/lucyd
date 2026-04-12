@@ -176,29 +176,30 @@ class TestTurnGroupTrimming:
 
 
 class TestValidateTurnStructure:
-    """_validate_turn_structure fixes orphaned messages."""
+    """_validate_turn_structure detects corruption without mutating."""
 
-    def test_strips_orphaned_tool_calls(self):
+    def test_detects_orphaned_tool_calls(self, caplog):
         msgs = [
             {"role": "user", "content": "hi"},
             {"role": "agent", "text": "thinking", "tool_calls": [{"id": "1"}]},
         ]
         _validate_turn_structure(msgs)
-        assert "tool_calls" not in msgs[1]
+        # NOT mutated — tool_calls still present
+        assert "tool_calls" in msgs[1]
+        assert "orphaned tool_calls at index 1" in caplog.text
 
-    def test_removes_orphaned_tool_results(self):
+    def test_detects_orphaned_tool_results(self, caplog):
         msgs = [
             {"role": "user", "content": "hi"},
             {"role": "tool_result", "results": [{"tool_call_id": "1", "content": "x"}]},
             {"role": "agent", "text": "done"},
         ]
         _validate_turn_structure(msgs)
-        # tool_result should be removed
-        assert len(msgs) == 2
-        assert msgs[0]["role"] == "user"
-        assert msgs[1]["role"] == "agent"
+        # NOT removed — all messages still present
+        assert len(msgs) == 3
+        assert "orphaned tool_result at index 1" in caplog.text
 
-    def test_valid_structure_unchanged(self):
+    def test_valid_structure_no_warnings(self, caplog):
         msgs = [
             {"role": "user", "content": "hi"},
             {"role": "agent", "text": "", "tool_calls": [{"id": "1"}]},
@@ -207,6 +208,7 @@ class TestValidateTurnStructure:
         ]
         _validate_turn_structure(msgs)
         assert len(msgs) == 4
+        assert "corruption" not in caplog.text
 
 
 class TestPreRetrySnapshot:
@@ -377,49 +379,6 @@ class TestSubagentRouting:
         assert "subagent" in called_roles
 
 
-class TestOpenAIHttpFallback:
-    """OpenAI HTTP fallback flattens extra_body into request params."""
-
-    @pytest.mark.asyncio
-    async def test_extra_body_flattened(self):
-        """extra_body keys are top-level in the HTTP request, not nested."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-        from providers.openai import OpenAIProvider
-
-        # Force no SDK
-        provider = OpenAIProvider(
-            api_key="test", model="test-model", base_url="http://localhost:8080",
-            slot_id=3, thinking_budget=1000,
-        )
-        provider.client = None  # force httpx fallback
-
-        # Mock httpx to capture the request body
-        captured_body = {}
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-        }
-        mock_response.raise_for_status = MagicMock()
-
-        async def fake_post(url, headers=None, json=None):
-            captured_body.update(json)
-            return mock_response
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.post = fake_post
-
-        with patch("providers.openai.httpx.AsyncClient", return_value=mock_client):
-            await provider.complete("system prompt", [], [])
-
-        # Verify extra_body was flattened
-        assert "extra_body" not in captured_body
-        assert captured_body.get("id_slot") == 3
-
-
 # ═══════════════════════════════════════════════════════════════════
 # P4: Telemetry Scoping
 # ═══════════════════════════════════════════════════════════════════
@@ -528,9 +487,9 @@ class TestValidateAcrossTurnBoundaries:
     """Finding 3: tool_result must pair with the nearest assistant, not an
     older one across intervening turns."""
 
-    def test_tool_results_across_plain_assistant_is_orphaned(self):
+    def test_tool_results_across_plain_assistant_detected(self, caplog):
         """assistant(tc1) -> user -> assistant(no tc) -> tool_result(tc2)
-        must remove the dangling tool_result."""
+        detects both orphans without mutating."""
         msgs = [
             {"role": "user", "content": "hi"},
             {"role": "agent", "text": "", "tool_calls": [{"id": "tc1"}]},
@@ -539,14 +498,14 @@ class TestValidateAcrossTurnBoundaries:
             {"role": "tool_result", "results": [{"tool_call_id": "tc2"}]},
         ]
         _validate_turn_structure(msgs)
-        # The tool_result should be removed (nearest assistant has no tc)
-        roles = [m.get("role") for m in msgs]
-        assert "tool_result" not in roles
-        # And tc1 on the first assistant should be stripped (no matching results)
-        assert "tool_calls" not in msgs[1]
+        # NOT mutated — all messages still present
+        assert len(msgs) == 5
+        assert "orphaned tool_calls" in caplog.text
+        assert "orphaned tool_result" in caplog.text
 
-    def test_valid_pairing_across_user_hint_preserved(self):
-        """assistant(tc) -> user(system hint) -> tool_result is valid."""
+    def test_valid_pairing_detected_as_orphan(self, caplog):
+        """assistant(tc) -> user(system hint) -> tool_result is NOT valid
+        under strict adjacency — user message breaks the pair."""
         msgs = [
             {"role": "user", "content": "hi"},
             {"role": "agent", "text": "", "tool_calls": [{"id": "tc1"}]},
@@ -555,7 +514,9 @@ class TestValidateAcrossTurnBoundaries:
             {"role": "agent", "text": "done"},
         ]
         _validate_turn_structure(msgs)
-        assert len(msgs) == 5  # nothing removed
+        assert len(msgs) == 5  # NOT mutated
+        # Strict adjacency: user between tc and result = orphan
+        assert "orphaned tool_calls" in caplog.text
 
 
 class TestIsTransientHttpx:

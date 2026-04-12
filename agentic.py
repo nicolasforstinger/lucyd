@@ -301,38 +301,9 @@ async def run_agentic_loop(
     tool_calls_failed = 0
     all_attachments: list[str] = []
 
-    # Pre-compute context budget for message trimming
-    max_ctx = provider.capabilities.max_context_tokens
-    from context import _estimate_tokens as _est_tok
-
     response = None
     for turn in range(max_turns):
         turn_start = time.time()
-
-        # Context budget enforcement: trim oldest turn groups if over budget
-        if max_ctx > 0 and len(messages) > 2:
-            # Estimate: system + tool defs + messages + safety margin
-            sys_tokens = sum(_est_tok(str(b)) for b in (system if isinstance(system, list) else [system])) if system else 0
-            tool_tokens = sum(_est_tok(str(t)) for t in fmt_tools) if fmt_tools else 0
-            safety = int(max_ctx * 0.10)
-            budget_for_messages = max_ctx - sys_tokens - tool_tokens - safety
-            if budget_for_messages > 0:
-                msg_tokens = [_est_tok(str(m)) for m in messages]
-                total_msg = sum(msg_tokens)
-                # Trim by complete turn groups (preserve first user message)
-                while total_msg > budget_for_messages and len(messages) > 2:
-                    group_end = _turn_group_end(messages, 1)
-                    if len(messages) - (group_end - 1) < 2:
-                        break  # would leave fewer than 2 messages
-                    group_tokens = sum(msg_tokens[1:group_end])
-                    del messages[1:group_end]
-                    del msg_tokens[1:group_end]
-                    total_msg -= group_tokens
-                    log.info("[%s] Context trimmed: removed turn group (%d msgs, %d tokens), %d remaining",
-                             trace_id[:8], group_end - 1, group_tokens, total_msg)
-                    if metrics.ENABLED:
-                        metrics.CONTEXT_TRIMS_TOTAL.inc()
-                        metrics.CONTEXT_TRIM_TOKENS.observe(group_tokens)
 
         fmt_messages = provider.format_messages(messages)
 
@@ -482,8 +453,10 @@ async def run_agentic_loop(
                     "content": f"Error: {type(result).__name__}: {result}",
                 })
             else:
-                # Collect file attachments produced by tools
-                all_attachments.extend(result.pop("_attachments", []))
+                # Collect file attachments produced by tools (deduplicate)
+                for _att in result.pop("_attachments", []):
+                    if _att not in all_attachments:
+                        all_attachments.append(_att)
                 # Check if tool returned an error (argument errors, etc.)
                 content = result.get("content", "")
                 if isinstance(content, str) and content.startswith("Error:"):

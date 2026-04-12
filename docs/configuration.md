@@ -355,16 +355,14 @@ max_turns_per_message = 50                                             # Max too
 max_cost_per_message = 5.0                                             # USD circuit breaker per message (0.0 = disabled)
 api_retries = 2                                                        # Retry attempts for transient API errors (429, 5xx, connection). Default: 2
 api_retry_base_delay = 2.0                                             # Initial backoff delay in seconds (exponential with jitter). Default: 2.0
-message_retries = 2                                                    # Message-level retries on persistent failure (default: 2)
-message_retry_base_delay = 30                                          # Base delay between message retries in seconds (default: 30)
 notify_target = ""                                                    # Route all notifications to this sender's session (default: "" = disabled)
 # max_context_for_tools = 0                                             # Inject wrap-up hint when context exceeds this during tool use (0 = disabled)
 # thinking_concise_hint = false                                         # Inject "respond concisely" hint after tool results to reduce thinking overhead
 ```
 
-**`notify_target`:** When set, all notifications (`/notify`, `--notify`) route to the named sender's session instead of creating throwaway sessions per source. Keeps notification context in the agent's main conversation. Empty string disables (backward compatible).
+**`notify_target`:** When set, all notifications (`/notify`, `--notify`) route to the named sender's session instead of creating throwaway sessions per source. Keeps notification context in the agent's main conversation. Empty string disables.
 
-**Two-tier retry architecture:** `api_retries` handles transient errors (429, 5xx, connection) within a single agentic loop call (fast, 1–8s backoff). `message_retries` retries the entire message processing when the agentic loop fails after exhausting API retries (slower, 30–60s backoff with jitter).
+**Retry architecture:** `api_retries` handles transient errors (429, 5xx, connection) within the agentic loop (fast, 1–8s exponential backoff with jitter). This is the single retry point — there is no message-level retry. If all API retries are exhausted, the error propagates to the caller.
 
 ### [behavior.compaction]
 

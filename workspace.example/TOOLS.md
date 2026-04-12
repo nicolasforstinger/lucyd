@@ -7,7 +7,7 @@
 
 ## Communication
 - **message**: Send a message to a contact via the configured channel.
-- **tts**: Generate speech audio and optionally send to a contact.
+- **tts**: Generate and send a voice message.
 - **react**: React to a message with an emoji.
 
 ## Research

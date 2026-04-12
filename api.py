@@ -82,7 +82,7 @@ class HTTPApi:
 
     def __init__(
         self,
-        queue: asyncio.Queue[dict[str, Any]],
+        queue: Any,  # PriorityMessageQueue or asyncio.Queue
         host: str,
         port: int,
         auth_token: str,

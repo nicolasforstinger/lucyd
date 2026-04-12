@@ -24,15 +24,26 @@ log = logging.getLogger(__name__)
 AUDIT_TRUNCATION_LIMIT = 500
 
 
-def _text_from_content(content: Any) -> str:
-    """Extract text from string or content block list.
+class ConsecutiveRoleError(RuntimeError):
+    """Raised when add_user_message is called but the last message is already user."""
 
-    Handles plain strings, the neutral content block format
-    [{"type": "text", "text": "..."}, {"type": "image", ...}],
-    and edge cases (None, empty list).
+
+def _text_from_content(content: Any) -> str:
+    """Extract text from message content.
+
+    Content should always be ``str`` in the internal session format.
+    Non-string content (e.g. legacy content block lists) is detected,
+    logged, and coerced — the operator should investigate via the
+    ``session_invalid_content_format_total`` metric.
     """
     if isinstance(content, str):
         return content
+    if content is None:
+        return ""
+    # Non-string content: legacy format or upstream bug.
+    log.warning("Non-string content detected (type=%s), coercing", type(content).__name__)
+    if metrics.ENABLED:
+        metrics.ERRORS_TOTAL.labels(error_type="invalid_content_format").inc()
     if isinstance(content, list):
         return " ".join(
             b.get("text", "") for b in content
@@ -42,51 +53,54 @@ def _text_from_content(content: Any) -> str:
 
 
 def _validate_turn_structure(messages: list[Message]) -> None:
-    """Fix orphaned tool_calls or tool_results in a message list (in-place).
+    """Detect corrupted turn structure in a message list.
 
-    - Assistant messages with tool_calls that are not followed by a
-      tool_results message have their tool_calls removed.
-    - tool_results messages not preceded by an assistant with tool_calls
-      are removed entirely.
+    Checks strict adjacency: every agent message with tool_calls must
+    be immediately followed by a tool_result message.  Violations are
+    logged and counted via Prometheus — the session is NOT mutated.
+    The API call will reject the invalid structure, and the operator
+    investigates and fixes the DB manually.
     """
-    i = len(messages) - 1
-    while i >= 0:
+    i = 0
+    while i < len(messages):
         msg = messages[i]
         if msg["role"] == "agent" and msg.get("tool_calls"):
-            has_results = False
-            for j in range(i + 1, len(messages)):
-                if messages[j]["role"] == "tool_result":
-                    has_results = True
-                    break
-                if messages[j]["role"] == "agent":
-                    break
-            if not has_results:
-                msg.pop("tool_calls", None)
-                log.warning("Stripped orphaned tool_calls from assistant at index %d", i)
+            if i + 1 < len(messages) and messages[i + 1]["role"] == "tool_result":
+                i += 2  # valid pair, skip both
+                continue
+            # Orphaned tool_calls: no adjacent tool_result
+            tc_ids = [tc.get("id", "?") for tc in msg.get("tool_calls", [])]
+            log.error(
+                "Session corruption: orphaned tool_calls at index %d "
+                "(tool_call_ids=%s, next_role=%s)",
+                i, tc_ids,
+                messages[i + 1]["role"] if i + 1 < len(messages) else "END",
+            )
+            if metrics.ENABLED:
+                metrics.ERRORS_TOTAL.labels(error_type="session_corruption").inc()
         elif msg["role"] == "tool_result":
-            has_call = False
-            for j in range(i - 1, -1, -1):
-                if messages[j]["role"] == "agent":
-                    if messages[j].get("tool_calls"):
-                        has_call = True
-                    break
-                if messages[j]["role"] == "tool_result":
-                    break
-            if not has_call:
-                messages.pop(i)
-                log.warning("Removed orphaned tool_results at index %d", i)
-        i -= 1
+            # tool_result without preceding agent(tool_calls)
+            log.error(
+                "Session corruption: orphaned tool_result at index %d",
+                i,
+            )
+            if metrics.ENABLED:
+                metrics.ERRORS_TOTAL.labels(error_type="session_corruption").inc()
+        i += 1
 
 
 def _context_tokens_from_usage(usage: dict[str, Any]) -> int:
     """Extract context token count from a usage dict.
 
-    Uses the normalized ``context_tokens`` field when present.
-    Falls back to ``input_tokens + cache_read_tokens`` for messages
-    stored before the field was added.
+    Reads the ``context_tokens`` field directly.  Old messages missing
+    this field are detected via the ``missing_context_tokens`` metric
+    and fall through with estimated math until they age out via compaction.
     """
     if "context_tokens" in usage:
         return int(usage["context_tokens"])
+    log.warning("Message missing context_tokens field, using input+cache estimate")
+    if metrics.ENABLED:
+        metrics.ERRORS_TOTAL.labels(error_type="missing_context_tokens").inc()
     return int(usage.get("input_tokens", 0)) + int(usage.get("cache_read_tokens", 0))
 
 
@@ -114,6 +128,7 @@ class Session:
         self.total_output_tokens = 0
         self.compaction_count = 0
         self.warned_about_compaction = False
+        self.consolidation_pending = False
         self.pending_system_warning = ""
         self.trace_id = ""  # Set per-message; included in events
         self._persisted_count = 0  # Messages already in DB; append-only beyond this
@@ -225,7 +240,16 @@ class Session:
         )
 
     async def add_user_message(self, text: str, sender: str = "", source: str = "") -> None:
-        """Add user message to session."""
+        """Add user message to session.
+
+        Raises ``ConsecutiveRoleError`` if the last message is already
+        a user message — the caller must ensure role alternation.
+        """
+        if self.messages and self.messages[-1]["role"] == "user":
+            raise ConsecutiveRoleError(
+                f"Cannot add user message: last message is already role=user "
+                f"(session {self.id}, {len(self.messages)} messages)"
+            )
         user_msg: UserMessage = {"role": "user", "content": text}
         self.messages.append(user_msg)
         await self.append_event({

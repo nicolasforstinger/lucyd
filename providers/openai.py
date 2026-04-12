@@ -2,13 +2,11 @@
 
 Works with OpenAI cloud, Ollama, vLLM, llama.cpp server, LM Studio,
 LocalAI, or any server implementing the OpenAI chat completions API.
-Uses the OpenAI SDK when available and falls back to direct HTTP
-requests when it is not.
+Requires the OpenAI SDK.
 
 Small-model optimizations:
 - Thinking token detection: parses <think>...</think> blocks from reasoning models
 - Prompt cache awareness: reads cached_tokens from llama-server extended usage
-- JSON repair: attempts to fix malformed tool call arguments
 - Thinking budget: passes thinking budget parameters to compatible servers
 - Slot affinity: supports id_slot for per-session prompt cache pinning
 """
@@ -21,7 +19,7 @@ import re
 from collections.abc import AsyncIterator
 from typing import Any
 
-import httpx
+import openai
 
 from async_utils import run_blocking, threaded_stream
 from messages import Message
@@ -33,16 +31,11 @@ from . import (
     SystemPrompt,
     ToolCall,
     Usage,
-    _repair_json,
+    _parse_json,
     stream_fallback,
 )
 
 log = logging.getLogger(__name__)
-
-try:
-    import openai
-except ImportError:
-    openai = None  # type: ignore[assignment]  # conditional import — module when installed, None otherwise
 
 
 # ── Thinking block extraction ───────────────────────────────────
@@ -86,12 +79,10 @@ class OpenAIProvider:
         self.provider_name = provider_name
         self.api_key = api_key or "not-needed"
         self.base_url = base_url.rstrip("/")
-        self.client: Any = None  # OpenAI client when SDK installed, None otherwise
-        if openai is not None:
-            kwargs: dict[str, Any] = {"api_key": self.api_key}
-            if self.base_url:
-                kwargs["base_url"] = self.base_url
-            self.client = openai.OpenAI(**kwargs)
+        kwargs: dict[str, Any] = {"api_key": self.api_key}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        self.client = openai.OpenAI(**kwargs)
         self.model = model
         self.max_tokens = max_tokens
         self.thinking_budget = thinking_budget
@@ -205,7 +196,7 @@ class OpenAIProvider:
     def _parse_choice(choice: dict[str, Any]) -> tuple[str | None, list[ToolCall], str, str | None]:
         """Parse an OpenAI choice dict into (text, tool_calls, stop_reason, thinking).
 
-        Shared by complete() and _complete_via_httpx().
+        Shared by complete() and stream().
         """
         message = choice.get("message") or {}
         content = message.get("content") or ""
@@ -218,8 +209,8 @@ class OpenAIProvider:
             fn = tc.get("function") or {}
             args: Any = fn.get("arguments", {})
             if isinstance(args, str):
-                repaired = _repair_json(args)
-                args = repaired if repaired is not None else {"raw": args}
+                parsed = _parse_json(args)
+                args = parsed if parsed is not None else {"raw": args}
             tool_calls.append(ToolCall(
                 id=tc.get("id", ""),
                 name=fn.get("name", ""),
@@ -234,12 +225,6 @@ class OpenAIProvider:
             stop = "max_tokens"
 
         return content or None, tool_calls, stop, thinking_text
-
-    def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json"}
-        if self.api_key and self.api_key != "not-needed":
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        return headers
 
     @staticmethod
     def _parse_usage_dict(usage: dict[str, Any] | None) -> Usage:
@@ -260,47 +245,6 @@ class OpenAIProvider:
             cache_read_tokens=cache_read,
         )
 
-    # ── Direct HTTP fallback ────────────────────────────────────
-
-    async def _complete_via_httpx(self, params: dict[str, Any]) -> LLMResponse:
-        """Direct HTTP fallback when the OpenAI SDK is not installed."""
-        if not self.base_url:
-            raise RuntimeError(
-                "OpenAI-compatible provider requires either the openai package "
-                "or a configured base_url for direct HTTP fallback",
-            )
-
-        # Flatten extra_body into top-level params for direct HTTP requests.
-        # extra_body is an SDK concept; llama.cpp and other servers expect
-        # these keys (id_slot, thinking_budget) at the top level.
-        body = dict(params)
-        extra = body.pop("extra_body", None)
-        if extra and isinstance(extra, dict):
-            body.update(extra)
-
-        url = f"{self.base_url}/chat/completions"
-        timeout = max(float(body.get("timeout", 0) or 0), 60.0)
-        body.pop("timeout", None)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, headers=self._headers(), json=body)
-            response.raise_for_status()
-            data = response.json()
-
-        choices = data.get("choices") or []
-        if not choices:
-            raise RuntimeError("OpenAI-compatible fallback returned no choices")
-
-        text, tool_calls, stop, thinking_text = self._parse_choice(choices[0] or {})
-
-        return LLMResponse(
-            text=text,
-            tool_calls=tool_calls,
-            stop_reason=stop,
-            usage=self._parse_usage_dict(data.get("usage")),
-            thinking=thinking_text,
-            raw=data,
-        )
-
     # ── Completion ──────────────────────────────────────────────
 
     async def complete(
@@ -311,7 +255,6 @@ class OpenAIProvider:
         Handles:
         - Thinking token detection (strips <think> blocks from reasoning models)
         - Prompt cache awareness (reads cached_tokens from llama-server)
-        - JSON repair for malformed tool call arguments
         - Thinking budget / slot affinity for llama-server
         """
         api_messages = []
@@ -336,9 +279,6 @@ class OpenAIProvider:
             extra_body["thinking_budget"] = self.thinking_budget
         if extra_body:
             params["extra_body"] = extra_body
-
-        if self.client is None:
-            return await self._complete_via_httpx(params)
 
         response: Any = await run_blocking(
             self.client.chat.completions.create, **params,
@@ -413,12 +353,7 @@ class OpenAIProvider:
         Uses the SDK's ``stream=True`` parameter.  Yields StreamDelta
         chunks.  Handles ``<think>`` block detection in streaming mode.
         """
-        if self.client is None:
-            async for delta in stream_fallback(self, system, messages, tools, **kwargs):
-                yield delta
-            return
-
-        client = self.client  # bind for type narrowing in nested function
+        client = self.client
 
         api_messages = []
         if system:

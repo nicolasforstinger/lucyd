@@ -160,7 +160,7 @@ async def tool_tts(text: str, voice: str = "", model: str = "",
             currency=_cost_currency, converter=_converter,
         )
 
-    return {"text": f"Generated audio ({len(audio)} bytes)", "attachments": [output_file]}
+    return {"text": f"Voice message sent ({len(audio)} bytes)", "attachments": [output_file]}
 
 
 # ─── Tool registration ──────────────────────────────────────────
@@ -168,10 +168,7 @@ async def tool_tts(text: str, voice: str = "", model: str = "",
 TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="tts",
-        description=(
-            "Generate speech audio from text. "
-            "The audio file is included in the reply as an attachment."
-        ),
+        description="Generate and send a voice message.",
         input_schema={
             "type": "object",
             "properties": {

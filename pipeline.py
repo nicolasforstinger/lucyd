@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import random
 import re
 import time
 import uuid
@@ -28,7 +27,7 @@ from typing import Any
 
 import consolidation as consolidation_mod
 import metrics
-from agentic import LoopConfig, is_transient_error, run_agentic_loop, run_single_shot
+from agentic import LoopConfig, run_agentic_loop, run_single_shot
 from attachments import ImageTooLarge, extract_document_text, fit_image, render_pdf_pages
 from config import Config
 from context import ContextBuilder, _estimate_tokens
@@ -36,7 +35,7 @@ from log_utils import _log_safe, set_log_context
 from metering import MeteringDB
 from memory import get_session_start_context
 from providers import CostContext, LLMProvider
-from session import SessionManager, _text_from_content
+from session import ConsecutiveRoleError, SessionManager
 from skills import SkillLoader
 from tools import ToolRegistry
 
@@ -218,7 +217,7 @@ class MessagePipeline:
         client_id: str,
         agent_id: str,
         preprocessors: list[dict[str, Any]],
-        queue: asyncio.Queue[dict[str, Any]],
+        queue: Any,  # PriorityMessageQueue or asyncio.Queue
         on_pre_close: Callable[[str], Awaitable[None]] | None = None,
         converter: Any = None,
     ) -> None:
@@ -279,6 +278,10 @@ class MessagePipeline:
         Each preprocessor receives (text, attachments, config) and returns
         (text, attachments). Preprocessors run in registration order.
         A preprocessor claims attachments it handles and passes the rest through.
+
+        Critical preprocessors (e.g. voice transcription) produce fallback
+        text on failure so the agent sees an explicit input. Optional
+        preprocessors log + metric and continue.
         """
         if not self._preprocessors or not attachments:
             return text, attachments
@@ -289,10 +292,17 @@ class MessagePipeline:
                 if metrics.ENABLED:
                     metrics.PREPROCESSOR_TOTAL.labels(name=pp["name"], status="success").inc()
                     metrics.PREPROCESSOR_DURATION.labels(name=pp["name"]).observe(time.time() - _pp_start)
-            except Exception:
-                log.exception("Preprocessor %s failed", pp["name"])
+            except (TimeoutError, RuntimeError, OSError) as e:
+                critical = pp.get("critical", False)
+                log.error("Preprocessor %s failed (critical=%s): %s",
+                          pp["name"], critical, e, exc_info=True)
                 if metrics.ENABLED:
                     metrics.PREPROCESSOR_TOTAL.labels(name=pp["name"], status="error").inc()
+                if critical:
+                    # Critical failure: provide explicit fallback text
+                    fallback = pp.get("fallback_text", f"[{pp['name']} processing failed]")
+                    text = f"{text}\n{fallback}" if text else fallback
+                    attachments = []  # consumed by failure
             if not attachments:
                 break
         return text, attachments or None
@@ -437,17 +447,6 @@ class MessagePipeline:
         # Transiently inject image content blocks for the API call
         ctx.user_msg_idx = len(session.messages) - 1
 
-        # Merge consecutive user messages (recovery from prior errors, JSONL rebuild)
-        while len(session.messages) >= 2 and session.messages[-2]["role"] == "user":
-            last = session.messages[-1]
-            if last["role"] != "user":
-                break
-            prev = session.messages[-2]
-            prev["content"] = _text_from_content(prev["content"]) + "\n" + _text_from_content(last["content"])
-            session.messages.pop()
-            ctx.user_msg_idx = len(session.messages) - 1
-            log.warning("Merged consecutive user messages in session %s", session.id)
-
         if ctx.image_blocks:
             session.messages[ctx.user_msg_idx]["_image_blocks"] = ctx.image_blocks  # type: ignore[typeddict-unknown-key]  # transient key, stripped before persistence
 
@@ -544,87 +543,62 @@ class MessagePipeline:
 
     # ── Agentic Loop ─────────────────────────────────────────────
 
-    async def _run_agentic_with_retries(self, ctx: _MessageState, provider: LLMProvider,
-                                         on_response: Any, on_tool_results: Any,
-                                         write_monitor: Any, on_stream_delta: Any = None) -> None:
-        """Run the agentic loop with message-level retries. Sets ctx.response."""
+    async def _run_agentic(self, ctx: _MessageState, provider: LLMProvider,
+                           on_response: Any, on_tool_results: Any,
+                           on_stream_delta: Any = None) -> None:
+        """Run the agentic loop. Sets ctx.response.
+
+        No message-level retry — API-level retry in _call_provider_with_retry
+        handles transient errors. If the loop fails, the error propagates.
+        """
         session = ctx.session
-        message_retries = self._config.message_retries
-        message_retry_delay = self._config.message_retry_base_delay
-
-        # Snapshot message count so retries can restore to a clean state.
-        # The agentic loop mutates session.messages in-place; on failure
-        # those partial turns must be stripped before the next attempt.
-        pre_attempt_len = len(session.messages)
-
-        for msg_attempt in range(1 + message_retries):
-            try:
-                max_cost = self._config.max_cost_per_message
-                cost_ctx = CostContext(
-                    metering=self._metering_db,
-                    session_id=session.id,
-                    model_name=ctx.model_name,
-                    cost_rates=ctx.cost_rates,
-                    provider_name=ctx.provider_name,
-                    currency=ctx.currency,
-                    converter=self._converter,
-                )
-                loop_cfg = LoopConfig(
-                    max_turns=self._config.max_turns,
-                    timeout=self._config.agent_timeout,
-                    api_retries=self._config.api_retries,
-                    api_retry_base_delay=self._config.api_retry_base_delay,
-                    max_cost=float(max_cost),
-                    max_context_for_tools=self._config.max_context_for_tools,
-                    tool_call_retry=self._config.tool_call_retry,
-                    tool_success_warn_threshold=0.5,
-                    thinking_concise_hint=False,
-                    trace_id=ctx.trace_id,
-                )
-                if self._single_shot:
-                    ctx.response = await run_single_shot(
-                        provider=provider,
-                        system=ctx.fmt_system,
-                        messages=session.messages,
-                        tools=ctx.tools,
-                        tool_executor=self._tool_registry,
-                        config=loop_cfg,
-                        cost=cost_ctx,
-                        on_response=on_response,
-                        on_tool_results=on_tool_results,
-                        on_stream_delta=on_stream_delta,
-                    )
-                else:
-                    ctx.response = await run_agentic_loop(
-                        provider=provider,
-                        system=ctx.fmt_system,
-                        messages=session.messages,
-                        tools=ctx.tools,
-                        tool_executor=self._tool_registry,
-                        config=loop_cfg,
-                        cost=cost_ctx,
-                        on_response=on_response,
-                        on_tool_results=on_tool_results,
-                        on_stream_delta=on_stream_delta,
-                    )
-                return  # Success
-            except Exception as e:
-                if not is_transient_error(e) or msg_attempt >= message_retries:
-                    raise  # Non-transient or exhausted — propagate
-
-                # Roll back messages added by the failed attempt
-                if len(session.messages) > pre_attempt_len:
-                    del session.messages[pre_attempt_len:]
-
-                delay = message_retry_delay * (2 ** msg_attempt) * (0.5 + random.random())  # noqa: S311
-                log.warning(
-                    "[%s] Message retry (%d/%d) for %s: %s — waiting %.0fs",
-                    ctx.trace_id[:8], msg_attempt + 1, message_retries, ctx.sender, e, delay,
-                )
-                write_monitor("retry_wait")
-                await asyncio.sleep(delay)
-
-                write_monitor("thinking")
+        cost_ctx = CostContext(
+            metering=self._metering_db,
+            session_id=session.id,
+            model_name=ctx.model_name,
+            cost_rates=ctx.cost_rates,
+            provider_name=ctx.provider_name,
+            currency=ctx.currency,
+            converter=self._converter,
+        )
+        loop_cfg = LoopConfig(
+            max_turns=self._config.max_turns,
+            timeout=self._config.agent_timeout,
+            api_retries=self._config.api_retries,
+            api_retry_base_delay=self._config.api_retry_base_delay,
+            max_cost=float(self._config.max_cost_per_message),
+            max_context_for_tools=self._config.max_context_for_tools,
+            tool_call_retry=self._config.tool_call_retry,
+            tool_success_warn_threshold=0.5,
+            thinking_concise_hint=False,
+            trace_id=ctx.trace_id,
+        )
+        if self._single_shot:
+            ctx.response = await run_single_shot(
+                provider=provider,
+                system=ctx.fmt_system,
+                messages=session.messages,
+                tools=ctx.tools,
+                tool_executor=self._tool_registry,
+                config=loop_cfg,
+                cost=cost_ctx,
+                on_response=on_response,
+                on_tool_results=on_tool_results,
+                on_stream_delta=on_stream_delta,
+            )
+        else:
+            ctx.response = await run_agentic_loop(
+                provider=provider,
+                system=ctx.fmt_system,
+                messages=session.messages,
+                tools=ctx.tools,
+                tool_executor=self._tool_registry,
+                config=loop_cfg,
+                cost=cost_ctx,
+                on_response=on_response,
+                on_tool_results=on_tool_results,
+                on_stream_delta=on_stream_delta,
+            )
 
     async def _handle_agentic_error(self, ctx: _MessageState, error: Any, _resolve: Any) -> None:
         """Handle agentic loop failure: cleanup, resolve future, deliver error."""
@@ -757,8 +731,82 @@ class MessagePipeline:
             log.info("Compaction warning set for session %s at %d tokens",
                      session.id, session.last_input_tokens)
 
+    async def _ensure_context_budget(self, ctx: _MessageState) -> bool:
+        """Compact session if context utilization exceeds 80%.
+
+        Called before the agentic loop to guarantee context fits.
+        Returns True if the message can proceed, False if context
+        could not be brought within budget (caller should fail).
+        """
+        session = ctx.session
+        provider = self._provider
+        if provider is None:
+            return True
+        max_ctx = provider.capabilities.max_context_tokens
+        if max_ctx <= 0:
+            return True
+
+        for attempt in range(2):
+            used = sum(
+                _estimate_tokens(m["content"] if m["role"] == "user" else m.get("text", ""))
+                for m in session.messages
+            )
+            ratio = used / max_ctx
+            if ratio <= 0.80:
+                return True
+
+            keep_pct = self._config.compaction_keep_pct if attempt == 0 else 0.15
+            log.warning(
+                "[%s] Context at %.0f%% — running %s compaction (keep_recent=%.0f%%)",
+                ctx.trace_id[:8], ratio * 100,
+                "emergency" if attempt > 0 else "pre-loop",
+                keep_pct * 100,
+            )
+            if metrics.ENABLED:
+                metrics.ERRORS_TOTAL.labels(error_type="context_emergency_compaction").inc()
+
+            prompt = self._config.compaction_prompt.replace(
+                "{agent_name}", self._config.agent_name,
+            ).replace("{max_tokens}", str(self._config.compaction_max_tokens))
+            cost_ctx = CostContext(
+                metering=self._metering_db,
+                session_id=session.id,
+                model_name=ctx.model_name,
+                cost_rates=ctx.cost_rates,
+                provider_name=ctx.provider_name,
+                currency=ctx.currency,
+                converter=self._converter,
+            )
+            await self._session_mgr.compact_session(
+                session, self._get_provider("compaction"), prompt,
+                trace_id=ctx.trace_id,
+                system_blocks=self._context_builder.build_stable(),
+                cost=cost_ctx,
+                keep_recent_pct=keep_pct,
+                min_messages=4,
+                tool_result_max_chars=2000,
+                max_tokens=self._config.compaction_max_tokens,
+            )
+            if metrics.ENABLED:
+                metrics.COMPACTION_TOTAL.inc()
+
+            # Rebuild context after compaction rewrote messages
+            await self._build_context(ctx, provider)
+
+        # Exhausted attempts
+        log.error("[%s] Context still over budget after emergency compaction", ctx.trace_id[:8])
+        if metrics.ENABLED:
+            metrics.ERRORS_TOTAL.labels(error_type="context_budget_exceeded").inc()
+        return False
+
     async def _run_compaction_if_needed(self, ctx: _MessageState) -> None:
-        """Run consolidation + compaction if threshold is exceeded."""
+        """Run consolidation + compaction if threshold is exceeded.
+
+        Consolidation must succeed before compaction runs — compacting
+        unconsolidated messages is permanent fact loss. If consolidation
+        fails, the ``consolidation_pending`` flag is set and compaction
+        is skipped until the next message retries consolidation.
+        """
         session = ctx.session
         _needs_compact = ctx.force_compact or session.needs_compaction(
             self._config.compaction_threshold)
@@ -783,8 +831,14 @@ class MessagePipeline:
                 if result["facts_added"] or result.get("episode_id"):
                     log.info("consolidation: %d facts, episode=%s",
                              result["facts_added"], result.get("episode_id"))
-            except Exception:
-                log.warning("consolidation failed, continuing without", exc_info=True)
+                session.consolidation_pending = False
+            except (TimeoutError, RuntimeError, OSError) as e:
+                log.error("Consolidation failed, blocking compaction: %s", e, exc_info=True)
+                session.consolidation_pending = True
+                if metrics.ENABLED:
+                    metrics.ERRORS_TOTAL.labels(error_type="consolidation_failure").inc()
+                    metrics.ERRORS_TOTAL.labels(error_type="consolidation_blocked_compaction").inc()
+                return  # Skip compaction — don't summarize unconsolidated messages
         prompt = self._config.compaction_prompt.replace(
             "{agent_name}", self._config.agent_name,
         ).replace("{max_tokens}", str(self._config.compaction_max_tokens))
@@ -900,7 +954,15 @@ class MessagePipeline:
         )
 
         # Session setup: get/create, inject warnings, add user message
-        await self._setup_session(ctx)
+        try:
+            await self._setup_session(ctx)
+        except ConsecutiveRoleError:
+            log.error("[%s] Consecutive user messages blocked for %s",
+                      trace_id[:8], _log_safe(sender))
+            if metrics.ENABLED:
+                metrics.ERRORS_TOTAL.labels(error_type="consecutive_role_violation").inc()
+            _resolve({"error": "consecutive user messages — upstream bug"})
+            return
 
         # Set structured log context for this message cycle
         set_log_context(
@@ -911,6 +973,11 @@ class MessagePipeline:
 
         # Build system prompt, recall, tools
         await self._build_context(ctx, provider)
+
+        # Pre-loop context budget check — compact if over 80%
+        if not await self._ensure_context_budget(ctx):
+            _resolve({"error": "context budget exceeded after emergency compaction"})
+            return
 
         session = ctx.session
 
@@ -952,8 +1019,8 @@ class MessagePipeline:
             stream_delta_cb = _on_stream_delta
 
         try:
-            await self._run_agentic_with_retries(
-                ctx, provider, monitor.on_response, monitor.on_tool_results, monitor.write,
+            await self._run_agentic(
+                ctx, provider, monitor.on_response, monitor.on_tool_results,
                 on_stream_delta=stream_delta_cb,
             )
         except Exception as e:

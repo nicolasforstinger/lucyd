@@ -298,5 +298,7 @@ PREPROCESSORS = [
     {
         "name": "stt",
         "fn": preprocess_audio,
+        "critical": True,
+        "fallback_text": "[voice message received — transcription unavailable]",
     },
 ]

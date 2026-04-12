@@ -195,7 +195,8 @@ class TestToolTts:
     @pytest.mark.asyncio
     async def test_not_configured_returns_error(self) -> None:
         elevenlabs_plugin._client = None
-        result = await elevenlabs_plugin.tool_tts(text="Hello")
+        with patch.object(elevenlabs_plugin, "AsyncElevenLabs", MagicMock()):
+            result = await elevenlabs_plugin.tool_tts(text="Hello")
         assert "Error" in result["text"]
         assert "not configured" in result["text"]
 

@@ -69,7 +69,7 @@ flowchart TD
         SETUP["_setup_session<br/>key = channel_id:sender"]
         RECALL["_build_recall<br/>facts, episodes, commitments"]
         BUILD["_build_context<br/>stable + semi-stable + dynamic tiers"]
-        RUN["_run_agentic_with_retries"]
+        RUN["_run_agentic"]
     end
 
     subgraph Finalize["_finalize_response"]
@@ -114,21 +114,21 @@ flowchart TD
 2. **Error path**: pushes error event + sentinel to terminate the SSE stream.
 3. **Non-streaming bridge**: if the provider didn't stream (no done event pushed via deltas), pushes the full reply as a single done event. Always pushes sentinel `None`.
 
-The processing pipeline (`_run_agentic_with_retries`, `_finalize_response`) runs identically for both paths. No hidden conditional logic.
+The processing pipeline (`_run_agentic`, `_finalize_response`) runs identically for both paths. No hidden conditional logic.
 
 ### Metrics
 
-Fire at: `_run_preprocessors` (count, duration), `_build_context` (context utilization), `_run_agentic_with_retries` via agentic.py (API calls, latency, tokens, cost), tool execution (count, duration), message completion (count, duration, cost, turns), `_auto_close_if_ephemeral` (session close), `_handle_agentic_error` (errors).
+Fire at: `_run_preprocessors` (count, duration), `_build_context` (context utilization), `_run_agentic` via agentic.py (API calls, latency, tokens, cost), tool execution (count, duration), message completion (count, duration, cost, turns), `_auto_close_if_ephemeral` (session close), `_handle_agentic_error` (errors).
 
 ---
 
 ## 2. Agentic Loop
 
-The core thinking-acting cycle. Source: `pipeline.py` `_run_agentic_with_retries()`, `agentic.py` `run_agentic_loop()`.
+The core thinking-acting cycle. Source: `pipeline.py` `_run_agentic()`, `agentic.py` `run_agentic_loop()`.
 
 ```mermaid
 flowchart TD
-    START["_run_agentic_with_retries"]
+    START["_run_agentic"]
     DISPATCH{"_single_shot?"}
 
     subgraph SingleShot["run_single_shot"]
@@ -136,7 +136,6 @@ flowchart TD
     end
 
     subgraph ToolUse["run_agentic_loop"]
-        TRIM["Trim oldest turn groups<br/>if over context budget"]
         CALL["_call_provider_with_retry<br/>format → call → backoff on transient"]
         METER["Record cost to metering.db"]
         COST_CHECK{"Cost limit<br/>exceeded?"}
@@ -151,14 +150,9 @@ flowchart TD
     RETURN["Return LLMResponse<br/>text + attachments + usage + turns"]
     MAX_TURNS["Append stop message<br/>+ fallback text"]
 
-    subgraph Retry["Message-level retry"]
-        ROLLBACK["Rollback session.messages<br/>to pre-attempt state"]
-        BACKOFF["Exponential backoff + jitter"]
-    end
-
     START --> DISPATCH
     DISPATCH -->|yes| SS --> RETURN
-    DISPATCH -->|no| TRIM --> CALL --> METER --> COST_CHECK
+    DISPATCH -->|no| CALL --> METER --> COST_CHECK
     COST_CHECK -->|"exceeded: cost_limited=True"| RETURN
     COST_CHECK -->|ok| STOP
     STOP -->|"no tool_calls"| RETURN
@@ -167,10 +161,8 @@ flowchart TD
     ENDTURN -->|"no (tool_use or max_tokens)"| TOOLS --> PRESSURE
     PRESSURE -->|"context > max_context_for_tools<br/>or turns remaining == 2"| HINT --> TURNS
     PRESSURE -->|"no pressure"| TURNS
-    TURNS -->|yes| TRIM
+    TURNS -->|yes| CALL
     TURNS -->|exhausted| MAX_TURNS --> RETURN
-
-    START -.->|"transient error<br/>+ retries left"| ROLLBACK --> BACKOFF --> START
 ```
 
 ### Key decision: stop vs continue
@@ -186,9 +178,13 @@ if not response.tool_calls or response.stop_reason == "end_turn":
 
 Happens inside `ToolRegistry.execute()`, not as a step in the agentic loop. `_smart_truncate` applies per-tool limits: JSON arrays truncated by items, objects compacted, fallback to head+tail character cut.
 
-### Message-level retry
+### Context pressure
 
-`_run_agentic_with_retries` wraps the inner loop. On transient failure with retries remaining: roll back `session.messages` to the pre-attempt snapshot (strip partial turns), sleep with exponential backoff + jitter, and re-enter. Non-transient errors or exhausted retries propagate to `_handle_agentic_error`.
+Handled *before* the agentic loop by `_ensure_context_budget()` in the pipeline. If session tokens exceed 80% of the model's context window, compaction runs before the loop starts. The agentic loop trusts that context fits — it never trims mid-flight.
+
+### Retry architecture
+
+Single retry point: `_call_provider_with_retry()` inside `run_agentic_loop`. Retries transient API errors (429, 5xx, connection) with exponential backoff + jitter. No message-level retry — if the loop fails after API retries are exhausted, the error propagates to `_handle_agentic_error`.
 
 ---
 
@@ -348,9 +344,9 @@ flowchart TD
     end
 
     subgraph Providers["Implementations"]
-        ANTHROPIC["AnthropicProvider<br/>SDK or HTTP fallback<br/>prompt caching, extended thinking"]
-        OPENAI["OpenAIProvider<br/>SDK or HTTP fallback<br/>thinking detection, JSON repair"]
-        MISTRAL["MistralProvider<br/>SDK or HTTP fallback<br/>tool use, vision, streaming"]
+        ANTHROPIC["AnthropicProvider<br/>SDK required<br/>prompt caching, extended thinking"]
+        OPENAI["OpenAIProvider<br/>SDK required<br/>thinking detection"]
+        MISTRAL["MistralProvider<br/>SDK required<br/>tool use, vision, streaming"]
         SMOKE["SmokeLocalProvider<br/>deterministic, no network"]
     end
 
@@ -404,7 +400,7 @@ flowchart TD
     subgraph Routing["SessionManager routing"]
         INDEX["sessions.json<br/>contact → session_id"]
         LOOKUP{"Contact in index?"}
-        LOAD["Session.load()<br/>from .state.json +<br/>_validate_turn_structure"]
+        LOAD["Session.load()<br/>from DB +<br/>_validate_turn_structure (detect only)"]
         NEW["Create UUID<br/>+ append session event"]
     end
 
@@ -454,7 +450,7 @@ Every mutation writes to both stores:
 - **JSONL** (`{id}.{YYYY-MM-DD}.jsonl`): `append_event()` with `fsync`. Events: session creation, user messages, assistant messages, tool results, compaction. Daily-split for rotation.
 - **State** (`{id}.state.json`): `save_state()` via `_atomic_write` (temp + rename). Full snapshot: messages, token counts, compaction count, warning state.
 
-On load, `_validate_turn_structure()` fixes orphaned tool_calls (no matching tool_results) and orphaned tool_results (no preceding tool_calls) — data integrity after crashes or interrupted agentic loops.
+On load, `_validate_turn_structure()` detects orphaned tool_calls (no adjacent tool_results) and orphaned tool_results (no preceding tool_calls). It logs errors and emits a `session_corruption` metric but does NOT mutate the message list — the operator investigates and fixes manually.
 
 ### Compaction
 

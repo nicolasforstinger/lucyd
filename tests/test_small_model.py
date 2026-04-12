@@ -12,7 +12,7 @@ import pytest
 
 from config import Config
 from context import ContextBuilder, _estimate_tokens
-from providers import LLMResponse, ModelCapabilities, ToolCall, Usage, _repair_json
+from providers import LLMResponse, ModelCapabilities, ToolCall, Usage, _parse_json
 from providers.openai import _strip_thinking
 from tools import _smart_truncate
 
@@ -102,9 +102,8 @@ class TestMaxSystemTokens:
 
 class TestContextBudget:
     def test_estimate_tokens(self):
-        """Token estimation uses tiktoken or byte-based fallback (not len//4)."""
+        """Token estimation uses tiktoken cl100k_base."""
         result = _estimate_tokens("a" * 400)
-        # Byte fallback: 400 * 10 // 33 = 121; tiktoken: varies
         assert result > 0
         assert _estimate_tokens("") == 0
         # Multibyte chars produce more tokens than single-byte
@@ -220,39 +219,34 @@ class TestThinkingDetection:
 # ─── Challenge 8: JSON Repair ────────────────────────────────────
 
 
-class TestJSONRepair:
+class TestParseJson:
     def test_valid_json_passes_through(self):
         """Valid JSON is parsed normally."""
-        assert _repair_json('{"key": "value"}') == {"key": "value"}
+        assert _parse_json('{"key": "value"}') == {"key": "value"}
 
-    def test_trailing_comma_fixed(self):
-        """Trailing comma before } is fixed."""
-        assert _repair_json('{"key": "value",}') == {"key": "value"}
+    def test_trailing_comma_rejected(self):
+        """Trailing comma is invalid JSON — no repair."""
+        assert _parse_json('{"key": "value",}') is None
 
-    def test_single_quotes_fixed(self):
-        """Single quotes are converted to double quotes."""
-        assert _repair_json("{'key': 'value'}") == {"key": "value"}
+    def test_single_quotes_rejected(self):
+        """Single quotes are invalid JSON — no repair."""
+        assert _parse_json("{'key': 'value'}") is None
 
-    def test_unquoted_keys_fixed(self):
-        """Unquoted keys are quoted."""
-        assert _repair_json('{key: "value"}') == {"key": "value"}
+    def test_unquoted_keys_rejected(self):
+        """Unquoted keys are invalid JSON — no repair."""
+        assert _parse_json('{key: "value"}') is None
 
     def test_garbage_returns_none(self):
-        """Unrepairable input returns None."""
-        assert _repair_json("not json at all") is None
+        """Invalid input returns None."""
+        assert _parse_json("not json at all") is None
 
     def test_none_input(self):
         """None input returns None."""
-        assert _repair_json(None) is None
+        assert _parse_json(None) is None
 
     def test_empty_string(self):
         """Empty string returns None."""
-        assert _repair_json("") is None
-
-    def test_nested_json_repair(self):
-        """Nested JSON with trailing commas."""
-        result = _repair_json('{"a": [1, 2, 3,], "b": "x",}')
-        assert result == {"a": [1, 2, 3], "b": "x"}
+        assert _parse_json("") is None
 
 
 # ─── Challenge 6: Agentic Loop Efficiency ────────────────────────
