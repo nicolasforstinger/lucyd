@@ -15,20 +15,15 @@ import os
 import tempfile
 import time
 import tomllib
-import types
 from pathlib import Path
 from typing import Any
 
 import httpx
 import metrics
+from providers import Usage
 from tools import ToolSpec
 
 log = logging.getLogger(__name__)
-
-# Sentinel for metering — no tokens for TTS, only character-based cost.
-_ZERO_USAGE = types.SimpleNamespace(
-    input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
-)
 
 # ─── Module config (set by configure()) ─────────────────────────
 
@@ -148,14 +143,14 @@ async def tool_tts(text: str, voice: str = "", model: str = "",
     elapsed_ms = int((time.monotonic() - start) * 1000)
     metrics.record_api_call(
         model=model, provider="mistral",
-        usage=_ZERO_USAGE, latency_ms=elapsed_ms,
+        usage=Usage(), latency_ms=elapsed_ms,
     )
 
     if _metering and _cost_per_1k_chars > 0:
         cost = len(text) / 1000 * _cost_per_1k_chars
         await _metering.record(
             session_id="", model=model, provider="mistral",
-            usage=_ZERO_USAGE, cost_rates=[],
+            usage=Usage(), cost_rates=[],
             call_type="tts", cost_override=cost,
             currency=_cost_currency, converter=_converter,
         )

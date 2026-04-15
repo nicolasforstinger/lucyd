@@ -15,11 +15,11 @@ import logging
 import os
 import time
 import tomllib
-import types
 from pathlib import Path
 from typing import Any
 
 import metrics
+from providers import Usage
 
 log = logging.getLogger(__name__)
 
@@ -27,11 +27,6 @@ try:
     from mistralai import Mistral
 except ImportError:
     Mistral = None  # type: ignore[misc,assignment]
-
-# Sentinel for metering — no tokens for duration-billed STT calls.
-_ZERO_USAGE = types.SimpleNamespace(
-    input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
-)
 
 # ─── Module config (set by configure()) ─────────────────────────
 
@@ -122,7 +117,7 @@ async def transcribe(file_path: str, content_type: str = "") -> str:
     # ── Metrics + cost ──────────────────────────────────────────
     metrics.record_api_call(
         model=_model, provider="mistral",
-        usage=_ZERO_USAGE, latency_ms=elapsed_ms,
+        usage=Usage(), latency_ms=elapsed_ms,
     )
 
     # Estimate duration from file size (rough: ~16kB/s for OGG voice)
@@ -133,7 +128,7 @@ async def transcribe(file_path: str, content_type: str = "") -> str:
         cost = (duration_seconds / 60) * _cost_per_minute
         await _metering.record(
             session_id="", model=_model, provider="mistral",
-            usage=_ZERO_USAGE, cost_rates=[],
+            usage=Usage(), cost_rates=[],
             call_type="transcription", cost_override=cost,
             currency=_cost_currency, converter=_converter,
         )
