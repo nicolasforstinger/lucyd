@@ -10,11 +10,16 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import asyncpg
 import httpx
 
 import metrics
+
+if TYPE_CHECKING:
+    from conversion import CurrencyConverter
+    from metering import MeteringDB
 
 log = logging.getLogger(__name__)
 
@@ -31,13 +36,13 @@ EXCLUDE_DIRS = {"memory/cache"}
 _EMBED_BATCH_LIMIT = 100
 
 # Cost tracking (set by configure, used by embed_batch)
-_METERING: Any = None
-_CONVERTER: Any = None
+_METERING: MeteringDB | None = None
+_CONVERTER: CurrencyConverter | None = None
 _COST_RATES: list[float] = []
 _CURRENCY: str = "EUR"
 
 # Pool + tenant (set by configure, used by index_workspace)
-_POOL: Any = None
+_POOL: asyncpg.Pool | None = None
 _CLIENT_ID: str = ""
 _AGENT_ID: str = ""
 
@@ -49,11 +54,11 @@ def configure(
     embedding_model: str = "",
     embedding_base_url: str = "",
     embedding_provider: str = "",
-    metering: Any = None,
-    converter: Any = None,
+    metering: MeteringDB | None = None,
+    converter: CurrencyConverter | None = None,
     cost_rates: list[float] | None = None,
     currency: str = "EUR",
-    pool: Any = None,
+    pool: asyncpg.Pool | None = None,
     client_id: str = "",
     agent_id: str = "",
 ) -> None:
@@ -175,7 +180,7 @@ def scan_workspace(
 
 # ─── DB Functions (async, PostgreSQL) ────────────────────────────
 
-async def get_indexed_files(pool: Any, client_id: str, agent_id: str) -> dict[str, str]:
+async def get_indexed_files(pool: asyncpg.Pool, client_id: str, agent_id: str) -> dict[str, str]:
     """Returns {path: content_hash} from search.files table."""
     try:
         rows = await pool.fetch(
@@ -189,7 +194,7 @@ async def get_indexed_files(pool: Any, client_id: str, agent_id: str) -> dict[st
 
 
 async def update_chunks(
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     path: str,
@@ -250,7 +255,7 @@ async def update_chunks(
 
 
 async def remove_stale_files(
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     current_paths: set[str],
@@ -345,7 +350,7 @@ async def embed_batch(
 
 
 async def cache_embeddings(
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     texts: list[str],
@@ -377,7 +382,7 @@ async def cache_embeddings(
 
 async def index_workspace(
     workspace: Path,
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     api_key: str,
@@ -480,7 +485,7 @@ async def index_workspace(
 
 
 async def get_index_status(
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     workspace: Path,

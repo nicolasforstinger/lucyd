@@ -10,9 +10,15 @@ from __future__ import annotations
 import datetime
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import asyncpg
 
 import metrics
+
+if TYPE_CHECKING:
+    from conversion import CurrencyConverter
+    from providers import Usage
 
 log = logging.getLogger(__name__)
 
@@ -22,9 +28,14 @@ def _current_billing_period() -> str:
     return time.strftime("%Y-%m")
 
 
-def _serialize(v: Any) -> Any:
-    """Make a DB value JSON-serializable."""
-    if hasattr(v, "isoformat"):
+def _serialize(v: object) -> str | float | object:
+    """Make a DB value JSON-serializable.
+
+    Converts datetime objects to ISO strings and Decimal to float.
+    Other values pass through unchanged.
+    """
+    import datetime as _dt
+    if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
         return v.isoformat()
     if isinstance(v, __import__("decimal").Decimal):
         return float(v)
@@ -41,7 +52,7 @@ class MeteringDB:
 
     def __init__(
         self,
-        pool: Any,  # asyncpg.Pool — no stubs available
+        pool: asyncpg.Pool,
         *,
         client_id: str = "",
         agent_id: str = "",
@@ -57,7 +68,7 @@ class MeteringDB:
         session_id: str,
         model: str,
         provider: str,
-        usage: Any,
+        usage: Usage,
         cost_rates: list[float],
         call_type: str = "agentic",
         trace_id: str = "",
@@ -65,7 +76,7 @@ class MeteringDB:
         success: bool = True,
         error_type: str | None = None,
         currency: str = "EUR",
-        converter: Any = None,
+        converter: CurrencyConverter | None = None,
         cost_override: float | None = None,
     ) -> float:
         """Record an API call and return calculated cost in EUR.
@@ -143,10 +154,10 @@ class MeteringDB:
 
     # ── Queries ───────────────────────────────────────────────────
 
-    async def query(self, sql: str, *args: Any) -> list[Any]:
+    async def query(self, sql: str, *args: str) -> list[asyncpg.Record]:
         """Read-only query.  Returns [] on error."""
         try:
-            rows: list[Any] = await self._pool.fetch(sql, *args)
+            rows: list[asyncpg.Record] = await self._pool.fetch(sql, *args)
             return rows
         except Exception:
             log.warning("Metering query failed", exc_info=True)
@@ -166,7 +177,7 @@ class MeteringDB:
 
     # ── Records ─────────────────────────────────────────────────────
 
-    async def get_records(self, billing_period: str = "") -> dict[str, Any]:
+    async def get_records(self, billing_period: str = "") -> dict[str, Any]:  # Any justified: JSON-serializable dict for HTTP response
         """Return raw cost records for a billing period.
 
         No aggregation — consumers (psql, Grafana, scripts) do that.

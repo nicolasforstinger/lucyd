@@ -14,13 +14,19 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import asyncpg
 import httpx
 
 import metrics
 from async_utils import run_blocking
 from context import _estimate_tokens
+
+if TYPE_CHECKING:
+    from config import Config
+    from conversion import CurrencyConverter
+    from metering import MeteringDB
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +36,7 @@ class MemoryInterface:
 
     def __init__(
         self,
-        pool: Any,  # asyncpg.Pool — no stubs available
+        pool: asyncpg.Pool,
         client_id: str,
         agent_id: str,
         embedding_api_key: str = "",
@@ -55,8 +61,8 @@ class MemoryInterface:
         self.embedding_timeout = embedding_timeout
         self.cost_rates: list[float] = embedding_cost_rates or []
         self.currency: str = embedding_currency
-        self.metering: Any = None  # Set externally for embedding cost tracking
-        self.converter: Any = None  # Set externally for FX conversion
+        self.metering: MeteringDB | None = None  # Set externally for embedding cost tracking
+        self.converter: CurrencyConverter | None = None  # Set externally for FX conversion
         self.top_k = top_k
         self.vector_search_limit = vector_search_limit
         self.fts_min_results = fts_min_results
@@ -268,15 +274,16 @@ class RecallBlock:
     est_tokens: int # from context._estimate_tokens()
 
 
-def _format_fact(f: Any, fmt: str = "natural") -> str:
+def _format_fact(f: asyncpg.Record | dict[str, str] | tuple[str, ...] | list[str], fmt: str = "natural") -> str:
     """Format a fact from a Record, dict, tuple, or Row.
 
     Normalizes input to (entity, attribute, value) then formats.
     """
-    if isinstance(f, dict) or hasattr(f, "keys"):
-        entity, attr, value = f["entity"], f["attribute"], f["value"]
-    elif isinstance(f, (tuple, list)):
+    if isinstance(f, (tuple, list)):
         entity, attr, value = f[0], f[1], f[2]
+    elif isinstance(f, dict) or hasattr(f, "keys"):
+        # dict or asyncpg.Record (supports dict-like access)
+        entity, attr, value = f["entity"], f["attribute"], f["value"]
     else:
         raise TypeError(f"_format_fact: expected dict, Record, or tuple, got {type(f).__name__}")
     if fmt == "compact":
@@ -285,7 +292,7 @@ def _format_fact(f: Any, fmt: str = "natural") -> str:
 
 
 async def _build_commitment_block(
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     priority: int,
@@ -307,7 +314,7 @@ async def _build_commitment_block(
     )
 
 
-def _format_episode(e: Any, show_tone: bool = True) -> str:
+def _format_episode(e: asyncpg.Record | tuple[str, ...] | list[str], show_tone: bool = True) -> str:
     """Format an episode for recall display.
 
     Accepts asyncpg.Record (dict-like) or tuple (date, summary, emotional_tone).
@@ -321,7 +328,7 @@ def _format_episode(e: Any, show_tone: bool = True) -> str:
     return f"  [{date}] {summary}"
 
 
-async def resolve_entity(name: str, pool: Any, client_id: str, agent_id: str) -> str:
+async def resolve_entity(name: str, pool: asyncpg.Pool, client_id: str, agent_id: str) -> str:
     """Resolve an entity name through the alias table."""
     from consolidation import _normalize_entity
     normalized = _normalize_entity(name)
@@ -334,7 +341,7 @@ async def resolve_entity(name: str, pool: Any, client_id: str, agent_id: str) ->
 
 
 async def extract_query_entities(
-    query: str, pool: Any, client_id: str, agent_id: str,
+    query: str, pool: asyncpg.Pool, client_id: str, agent_id: str,
 ) -> set[str]:
     """Extract known entity names from a natural language query.
 
@@ -369,11 +376,11 @@ async def extract_query_entities(
 
 async def lookup_facts(
     entities: set[str],
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     max_results: int = 20,
-) -> list[Any]:
+) -> list[asyncpg.Record]:
     """Direct fact lookup by entity names.
 
     Returns current (non-invalidated) facts. Updates accessed_at.
@@ -386,7 +393,7 @@ async def lookup_facts(
     placeholders = ", ".join(f"${i + 3}" for i in range(len(entity_list)))
     limit_idx = len(entity_list) + 3
 
-    rows: list[Any] = await pool.fetch(
+    rows: list[asyncpg.Record] = await pool.fetch(
         f"SELECT id, entity, attribute, value, confidence "  # noqa: S608 — parameterized
         f"FROM knowledge.facts "
         f"WHERE client_id = $1 AND agent_id = $2 "
@@ -411,15 +418,15 @@ async def lookup_facts(
 
 async def search_episodes(
     keywords: list[str],
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     max_results: int = 3,
     days_back: int | None = None,
-) -> list[Any]:
+) -> list[asyncpg.Record]:
     """Search episodes by topic keywords and optional date range."""
     conditions: list[str] = ["client_id = $1", "agent_id = $2"]
-    params: list[Any] = [client_id, agent_id]
+    params: list[str | int] = [client_id, agent_id]
     idx = 3
 
     if days_back:
@@ -438,7 +445,7 @@ async def search_episodes(
     where = " AND ".join(conditions)
     params.append(max_results)
 
-    rows: list[Any] = await pool.fetch(
+    rows: list[asyncpg.Record] = await pool.fetch(
         f"SELECT id, session_id, date, topics, decisions, summary, emotional_tone "  # noqa: S608 — parameterized
         f"FROM knowledge.episodes "
         f"WHERE {where} "
@@ -448,9 +455,9 @@ async def search_episodes(
     return rows
 
 
-async def get_open_commitments(pool: Any, client_id: str, agent_id: str) -> list[Any]:
+async def get_open_commitments(pool: asyncpg.Pool, client_id: str, agent_id: str) -> list[asyncpg.Record]:
     """Get all open commitments, ordered by deadline."""
-    rows: list[Any] = await pool.fetch(
+    rows: list[asyncpg.Record] = await pool.fetch(
         """SELECT id, who, what, deadline, created_at
            FROM knowledge.commitments
            WHERE client_id = $1 AND agent_id = $2 AND status = 'open'
@@ -462,11 +469,11 @@ async def get_open_commitments(pool: Any, client_id: str, agent_id: str) -> list
 
 async def recall(
     query: str,
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     memory_interface: MemoryInterface,
-    config: Any,
+    config: Config,
     top_k: int = 5,
 ) -> list[RecallBlock]:
     """Three-stage recall: facts -> episodes -> vector fallback.
@@ -590,10 +597,10 @@ EMPTY_RECALL_FALLBACK = (
 
 
 async def get_session_start_context(
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
-    config: Any = None,
+    config: Config | None = None,
     max_facts: int = 20,
     max_episodes: int = 3,
     max_tokens: int = 0,
@@ -649,11 +656,11 @@ async def get_session_start_context(
 
 
 async def run_maintenance(
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     stale_threshold_days: int,
-) -> dict[str, Any]:
+) -> dict[str, int]:  # all values are counts
     """Run memory maintenance: stale facts, expired commitments, conflict detection.
 
     Returns a stats dict with counts for facts, episodes, open_commitments,

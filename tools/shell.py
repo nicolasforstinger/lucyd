@@ -6,9 +6,12 @@ import asyncio
 import logging
 import os
 import signal
-from typing import Any
+from typing import TYPE_CHECKING
 
 from . import ToolSpec
+
+if TYPE_CHECKING:
+    from config import Config
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +27,7 @@ _DENIED_PATHS = ("/config/", "/proc/self/environ", "/proc/1/environ")
 
 
 def configure(default_timeout: int | None = None, max_timeout: int | None = None,
-              config: Any = None, **_: Any) -> None:
+              config: Config | None = None, **_: object) -> None:
     global _DEFAULT_TIMEOUT, _MAX_TIMEOUT
     if config is not None:
         if default_timeout is None:

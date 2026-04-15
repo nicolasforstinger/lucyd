@@ -12,11 +12,18 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any
+
+import asyncpg
 
 import metrics
 from messages import AssistantMessage, Message, ToolResultsMessage, UserMessage
+
+if TYPE_CHECKING:
+    from metering import MeteringDB
+
+from providers import CostContext, LLMProvider
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +35,7 @@ class ConsecutiveRoleError(RuntimeError):
     """Raised when add_user_message is called but the last message is already user."""
 
 
-def _text_from_content(content: Any) -> str:
+def _text_from_content(content: str | list[dict[str, str]] | None) -> str:
     """Extract text from message content.
 
     Content should always be ``str`` in the internal session format.
@@ -89,7 +96,7 @@ def _validate_turn_structure(messages: list[Message]) -> None:
         i += 1
 
 
-def _context_tokens_from_usage(usage: dict[str, Any]) -> int:
+def _context_tokens_from_usage(usage: dict[str, int]) -> int:
     """Extract context token count from a usage dict.
 
     Reads the ``context_tokens`` field directly.  Old messages missing
@@ -110,7 +117,7 @@ class Session:
     def __init__(
         self,
         session_id: str,
-        pool: Any,
+        pool: asyncpg.Pool,
         client_id: str,
         agent_id: str,
         model: str = "",
@@ -164,7 +171,7 @@ class Session:
         log.info("Resumed session %s (%d messages)", self.id, len(self.messages))
         return True
 
-    async def _save_session_meta(self, conn: Any) -> None:
+    async def _save_session_meta(self, conn: asyncpg.Connection) -> None:
         """Update session metadata row."""
         await conn.execute(
             """UPDATE sessions.sessions SET
@@ -273,7 +280,7 @@ class Session:
         if not persist_only:
             await self.save_state()
 
-    async def add_tool_results(self, results: list[dict[str, Any]], persist_only: bool = False) -> None:
+    async def add_tool_results(self, results: list[dict[str, str]], persist_only: bool = False) -> None:
         """Add tool results to session.
 
         When persist_only=True, skip appending to self.messages (use when the
@@ -309,7 +316,7 @@ class SessionManager:
 
     def __init__(
         self,
-        pool: Any,
+        pool: asyncpg.Pool,
         client_id: str,
         agent_id: str,
         agent_name: str = "Assistant",
@@ -319,7 +326,7 @@ class SessionManager:
         self._agent_id = agent_id
         self.agent_name = agent_name
         self._sessions: dict[str, Session] = {}
-        self._on_close_callbacks: list[Callable[..., Any]] = []
+        self._on_close_callbacks: list[Callable[[Session], Coroutine[None, None, None] | None]] = []
 
     # ── Public API ───────────────────────────────────────────────
 
@@ -357,7 +364,7 @@ class SessionManager:
         )
         return val or 0
 
-    async def get_index(self) -> dict[str, dict[str, Any]]:
+    async def get_index(self) -> dict[str, dict[str, str | float]]:
         """Return session index: contact → {session_id, created_at}."""
         rows = await self._pool.fetch(
             "SELECT contact, id, created_at FROM sessions.sessions "
@@ -424,7 +431,7 @@ class SessionManager:
             metrics.SESSION_OPEN_TOTAL.inc()
         return session
 
-    def on_close(self, callback: Callable[..., Any]) -> None:
+    def on_close(self, callback: Callable[[Session], Coroutine[None, None, None] | None]) -> None:
         """Register a callback for session close.
 
         Callback signature: async def cb(session) or def cb(session).
@@ -479,7 +486,7 @@ class SessionManager:
     async def compact_session(
         self,
         session: Session,
-        provider: Any,
+        provider: LLMProvider,
         compaction_prompt: str,
         model_name: str = "",
         cost_rates: list[float] | None = None,
@@ -490,7 +497,7 @@ class SessionManager:
         tool_result_max_chars: int = 2000,
         max_tokens: int = 0,
         system_blocks: list[dict[str, str]] | None = None,
-        cost: Any = None,
+        cost: CostContext | None = None,
     ) -> None:
         """Compact old messages using a summarization model."""
         metering = None
@@ -559,7 +566,7 @@ class SessionManager:
         fmt_messages = provider.format_messages(summary_messages)
 
         try:
-            kwargs: dict[str, Any] = {}
+            kwargs: dict[str, int] = {}
             if max_tokens > 0:
                 kwargs["max_tokens"] = max_tokens
             response = await provider.complete(fmt_system, fmt_messages, [], **kwargs)
@@ -617,20 +624,20 @@ class SessionManager:
 
 
 async def build_session_info(
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     session_id: str,
     session: Session | None = None,
     max_context_tokens: int = 0,
-    metering: Any = None,
-) -> dict[str, Any]:
+    metering: MeteringDB | None = None,
+) -> dict[str, Any]:  # Any justified: JSON-serializable dict with mixed value types
     """Build enriched session info dict. Used by both CLI and HTTP API.
 
     Returns dict with: session_id, context_tokens, context_pct, cost,
     message_count, compaction_count, event_count.
     """
-    info: dict[str, Any] = {"session_id": session_id}
+    info: dict[str, Any] = {"session_id": session_id}  # Any justified: JSON-serializable dict
 
     messages: list[Message] = []
     compaction_count = 0
@@ -688,10 +695,10 @@ async def build_session_info(
 
 
 async def read_history_events(
-    pool: Any,
+    pool: asyncpg.Pool,
     session_id: str,
     full: bool = False,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]]:  # Any justified: JSON-deserialized event payloads
     """Read session history from events table.
 
     When full=False, returns only message events (user + assistant text).

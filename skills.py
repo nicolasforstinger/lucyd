@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
 
 from tools import ToolSpec
 
@@ -99,7 +98,7 @@ class SkillLoader:
     def __init__(self, workspace: Path, skills_dir: str = "skills"):
         self.workspace = workspace
         self.skills_dir = skills_dir
-        self._skills: dict[str, dict[str, Any]] = {}
+        self._skills: dict[str, dict[str, str]] = {}
         self._loaded = False
 
     def scan(self) -> None:
@@ -137,7 +136,7 @@ class SkillLoader:
         self._loaded = True
         log.info("Loaded %d skills from %s", len(self._skills), skills_path)
 
-    def get_skill(self, name: str) -> dict[str, Any] | None:
+    def get_skill(self, name: str) -> dict[str, str] | None:
         """Get a skill by name."""
         if not self._loaded:
             self.scan()
@@ -182,7 +181,7 @@ class SkillLoader:
 _skill_loader: SkillLoader | None = None
 
 
-def configure(skill_loader: SkillLoader | None = None, **_: Any) -> None:
+def configure(skill_loader: SkillLoader | None = None, **_: object) -> None:
     """Configure skill tool. Called once at init."""
     global _skill_loader
     if skill_loader is not None:

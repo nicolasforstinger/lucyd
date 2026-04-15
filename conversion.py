@@ -8,7 +8,7 @@ unreachable.  Any JSON API that returns ``{"rate": float}`` is compatible.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any  # Any justified: JSON-deserialized FX API response
 
 import httpx
 

@@ -14,7 +14,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any  # Any justified: TOML config values are polymorphic (str|int|float|bool|list|Path)
 
 import tomllib
 

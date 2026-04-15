@@ -611,7 +611,7 @@ class LucydDaemon:
 
         result = []
         for contact, entry in (await self.session_mgr.get_index()).items():
-            session_id = entry.get("session_id", "")
+            session_id = str(entry.get("session_id", ""))
             live = self.session_mgr.get_loaded(contact)
             info = await build_session_info(
                 pool=self.pool,
@@ -665,12 +665,12 @@ class LucydDaemon:
         session_id = target
         index = await self.session_mgr.get_index()
         if target in index:
-            session_id = index[target].get("session_id", target)
+            session_id = str(index[target].get("session_id", target))
         else:
             # Case-insensitive lookup
             for key, entry in index.items():
                 if key.lower() == target.lower():
-                    session_id = entry.get("session_id", target)
+                    session_id = str(entry.get("session_id", target))
                     break
 
         events = await read_history_events(self.pool, session_id, full=full)

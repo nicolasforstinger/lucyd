@@ -8,29 +8,35 @@ with vector fallback. memory_get reads chunks by file path.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
+
+import asyncpg
 
 import metrics
 
 from . import ToolSpec
 
+if TYPE_CHECKING:
+    from config import Config
+    from memory import MemoryInterface
+
 log = logging.getLogger(__name__)
 
 # Set once at daemon startup via configure()
-_memory: Any = None
-_pool: Any = None
+_memory: MemoryInterface | None = None
+_pool: asyncpg.Pool | None = None
 _client_id: str = ""
 _agent_id: str = ""
-_config: Any = None
+_config: Config | None = None
 
 
 def configure(
-    memory: Any = None,
-    pool: Any = None,
+    memory: MemoryInterface | None = None,
+    pool: asyncpg.Pool | None = None,
     client_id: str = "",
     agent_id: str = "",
-    config: Any = None,
-    **_: Any,
+    config: Config | None = None,
+    **_: object,
 ) -> None:
     """Configure memory tools. Called once at init."""
     global _memory, _pool, _client_id, _agent_id, _config

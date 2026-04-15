@@ -6,23 +6,29 @@ Returns current session stats for context-aware agents.
 from __future__ import annotations
 
 import time
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from . import ToolSpec
 
+if TYPE_CHECKING:
+    from config import Config
+    from providers import LLMProvider
+    from session import Session, SessionManager
+
 # Set once at daemon startup via configure()
-_session_manager: Any = None
+_session_manager: SessionManager | None = None
 _daemon_start_time: float = 0.0
-_session_getter: Any = None  # Callback returning current session
+_session_getter: Callable[[], Session | None] | None = None
 
 MAX_CONTEXT_TOKENS = 0
 
 
-def configure(session_manager: Any = None,
+def configure(session_manager: SessionManager | None = None,
               start_time: float = 0.0, max_context_tokens: int = 0,
-              session_getter: Any = None,
-              config: Any = None, provider: Any = None,
-              **_: Any) -> None:
+              session_getter: Callable[[], Session | None] | None = None,
+              config: Config | None = None, provider: LLMProvider | None = None,
+              **_: object) -> None:
     global _session_manager, _daemon_start_time
     global MAX_CONTEXT_TOKENS, _session_getter
     if session_manager is not None:

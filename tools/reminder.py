@@ -9,16 +9,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
-from typing import Any
+from typing import TYPE_CHECKING
 
 from . import ToolSpec
+
+if TYPE_CHECKING:
+    from config import Config
 
 log = logging.getLogger(__name__)
 
 _http_token: str = ""
 
 
-def configure(config: Any = None, **_: Any) -> None:
+def configure(config: Config | None = None, **_: object) -> None:
     global _http_token
     if config is not None:
         _http_token = config.http_auth_token

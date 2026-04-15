@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from . import ToolSpec
+
+if TYPE_CHECKING:
+    from config import Config
 
 # Allowed path prefixes — set at startup via configure()
 _PATH_ALLOW: list[str] = []
@@ -15,7 +18,7 @@ _default_read_limit: int = 2000
 
 def configure(allowed_paths: list[str] | None = None,
               default_read_limit: int | None = None,
-              config: Any = None, **_: Any) -> None:
+              config: Config | None = None, **_: object) -> None:
     global _PATH_ALLOW, _default_read_limit
     if config is not None and allowed_paths is None:
         allowed_paths = config.filesystem_allowed_paths
@@ -141,7 +144,7 @@ def tool_edit(file_path: str, old_string: str, new_string: str,
     return f"Edited {file_path}"
 
 
-def tool_send_file(file_path: str) -> dict[str, Any]:
+def tool_send_file(file_path: str) -> dict[str, str | list[str]]:
     """Send a file as an attachment to the user."""
     err = _check_path(file_path)
     if err:
