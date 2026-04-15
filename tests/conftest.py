@@ -38,7 +38,7 @@ def pytest_sessionfinish(session, exitstatus):
 
 def _running_under_mutmut() -> bool:
     # MUTANT_UNDER_TEST is set by mutmut (even to '' for clean tests).
-    # MUTMUT_RUNNING is our legacy env var.
+    # MUTMUT_RUNNING is the original env var name (still checked for compatibility).
     return "MUTANT_UNDER_TEST" in os.environ or bool(os.environ.get("MUTMUT_RUNNING"))
 
 

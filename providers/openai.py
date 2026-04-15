@@ -235,8 +235,6 @@ class OpenAIProvider:
         details = usage.get("prompt_tokens_details") or {}
         if isinstance(details, dict):
             cache_read = int(details.get("cached_tokens", 0) or 0)
-        elif hasattr(details, "cached_tokens"):
-            cache_read = int(getattr(details, "cached_tokens", 0) or 0)
         if cache_read == 0 and "cached_tokens" in usage:
             cache_read = int(usage.get("cached_tokens", 0) or 0)
         return Usage(
@@ -315,10 +313,11 @@ class OpenAIProvider:
         if u:
             usage_dict["prompt_tokens"] = u.prompt_tokens or 0
             usage_dict["completion_tokens"] = u.completion_tokens or 0
-            details = getattr(u, "prompt_tokens_details", None)
-            if details and hasattr(details, "cached_tokens"):
-                usage_dict["cached_tokens"] = details.cached_tokens or 0
-            elif hasattr(u, "cached_tokens"):
+            details = u.prompt_tokens_details
+            if details and details.cached_tokens:
+                usage_dict["cached_tokens"] = details.cached_tokens
+            else:
+                # llama-server puts cached_tokens directly on usage
                 usage_dict["cached_tokens"] = getattr(u, "cached_tokens", 0) or 0
 
             # Log cache miss warning when no caching detected on large prompts
@@ -390,9 +389,11 @@ class OpenAIProvider:
                     "prompt_tokens": u.prompt_tokens or 0,
                     "completion_tokens": u.completion_tokens or 0,
                 }
-                details = getattr(u, "prompt_tokens_details", None)
-                if details and hasattr(details, "cached_tokens"):
-                    usage_dict["cached_tokens"] = details.cached_tokens or 0
+                details = u.prompt_tokens_details
+                if details and details.cached_tokens:
+                    usage_dict["cached_tokens"] = details.cached_tokens
+                else:
+                    usage_dict["cached_tokens"] = getattr(u, "cached_tokens", 0) or 0
                 yield StreamDelta(usage=self._parse_usage_dict(usage_dict))
                 continue
 
