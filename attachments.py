@@ -24,7 +24,7 @@ class Attachment:
 
 
 class ImageTooLarge(Exception):
-    """Raised when an image can't be fit within API limits."""
+    pass
 
 
 def fit_image(data: bytes, content_type: str, max_bytes: int,

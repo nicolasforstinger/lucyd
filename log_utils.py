@@ -38,7 +38,6 @@ def set_log_context(
     _log_context.set(ctx)
 
 
-
 def _log_safe(s: str | None) -> str:
     """Sanitize a string for log output — strip control chars that could forge log entries."""
     if s is None:

@@ -22,7 +22,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-# Add lucyd directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 import db as lucyd_db
@@ -429,7 +428,6 @@ class LucydDaemon:
         self.skill_loader.scan()
 
     def _init_metering(self) -> None:
-        """Initialize metering DB."""
         self.metering_db = MeteringDB(
             pool=self.pool,
             client_id=self.config.client_id or self.config.agent_name,
@@ -437,7 +435,6 @@ class LucydDaemon:
         )
 
     def _init_conversion(self) -> None:
-        """Initialize currency converter from config."""
         api_url = self.config.conversion_api_url
         static_rate = self.config.conversion_static_rate
         if api_url or static_rate != 1.0:
@@ -597,7 +594,6 @@ class LucydDaemon:
                 await self._process_reset_item(item)
 
     async def _build_sessions(self) -> list[dict[str, Any]]:
-        """Build session list for HTTP /sessions."""
         from session import build_session_info
 
         if not self.session_mgr:
@@ -626,8 +622,7 @@ class LucydDaemon:
         return result
 
     def _sweep_expired_media(self) -> None:
-        """Delete media downloads older than media_ttl_hours."""
-        ttl = 24 * 3600
+        ttl = 24 * 3600  # 24 hours
         download_dir = Path(self.config.http_download_dir)
         if not download_dir.exists():
             return
@@ -644,7 +639,6 @@ class LucydDaemon:
             log.info("Media sweep: deleted %d files older than 24h", swept)
 
     def _build_monitor(self) -> dict[str, Any]:
-        """Build monitor data for HTTP /monitor."""
         return dict(self.pipeline.monitor_state) if self.pipeline else {"state": "idle"}
 
     async def _build_history(self, target: str, full: bool = False) -> dict[str, Any]:
@@ -673,7 +667,6 @@ class LucydDaemon:
         return {"session_id": session_id, "events": events}
 
     async def _build_status(self) -> dict[str, Any]:
-        """Build status dict for HTTP /status."""
         from config import today_start_ts
 
         today_cost = 0.0

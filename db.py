@@ -64,7 +64,6 @@ async def create_pool(
 
 
 async def close_pool(pool: Any) -> None:
-    """Gracefully close an asyncpg pool."""
     await pool.close()
 
 

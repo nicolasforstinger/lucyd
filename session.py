@@ -25,7 +25,7 @@ AUDIT_TRUNCATION_LIMIT = 500
 
 
 class ConsecutiveRoleError(RuntimeError):
-    """Raised when add_user_message is called but the last message is already user."""
+    pass
 
 
 def _text_from_content(content: Any) -> str:

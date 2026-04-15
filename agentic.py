@@ -50,7 +50,6 @@ class LoopConfig:
     trace_id: str = ""
 
 
-
 async def _call_provider_with_retry(
     provider: LLMProvider,
     system: Any,
@@ -296,7 +295,6 @@ async def run_agentic_loop(
     accumulated_cost = 0.0
     fallback_text: list[str] = []
 
-    # Tool call success tracking (Challenge 8)
     tool_calls_total = 0
     tool_calls_failed = 0
     all_attachments: list[str] = []
@@ -312,7 +310,6 @@ async def run_agentic_loop(
             cfg=cfg, trace_id=trace_id, on_stream_delta=on_stream_delta,
         )
 
-        # Turn-level token/time logging (Challenge 6)
         turn_elapsed = time.time() - turn_start
         u = response.usage
         log.info(
@@ -392,8 +389,7 @@ async def run_agentic_loop(
             response.total_cost = accumulated_cost
             return response
 
-        # Context pressure check (Challenge 6): inject wrap-up hint
-        # when accumulated context is too large for useful tool use
+        # Inject wrap-up hint when context is too large for useful tool use
         if max_context_for_tools > 0:
             ctx_tokens = response.usage.context_tokens
             if ctx_tokens > max_context_for_tools:
@@ -485,7 +481,6 @@ async def run_agentic_loop(
             await on_tool_results(results_msg) if inspect.iscoroutinefunction(on_tool_results) \
                 else on_tool_results(results_msg)
 
-        # Tool success rate warning (Challenge 8)
         if tool_calls_total >= 4:
             success_rate = 1.0 - (tool_calls_failed / tool_calls_total)
             if success_rate < cfg.tool_success_warn_threshold:
@@ -585,7 +580,6 @@ def is_transient_error(exc: BaseException) -> bool:
 
     # Connection-level errors
     return isinstance(exc, (ConnectionError, OSError))
-
 
 
 def _truncate_args(args: dict[str, Any], max_len: int = 200) -> str:
