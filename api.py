@@ -192,8 +192,8 @@ class HTTPApi:
                 try:
                     if f.is_file():
                         f.unlink()
-                except OSError:
-                    pass
+                except OSError as e:
+                    log.debug("Cleanup: failed to remove %s: %s", f, e)
         log.info("HTTP API stopped")
 
     # ─── Auth Middleware ──────────────────────────────────────────

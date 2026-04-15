@@ -216,7 +216,7 @@ async def tool_sessions_spawn(
     except TimeoutError:
         return f"Error: Sub-agent timed out after {timeout}s"
     except Exception as e:
-        log.error("Sub-agent failed: %s", e)
+        log.error("Sub-agent failed: %s", e, exc_info=True)
         return f"Error: Sub-agent failed: {e}"
 
 

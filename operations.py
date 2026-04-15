@@ -151,7 +151,7 @@ def git_snapshot(workspace: Path, label: str) -> str | None:
         )
         log.info("Git snapshot: %s", tag)
         return tag
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError) as e:
         log.warning("Git snapshot failed: %s", e)
         return None
 
@@ -165,7 +165,7 @@ def git_rollback(workspace: Path, tag: str) -> bool:
         )
         log.warning("Rolled back workspace to %s", tag)
         return True
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError) as e:
         log.error("Git rollback to %s failed: %s", tag, e)
         return False
 
@@ -217,8 +217,8 @@ async def consolidate_on_close(
                 agent_id=agent_id,
                 metering=metering_db,
             )
-    except Exception:
-        log.warning("consolidation on close failed", exc_info=True)
+    except (TimeoutError, RuntimeError, OSError) as e:
+        log.warning("Consolidation on session close failed: %s", e, exc_info=True)
 
 
 # ─── Evolution ───────────────────────────────────────────────────
@@ -242,8 +242,8 @@ async def handle_evolve(
             )
             if not has_new:
                 return {"status": "skipped", "reason": f"no new daily logs since {since_date or 'ever'}"}
-        except Exception:
-            log.warning("Evolution pre-check failed, proceeding anyway", exc_info=True)
+        except (OSError, RuntimeError) as e:
+            log.warning("Evolution pre-check failed, proceeding anyway: %s", e, exc_info=True)
 
     tag = git_snapshot(config.workspace, "evolve")
     if tag:
@@ -362,8 +362,8 @@ async def handle_consolidate(
                 files_with_facts += 1
                 log.info("Extracted %d facts from %s", count, rel_path)
             total_facts += count
-        except Exception:
-            log.exception("Failed to process %s", rel_path)
+        except (TimeoutError, RuntimeError, OSError) as e:
+            log.error("Consolidation failed for %s: %s", rel_path, e, exc_info=True)
 
     return {"status": "completed", "facts": total_facts,
             "files_scanned": len(file_list), "files_with_facts": files_with_facts}

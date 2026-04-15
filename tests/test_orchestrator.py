@@ -1099,7 +1099,7 @@ class TestConsolidateOnClose:
         daemon.pool = MagicMock()
         session.compaction_count = 0
 
-        with patch("consolidation.get_unprocessed_range", side_effect=Exception("DB locked")):
+        with patch("consolidation.get_unprocessed_range", side_effect=RuntimeError("DB locked")):
             # Should not raise
             await daemon._consolidate_on_close(session)
 

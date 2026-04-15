@@ -60,8 +60,8 @@ async def tool_reminder(message: str, minutes: int = 5) -> str:
 
         log.info("Reminder scheduled: '%s' in %d minutes", message[:80], minutes)
         return f"Reminder set: \"{message}\" in {minutes} minutes"
-    except Exception as e:
-        return f"Error: Failed to schedule reminder: {type(e).__name__}"
+    except (OSError, TimeoutError) as e:
+        return f"Error: Failed to schedule reminder: {type(e).__name__}: {e}"
 
 
 TOOLS: list[ToolSpec] = [

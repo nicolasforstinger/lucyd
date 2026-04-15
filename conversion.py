@@ -12,6 +12,8 @@ from typing import Any
 
 import httpx
 
+import metrics
+
 log = logging.getLogger(__name__)
 
 # Timeout for FX API calls — kept short since the API is typically local.
@@ -76,10 +78,6 @@ class CurrencyConverter:
             return rate
         except Exception as exc:
             log.warning("FX rate fetch failed (%s): %s", self._api_url, exc)
-            try:
-                import metrics
-                if metrics.ENABLED:
-                    metrics.FX_FETCH_ERRORS_TOTAL.inc()
-            except Exception:  # pragma: no cover — metrics may not be importable in tests
-                pass
+            if metrics.ENABLED:
+                metrics.FX_FETCH_ERRORS_TOTAL.inc()
             return None
