@@ -388,6 +388,27 @@ class TestLoggingConfig:
     pass
 
 
+class TestResolvedIdentity:
+    """resolved_client_id / resolved_agent_id fall back to agent_name."""
+
+    def test_defaults_to_agent_name(self, minimal_toml_data: dict) -> None:  # type: ignore[type-arg]
+        cfg = Config(minimal_toml_data)
+        assert cfg.resolved_client_id == cfg.agent_name
+        assert cfg.resolved_agent_id == cfg.agent_name
+
+    def test_explicit_client_id_wins(self, minimal_toml_data: dict) -> None:  # type: ignore[type-arg]
+        minimal_toml_data["agent"]["client_id"] = "custom-client"
+        cfg = Config(minimal_toml_data)
+        assert cfg.resolved_client_id == "custom-client"
+        assert cfg.resolved_agent_id == cfg.agent_name
+
+    def test_explicit_agent_id_wins(self, minimal_toml_data: dict) -> None:  # type: ignore[type-arg]
+        minimal_toml_data["agent"]["id"] = "custom-agent"
+        cfg = Config(minimal_toml_data)
+        assert cfg.resolved_client_id == cfg.agent_name
+        assert cfg.resolved_agent_id == "custom-agent"
+
+
 class TestPrimarySender:
     """Primary sender config for notification routing."""
 

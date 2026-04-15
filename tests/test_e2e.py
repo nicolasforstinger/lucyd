@@ -145,8 +145,8 @@ async def test_e2e_message_cycle(tmp_path, pool):
     row = await pool.fetchval(
         "SELECT COUNT(*) FROM sessions.sessions "
         "WHERE client_id = $1 AND agent_id = $2",
-        config.client_id or config.agent_name,
-        config.agent_id or config.agent_name,
+        config.resolved_client_id,
+        config.resolved_agent_id,
     )
     assert row >= 1, "At least one session should be persisted"
 
@@ -154,8 +154,8 @@ async def test_e2e_message_cycle(tmp_path, pool):
     cost_count = await pool.fetchval(
         "SELECT COUNT(*) FROM metering.costs "
         "WHERE client_id = $1 AND agent_id = $2",
-        config.client_id or config.agent_name,
-        config.agent_id or config.agent_name,
+        config.resolved_client_id,
+        config.resolved_agent_id,
     )
     assert cost_count >= 1, "At least one metering record should exist"
 
