@@ -193,14 +193,11 @@ def tool_load_skill(name: str) -> str:
     """Load a skill's full content by name."""
     if _skill_loader is None:
         return "Error: Skill loader not initialized"
-    try:
-        skill = _skill_loader.get_skill(name)
-        if skill is None:
-            available = _skill_loader.list_skill_names()
-            return f"Error: Skill '{name}' not found. Available: {', '.join(available)}"
-        return str(skill["body"])
-    except Exception as e:
-        return f"Error loading skill: {e}"
+    skill = _skill_loader.get_skill(name)
+    if skill is None:
+        available = _skill_loader.list_skill_names()
+        return f"Error: Skill '{name}' not found. Available: {', '.join(available)}"
+    return str(skill["body"])
 
 
 TOOLS: list[ToolSpec] = [

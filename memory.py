@@ -112,7 +112,7 @@ class MemoryInterface:
             )
             return [dict(r) for r in rows]
         except Exception as e:
-            log.debug("FTS query failed: %s", e)
+            log.warning("FTS query failed: %s", e, exc_info=True)
             return []
 
     async def _vector_search(self, query: str, top_k: int) -> list[dict[str, Any]]:
@@ -138,7 +138,7 @@ class MemoryInterface:
             )
             return [dict(r) for r in rows]
         except Exception as e:
-            log.debug("Vector search failed: %s", e)
+            log.warning("Vector search failed: %s", e, exc_info=True)
             return []
 
     async def _embed(self, text: str) -> list[float]:

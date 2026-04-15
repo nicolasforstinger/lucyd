@@ -73,7 +73,7 @@ def _is_private_ip(addr: str) -> bool:
             normalized = socket.inet_ntoa(socket.inet_aton(addr))
             ip = ipaddress.ip_address(normalized)
         return ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local
-    except Exception:
+    except (ValueError, OSError):
         return True  # Fail closed: unknown format = block
 
 
@@ -86,7 +86,7 @@ def _validate_url(url: str) -> tuple[str | None, str | None]:
     """
     try:
         parsed = urllib.parse.urlparse(url)
-    except Exception:
+    except ValueError:
         return f"Invalid URL: {url}", None
 
     if parsed.scheme not in _ALLOWED_SCHEMES:

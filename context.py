@@ -178,8 +178,8 @@ class ContextBuilder:
                 try:
                     content = path.read_text(encoding="utf-8")
                     parts.append(f"--- {name} ---\n{content}")
-                except Exception as e:
-                    log.warning("Failed to read %s: %s", path, e, exc_info=True)
+                except (OSError, UnicodeDecodeError) as e:
+                    log.warning("Failed to read context file %s: %s", path, e)
             else:
                 log.debug("Context file not found: %s", path)
         return "\n\n".join(parts)

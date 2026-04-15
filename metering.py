@@ -142,13 +142,9 @@ class MeteringDB:
     # ── Queries ───────────────────────────────────────────────────
 
     async def query(self, sql: str, *args: Any) -> list[Any]:
-        """Read-only query.  Returns [] on error."""
-        try:
-            rows: list[Any] = await self._pool.fetch(sql, *args)
-            return rows
-        except Exception:
-            log.warning("Metering query failed", exc_info=True)
-            return []
+        """Read-only query."""
+        rows: list[Any] = await self._pool.fetch(sql, *args)
+        return rows
 
     async def month_total(self, billing_period: str = "") -> float:
         """Total cost for current agent in a billing period.  Default: current month."""

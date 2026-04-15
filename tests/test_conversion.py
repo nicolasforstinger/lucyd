@@ -100,7 +100,7 @@ class TestPrometheusIntegration:
         converter = CurrencyConverter(api_url="http://fx/rate", static_rate=1.15)
         mock_counter = MagicMock()
         with patch("conversion.httpx") as mock_httpx, \
-             patch.dict("sys.modules", {"metrics": MagicMock(ENABLED=True, FX_FETCH_ERRORS_TOTAL=mock_counter)}):
+             patch("conversion.metrics", MagicMock(ENABLED=True, FX_FETCH_ERRORS_TOTAL=mock_counter)):
             mock_httpx.get.side_effect = Exception("timeout")
             amount, rate = converter.convert(10.0, "USD")
         mock_counter.inc.assert_called_once()

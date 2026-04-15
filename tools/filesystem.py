@@ -39,7 +39,7 @@ def _check_path(file_path: str) -> str | None:
     """Validate file path against allowlist. Returns error or None if OK."""
     try:
         resolved = str(Path(file_path).expanduser().resolve())
-    except Exception:
+    except (ValueError, OSError):
         return f"Error: Invalid path: {file_path}"
     if not _PATH_ALLOW:
         return "Error: No allowed paths configured — filesystem access denied"

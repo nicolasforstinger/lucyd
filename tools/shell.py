@@ -74,16 +74,16 @@ async def tool_exec(command: str, timeout: int | None = None) -> str:
             # Kill entire process group to prevent orphans
             os.killpg(proc.pid, signal.SIGKILL)
             await proc.wait()
-        except Exception:
+        except (OSError, ProcessLookupError):
             log.debug("killpg failed during timeout cleanup (pid=%s)", proc.pid, exc_info=True)
             try:
                 proc.kill()
                 await proc.wait()
-            except Exception:
+            except (OSError, ProcessLookupError):
                 log.debug("proc.kill() also failed (pid=%s)", proc.pid, exc_info=True)
         return f"Error: Command timed out after {timeout}s"
-    except Exception as e:
-        return f"Error: Command execution failed: {type(e).__name__}"
+    except OSError as e:
+        return f"Error: Command execution failed: {e}"
 
     result = ""
     out = stdout.decode("utf-8", errors="replace") if stdout else ""

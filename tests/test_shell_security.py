@@ -507,17 +507,17 @@ class TestExecExceptionHandling:
 
     @pytest.mark.asyncio
     async def test_generic_exception_returns_error_string(self):
-        """Non-timeout exception returns error with exception type name."""
+        """Non-timeout exception returns error with exception message."""
         with patch("asyncio.create_subprocess_shell", side_effect=OSError("bad")):
             result = await tool_exec("test_cmd")
-        assert "OSError" in result
+        assert "bad" in result
 
     @pytest.mark.asyncio
     async def test_generic_exception_format(self):
         """Error format starts with 'Error: Command execution failed:'."""
         with patch("asyncio.create_subprocess_shell", side_effect=PermissionError("denied")):
             result = await tool_exec("test_cmd")
-        assert result == "Error: Command execution failed: PermissionError"
+        assert result == "Error: Command execution failed: denied"
 
 
 class TestExecOutputEdgeCases:

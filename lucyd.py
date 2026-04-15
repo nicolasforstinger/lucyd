@@ -189,19 +189,16 @@ class LucydDaemon:
     def _init_provider(self) -> None:
         """Create the primary provider instance and determine dispatch mode."""
         self._providers: dict[str, Any] = {}
-        try:
-            self.provider = self._create_provider_for("primary")
-            self._providers["primary"] = self.provider
-            # Determine dispatch mode based on config + model capabilities
-            caps = self.provider.capabilities if self.provider else None
-            if self.config.agent_strategy == "single_shot" or (caps and not caps.supports_tools):
-                self._single_shot = True
-                log.info("Agent strategy: single shot")
-            else:
-                self._single_shot = False
-                log.info("Agent strategy: agentic loop")
-        except Exception as e:
-            log.error("Failed to create provider: %s", e, exc_info=True)
+        self.provider = self._create_provider_for("primary")
+        self._providers["primary"] = self.provider
+        # Determine dispatch mode based on config + model capabilities
+        caps = self.provider.capabilities if self.provider else None
+        if self.config.agent_strategy == "single_shot" or (caps and not caps.supports_tools):
+            self._single_shot = True
+            log.info("Agent strategy: single shot")
+        else:
+            self._single_shot = False
+            log.info("Agent strategy: agentic loop")
 
     def _create_provider_for(self, model_name: str) -> Any:
         """Create a provider instance for a named model config."""
@@ -233,9 +230,9 @@ class LucydDaemon:
             provider = self._create_provider_for(model_name)
             self._providers[role] = provider
             return provider
-        except Exception:
-            log.warning("Failed to create provider for role '%s' (model '%s'), falling back to primary",
-                        role, model_name, exc_info=True)
+        except (ValueError, ImportError, KeyError) as e:
+            log.warning("Failed to create provider for role '%s' (model '%s'), falling back to primary: %s",
+                        role, model_name, e)
             return self.provider
 
     def _init_sessions(self) -> None:
@@ -496,8 +493,8 @@ class LucydDaemon:
                     self.config.resolved_client_id,
                     self.config.resolved_agent_id,
                 )
-            except Exception:
-                log.exception("Failed to update evolution state")
+            except (OSError, RuntimeError) as e:
+                log.error("Failed to update evolution state: %s", e, exc_info=True)
 
     def _validate_evolution(self) -> bool:
         import operations as ops
@@ -623,8 +620,8 @@ class LucydDaemon:
                 if f.is_file() and f.stat().st_mtime < cutoff:
                     f.unlink()
                     swept += 1
-            except OSError:
-                pass
+            except OSError as e:
+                log.debug("Media sweep: failed to remove %s: %s", f, e)
         if swept:
             log.info("Media sweep: deleted %d files older than 24h", swept)
 

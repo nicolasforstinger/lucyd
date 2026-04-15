@@ -384,19 +384,6 @@ class TestToolLoadSkill:
         finally:
             mod._skill_loader = original
 
-    def test_load_skill_error_handled(self):
-        """Exception during skill loading returns error."""
-        import skills as mod
-        mock_loader = MagicMock()
-        mock_loader.get_skill.side_effect = RuntimeError("disk error")
-        original = mod._skill_loader
-        mod._skill_loader = mock_loader
-        try:
-            result = mod.tool_load_skill("compute-routing")
-            assert "Error loading skill" in result
-        finally:
-            mod._skill_loader = original
-
     def test_configure_skill_loader(self):
         """configure(skill_loader=...) updates module global."""
         import skills as mod

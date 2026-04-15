@@ -177,15 +177,12 @@ def scan_workspace(
 
 async def get_indexed_files(pool: Any, client_id: str, agent_id: str) -> dict[str, str]:
     """Returns {path: content_hash} from search.files table."""
-    try:
-        rows = await pool.fetch(
-            "SELECT path, hash FROM search.files "
-            "WHERE client_id = $1 AND agent_id = $2",
-            client_id, agent_id,
-        )
-        return {row["path"]: row["hash"] for row in rows}
-    except Exception:
-        return {}
+    rows = await pool.fetch(
+        "SELECT path, hash FROM search.files "
+        "WHERE client_id = $1 AND agent_id = $2",
+        client_id, agent_id,
+    )
+    return {row["path"]: row["hash"] for row in rows}
 
 
 async def update_chunks(
