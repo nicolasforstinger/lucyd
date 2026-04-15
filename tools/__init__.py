@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any  # Any justified in this module: tool schemas are JSON, tool functions have heterogeneous signatures
 
 import metrics
 

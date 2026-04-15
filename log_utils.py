@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
-from typing import Any
+from typing import Any  # Any justified: JSON log entries have mixed value types
 
 # ─── Log Context ──────────────────────────────────────────────────
 # Set once per message processing cycle via set_log_context().

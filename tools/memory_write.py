@@ -7,7 +7,8 @@ Delegates to the same PostgreSQL knowledge schema used by consolidation and reca
 from __future__ import annotations
 
 import logging
-from typing import Any
+
+import asyncpg
 
 import metrics
 
@@ -18,16 +19,16 @@ from memory import _normalize_entity as _normalize, resolve_entity
 
 log = logging.getLogger(__name__)
 
-_pool: Any = None
+_pool: asyncpg.Pool | None = None
 _client_id: str = ""
 _agent_id: str = ""
 
 
 def configure(
-    pool: Any = None,
+    pool: asyncpg.Pool | None = None,
     client_id: str = "",
     agent_id: str = "",
-    **_: Any,
+    **_: object,
 ) -> None:
     global _pool, _client_id, _agent_id
     _pool = pool

@@ -10,9 +10,13 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from messages import AssistantMessage, Message
+
+if TYPE_CHECKING:
+    from conversion import CurrencyConverter
+    from metering import MeteringDB
 
 
 @dataclass
@@ -60,13 +64,13 @@ class ModelCapabilities:
 @dataclass
 class CostContext:
     """Cost tracking parameters that travel together through the call chain."""
-    metering: Any  # MeteringDB | None
+    metering: MeteringDB | None
     session_id: str
     model_name: str
     cost_rates: list[float]
     provider_name: str = ""
     currency: str = "EUR"
-    converter: Any = None  # CurrencyConverter | None
+    converter: CurrencyConverter | None = None
 
     @classmethod
     def none(cls) -> "CostContext":
@@ -81,7 +85,7 @@ class LLMResponse:
     stop_reason: str  # "end_turn" | "tool_use" | "max_tokens"
     usage: Usage
     thinking: str | None = None
-    raw: Any = None
+    raw: Any = None  # Provider-specific raw response (Anthropic/OpenAI/Mistral); no common type
     # Full thinking block with signature for Anthropic tool-use continuity
     _thinking_block: dict[str, Any] | None = field(default=None, repr=False)
     # API call latency (set by _call_provider_with_retry for metering)
@@ -204,7 +208,7 @@ def _parse_json(raw: str) -> dict[str, Any] | None:
     returns an error to the model via tool_call_retry.
     """
     try:
-        result: Any = json.loads(raw)
+        result = json.loads(raw)  # Any: JSON deserialization is inherently untyped
         return result if isinstance(result, dict) else None
     except (json.JSONDecodeError, TypeError):
         return None

@@ -12,12 +12,21 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import asyncpg
 
 import metrics
 from memory import _normalize_entity, resolve_entity
 from messages import Message
 from session import _text_from_content
+
+if TYPE_CHECKING:
+    from config import Config
+    from context import ContextBuilder
+    from conversion import CurrencyConverter
+    from metering import MeteringDB
+    from providers import LLMProvider, Usage
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +39,7 @@ async def get_unprocessed_range(
     session_id: str,
     messages: list[Message],
     compaction_count: int,
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
 ) -> tuple[int, int]:
@@ -70,7 +79,7 @@ async def update_consolidation_state(
     session_id: str,
     compaction_count: int,
     message_count: int,
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
 ) -> None:
@@ -110,7 +119,9 @@ def serialize_messages(
         if role == "agent":
             text = msg.get("text", "")
         else:
-            text = _text_from_content(msg.get("content", ""))
+            raw_content = msg.get("content", "")
+            # _text_from_content handles str, list[dict], and None
+            text = _text_from_content(raw_content if isinstance(raw_content, (str, list)) else str(raw_content))
         if not text:
             continue
         line = f"{role}: {text}"
@@ -128,7 +139,7 @@ async def upsert_fact(
     entity: str,
     attribute: str,
     value: str,
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     confidence: float = 1.0,
@@ -182,7 +193,7 @@ def _strip_json_fences(text: str) -> str:
 async def _store_facts(
     data: dict[str, Any],
     session_id: str,
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     confidence_threshold: float,
@@ -231,7 +242,7 @@ async def _store_facts(
 async def _store_episode(
     data: dict[str, Any],
     session_id: str,
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
 ) -> int | None:
@@ -318,11 +329,11 @@ Rules:
 
 
 async def _llm_extract_json(
-    provider: Any,
+    provider: LLMProvider,
     system_blocks: list[dict[str, str]],
     prompt_text: str,
     label: str = "extraction",
-) -> tuple[dict[str, Any] | None, Any]:
+) -> tuple[dict[str, Any] | None, Usage | None]:  # first Any justified: JSON-deserialized LLM output
     """Shared helper: format -> call -> strip fences -> parse JSON.
 
     Returns (parsed_dict_or_None, usage_or_None).
@@ -353,12 +364,12 @@ async def _llm_extract_json(
 async def extract_facts(
     text: str,
     session_id: str,
-    provider: Any,
-    pool: Any,
+    provider: LLMProvider,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     confidence_threshold: float = 0.6,
-) -> tuple[int, Any]:
+) -> tuple[int, Usage | None]:
     """Extract facts from text and store in DB (facts-only path for files).
 
     Returns (count of new/updated facts, usage object or None).
@@ -418,13 +429,13 @@ If the conversation was trivial or purely mechanical, return empty facts/aliases
 async def extract_structured_data(
     text: str,
     session_id: str,
-    provider: Any,
+    provider: LLMProvider,
     system_blocks: list[dict[str, str]],
-    pool: Any,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     confidence_threshold: float = 0.6,
-) -> tuple[int, int | None, Any]:
+) -> tuple[int, int | None, Usage | None]:
     """Extract facts and episode from text in a single LLM call.
 
     Returns (facts_added, episode_id_or_None, usage_or_None).
@@ -450,15 +461,15 @@ async def extract_structured_data(
 # ─── Cost Recording ──────────────────────────────────────────────
 
 async def _record_extraction_cost(
-    usage: Any,
+    usage: Usage | None,
     *,
-    metering: Any = None,
+    metering: MeteringDB | None = None,
     session_id: str = "",
     model_name: str = "",
     provider_name: str = "",
     cost_rates: list[float] | None = None,
     trace_id: str = "",
-    converter: Any = None,
+    converter: CurrencyConverter | None = None,
     currency: str = "EUR",
 ) -> None:
     """Record extraction cost via metering."""
@@ -480,16 +491,16 @@ async def consolidate_session(
     session_id: str,
     messages: list[Message],
     compaction_count: int,
-    config: Any,
-    provider: Any,
-    context_builder: Any,
-    pool: Any,
+    config: Config,
+    provider: LLMProvider,
+    context_builder: ContextBuilder,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     trace_id: str = "",
-    metering: Any = None,
-    converter: Any = None,
-) -> dict[str, Any]:
+    metering: MeteringDB | None = None,
+    converter: CurrencyConverter | None = None,
+) -> dict[str, Any]:  # Any justified: JSON-serializable response dict
     """Run full consolidation on a session's messages.
 
     Uses a single LLM call to extract both facts and episode.
@@ -530,11 +541,11 @@ async def consolidate_session(
     model_cfg = config.model_config(model_role)
     cost_rates = model_cfg.get("cost_per_mtok")
     display_name = model_cfg.get("model", model_role)
-    provider = model_cfg.get("provider", "")
-    currency = model_cfg.get("currency", "EUR")
+    provider_name = str(model_cfg.get("provider", ""))
+    currency = str(model_cfg.get("currency", "EUR"))
     await _record_extraction_cost(
         usage, metering=metering, session_id=session_id,
-        model_name=display_name, provider_name=provider,
+        model_name=display_name, provider_name=provider_name,
         cost_rates=cost_rates, trace_id=trace_id,
         converter=converter, currency=currency,
     )
@@ -546,16 +557,16 @@ async def consolidate_session(
 
 async def extract_from_file(
     file_path: str,
-    provider: Any,
-    pool: Any,
+    provider: LLMProvider,
+    pool: asyncpg.Pool,
     client_id: str,
     agent_id: str,
     confidence_threshold: float = 0.6,
     model_name: str = "",
     provider_name: str = "",
     cost_rates: list[float] | None = None,
-    metering: Any = None,
-    converter: Any = None,
+    metering: MeteringDB | None = None,
+    converter: CurrencyConverter | None = None,
     currency: str = "EUR",
 ) -> int:
     """Extract facts from a workspace markdown file.

@@ -8,21 +8,29 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from . import ToolSpec
 
 from messages import Message
 
+if TYPE_CHECKING:
+    from config import Config
+    from conversion import CurrencyConverter
+    from metering import MeteringDB
+    from providers import LLMProvider
+    from tools import ToolRegistry
+
 log = logging.getLogger(__name__)
 
 # Set at daemon startup
-_config: Any = None
-_provider: Any = None
-_get_provider: Any = None  # callback(role) → provider; uses routed subagent model
-_tool_registry: Any = None
-_metering: Any = None  # MeteringDB instance
-_converter: Any = None  # CurrencyConverter instance
+_config: Config | None = None
+_provider: LLMProvider | None = None
+_get_provider: Callable[[str], LLMProvider] | None = None  # callback(role) → provider
+_tool_registry: ToolRegistry | None = None
+_metering: MeteringDB | None = None
+_converter: CurrencyConverter | None = None
 # Active deny set — set by config at configure() time
 _subagent_deny: set[str] = set()
 
@@ -38,9 +46,11 @@ _MEMORY_CONVENTIONS: list[str] = [
 ]
 
 
-def configure(config: Any = None, provider: Any = None, tool_registry: Any = None,
-              session_manager: Any = None, get_provider: Any = None,
-              metering: Any = None, converter: Any = None, **_: Any) -> None:
+def configure(config: Config | None = None, provider: LLMProvider | None = None,
+              tool_registry: ToolRegistry | None = None,
+              session_manager: object = None, get_provider: Callable[[str], LLMProvider] | None = None,
+              metering: MeteringDB | None = None, converter: CurrencyConverter | None = None,
+              **_: object) -> None:
     global _config, _provider, _get_provider, _tool_registry, _subagent_deny
     global _default_max_turns, _default_timeout, _metering, _converter
     if config is not None:
@@ -153,6 +163,8 @@ async def tool_sessions_spawn(
         return "Error: No provider configured"
 
     # Scope tools — always apply deny-list
+    if _tool_registry is None:
+        return "Error: Tool registry not initialized"
     available = _tool_registry.get_schemas()
     if tools is not None:
         scoped_tools = [t for t in available if t["name"] in tools and t["name"] not in _subagent_deny]

@@ -33,13 +33,21 @@ import logging
 import time
 from collections import defaultdict
 from pathlib import Path
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Protocol  # Any justified: JSON request/response bodies have mixed value types
 
 from aiohttp import web
 
 from log_utils import _log_safe
 from attachments import Attachment
+
+if TYPE_CHECKING:
+    from metering import MeteringDB
+
+
+class _MessageQueue(Protocol):
+    """Protocol for message queues (asyncio.Queue or PriorityMessageQueue)."""
+    async def put(self, item: dict[str, Any]) -> None: ...
 
 log = logging.getLogger(__name__)
 
@@ -82,21 +90,21 @@ class HTTPApi:
 
     def __init__(
         self,
-        queue: Any,  # PriorityMessageQueue or asyncio.Queue
+        queue: _MessageQueue,
         host: str,
         port: int,
         auth_token: str,
         agent_timeout: float,
-        get_status: Any = None,
-        get_sessions: Any = None,
-        get_monitor: Any = None,
-        get_history: Any = None,
-        handle_evolve: Any = None,
-        handle_index: Any = None,
-        handle_index_status: Any = None,
-        handle_consolidate: Any = None,
-        handle_maintain: Any = None,
-        metering_db: Any = None,
+        get_status: Callable[[], Coroutine[None, None, dict[str, Any]]] | None = None,
+        get_sessions: Callable[[], Coroutine[None, None, list[dict[str, Any]]]] | None = None,
+        get_monitor: Callable[[], dict[str, Any]] | None = None,
+        get_history: Callable[[str, bool], Coroutine[None, None, dict[str, Any]]] | None = None,
+        handle_evolve: Callable[..., Coroutine[None, None, dict[str, Any]]] | None = None,  # Any justified: keyword args vary
+        handle_index: Callable[..., Coroutine[None, None, dict[str, Any]]] | None = None,  # Any justified: keyword args vary
+        handle_index_status: Callable[[], Awaitable[dict[str, Any]]] | Callable[[], dict[str, Any]] | None = None,
+        handle_consolidate: Callable[[], Coroutine[None, None, dict[str, Any]]] | None = None,
+        handle_maintain: Callable[[], Coroutine[None, None, dict[str, Any]]] | None = None,
+        metering_db: MeteringDB | None = None,
         *,
         download_dir: str,
         max_body_bytes: int,
@@ -199,7 +207,7 @@ class HTTPApi:
     # ─── Auth Middleware ──────────────────────────────────────────
 
     @web.middleware
-    async def _auth_middleware(self, request: web.Request, handler: Callable[[web.Request], Any]) -> web.StreamResponse:
+    async def _auth_middleware(self, request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
         # Health check endpoints are always open
         if request.path in self._AUTH_EXEMPT_PATHS:
             r: web.StreamResponse = await handler(request)
@@ -233,7 +241,7 @@ class HTTPApi:
     # ─── Rate Limit Middleware ────────────────────────────────────
 
     @web.middleware
-    async def _rate_middleware(self, request: web.Request, handler: Callable[[web.Request], Any]) -> web.StreamResponse:
+    async def _rate_middleware(self, request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
         client_ip = request.remote or "unknown"
         if request.path in self._READ_ONLY_PATHS or (
             request.path.startswith("/api/v1/sessions/")
@@ -835,7 +843,11 @@ class HTTPApi:
             )
 
         try:
-            result = self._handle_index_status_cb()
+            import inspect
+            if inspect.iscoroutinefunction(self._handle_index_status_cb):
+                result = await self._handle_index_status_cb()
+            else:
+                result = self._handle_index_status_cb()
         except Exception:
             log.exception("Index status endpoint failed")
             return self._json_response(

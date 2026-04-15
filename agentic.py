@@ -23,7 +23,7 @@ from typing import Any
 import metrics
 from messages import Message, ToolResultsMessage
 
-from providers import CostContext, LLMProvider, LLMResponse, StreamDelta, ToolCall, Usage
+from providers import CostContext, LLMProvider, LLMResponse, StreamDelta, SystemPrompt, ToolCall, Usage
 from tools import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -52,13 +52,13 @@ class LoopConfig:
 
 async def _call_provider_with_retry(
     provider: LLMProvider,
-    system: Any,
-    fmt_messages: list[dict[str, Any]],
-    fmt_tools: list[dict[str, Any]],
+    system: SystemPrompt,
+    fmt_messages: list[dict[str, Any]],  # Any justified: provider-formatted message dicts
+    fmt_tools: list[dict[str, Any]],  # Any justified: provider-formatted tool schemas
     *,
     cfg: LoopConfig,
     trace_id: str,
-    on_stream_delta: Any = None,
+    on_stream_delta: Callable[[StreamDelta], Any] | None = None,  # Any justified: may be sync or async
 ) -> LLMResponse:
     """Call the provider with retry and streaming.
 
@@ -118,15 +118,15 @@ async def _call_provider_with_retry(
 
 async def run_single_shot(
     provider: LLMProvider,
-    system: Any,
+    system: SystemPrompt,
     messages: list[Message],
-    tools: list[dict[str, Any]],  # ignored
+    tools: list[dict[str, Any]],  # ignored; Any justified: tool schema dicts
     tool_executor: ToolRegistry,  # ignored
     config: LoopConfig | None = None,
     cost: CostContext | None = None,
-    on_response: Callable[..., Any] | None = None,
-    on_tool_results: Callable[..., Any] | None = None,
-    on_stream_delta: Callable[..., Any] | None = None,
+    on_response: Callable[[LLMResponse], Any] | None = None,  # Any justified: may be sync or async
+    on_tool_results: Callable[[ToolResultsMessage], Any] | None = None,  # Any justified: may be sync or async
+    on_stream_delta: Callable[[StreamDelta], Any] | None = None,  # Any justified: may be sync or async
 ) -> LLMResponse:
     """Single model call, no tools. For constrained models or simple queries."""
     cfg = config or LoopConfig()
@@ -160,8 +160,8 @@ async def run_single_shot(
 
 
 async def _stream_to_response(
-    provider: LLMProvider, system: Any, messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]], on_delta: Any,
+    provider: LLMProvider, system: SystemPrompt, messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]], on_delta: Callable[[StreamDelta], Any] | None,
 ) -> LLMResponse:
     """Consume provider.stream(), call on_delta for each chunk, return aggregated LLMResponse."""
     text_parts: list[str] = []
@@ -254,15 +254,15 @@ def _turn_group_end(messages: list[Message], start: int) -> int:
 
 async def run_agentic_loop(
     provider: LLMProvider,
-    system: Any,
+    system: SystemPrompt,
     messages: list[Message],
-    tools: list[dict[str, Any]],
+    tools: list[dict[str, Any]],  # Any justified: tool schema dicts
     tool_executor: ToolRegistry,
     config: LoopConfig | None = None,
     cost: CostContext | None = None,
-    on_response: Callable[..., Any] | None = None,
-    on_tool_results: Callable[..., Any] | None = None,
-    on_stream_delta: Callable[..., Any] | None = None,
+    on_response: Callable[[LLMResponse], Any] | None = None,  # Any justified: may be sync or async
+    on_tool_results: Callable[[ToolResultsMessage], Any] | None = None,  # Any justified: may be sync or async
+    on_stream_delta: Callable[[StreamDelta], Any] | None = None,  # Any justified: may be sync or async
 ) -> LLMResponse:
     """Run the provider-agnostic agentic loop.
 

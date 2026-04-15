@@ -13,24 +13,29 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
+
+import asyncpg
 
 from . import ToolSpec
 
+if TYPE_CHECKING:
+    from config import Config
+
 log = logging.getLogger(__name__)
 
-_pool: Any = None
+_pool: asyncpg.Pool | None = None
 _client_id: str = ""
 _agent_id: str = ""
 _workspace: str = ""
 
 
 def configure(
-    pool: Any = None,
+    pool: asyncpg.Pool | None = None,
     client_id: str = "",
     agent_id: str = "",
-    config: Any = None,
-    **_: Any,
+    config: Config | None = None,
+    **_: object,
 ) -> None:
     global _pool, _client_id, _agent_id, _workspace
     _pool = pool
