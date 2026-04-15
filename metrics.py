@@ -7,7 +7,7 @@ Gracefully degrades to no-ops if prometheus_client is not installed.
 from __future__ import annotations
 
 try:
-    from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
+    from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
     # ── Per-message ──────────────────────────────────────────────────
 
@@ -243,7 +243,6 @@ try:
 except ImportError:
     ENABLED = False
     generate_latest = None  # type: ignore[assignment,unused-ignore]
-    CONTENT_TYPE_LATEST = "text/plain"
 
     def record_api_call(  # type: ignore[misc,unused-ignore]  # no-op fallback; unused when prometheus_client installed
         model: str, provider: str, usage: object, latency_ms: int | None = None,

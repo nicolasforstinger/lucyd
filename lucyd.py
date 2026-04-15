@@ -413,10 +413,6 @@ class LucydDaemon:
                 metrics.TOOL_CALLS_TOTAL.labels(tool_name=name, status="success")
                 metrics.TOOL_CALLS_TOTAL.labels(tool_name=name, status="error")
 
-    def _get_pool(self) -> Any:
-        """Return the asyncpg connection pool."""
-        return self.pool
-
     def _init_context(self) -> None:
         self.context_builder = ContextBuilder(
             workspace=self.config.workspace,
@@ -716,10 +712,6 @@ class LucydDaemon:
             self.config, self.session_mgr,
             self._process_message, self.pipeline.get_session_lock,
         )
-
-    def _git_snapshot(self, label: str) -> str | None:
-        import operations as ops
-        return ops.git_snapshot(self.config.workspace, label)
 
     def _git_rollback(self, tag: str) -> bool:
         import operations as ops
