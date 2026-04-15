@@ -174,7 +174,6 @@ async def upsert_fact(
 
 
 def _strip_json_fences(text: str) -> str:
-    """Strip markdown code fences from JSON text."""
     text = text.strip()
     if text.startswith("```json"):
         text = text[7:]

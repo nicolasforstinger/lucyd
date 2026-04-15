@@ -18,12 +18,10 @@ log = logging.getLogger(__name__)
 
 
 def _current_billing_period() -> str:
-    """Return current billing period as 'YYYY-MM'."""
     return time.strftime("%Y-%m")
 
 
 def _serialize(v: Any) -> Any:
-    """Make a DB value JSON-serializable."""
     if hasattr(v, "isoformat"):
         return v.isoformat()
     if isinstance(v, __import__("decimal").Decimal):

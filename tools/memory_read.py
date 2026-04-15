@@ -32,7 +32,7 @@ def configure(
     config: Any = None,
     **_: Any,
 ) -> None:
-    """Configure memory tools. Called once at init."""
+    """Wire dependencies from daemon bootstrap."""
     global _memory, _pool, _client_id, _agent_id, _config
     if memory is not None:
         _memory = memory

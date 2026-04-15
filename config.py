@@ -22,12 +22,12 @@ log = logging.getLogger(__name__)
 
 
 def today_start_ts() -> int:
-    """Return Unix timestamp for start of today (local time)."""
+    """Unix timestamp for midnight today (local time)."""
     return int(time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d")))
 
 
 class ConfigError(Exception):
-    """Raised when configuration is invalid or missing."""
+    pass
 
 
 # ─── Helpers ─────────────────────────────────────────────────────

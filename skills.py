@@ -183,7 +183,7 @@ _skill_loader: SkillLoader | None = None
 
 
 def configure(skill_loader: SkillLoader | None = None, **_: Any) -> None:
-    """Configure skill tool. Called once at init."""
+    """Wire dependencies from daemon bootstrap."""
     global _skill_loader
     if skill_loader is not None:
         _skill_loader = skill_loader
