@@ -33,7 +33,7 @@ import logging
 import time
 from collections import defaultdict
 from pathlib import Path
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web

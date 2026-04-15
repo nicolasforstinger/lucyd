@@ -69,9 +69,6 @@ def pytest_unconfigure(config):
 _root = Path(__file__).parent.parent
 sys.path.insert(0, str(_root))
 
-# Make plugins.d/ modules importable for tests
-import importlib.util as _ilu
-
 # Mutmut fallback: when running from mutants/, non-target modules (config,
 # agentic, etc.) live in the real project root one level up.
 _abs_root = Path(__file__).resolve().parent.parent

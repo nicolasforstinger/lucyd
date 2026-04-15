@@ -179,7 +179,6 @@ class _MessageState:
     session: Any = None
     user_msg_idx: int = 0
     session_preexisted: bool = False
-    model_cfg: dict[str, Any] = field(default_factory=dict)
     model_name: str = ""
     provider_name: str = ""
     cost_rates: list[float] = field(default_factory=list)
@@ -189,7 +188,6 @@ class _MessageState:
     msg_count_before: int = 0
     response: Any = None
     force_compact: bool = False
-    had_voice_input: bool = False
 
 
 # ─── Pipeline ────────────────────────────────────────────────────
@@ -919,11 +917,6 @@ class MessagePipeline:
 
         model_cfg = self._config.model_config("primary")
 
-        # Detect voice messages before preprocessors consume them
-        _had_voice = bool(
-            attachments and any(getattr(a, "is_voice", False) for a in attachments)
-        )
-
         # Run preprocessors before core attachment handling
         text, attachments = await self._run_preprocessors(text, attachments)
 
@@ -944,13 +937,11 @@ class MessagePipeline:
             session_key=session_key or f"{channel_id}:{sender}",
             deliver=deliver,
             image_blocks=image_blocks,
-            model_cfg=model_cfg,
             model_name=model_cfg.get("model", ""),
             provider_name=model_cfg.get("provider", ""),
             cost_rates=model_cfg.get("cost_per_mtok", []),
             currency=model_cfg.get("currency", "EUR"),
             force_compact=force_compact,
-            had_voice_input=_had_voice,
         )
 
         # Session setup: get/create, inject warnings, add user message
