@@ -147,10 +147,10 @@ class TestRecord:
         assert abs(cost - expected) < 1e-9
 
     @pytest.mark.asyncio
-    async def test_three_element_rates_backward_compatible(
+    async def test_three_element_rates_omits_cache_write(
         self, metering_db: MeteringDB,
     ) -> None:
-        """Old 3-element rates still work -- cache_write defaults to 0."""
+        """3-element cost_rates list omits cache_write (defaults to 0)."""
         usage = MockUsage(input_tokens=1000, output_tokens=500,
                           cache_read_tokens=200, cache_write_tokens=100)
         cost = await metering_db.record(

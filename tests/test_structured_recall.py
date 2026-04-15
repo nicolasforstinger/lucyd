@@ -659,7 +659,6 @@ class TestGetSessionStartContext:
     ) -> None:
         result = await get_session_start_context(
             populated_pool, TEST_CLIENT_ID, TEST_AGENT_ID,
-            config=FakeConfig(),
         )
         assert "[Known facts]" in result
         assert "[Recent conversations]" in result
@@ -669,7 +668,7 @@ class TestGetSessionStartContext:
     async def test_respects_max_facts(self, populated_pool: Any) -> None:
         result = await get_session_start_context(
             populated_pool, TEST_CLIENT_ID, TEST_AGENT_ID,
-            config=FakeConfig(), max_facts=1,
+            max_facts=1,
         )
         # Facts section follows [Known facts] header (lowest priority, last in output)
         assert "[Known facts]" in result
@@ -684,7 +683,7 @@ class TestGetSessionStartContext:
     async def test_respects_max_episodes(self, populated_pool: Any) -> None:
         result = await get_session_start_context(
             populated_pool, TEST_CLIENT_ID, TEST_AGENT_ID,
-            config=FakeConfig(), max_episodes=1,
+            max_episodes=1,
         )
         # Episodes section follows [Recent conversations] header
         assert "[Recent conversations]" in result
@@ -706,13 +705,13 @@ class TestGetSessionStartContext:
     async def test_budget_constraint(self, populated_pool: Any) -> None:
         result = await get_session_start_context(
             populated_pool, TEST_CLIENT_ID, TEST_AGENT_ID,
-            config=FakeConfig(), max_tokens=10,
+            max_tokens=10,
         )
         assert isinstance(result, str)
 
     @pytest.mark.asyncio
-    async def test_works_without_config(self, populated_pool: Any) -> None:
-        """Graceful fallback when config is None (backwards compat)."""
+    async def test_works_with_defaults(self, populated_pool: Any) -> None:
+        """Returns context with default parameters."""
         result = await get_session_start_context(
             populated_pool, TEST_CLIENT_ID, TEST_AGENT_ID,
         )
@@ -723,7 +722,6 @@ class TestGetSessionStartContext:
     async def test_uses_natural_fact_format(self, populated_pool: Any) -> None:
         result = await get_session_start_context(
             populated_pool, TEST_CLIENT_ID, TEST_AGENT_ID,
-            config=FakeConfig(),
         )
         # Natural format uses em-dashes in the facts section
         facts_section = result.split("[Known facts]")[1].split("[Memory loaded")[0]
@@ -733,7 +731,6 @@ class TestGetSessionStartContext:
     async def test_episode_tone_in_output(self, populated_pool: Any) -> None:
         result = await get_session_start_context(
             populated_pool, TEST_CLIENT_ID, TEST_AGENT_ID,
-            config=FakeConfig(),
         )
         # Fixture episodes have non-neutral tones
         assert "tone:" in result

@@ -527,7 +527,7 @@ async def consolidate_session(
 
     # Record consolidation cost (non-critical)
     model_role = "primary"
-    model_cfg = config.model_config(model_role) if hasattr(config, "model_config") else {}
+    model_cfg = config.model_config(model_role)
     cost_rates = model_cfg.get("cost_per_mtok")
     display_name = model_cfg.get("model", model_role)
     provider = model_cfg.get("provider", "")

@@ -597,7 +597,6 @@ async def get_session_start_context(
     pool: Any,
     client_id: str,
     agent_id: str,
-    config: Any = None,
     max_facts: int = 20,
     max_episodes: int = 3,
     max_tokens: int = 0,

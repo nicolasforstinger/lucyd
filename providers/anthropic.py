@@ -252,7 +252,7 @@ class AnthropicProvider:
                     "type": "thinking",
                     "thinking": block.thinking,
                 }
-                if hasattr(block, "signature") and block.signature:
+                if block.signature:
                     entry["signature"] = block.signature
                 content.append(entry)
             elif block.type == "redacted_thinking":

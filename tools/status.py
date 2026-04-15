@@ -28,7 +28,7 @@ def configure(session_manager: Any = None,
     if session_manager is not None:
         _session_manager = session_manager
     # Prefer provider.capabilities for max_context_tokens
-    if provider is not None and hasattr(provider, "capabilities"):
+    if provider is not None:
         mct = provider.capabilities.max_context_tokens
         if mct > 0:
             MAX_CONTEXT_TOKENS = mct

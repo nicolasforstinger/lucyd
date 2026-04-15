@@ -462,7 +462,6 @@ class MessagePipeline:
                 pool=self._pool,
                 client_id=self._client_id,
                 agent_id=self._agent_id,
-                config=self._config,
                 max_facts=self._config.recall_max_facts,
                 max_episodes=self._config.recall_max_episodes_at_start,
                 max_tokens=self._config.recall_max_dynamic_tokens,

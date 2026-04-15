@@ -106,23 +106,27 @@ def _write_plugin(plugins_dir, filename, content):
 
 
 SIMPLE_PLUGIN = '''\
+from tools import ToolSpec
+
 def my_tool(text: str = "") -> str:
     return f"plugin:{text}"
 
 TOOLS = [
-    {
-        "name": "my_tool",
-        "description": "A simple plugin tool",
-        "input_schema": {
+    ToolSpec(
+        name="my_tool",
+        description="A simple plugin tool",
+        input_schema={
             "type": "object",
             "properties": {"text": {"type": "string"}},
         },
-        "function": my_tool,
-    },
+        function=my_tool,
+    ),
 ]
 '''
 
 CONFIGURABLE_PLUGIN = '''\
+from tools import ToolSpec
+
 _config_val = None
 
 def configure(config):
@@ -133,16 +137,18 @@ def cfg_tool() -> str:
     return str(_config_val)
 
 TOOLS = [
-    {
-        "name": "cfg_tool",
-        "description": "Tool that uses configure()",
-        "input_schema": {"type": "object", "properties": {}},
-        "function": cfg_tool,
-    },
+    ToolSpec(
+        name="cfg_tool",
+        description="Tool that uses configure()",
+        input_schema={"type": "object", "properties": {}},
+        function=cfg_tool,
+    ),
 ]
 '''
 
 MULTI_DEP_PLUGIN = '''\
+from tools import ToolSpec
+
 _received = {}
 
 def configure(config, provider, session_mgr):
@@ -153,12 +159,12 @@ def multi_tool() -> str:
     return str(list(_received.keys()))
 
 TOOLS = [
-    {
-        "name": "multi_tool",
-        "description": "Tool with multi-dep configure",
-        "input_schema": {"type": "object", "properties": {}},
-        "function": multi_tool,
-    },
+    ToolSpec(
+        name="multi_tool",
+        description="Tool with multi-dep configure",
+        input_schema={"type": "object", "properties": {}},
+        function=multi_tool,
+    ),
 ]
 '''
 
@@ -173,6 +179,8 @@ def helper():
 '''
 
 TWO_TOOLS_PLUGIN = '''\
+from tools import ToolSpec
+
 def tool_a() -> str:
     return "a"
 
@@ -180,18 +188,18 @@ def tool_b() -> str:
     return "b"
 
 TOOLS = [
-    {
-        "name": "tool_a",
-        "description": "Tool A",
-        "input_schema": {"type": "object", "properties": {}},
-        "function": tool_a,
-    },
-    {
-        "name": "tool_b",
-        "description": "Tool B",
-        "input_schema": {"type": "object", "properties": {}},
-        "function": tool_b,
-    },
+    ToolSpec(
+        name="tool_a",
+        description="Tool A",
+        input_schema={"type": "object", "properties": {}},
+        function=tool_a,
+    ),
+    ToolSpec(
+        name="tool_b",
+        description="Tool B",
+        input_schema={"type": "object", "properties": {}},
+        function=tool_b,
+    ),
 ]
 '''
 

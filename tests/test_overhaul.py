@@ -1,5 +1,5 @@
 """Tests for the architectural overhaul: config schema, unified tool loader,
-SessionManager public API, _MonitorWriter, multi-model routing, backward compat.
+SessionManager public API, _MonitorWriter, multi-model routing.
 
 Style: call REAL functions, swap module globals with try/finally, assert on output.
 """
