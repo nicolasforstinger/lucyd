@@ -321,9 +321,13 @@ def _format_episode(e: Any, show_tone: bool = True) -> str:
     return f"  [{date}] {summary}"
 
 
+def _normalize_entity(name: str) -> str:
+    """Normalize an entity name to a canonical form for storage and lookup."""
+    return name.lower().strip().replace(" ", "_")
+
+
 async def resolve_entity(name: str, pool: Any, client_id: str, agent_id: str) -> str:
     """Resolve an entity name through the alias table."""
-    from consolidation import _normalize_entity
     normalized = _normalize_entity(name)
     row = await pool.fetchrow(
         "SELECT canonical FROM knowledge.entity_aliases "

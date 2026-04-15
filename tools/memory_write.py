@@ -13,8 +13,8 @@ import metrics
 
 from . import ToolSpec
 
-from consolidation import _normalize_entity as _normalize
 from consolidation import upsert_fact
+from memory import _normalize_entity as _normalize, resolve_entity
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,6 @@ def configure(
 
 async def _resolve_entity(entity: str) -> str:
     """Resolve entity through alias table, falling back to normalization."""
-    from memory import resolve_entity
     if _pool is None:
         return _normalize(entity)
     return await resolve_entity(entity, _pool, _client_id, _agent_id)

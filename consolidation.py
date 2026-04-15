@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import metrics
+from memory import _normalize_entity, resolve_entity
 from messages import Message
 from session import _text_from_content
 
@@ -123,12 +124,6 @@ def serialize_messages(
     return "\n".join(parts)
 
 
-# ─── Shared Helpers ──────────────────────────────────────────────
-
-def _normalize_entity(name: str) -> str:
-    return name.lower().strip().replace(" ", "_")
-
-
 async def upsert_fact(
     entity: str,
     attribute: str,
@@ -220,7 +215,6 @@ async def _store_facts(
         if not entity or not attribute or not value:
             continue
 
-        from memory import resolve_entity
         entity = await resolve_entity(entity, pool, client_id, agent_id)
 
         result = await upsert_fact(
