@@ -504,6 +504,16 @@ class Config:
     # ── Sub-agents (cross-field fallback) ────────────────────────
 
     @property
+    def resolved_client_id(self) -> str:
+        """Client identity — falls back to agent_name when client_id is unset."""
+        return self.client_id or self.agent_name
+
+    @property
+    def resolved_agent_id(self) -> str:
+        """Agent identity — falls back to agent_name when agent_id is unset."""
+        return self.agent_id or self.agent_name
+
+    @property
     def subagent_max_turns(self) -> int:
         """Max turns for sub-agents. 0 = use max_turns_per_message."""
         val = int(_deep_get(self._data, "tools", "subagent_max_turns", default=0))

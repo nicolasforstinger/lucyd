@@ -241,8 +241,8 @@ class LucydDaemon:
     def _init_sessions(self) -> None:
         self.session_mgr = SessionManager(
             pool=self.pool,
-            client_id=self.config.client_id or self.config.agent_name,
-            agent_id=self.config.agent_id or self.config.agent_name,
+            client_id=self.config.resolved_client_id,
+            agent_id=self.config.resolved_agent_id,
             agent_name=self.config.agent_name,
         )
 
@@ -284,8 +284,8 @@ class LucydDaemon:
 
         # Shared resources — created once, passed to modules that need them
         memory = None
-        client_id = self.config.client_id or self.config.agent_name
-        agent_id = self.config.agent_id or self.config.agent_name
+        client_id = self.config.resolved_client_id
+        agent_id = self.config.resolved_agent_id
         if self.pool and (enabled & {
             "memory_search", "memory_get",
             "memory_write", "memory_forget", "commitment_update",
@@ -420,8 +420,8 @@ class LucydDaemon:
     def _init_metering(self) -> None:
         self.metering_db = MeteringDB(
             pool=self.pool,
-            client_id=self.config.client_id or self.config.agent_name,
-            agent_id=self.config.agent_id or self.config.agent_name,
+            client_id=self.config.resolved_client_id,
+            agent_id=self.config.resolved_agent_id,
         )
 
     def _init_conversion(self) -> None:
@@ -458,8 +458,8 @@ class LucydDaemon:
             skill_loader=self.skill_loader,
             metering_db=self.metering_db,
             pool=self.pool,
-            client_id=self.config.client_id or self.config.agent_name,
-            agent_id=self.config.agent_id or self.config.agent_name,
+            client_id=self.config.resolved_client_id,
+            agent_id=self.config.resolved_agent_id,
             preprocessors=self._preprocessors,
             queue=self.queue,
             on_pre_close=self._pre_close_hook,
@@ -493,8 +493,8 @@ class LucydDaemon:
                 import operations as ops
                 await ops.update_evolution_state(
                     self.config, self.pool,
-                    self.config.client_id or self.config.agent_name,
-                    self.config.agent_id or self.config.agent_name,
+                    self.config.resolved_client_id,
+                    self.config.resolved_agent_id,
                 )
             except Exception:
                 log.exception("Failed to update evolution state")
@@ -507,8 +507,8 @@ class LucydDaemon:
         import operations as ops
         await ops.consolidate_on_close(
             session, self.config, self.pool,
-            self.config.client_id or self.config.agent_name,
-            self.config.agent_id or self.config.agent_name,
+            self.config.resolved_client_id,
+            self.config.resolved_agent_id,
             self.get_provider, self.context_builder, self.metering_db,
         )
 
@@ -597,8 +597,8 @@ class LucydDaemon:
             live = self.session_mgr.get_loaded(contact)
             info = await build_session_info(
                 pool=self.pool,
-                client_id=self.config.client_id or self.config.agent_name,
-                agent_id=self.config.agent_id or self.config.agent_name,
+                client_id=self.config.resolved_client_id,
+                agent_id=self.config.resolved_agent_id,
                 session_id=session_id,
                 session=live,
                 metering=self.metering_db,
@@ -709,8 +709,8 @@ class LucydDaemon:
         return await ops.handle_evolve(
             force=force, config=self.config,
             pool=self.pool,
-            client_id=self.config.client_id or self.config.agent_name,
-            agent_id=self.config.agent_id or self.config.agent_name,
+            client_id=self.config.resolved_client_id,
+            agent_id=self.config.resolved_agent_id,
             queue=self.queue, set_rollback_tag=_set_tag,
         )
 
@@ -719,8 +719,8 @@ class LucydDaemon:
         return await ops.handle_index(
             self.config,
             pool=self.pool,
-            client_id=self.config.client_id or self.config.agent_name,
-            agent_id=self.config.agent_id or self.config.agent_name,
+            client_id=self.config.resolved_client_id,
+            agent_id=self.config.resolved_agent_id,
             full=full,
             metering=self.metering_db, converter=self.converter,
         )
@@ -730,16 +730,16 @@ class LucydDaemon:
         return await ops.handle_index_status(
             self.config,
             pool=self.pool,
-            client_id=self.config.client_id or self.config.agent_name,
-            agent_id=self.config.agent_id or self.config.agent_name,
+            client_id=self.config.resolved_client_id,
+            agent_id=self.config.resolved_agent_id,
         )
 
     async def _handle_consolidate(self) -> dict[str, Any]:
         import operations as ops
         return await ops.handle_consolidate(
             self.config, self.pool,
-            self.config.client_id or self.config.agent_name,
-            self.config.agent_id or self.config.agent_name,
+            self.config.resolved_client_id,
+            self.config.resolved_agent_id,
             self.get_provider, self.metering_db,
             converter=self.converter,
         )
@@ -748,8 +748,8 @@ class LucydDaemon:
         import operations as ops
         return await ops.handle_maintain(
             self.config, self.pool,
-            self.config.client_id or self.config.agent_name,
-            self.config.agent_id or self.config.agent_name,
+            self.config.resolved_client_id,
+            self.config.resolved_agent_id,
             self.metering_db,
         )
 
@@ -972,9 +972,6 @@ class LucydDaemon:
             self._init_conversion()
             self._init_tools()
 
-            client_id = cfg.client_id or cfg.agent_name
-            agent_id = cfg.agent_id or cfg.agent_name
-
             # Create message pipeline — the core runtime path
             from pipeline import MessagePipeline
             self.pipeline = MessagePipeline(
@@ -987,8 +984,8 @@ class LucydDaemon:
                 skill_loader=self.skill_loader,
                 metering_db=self.metering_db,
                 pool=self.pool,
-                client_id=client_id,
-                agent_id=agent_id,
+                client_id=cfg.resolved_client_id,
+                agent_id=cfg.resolved_agent_id,
                 preprocessors=self._preprocessors,
                 queue=self.queue,
                 on_pre_close=self._pre_close_hook,

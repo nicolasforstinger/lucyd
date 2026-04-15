@@ -540,6 +540,18 @@ class MessagePipeline:
 
     # ── Agentic Loop ─────────────────────────────────────────────
 
+    def _build_cost_context(self, ctx: _MessageState) -> CostContext:
+        """Build CostContext from message state — shared by agentic loop and compaction."""
+        return CostContext(
+            metering=self._metering_db,
+            session_id=ctx.session.id,
+            model_name=ctx.model_name,
+            cost_rates=ctx.cost_rates,
+            provider_name=ctx.provider_name,
+            currency=ctx.currency,
+            converter=self._converter,
+        )
+
     async def _run_agentic(self, ctx: _MessageState, provider: LLMProvider,
                            on_response: Any, on_tool_results: Any,
                            on_stream_delta: Any = None) -> None:
@@ -549,15 +561,7 @@ class MessagePipeline:
         handles transient errors. If the loop fails, the error propagates.
         """
         session = ctx.session
-        cost_ctx = CostContext(
-            metering=self._metering_db,
-            session_id=session.id,
-            model_name=ctx.model_name,
-            cost_rates=ctx.cost_rates,
-            provider_name=ctx.provider_name,
-            currency=ctx.currency,
-            converter=self._converter,
-        )
+        cost_ctx = self._build_cost_context(ctx)
         loop_cfg = LoopConfig(
             max_turns=self._config.max_turns,
             timeout=self._config.agent_timeout,
@@ -728,6 +732,24 @@ class MessagePipeline:
             log.info("Compaction warning set for session %s at %d tokens",
                      session.id, session.last_input_tokens)
 
+    async def _compact_session(self, ctx: _MessageState, keep_recent_pct: float) -> None:
+        """Run compaction with shared prompt, cost, and config. Emits Prometheus metric."""
+        prompt = self._config.compaction_prompt.replace(
+            "{agent_name}", self._config.agent_name,
+        ).replace("{max_tokens}", str(self._config.compaction_max_tokens))
+        await self._session_mgr.compact_session(
+            ctx.session, self._get_provider("compaction"), prompt,
+            trace_id=ctx.trace_id,
+            system_blocks=self._context_builder.build_stable(),
+            cost=self._build_cost_context(ctx),
+            keep_recent_pct=keep_recent_pct,
+            min_messages=4,
+            tool_result_max_chars=2000,
+            max_tokens=self._config.compaction_max_tokens,
+        )
+        if metrics.ENABLED:
+            metrics.COMPACTION_TOTAL.inc()
+
     async def _ensure_context_budget(self, ctx: _MessageState) -> bool:
         """Compact session if context utilization exceeds 80%.
 
@@ -762,30 +784,7 @@ class MessagePipeline:
             if metrics.ENABLED:
                 metrics.ERRORS_TOTAL.labels(error_type="context_emergency_compaction").inc()
 
-            prompt = self._config.compaction_prompt.replace(
-                "{agent_name}", self._config.agent_name,
-            ).replace("{max_tokens}", str(self._config.compaction_max_tokens))
-            cost_ctx = CostContext(
-                metering=self._metering_db,
-                session_id=session.id,
-                model_name=ctx.model_name,
-                cost_rates=ctx.cost_rates,
-                provider_name=ctx.provider_name,
-                currency=ctx.currency,
-                converter=self._converter,
-            )
-            await self._session_mgr.compact_session(
-                session, self._get_provider("compaction"), prompt,
-                trace_id=ctx.trace_id,
-                system_blocks=self._context_builder.build_stable(),
-                cost=cost_ctx,
-                keep_recent_pct=keep_pct,
-                min_messages=4,
-                tool_result_max_chars=2000,
-                max_tokens=self._config.compaction_max_tokens,
-            )
-            if metrics.ENABLED:
-                metrics.COMPACTION_TOTAL.inc()
+            await self._compact_session(ctx, keep_pct)
 
             # Rebuild context after compaction rewrote messages
             await self._build_context(ctx, provider)
@@ -836,31 +835,9 @@ class MessagePipeline:
                     metrics.ERRORS_TOTAL.labels(error_type="consolidation_failure").inc()
                     metrics.ERRORS_TOTAL.labels(error_type="consolidation_blocked_compaction").inc()
                 return  # Skip compaction — don't summarize unconsolidated messages
-        prompt = self._config.compaction_prompt.replace(
-            "{agent_name}", self._config.agent_name,
-        ).replace("{max_tokens}", str(self._config.compaction_max_tokens))
-        cost_ctx = CostContext(
-            metering=self._metering_db,
-            session_id=session.id,
-            model_name=ctx.model_name,
-            cost_rates=ctx.cost_rates,
-            provider_name=ctx.provider_name,
-            currency=ctx.currency,
-            converter=self._converter,
-        )
         _pre_tokens = session.last_input_tokens
-        await self._session_mgr.compact_session(
-            session, self._get_provider("compaction"), prompt,
-            trace_id=ctx.trace_id,
-            system_blocks=self._context_builder.build_stable(),
-            cost=cost_ctx,
-            keep_recent_pct=self._config.compaction_keep_pct,
-            min_messages=4,
-            tool_result_max_chars=2000,
-            max_tokens=self._config.compaction_max_tokens,
-        )
+        await self._compact_session(ctx, self._config.compaction_keep_pct)
         if metrics.ENABLED:
-            metrics.COMPACTION_TOTAL.inc()
             reclaimed = max(0, _pre_tokens - (session.last_input_tokens or 0))
             if reclaimed > 0:
                 metrics.COMPACTION_TOKENS_RECLAIMED.observe(reclaimed)
@@ -956,7 +933,7 @@ class MessagePipeline:
 
         # Set structured log context for this message cycle
         set_log_context(
-            agent_id=self._config.agent_id or self._config.agent_name,
+            agent_id=self._config.resolved_agent_id,
             session_id=ctx.session.id if ctx.session else "",
             trace_id=trace_id,
         )
