@@ -1,7 +1,7 @@
-"""Integration tests for the channel architecture refactor.
+"""Integration tests for the talker envelope.
 
-Verifies end-to-end: message envelope propagation, session keying by
-channel_id:sender, task_type auto-close, and Prometheus metrics wiring.
+Verifies end-to-end: envelope propagation, session keying by talker:sender,
+auto-close for system/agent talkers, and Prometheus metrics wiring.
 
 Uses the smoke-local provider (no external API calls).
 """
@@ -87,7 +87,6 @@ def _make_config(tmp_path: Path) -> Config:
             "message_retries": 0, "message_retry_base_delay": 0,
             "agent_timeout_seconds": 30,
             "max_turns_per_message": 5, "max_cost_per_message": 0.0,
-            "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize.", "keep_recent_pct": 0.33,
@@ -135,82 +134,80 @@ async def _send_and_process(daemon: LucydDaemon, item: dict) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_envelope_channel_id_in_session_key(tmp_path, pool):
-    """channel_id propagates to session key as channel_id:sender."""
+async def test_session_key_is_talker_colon_sender(tmp_path, pool):
+    """Session key equals f'{talker}:{sender}'."""
     daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
         "text": "ping",
-        "sender": "test-user",
-        "source": "http",
-        "channel_id": "test",
-        "task_type": "conversational",
+        "talker": "user",
+        "sender": "testuser",
     })
 
     assert "Acknowledged" in result.get("reply", "")
-
-    # Session should be keyed as "test:test-user"
     contacts = await daemon.session_mgr.list_contacts()
-    assert "test:test-user" in contacts
+    assert "user:testuser" in contacts
 
 
 @pytest.mark.asyncio
-async def test_task_type_auto_close(tmp_path, pool):
-    """task_type 'task' auto-closes the session after response."""
+async def test_system_talker_auto_close(tmp_path, pool):
+    """talker='system' auto-closes the session after response."""
     daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
-        "text": "one-shot request",
-        "sender": "ephemeral-user",
-        "source": "http",
-        "channel_id": "test",
-        "task_type": "task",
+        "text": "one-shot event",
+        "talker": "system",
+        "sender": "automation",
     })
 
     assert "Acknowledged" in result.get("reply", "")
-
-    # Session should have been auto-closed
     contacts = await daemon.session_mgr.list_contacts()
-    assert "test:ephemeral-user" not in contacts
+    assert "system:automation" not in contacts
 
 
 @pytest.mark.asyncio
-async def test_conversational_session_stays_open(tmp_path, pool):
-    """task_type 'conversational' keeps the session open."""
+async def test_agent_talker_auto_close(tmp_path, pool):
+    """talker='agent' auto-closes the session after response."""
     daemon = await _boot_daemon(tmp_path, pool)
 
-    result = await _send_and_process(daemon, {
+    await _send_and_process(daemon, {
+        "text": "scheduled reminder fires",
+        "talker": "agent",
+        "sender": "self",
+    })
+
+    contacts = await daemon.session_mgr.list_contacts()
+    assert "agent:self" not in contacts
+
+
+@pytest.mark.asyncio
+async def test_user_session_stays_open(tmp_path, pool):
+    """talker='user' keeps the session open."""
+    daemon = await _boot_daemon(tmp_path, pool)
+
+    await _send_and_process(daemon, {
         "text": "first message",
-        "sender": "persistent-user",
-        "source": "http",
-        "channel_id": "telegram",
-        "task_type": "conversational",
+        "talker": "user",
+        "sender": "testuser",
     })
 
-    assert "Acknowledged" in result.get("reply", "")
-
-    # Session should still be open
     contacts = await daemon.session_mgr.list_contacts()
-    assert "telegram:persistent-user" in contacts
+    assert "user:testuser" in contacts
 
 
 @pytest.mark.asyncio
-async def test_default_envelope_values(tmp_path, pool):
-    """Missing envelope fields default to channel_id='http', task_type='conversational'."""
+async def test_operator_session_stays_open(tmp_path, pool):
+    """talker='operator' keeps the session open."""
     daemon = await _boot_daemon(tmp_path, pool)
 
-    result = await _send_and_process(daemon, {
-        "text": "bare message",
-        "sender": "bare-user",
-        "source": "http",
-        # No channel_id or task_type
+    await _send_and_process(daemon, {
+        "text": "admin command",
+        "talker": "operator",
+        "sender": "cli",
     })
 
-    assert "Acknowledged" in result.get("reply", "")
-
-    # Defaults: channel_id="http", so key is "http:bare-user"
     contacts = await daemon.session_mgr.list_contacts()
-    assert "http:bare-user" in contacts
+    assert "operator:cli" in contacts
 
 
 @pytest.mark.asyncio
@@ -222,35 +219,28 @@ async def test_metrics_incremented(tmp_path, pool):
         pytest.skip("prometheus_client not installed")
 
     daemon = await _boot_daemon(tmp_path, pool)
-
-    # Clear metric state for test isolation
     metrics.MESSAGES_TOTAL._metrics.clear()
 
     await _send_and_process(daemon, {
         "text": "metric test",
-        "sender": "metric-user",
-        "source": "http",
-        "channel_id": "test",
-        "task_type": "task",
+        "talker": "system",
+        "sender": "automation",
     })
 
-    # MESSAGES_TOTAL should have an observation for our labels
     samples = list(metrics.MESSAGES_TOTAL.collect())
-    assert samples, "MESSAGES_TOTAL should have samples"
     total = sum(
         s.value for metric in samples for s in metric.samples
-        if s.labels.get("channel_id") == "test"
-        and s.labels.get("task_type") == "task"
+        if s.labels.get("talker") == "system"
+        and s.labels.get("sender") == "automation"
     )
-    assert total > 0, "MESSAGES_TOTAL{channel_id=test, task_type=task} should be > 0"
+    assert total > 0, "MESSAGES_TOTAL{talker=system,sender=automation} should be > 0"
 
-    # SESSION_CLOSE_TOTAL should fire for task_type auto-close
     close_samples = list(metrics.SESSION_CLOSE_TOTAL.collect())
     close_total = sum(
         s.value for metric in close_samples for s in metric.samples
-        if s.labels.get("reason") == "auto_task"
+        if s.labels.get("reason") == "auto_system"
     )
-    assert close_total > 0, "SESSION_CLOSE_TOTAL{reason=auto_task} should be > 0"
+    assert close_total > 0, "SESSION_CLOSE_TOTAL{reason=auto_system} should be > 0"
 
 
 # ─── reply_to routing ─────────────────────────────────────────────
@@ -258,18 +248,16 @@ async def test_metrics_incremented(tmp_path, pool):
 
 @pytest.mark.asyncio
 async def test_reply_to_default(tmp_path, pool):
-    """No reply_to — normal HTTP response with reply text."""
+    """No reply_to — normal response with reply text."""
     daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
         "text": "normal request",
-        "sender": "caller",
-        "source": "http",
-        "channel_id": "test",
+        "talker": "operator",
+        "sender": "cli",
     })
 
     assert "Acknowledged" in result.get("reply", "")
-    assert "redirected_to" not in result
     assert result.get("silent") is not True
 
 
@@ -280,9 +268,8 @@ async def test_reply_to_silent(tmp_path, pool):
 
     result = await _send_and_process(daemon, {
         "text": "silent request",
-        "sender": "caller",
-        "source": "http",
-        "channel_id": "test",
+        "talker": "operator",
+        "sender": "cli",
         "reply_to": "silent",
     })
 
@@ -291,61 +278,14 @@ async def test_reply_to_silent(tmp_path, pool):
 
 
 @pytest.mark.asyncio
-async def test_reply_to_redirect(tmp_path, pool):
-    """reply_to='<sender>' — reply enqueued as system message into target session."""
-    daemon = await _boot_daemon(tmp_path, pool)
-
-    # First, create the target's session so we can verify the redirect lands
-    await _send_and_process(daemon, {
-        "text": "setup target session",
-        "sender": "target-user",
-        "source": "http",
-        "channel_id": "test",
-        "task_type": "conversational",
-    })
-    assert "test:target-user" in await daemon.session_mgr.list_contacts()
-
-    # Now send a message with reply_to pointing to the target
-    result = await _send_and_process(daemon, {
-        "text": "generate a reply for someone else",
-        "sender": "caller",
-        "source": "http",
-        "channel_id": "test",
-        "reply_to": "target-user",
-    })
-
-    # Caller gets the reply with redirect metadata
-    assert "Acknowledged" in result.get("reply", "")
-    assert result.get("redirected_to") == "target-user"
-
-    # The redirect enqueued a system message — drain it
-    # The queue should have the redirected message
-    assert not daemon.queue.empty(), "Redirect should have enqueued a system message"
-    redirected_item = daemon.queue.get_nowait()
-    assert redirected_item["sender"] == "target-user"
-    assert redirected_item["type"] == "system"
-    assert redirected_item["task_type"] == "system"
-    assert "Acknowledged" in redirected_item["text"]
-
-
-# ─── system convention via /message ──────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_message_with_system_task_type(tmp_path, pool):
-    """task_type 'system' via /message auto-closes like the old /system endpoint."""
+async def test_system_talker_reply_is_silent(tmp_path, pool):
+    """system talker has no reply path — result is marked silent."""
     daemon = await _boot_daemon(tmp_path, pool)
 
     result = await _send_and_process(daemon, {
-        "text": "system event via /message",
-        "sender": "system-user",
-        "source": "http",
-        "channel_id": "test",
-        "task_type": "system",
+        "text": "system event",
+        "talker": "system",
+        "sender": "automation",
     })
 
-    assert "Acknowledged" in result.get("reply", "")
-
-    # Session should have been auto-closed (same as old /system behavior)
-    contacts = await daemon.session_mgr.list_contacts()
-    assert "test:system-user" not in contacts
+    assert result.get("silent") is True

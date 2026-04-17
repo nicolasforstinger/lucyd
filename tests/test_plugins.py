@@ -66,7 +66,6 @@ def _make_config(tmp_path, enabled=None, plugins_dir="plugins.d"):
             "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
             "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
-            "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize for {agent_name}.", "keep_recent_pct": 0.33,

@@ -177,7 +177,6 @@ api_retries = 2                                            # API-level retries f
 api_retry_base_delay = 2.0                                 # Initial backoff delay for API retries (seconds)
 message_retries = 2                                        # Message-level retries on persistent failure
 message_retry_base_delay = 30                              # Base delay between message retries (seconds)
-notify_target = ""                                        # Route notifications to this sender's session ("" = disabled)
 # max_context_for_tools = 0                                  # Inject wrap-up hint when context exceeds this during tool use (0 = disabled, auto-set by local profiles)
 # thinking_concise_hint = false                              # Inject "respond concisely" hint after tool results to reduce thinking overhead
 

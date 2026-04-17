@@ -475,19 +475,6 @@ class TestResolvedIdentity:
         assert cfg.resolved_agent_id == "custom-agent"
 
 
-class TestPrimarySender:
-    """Primary sender config for notification routing."""
-
-    def test_default_empty(self, minimal_toml_data):
-        cfg = Config(minimal_toml_data)
-        assert cfg.notify_target == ""
-
-    def test_from_config(self, minimal_toml_data):
-        minimal_toml_data.setdefault("behavior", {})["notify_target"] = "Nicolas"
-        cfg = Config(minimal_toml_data)
-        assert cfg.notify_target == "Nicolas"
-
-
 class TestWebTimeouts:
     """Web search/fetch timeout config."""
 

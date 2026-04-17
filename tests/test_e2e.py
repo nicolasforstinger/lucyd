@@ -87,7 +87,6 @@ def _make_e2e_config(tmp_path: Path) -> Config:
             "message_retries": 0, "message_retry_base_delay": 0,
             "agent_timeout_seconds": 30,
             "max_turns_per_message": 5, "max_cost_per_message": 0.0,
-            "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize.", "keep_recent_pct": 0.33,

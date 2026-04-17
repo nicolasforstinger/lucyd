@@ -182,7 +182,6 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     "agent_timeout":            (("behavior", "agent_timeout_seconds"),     float, 600.0),
     "max_turns":                (("behavior", "max_turns_per_message"),     int,   50),
     "max_cost_per_message":     (("behavior", "max_cost_per_message"),     float, 0.0),
-    "notify_target":            (("behavior", "notify_target"),            str,   ""),
     "max_context_for_tools":    (("behavior", "max_context_for_tools"),    int,   0),
 
     # ── Behavior: Compaction ─────────────────────────────────────

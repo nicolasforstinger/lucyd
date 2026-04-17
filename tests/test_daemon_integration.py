@@ -124,7 +124,6 @@ def _make_config(tmp_path, **overrides):
             "message_retries": 2, "message_retry_base_delay": 30.0,
             "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
-            "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize this conversation for {agent_name}.",
@@ -542,8 +541,8 @@ class TestResolveIntegration:
 # ─── Context Builder Source Integration ──────────────────────────
 
 
-class TestContextBuilderSourcePassthrough:
-    """Verify that task_type is passed through to context_builder.build()."""
+class TestContextBuilderTalkerPassthrough:
+    """Verify that talker is passed through to context_builder.build()."""
 
     @pytest.fixture
     def daemon_for_context_test(self, tmp_path, pool):
@@ -606,46 +605,46 @@ class TestContextBuilderSourcePassthrough:
         return daemon, resp
 
     @pytest.mark.asyncio
-    async def test_system_task_type_passed_to_context(self, daemon_for_context_test):
+    async def test_system_talker_passed_to_context(self, daemon_for_context_test):
         daemon, resp = daemon_for_context_test
 
         with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
-                text="test", sender="system", talker="system",
+                text="test", sender="automation", talker="system",
             )
 
         daemon.context_builder.build.assert_called_once()
         call_kwargs = daemon.context_builder.build.call_args
-        assert call_kwargs.kwargs.get("task_type") == "system"
+        assert call_kwargs.kwargs.get("talker") == "system"
 
     @pytest.mark.asyncio
-    async def test_conversational_task_type_passed_to_context(self, daemon_for_context_test):
+    async def test_operator_talker_passed_to_context(self, daemon_for_context_test):
         daemon, resp = daemon_for_context_test
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
         with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
-                text="test", sender="http", talker="operator",
+                text="test", sender="cli", talker="operator",
                 response_future=future,
             )
 
         daemon.context_builder.build.assert_called_once()
         call_kwargs = daemon.context_builder.build.call_args
-        assert call_kwargs.kwargs.get("task_type") == "conversational"
+        assert call_kwargs.kwargs.get("talker") == "operator"
 
     @pytest.mark.asyncio
-    async def test_task_type_passed_to_context(self, daemon_for_context_test):
+    async def test_user_talker_passed_to_context(self, daemon_for_context_test):
         daemon, resp = daemon_for_context_test
 
         with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
-                text="hello", sender="+431234567890", talker="user", channel="telegram",
+                text="hello", sender="nicolas", talker="user", channel="telegram",
             )
 
         daemon.context_builder.build.assert_called_once()
         call_kwargs = daemon.context_builder.build.call_args
-        assert call_kwargs.kwargs.get("task_type") == "task"
+        assert call_kwargs.kwargs.get("talker") == "user"
 
 
 # ─── Message Loop HTTP Bypass ────────────────────────────────────
@@ -1113,7 +1112,6 @@ class TestMessageLoopDebounce:
         daemon.config.message_retries = 0
         daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
-        daemon.config.notify_target = ""
         # Very short debounce for fast tests
         daemon.config.debounce_ms = 50
 

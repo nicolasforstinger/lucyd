@@ -105,7 +105,6 @@ def _make_config(tmp_path, **overrides):
             "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
             "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
-            "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000, "max_tokens": 2048,
                 "prompt": "Summarize for {agent_name}.", "keep_recent_pct": 0.33,
@@ -206,7 +205,6 @@ def _make_daemon(tmp_path):
     daemon.config.compaction_prompt = "Compact this."
     daemon.config.agent_name = "TestAgent"
     daemon.config.consolidation_enabled = False
-    daemon.config.notify_target = ""
 
     daemon.metering_db = None
 
@@ -1961,8 +1959,8 @@ class TestAutoCloseSystemSessions:
 # ─── Primary Sender Routing ─────────────────────────────────────
 
 
-class TestPrimarySenderRouting:
-    """Notifications route to primary session when notify_target is configured."""
+class TestEphemeralAutoClose:
+    """system/agent sessions auto-close after processing."""
 
     @pytest.mark.asyncio
     async def test_fresh_system_session_still_autoclosed(self, tmp_path):

@@ -393,7 +393,7 @@ class MessagePipeline:
             await self._session_mgr.has_session(ctx.session_key)
         )
 
-        # Get or create session (keyed by channel_id:sender)
+        # Get or create session (keyed by talker:sender)
         session = await self._session_mgr.get_or_create(ctx.session_key)
         ctx.session = session
 

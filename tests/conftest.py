@@ -234,7 +234,6 @@ def minimal_toml_data():
             "agent_timeout_seconds": 600,
             "max_turns_per_message": 50,
             "max_cost_per_message": 0.0,
-            "notify_target": "",
             "compaction": {
                 "threshold_tokens": 150000,
                 "max_tokens": 2048,
