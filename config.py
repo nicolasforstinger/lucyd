@@ -32,7 +32,7 @@ TALKERS: frozenset[Talker] = frozenset(("user", "operator", "system", "agent"))
 
 # Sender enumerations per talker class.  "user" is validated against
 # config.user.name at API boundary, not listed here.
-OPERATOR_SENDERS: frozenset[str] = frozenset(("cli", "agentctl", "web"))
+OPERATOR_SENDERS: frozenset[str] = frozenset(("agentctl",))
 SYSTEM_SENDERS: frozenset[str] = frozenset(("maintenance", "automation", "error"))
 AGENT_SENDERS: frozenset[str] = frozenset(("self", "other"))
 

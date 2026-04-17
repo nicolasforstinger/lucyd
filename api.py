@@ -415,7 +415,7 @@ class HTTPApi:
                 {"error": "\"message\" field is required"}, status=400,
             )
 
-        sender = str(body.get("sender", "cli"))
+        sender = str(body.get("sender", "agentctl"))
         err = self._validate_sender(sender, OPERATOR_SENDERS, "operator")
         if err is not None:
             return err
@@ -458,7 +458,7 @@ class HTTPApi:
         if not message and not attachments:
             return self._json_response({"error": "\"message\" field is required"}, status=400)
 
-        sender = str(body.get("sender", "cli"))
+        sender = str(body.get("sender", "agentctl"))
         err = self._validate_sender(sender, OPERATOR_SENDERS, "operator")
         if err is not None:
             return err

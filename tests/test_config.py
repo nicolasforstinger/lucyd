@@ -107,9 +107,14 @@ class TestTalkerConstants:
         assert TALKERS == frozenset(("user", "operator", "system", "agent"))
 
     def test_operator_senders(self):
-        """OPERATOR_SENDERS enumerates allowed operator surfaces."""
+        """OPERATOR_SENDERS enumerates allowed operator surfaces.
+
+        Only `agentctl` is valid: it is the single operator UI surface.
+        cli + web were removed — scripts that used to send sender="cli"
+        must switch to "agentctl" or use a different talker entirely.
+        """
         from config import OPERATOR_SENDERS
-        assert OPERATOR_SENDERS == frozenset(("cli", "agentctl", "web"))
+        assert OPERATOR_SENDERS == frozenset(("agentctl",))
 
     def test_system_senders(self):
         """SYSTEM_SENDERS enumerates allowed system event buckets."""

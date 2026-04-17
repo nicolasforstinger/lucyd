@@ -186,7 +186,7 @@ the within-talker `sender`:
 | Field | Type | Required | Purpose |
 |---|---|---|---|
 | `message` | string | yes | The content |
-| `sender` | string | depends | Within-talker identity. Operator: `cli`/`agentctl`/`web`. System: `maintenance`/`automation`/`error`. Agent: `self`/`other`. User: auto-injected as `config.user.name` by `/inbound/*`. |
+| `sender` | string | depends | Within-talker identity. Operator: `agentctl`. System: `maintenance`/`automation`/`error`. Agent: `self`/`other`. User: auto-injected as `config.user.name` by `/inbound/*`. |
 | `reply_to` | string | no | `"silent"` suppresses delivery (reply still processed). |
 | `attachments` | list | no | Base64-encoded files |
 
@@ -226,7 +226,7 @@ Dual-format persistence in `$DATA_DIR/sessions/`:
 | State | `{id}.state.json` | Atomic snapshot for fast resume |
 
 Sessions are keyed by `talker:sender` (e.g., `user:nicolas`,
-`operator:cli`, `system:maintenance`, `agent:self`). The key is computed
+`operator:agentctl`, `system:maintenance`, `agent:self`). The key is computed
 in `_process_message` as `f"{talker}:{sender}"` and passed to
 `session_mgr.get_or_create()`.
 

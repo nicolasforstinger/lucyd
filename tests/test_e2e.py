@@ -126,7 +126,7 @@ async def test_e2e_message_cycle(tmp_path, pool):
     await daemon.queue.put({
         "text": "Hello, agent!",
         "talker": "operator",
-        "sender": "cli",
+        "sender": "agentctl",
         "response_future": response_future,
     })
     # Signal the loop to stop after processing

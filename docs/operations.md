@@ -70,8 +70,8 @@ Every inbound message declares two fields; the endpoint pins the
 
 | Endpoint | Talker | `sender` allowed |
 |---|---|---|
-| `POST /api/v1/chat` | operator | `cli`, `agentctl`, `web` |
-| `POST /api/v1/chat/stream` | operator | `cli`, `agentctl`, `web` |
+| `POST /api/v1/chat` | operator | `agentctl` |
+| `POST /api/v1/chat/stream` | operator | `agentctl` |
 | `POST /api/v1/inbound/telegram` | user | auto-injected = `config.user.name` |
 | `POST /api/v1/inbound/email` | user | auto-injected = `config.user.name` |
 | `POST /api/v1/inbound/whatsapp` | user | reserved (501 Not Implemented) |
@@ -92,7 +92,7 @@ Synchronous — sends an operator message and waits for the agent to respond.
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `message` | yes | — | Message text |
-| `sender` | no | `"cli"` | One of `cli`, `agentctl`, `web` |
+| `sender` | no | `"agentctl"` | Must be `agentctl` (only operator sender today) |
 | `reply_to` | no | — | `"silent"` suppresses delivery (reply is still processed and logged) |
 | `context` | no | — | Freeform label prepended as `[context]` |
 | `attachments` | no | — | Base64-encoded file attachments |

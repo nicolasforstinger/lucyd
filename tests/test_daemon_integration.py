@@ -325,7 +325,7 @@ class TestResolvePattern:
 
         await daemon._process_message(
             text="test",
-            sender="cli",
+            sender="agentctl",
             talker="operator",
             response_future=future,
         )
@@ -448,7 +448,7 @@ class TestResolveIntegration:
         with patch("pipeline.run_agentic_loop", side_effect=RuntimeError("API down")):
             await daemon._process_message(
                 text="test",
-                sender="cli",
+                sender="agentctl",
                 talker="operator",
                 response_future=future,
             )
@@ -488,7 +488,7 @@ class TestResolveIntegration:
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="heartbeat trigger",
-                sender="cli",
+                sender="agentctl",
                 talker="operator",
                 response_future=future,
             )
@@ -526,7 +526,7 @@ class TestResolveIntegration:
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="test question",
-                sender="cli",
+                sender="agentctl",
                 talker="operator",
                 response_future=future,
             )
@@ -625,7 +625,7 @@ class TestContextBuilderTalkerPassthrough:
 
         with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
-                text="test", sender="cli", talker="operator",
+                text="test", sender="agentctl", talker="operator",
                 response_future=future,
             )
 
@@ -660,7 +660,7 @@ class TestMessageLoopHTTPBypass:
         future = loop.create_future()
         item = {
             "talker": "operator",
-            "sender": "cli",
+            "sender": "agentctl",
             "text": "test",
             "response_future": future,
         }
@@ -1203,7 +1203,7 @@ class TestMessageLoopDebounce:
 
         http_item = {
             "talker": "operator",
-            "sender": "cli",
+            "sender": "agentctl",
             "text": "api question",
             "response_future": future,
         }
@@ -1324,8 +1324,8 @@ class TestMessageLoopDebounce:
     async def test_reset_user_alias_resolves_contact(self, loop_daemon):
         """Reset with sender='user' resolves to first non-http: contact."""
         daemon, session = loop_daemon
-        daemon.session_mgr._index = {"system:maintenance": MagicMock(), "operator:cli": MagicMock(), "user:Nicolas": MagicMock()}
-        daemon.session_mgr.list_contacts = AsyncMock(return_value=["system:maintenance", "operator:cli", "user:Nicolas"])
+        daemon.session_mgr._index = {"system:maintenance": MagicMock(), "operator:agentctl": MagicMock(), "user:Nicolas": MagicMock()}
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["system:maintenance", "operator:agentctl", "user:Nicolas"])
 
         await daemon.queue.put({"type": "reset", "sender": "user"})
         await daemon.queue.put(None)

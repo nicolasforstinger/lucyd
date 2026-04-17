@@ -554,7 +554,7 @@ class TestChat:
                 item = await queue.get()
                 assert item["talker"] == "operator"
                 assert item["text"] == "hello"
-                assert item["sender"] == "cli"
+                assert item["sender"] == "agentctl"
                 assert "response_future" in item
                 item["response_future"].set_result({
                     "reply": "hi back",
@@ -1202,20 +1202,22 @@ class TestConcurrentHTTPChat:
     independent responses with no cross-contamination."""
 
     @pytest.mark.asyncio
-    async def test_two_senders_get_own_responses(self, api, queue, auth_headers):
-        """Send two /chat requests with different senders simultaneously.
-        Each response must match its own sender, not the other."""
+    async def test_two_concurrent_requests_get_own_responses(self, api, queue, auth_headers):
+        """Two concurrent /chat requests must each receive their own reply.
+
+        With a single operator sender identity, both requests land on the
+        same session key (operator:agentctl); the invariant under test is
+        that futures don't cross-wire, not that session IDs differ.
+        """
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             async def resolve_all():
-                """Resolve each future with a reply that echoes the sender."""
-                for _ in range(2):
+                for i in range(2):
                     item = await queue.get()
-                    sender = item["sender"]
                     msg = item["text"]
                     item["response_future"].set_result({
-                        "reply": f"response-for-{sender}: {msg}",
-                        "session_id": f"session-{sender}",
+                        "reply": f"echo: {msg}",
+                        "session_id": f"session-{i}",
                     })
 
             task = asyncio.create_task(resolve_all())
@@ -1224,12 +1226,12 @@ class TestConcurrentHTTPChat:
                 client.post(
                     "/api/v1/chat",
                     headers=auth_headers,
-                    json={"message": "hello from cli", "sender": "cli"},
+                    json={"message": "msg-alpha", "sender": "agentctl"},
                 ),
                 client.post(
                     "/api/v1/chat",
                     headers=auth_headers,
-                    json={"message": "hello from agentctl", "sender": "agentctl"},
+                    json={"message": "msg-beta", "sender": "agentctl"},
                 ),
             )
             await task
@@ -1240,52 +1242,23 @@ class TestConcurrentHTTPChat:
             assert resp_a.status == 200
             assert resp_b.status == 200
 
-            # Each response must contain its own sender's name — no cross-talk
             replies = {body_a["reply"], body_b["reply"]}
-            assert any("cli" in r and "hello from cli" in r for r in replies)
-            assert any("agentctl" in r and "hello from agentctl" in r for r in replies)
-
-            # Session IDs must differ
-            assert body_a["session_id"] != body_b["session_id"]
+            assert "echo: msg-alpha" in replies
+            assert "echo: msg-beta" in replies
 
     @pytest.mark.asyncio
-    async def test_concurrent_mixed_senders_all_succeed(self, api, queue, auth_headers):
-        """Concurrent requests across all operator sub-senders resolve independently."""
+    async def test_rejects_old_operator_senders(self, api, queue, auth_headers):
+        """'cli' and 'web' are no longer valid operator senders."""
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
-            received_senders = []
-
-            async def resolve_all():
-                for i in range(3):
-                    item = await queue.get()
-                    received_senders.append(item["sender"])
-                    item["response_future"].set_result({
-                        "reply": f"reply-{i}",
-                        "session_id": f"s-{i}",
-                    })
-
-            task = asyncio.create_task(resolve_all())
-
-            responses = await asyncio.gather(
-                client.post("/api/v1/chat", headers=auth_headers,
-                            json={"message": "m0", "sender": "cli"}),
-                client.post("/api/v1/chat", headers=auth_headers,
-                            json={"message": "m1", "sender": "agentctl"}),
-                client.post("/api/v1/chat", headers=auth_headers,
-                            json={"message": "m2", "sender": "web"}),
-            )
-            await task
-
-            for resp in responses:
-                assert resp.status == 200
-
-            bodies = [await r.json() for r in responses]
-            reply_set = {b["reply"] for b in bodies}
-            assert len(reply_set) == 3
-
-            assert "cli" in received_senders
-            assert "agentctl" in received_senders
-            assert "web" in received_senders
+            for banned in ("cli", "web"):
+                resp = await client.post(
+                    "/api/v1/chat", headers=auth_headers,
+                    json={"message": "hello", "sender": banned},
+                )
+                assert resp.status == 400
+                body = await resp.json()
+                assert "invalid sender" in body["error"]
 
 
 # ─── Sessions Endpoint ───────────────────────────────────────────
@@ -1472,7 +1445,7 @@ class TestHTTPAttachments:
                 "/api/v1/chat",
                 headers=auth_headers,
                 json={
-                    "sender": "cli",
+                    "sender": "agentctl",
                     "message": "process this",
                     "attachments": [{
                         "content_type": "application/pdf",

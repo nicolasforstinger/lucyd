@@ -452,7 +452,7 @@ flowchart TD
 ### Session keying
 
 Sessions are keyed by `talker:sender` (e.g., `user:nicolas`,
-`operator:cli`, `system:maintenance`, `agent:self`). The key is computed
+`operator:agentctl`, `system:maintenance`, `agent:self`). The key is computed
 in `_process_message` as `f"{talker}:{sender}"` and passed to
 `get_or_create`. The talker is pinned by the HTTP endpoint — never
 overridable from the body.

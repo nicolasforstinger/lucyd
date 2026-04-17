@@ -203,11 +203,11 @@ async def test_operator_session_stays_open(tmp_path, pool):
     await _send_and_process(daemon, {
         "text": "admin command",
         "talker": "operator",
-        "sender": "cli",
+        "sender": "agentctl",
     })
 
     contacts = await daemon.session_mgr.list_contacts()
-    assert "operator:cli" in contacts
+    assert "operator:agentctl" in contacts
 
 
 @pytest.mark.asyncio
@@ -254,7 +254,7 @@ async def test_reply_to_default(tmp_path, pool):
     result = await _send_and_process(daemon, {
         "text": "normal request",
         "talker": "operator",
-        "sender": "cli",
+        "sender": "agentctl",
     })
 
     assert "Acknowledged" in result.get("reply", "")
@@ -269,7 +269,7 @@ async def test_reply_to_silent(tmp_path, pool):
     result = await _send_and_process(daemon, {
         "text": "silent request",
         "talker": "operator",
-        "sender": "cli",
+        "sender": "agentctl",
         "reply_to": "silent",
     })
 
