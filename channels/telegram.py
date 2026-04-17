@@ -383,6 +383,7 @@ async def process_message(message: dict[str, Any], download_dir: Path,
     if user_id == _bot_id:
         return
     if ALLOW_FROM and user_id not in ALLOW_FROM:
+        log.info("Dropped Telegram message from non-allowlisted user_id=%d", user_id)
         return
 
     # Resolve sender
