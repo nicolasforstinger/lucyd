@@ -235,7 +235,7 @@ class TestMonitorCallbacksWiring:
             await daemon._process_message(
                 text="hello",
                 sender="TestUser",
-                source="telegram",
+                talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -252,7 +252,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
         assert captured_kwargs["on_response"] is not None
@@ -275,7 +275,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -297,7 +297,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -325,7 +325,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -369,7 +369,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -382,7 +382,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
         # After the error, finally block should have written idle
@@ -401,7 +401,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -417,7 +417,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="Nicolas", source="telegram",
+                text="hello", sender="Nicolas", talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -433,7 +433,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -449,7 +449,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
         after = time.time()
@@ -469,7 +469,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
         snapshot = daemon._build_monitor()
@@ -499,7 +499,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -545,7 +545,7 @@ class TestMonitorCallbacksWiring:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="TestUser", source="telegram",
+                text="hello", sender="TestUser", talker="user", channel="telegram",
             )
 
         assert states_seen == ["tools", "thinking", "tools", "thinking", "idle"]

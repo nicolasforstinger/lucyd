@@ -42,65 +42,51 @@ class TestMissingFile:
         assert "Behavior rules" in stable["text"]
 
 
-class TestSourceAwareDynamic:
-    def test_system_no_deliver_adds_automation_framing(self, tmp_workspace):
-        """System task_type with deliver=False adds automated infrastructure annotation."""
+class TestTalkerAwareDynamic:
+    def test_system_talker_adds_automation_framing(self, tmp_workspace):
+        """talker=system produces automation framing."""
         builder = ContextBuilder(
             workspace=tmp_workspace,
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(task_type="system", deliver=False)
+        blocks = builder.build(talker="system")
         dynamic = blocks[-1]
         assert dynamic["tier"] == "dynamic"
         assert "automated infrastructure" in dynamic["text"]
 
-    def test_system_deliver_adds_notification_framing(self, tmp_workspace):
-        """System task_type with deliver=True adds notification framing."""
+    def test_user_talker_adds_user_framing(self, tmp_workspace):
+        """talker=user produces user/conversation framing."""
         builder = ContextBuilder(
             workspace=tmp_workspace,
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(task_type="system", deliver=True)
+        blocks = builder.build(talker="user")
         dynamic = blocks[-1]
-        assert "notification routed to operator" in dynamic["text"]
+        assert "user" in dynamic["text"].lower()
 
-    def test_http_source_adds_framing(self, tmp_workspace):
-        """Conversational task_type adds conversation framing."""
+    def test_operator_talker_adds_operator_framing(self, tmp_workspace):
+        """talker=operator produces operator framing (no user memory)."""
         builder = ContextBuilder(
             workspace=tmp_workspace,
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(task_type="conversational")
+        blocks = builder.build(talker="operator")
         dynamic = blocks[-1]
-        assert dynamic["tier"] == "dynamic"
-        assert "conversation" in dynamic["text"].lower()
+        assert "administrator" in dynamic["text"].lower() or "operator" in dynamic["text"].lower()
 
-    def test_telegram_source_no_framing(self, tmp_workspace):
-        """Task task_type adds ephemeral framing."""
+    def test_agent_talker_adds_agent_framing(self, tmp_workspace):
+        """talker=agent produces self-action framing."""
         builder = ContextBuilder(
             workspace=tmp_workspace,
             stable_files=["SOUL.md"],
             semi_stable_files=[],
         )
-        blocks = builder.build(task_type="task")
+        blocks = builder.build(talker="agent")
         dynamic = blocks[-1]
-        assert "ephemeral task" in dynamic["text"]
-        assert "automated infrastructure" not in dynamic["text"]
-
-    def test_empty_source_no_framing(self, tmp_workspace):
-        """Default task_type (conversational) has no system annotation."""
-        builder = ContextBuilder(
-            workspace=tmp_workspace,
-            stable_files=["SOUL.md"],
-            semi_stable_files=[],
-        )
-        blocks = builder.build()
-        dynamic = blocks[-1]
-        assert "automated infrastructure" not in dynamic["text"]
-        assert "ephemeral task" not in dynamic["text"]
+        assert "self-" in dynamic["text"] or "agent-to-agent" in dynamic["text"]
 
 
 class TestSkillsAppended:

@@ -657,7 +657,7 @@ class TestProcessMessage:
         # daemon was called with correct URL
         mock_client.post.assert_called_once()
         call_args = mock_client.post.call_args
-        assert call_args.args[0] == "http://daemon:8100/api/v1/chat"
+        assert call_args.args[0] == "http://daemon:8100/api/v1/inbound/telegram"
 
     @pytest.mark.asyncio
     async def test_bot_own_message_is_ignored(self, tmp_path: Path) -> None:
@@ -823,8 +823,9 @@ class TestProcessMessage:
         ):
             await tg.process_message(_msg(user_id=1001), tmp_path)
 
-        posted_body = mock_client.post.call_args.kwargs["json"]
-        assert posted_body["sender"] == "Alice"
+        # Bridge no longer includes sender in body — daemon injects config.user.name
+        # on the /inbound/telegram endpoint. Verify the correct endpoint was called.
+        assert mock_client.post.call_args.args[0].endswith("/api/v1/inbound/telegram")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1084,7 +1085,7 @@ class TestDecodeOutboundAttachment:
 class TestDeliveryFailureNotification:
     @pytest.mark.asyncio
     async def test_delivery_failure_notifies_daemon(self) -> None:
-        """Failed delivery POSTs to /api/v1/notify."""
+        """Failed delivery POSTs to /api/v1/system/event."""
         tg.DAEMON_URL = "http://daemon:8100"
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = MagicMock(status_code=202)
@@ -1094,10 +1095,10 @@ class TestDeliveryFailureNotification:
 
         mock_client.post.assert_called_once()
         call_args = mock_client.post.call_args
-        assert "/api/v1/notify" in call_args.args[0]
+        assert "/api/v1/system/event" in call_args.args[0]
         body = call_args.kwargs["json"]
         assert "Alice" in body["message"]
-        assert body["source"] == "telegram"
+        assert body["sender"] == "error"
 
     @pytest.mark.asyncio
     async def test_notify_failure_does_not_raise(self) -> None:

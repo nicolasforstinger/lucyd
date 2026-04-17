@@ -20,36 +20,27 @@ DATA_DIR="${LUCYD_DATA_DIR:-/data}"
 mkdir -p "${DATA_DIR}/sessions" "${DATA_DIR}/downloads" "${DATA_DIR}/logs"
 
 # ── Build cron environment ────────────────────────────────────────
-# Cron does NOT inherit the container's environment.  Forward the
-# subset of vars that cron jobs need: paths, DB URL, provider keys.
-CRON_ENV="SHELL=/bin/sh
-PATH=/usr/local/bin:/usr/bin:/bin
-LUCYD_DATA_DIR=${DATA_DIR}
-LUCYD_STATE_DIR=${STATE_DIR}
-LUCYD_CONFIG=${CONFIG}"
+# Cron jobs hit the daemon's HTTP API directly (curl).  Only the
+# auth token needs to be forwarded — everything else (DB, provider
+# keys) is resolved by the daemon process itself, not the cron job.
+CRON_TOKEN="${LUCYD_HTTP_TOKEN:-}"
+CRON_PORT="${LUCYD_HTTP_PORT:-8100}"
 
-# Forward env vars that cron jobs actually need.  Cron runs lucydctl
-# (index, consolidate, compact, maintain, evolve) which needs DB access
-# and LLM provider keys.  Channel tokens, HTTP auth, plugin keys, and
-# search API keys are runtime-only — keep them out of the cron file.
-CRON_EXCLUDE="LUCYD_TELEGRAM_TOKEN|LUCYD_EMAIL_PASSWORD|LUCYD_HTTP_TOKEN|LUCYD_ELEVENLABS_KEY|LUCYD_BRAVE_KEY|BRAVE_API_KEY"
-
-for var in $(env | grep -E '^(LUCYD_|OPENAI_|ANTHROPIC_)' | grep -vE "^(${CRON_EXCLUDE})=" | cut -d= -f1); do
-    # Skip vars already written above
-    case "$var" in LUCYD_DATA_DIR|LUCYD_STATE_DIR|LUCYD_CONFIG) continue ;; esac
-    eval "val=\$$var"
-    CRON_ENV="${CRON_ENV}
-${var}=${val}"
-done
+AUTH_HEADER=""
+if [ -n "$CRON_TOKEN" ]; then
+    AUTH_HEADER="-H \"Authorization: Bearer ${CRON_TOKEN}\""
+fi
+API="http://localhost:${CRON_PORT}/api/v1"
 
 cat > /etc/cron.d/lucyd <<CRONTAB
-${CRON_ENV}
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin
 
-10 * * * * ${CRON_USER} python /app/bin/lucydctl --index >> ${STATE_DIR}/lucyd-index.log 2>&1
-15 * * * * ${CRON_USER} python /app/bin/lucydctl --consolidate >> ${STATE_DIR}/lucyd-consolidate.log 2>&1
-50 3 * * * ${CRON_USER} python /app/bin/lucydctl --compact >> ${STATE_DIR}/lucyd-compact.log 2>&1
-5  4 * * * ${CRON_USER} python /app/bin/lucydctl --maintain >> ${STATE_DIR}/lucyd-consolidate.log 2>&1
-20 4 * * * ${CRON_USER} python /app/bin/lucydctl --evolve >> ${STATE_DIR}/lucyd-evolve.log 2>&1
+10 * * * * ${CRON_USER} curl -sf -X POST ${AUTH_HEADER} ${API}/index >> ${STATE_DIR}/lucyd-index.log 2>&1
+15 * * * * ${CRON_USER} curl -sf -X POST ${AUTH_HEADER} ${API}/consolidate >> ${STATE_DIR}/lucyd-consolidate.log 2>&1
+50 3 * * * ${CRON_USER} curl -sf -X POST ${AUTH_HEADER} ${API}/compact >> ${STATE_DIR}/lucyd-compact.log 2>&1
+5  4 * * * ${CRON_USER} curl -sf -X POST ${AUTH_HEADER} ${API}/maintain >> ${STATE_DIR}/lucyd-consolidate.log 2>&1
+20 4 * * * ${CRON_USER} curl -sf -X POST ${AUTH_HEADER} ${API}/evolve >> ${STATE_DIR}/lucyd-evolve.log 2>&1
 CRONTAB
 chmod 644 /etc/cron.d/lucyd
 

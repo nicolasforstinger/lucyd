@@ -1,19 +1,23 @@
 """HTTP API server — the daemon's single inbound/outbound interface.
 
-All messages enter via HTTP. Channel bridges, lucydctl, n8n, and scripts
-all talk to these endpoints. The API is always on.
+Every entry point maps to exactly one talker class — never overridable
+from the request body.  The body declares sender (within the talker's
+enumerated set); the endpoint declares the talker.
 
-Endpoints (17 routes):
-    POST /api/v1/chat                       — Synchronous: send message, await response
-    POST /api/v1/chat/stream                — SSE: send message, stream response tokens
-    POST /api/v1/message                    — Fire-and-forget: queue user message (202)
-    POST /api/v1/notify                     — Fire-and-forget: queue notification (202)
+Endpoints:
+    POST /api/v1/chat                       — Operator sync (agentctl, web, cli)
+    POST /api/v1/chat/stream                — Operator SSE streaming
+    POST /api/v1/inbound/telegram           — Bridge: user inbound (Telegram)
+    POST /api/v1/inbound/email              — Bridge: user inbound (email)
+    POST /api/v1/inbound/whatsapp           — Bridge: reserved (not yet implemented)
+    POST /api/v1/system/event               — System events (cron, webhooks, errors)
+    POST /api/v1/agent/action               — Agent self-actions (reminders, a2a)
     GET  /api/v1/status                     — Health check + daemon stats
     GET  /metrics                           — Prometheus metrics exposition
     GET  /api/v1/sessions                   — List active sessions
     GET  /api/v1/cost                       — Cost breakdown by billing period
     GET  /api/v1/monitor                    — Live agentic loop state
-    POST /api/v1/sessions/reset             — Reset/archive sessions
+    POST /api/v1/sessions/reset             — Reset sessions by talker:sender key
     GET  /api/v1/sessions/{id}/history      — Session transcript
     POST /api/v1/evolve                     — Trigger memory evolution
     POST /api/v1/compact                    — Force diary write + compaction
@@ -38,6 +42,7 @@ from typing import TYPE_CHECKING, Any, Protocol  # Any justified: JSON request/r
 
 from aiohttp import web
 
+from config import AGENT_SENDERS, OPERATOR_SENDERS, SYSTEM_SENDERS, Talker
 from log_utils import _log_safe
 from attachments import Attachment
 
@@ -95,6 +100,7 @@ class HTTPApi:
         port: int,
         auth_token: str,
         agent_timeout: float,
+        user_name: str,
         get_status: Callable[[], Coroutine[None, None, dict[str, Any]]] | None = None,
         get_sessions: Callable[[], Coroutine[None, None, list[dict[str, Any]]]] | None = None,
         get_monitor: Callable[[], dict[str, Any]] | None = None,
@@ -125,6 +131,7 @@ class HTTPApi:
         self._trust_localhost = trust_localhost
         self.agent_timeout = agent_timeout
         self.agent_name = agent_name
+        self.user_name = user_name
         self._get_status = get_status
         self._get_sessions = get_sessions
         self._get_monitor = get_monitor
@@ -165,8 +172,11 @@ class HTTPApi:
         )
         app.router.add_post("/api/v1/chat", self._handle_chat)
         app.router.add_post("/api/v1/chat/stream", self._handle_chat_stream)
-        app.router.add_post("/api/v1/message", self._handle_message)
-        app.router.add_post("/api/v1/notify", self._handle_notify)
+        app.router.add_post("/api/v1/inbound/telegram", self._handle_inbound_telegram)
+        app.router.add_post("/api/v1/inbound/email", self._handle_inbound_email)
+        app.router.add_post("/api/v1/inbound/whatsapp", self._handle_inbound_whatsapp)
+        app.router.add_post("/api/v1/system/event", self._handle_system_event)
+        app.router.add_post("/api/v1/agent/action", self._handle_agent_action)
         app.router.add_get("/api/v1/status", self._handle_status)
         app.router.add_get("/metrics", self._handle_metrics)
         app.router.add_get("/api/v1/sessions", self._handle_sessions)
@@ -364,111 +374,39 @@ class HTTPApi:
 
         result["attachments"] = encoded
 
-    # ─── Message Envelope ─────────────────────────────────────────
+    # ─── Envelope Helpers ─────────────────────────────────────────
 
-    _VALID_TASK_TYPES = frozenset(("conversational", "task", "system"))
-
-    def _extract_envelope(self, body: dict[str, Any], default_task_type: str = "conversational") -> dict[str, str]:
-        """Extract message envelope fields from request body.
-
-        All fields are optional — missing fields get safe defaults.
-        """
-        task_type = body.get("task_type", default_task_type)
-        if task_type not in self._VALID_TASK_TYPES:
-            log.warning("Unknown task_type %r, defaulting to %r", task_type, default_task_type)
-            task_type = default_task_type
-        envelope = {
-            "channel_id": body.get("channel_id", "http"),
-            "task_type": task_type,
-        }
-        reply_to = body.get("reply_to")
-        if reply_to is not None:
-            envelope["reply_to"] = str(reply_to)
-        return envelope
-
-    # ─── Shared Parsing ────────────────────────────────────────────
-
-    async def _parse_and_queue(
-        self,
-        request: web.Request,
-        msg_type: str,
-        sender_default: str = "default",
-        text_prefix: str = "",
-        extra_fields: dict[str, Any] | None = None,
-        default_task_type: str = "conversational",
-    ) -> web.Response:
-        """Shared parse body -> validate -> build queue item -> queue -> 202 response.
-
-        Used by _handle_message and _handle_notify.
-
-        System convention: when task_type resolves to "system" and msg_type
-        is "user", auto-applies system defaults (msg_type="system",
-        sender="http-system", text prefix "[AUTOMATED SYSTEM MESSAGE] ").
-        """
+    async def _parse_body(self, request: web.Request) -> dict[str, Any] | web.Response:
+        """Parse JSON body or return a 400 response."""
         try:
             body = await request.json()
         except web.HTTPException:
             raise
         except (json.JSONDecodeError, ValueError):
+            return self._json_response({"error": "invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return self._json_response({"error": "JSON body must be an object"}, status=400)
+        return body
+
+    def _validate_sender(
+        self, sender: str, allowed: frozenset[str], talker: Talker,
+    ) -> web.Response | None:
+        """Reject requests whose sender isn't in the talker's allowed set."""
+        if sender not in allowed:
             return self._json_response(
-                {"error": "invalid JSON body"}, status=400,
+                {"error": f"invalid sender for talker={talker!r}: {sender!r}",
+                 "allowed": sorted(allowed)},
+                status=400,
             )
-
-        message = body.get("message", "").strip()
-        attachments = self._extract_attachments(body)
-        if not message and not attachments:
-            return self._json_response(
-                {"error": "\"message\" field is required"}, status=400,
-            )
-
-        # Extract envelope first — task_type may override defaults
-        envelope = self._extract_envelope(body, default_task_type=default_task_type)
-
-        # System convention: task_type "system" promotes to system behavior
-        if envelope["task_type"] == "system" and msg_type == "user":
-            msg_type = "system"
-            if sender_default == "default":
-                sender_default = "system"
-            if not text_prefix:
-                text_prefix = "[AUTOMATED SYSTEM MESSAGE] "
-
-        sender = f"http-{body.get('sender', sender_default)}"
-        text = f"{text_prefix}{message}" if text_prefix else message
-
-        queue_item: dict[str, Any] = {
-            "sender": sender,
-            "type": msg_type,
-            "text": text,
-            **envelope,
-        }
-        if attachments:
-            queue_item["attachments"] = attachments
-        if extra_fields:
-            queue_item.update(extra_fields)
-
-        await self.queue.put(queue_item)
-
-        log.info("HTTP /%s queued: sender=%s channel=%s attachments=%d",
-                 msg_type, _log_safe(sender), queue_item["channel_id"],
-                 len(attachments) if attachments else 0)
-
-        return self._json_response(
-            {"accepted": True, "queued_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-            status=202,
-        )
+        return None
 
     # ─── Endpoints ────────────────────────────────────────────────
 
     async def _handle_chat(self, request: web.Request) -> web.Response:
-        """POST /api/v1/chat — synchronous message + response."""
-        try:
-            body = await request.json()
-        except web.HTTPException:
-            raise
-        except (json.JSONDecodeError, ValueError):
-            return self._json_response(
-                {"error": "invalid JSON body"}, status=400,
-            )
+        """POST /api/v1/chat — operator sync message + response."""
+        body = await self._parse_body(request)
+        if isinstance(body, web.Response):
+            return body
 
         message = body.get("message", "").strip()
         attachments = self._extract_attachments(body)
@@ -477,56 +415,55 @@ class HTTPApi:
                 {"error": "\"message\" field is required"}, status=400,
             )
 
-        sender = f"http-{body.get('sender', 'default')}"
-        context = body.get("context", "")
+        sender = str(body.get("sender", "cli"))
+        err = self._validate_sender(sender, OPERATOR_SENDERS, "operator")
+        if err is not None:
+            return err
 
-        # Prepend context label if provided
+        context = str(body.get("context", ""))
         text = f"[{context}] {message}" if context else message
 
-        # Create Future for response capture
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
 
-        queue_item = {
+        queue_item: dict[str, Any] = {
+            "talker": "operator",
             "sender": sender,
-            "type": "http",
             "text": text,
             "response_future": future,
-            **self._extract_envelope(body),
         }
         if attachments:
             queue_item["attachments"] = attachments
 
         await self.queue.put(queue_item)
-
-        log.info("HTTP /chat queued: sender=%s channel=%s context=%s attachments=%d",
-                 _log_safe(sender), queue_item["channel_id"], _log_safe(context),
-                 len(attachments) if attachments else 0)
+        log.info("HTTP /chat queued: operator:%s attachments=%d",
+                 _log_safe(sender), len(attachments) if attachments else 0)
 
         try:
             result = await asyncio.wait_for(future, timeout=self.agent_timeout)
             self._encode_outbound_attachments(result)
             return self._json_response(result, status=200)
         except TimeoutError:
-            log.error("HTTP /chat timeout for sender=%s", _log_safe(sender))
-            return self._json_response(
-                {"error": "processing timeout"}, status=408,
-            )
+            log.error("HTTP /chat timeout for operator:%s", _log_safe(sender))
+            return self._json_response({"error": "processing timeout"}, status=408)
 
     async def _handle_chat_stream(self, request: web.Request) -> web.StreamResponse:
-        """POST /api/v1/chat/stream — SSE: send message, stream response tokens."""
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return self._json_response({"error": "invalid JSON body"}, status=400)
+        """POST /api/v1/chat/stream — operator SSE streaming."""
+        body = await self._parse_body(request)
+        if isinstance(body, web.Response):
+            return body
 
         message = body.get("message", "").strip()
         attachments = self._extract_attachments(body)
         if not message and not attachments:
             return self._json_response({"error": "\"message\" field is required"}, status=400)
 
-        sender = f"http-{body.get('sender', 'default')}"
-        context = body.get("context", "")
+        sender = str(body.get("sender", "cli"))
+        err = self._validate_sender(sender, OPERATOR_SENDERS, "operator")
+        if err is not None:
+            return err
+
+        context = str(body.get("context", ""))
         text = f"[{context}] {message}" if context else message
 
         # SSE response
@@ -547,12 +484,11 @@ class HTTPApi:
         # Stream delta queue — daemon pushes deltas, we send as SSE
         delta_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         queue_item: dict[str, Any] = {
+            "talker": "operator",
             "sender": sender,
-            "type": "http",
             "text": text,
             "response_future": future,
             "stream_queue": delta_queue,
-            **self._extract_envelope(body),
         }
         if attachments:
             queue_item["attachments"] = attachments
@@ -595,69 +531,96 @@ class HTTPApi:
 
         return resp
 
-    async def _handle_message(self, request: web.Request) -> web.Response:
-        """POST /api/v1/message — fire-and-forget message.
+    async def _handle_inbound_telegram(self, request: web.Request) -> web.Response:
+        """POST /api/v1/inbound/telegram — Telegram bridge forwards user message."""
+        return await self._handle_user_inbound(request, channel="telegram")
 
-        Body: message (required), sender (optional), task_type (optional).
-        Queues a message without waiting for the agent's response.
+    async def _handle_inbound_email(self, request: web.Request) -> web.Response:
+        """POST /api/v1/inbound/email — Email bridge forwards user message."""
+        return await self._handle_user_inbound(request, channel="email")
 
-        When task_type is "system": sender defaults to "http-system",
-        text is prefixed with "[AUTOMATED SYSTEM MESSAGE] ", and reply
-        delivery is suppressed (system messages don't deliver).
-        """
-        return await self._parse_and_queue(request, msg_type="user")
+    async def _handle_inbound_whatsapp(self, request: web.Request) -> web.Response:
+        """POST /api/v1/inbound/whatsapp — reserved (no bridge yet)."""
+        return self._json_response({"error": "whatsapp bridge not implemented"}, status=501)
 
-    async def _handle_notify(self, request: web.Request) -> web.Response:
-        """POST /api/v1/notify — fire-and-forget notification.
-
-        Body: message (required), source/ref/data (optional metadata).
-        All /notify uses system type. Has extra metadata fields so it
-        doesn't fully reduce to _parse_and_queue.
-        """
-        try:
-            body = await request.json()
-        except web.HTTPException:
-            raise
-        except (json.JSONDecodeError, ValueError):
-            return self._json_response(
-                {"error": "invalid JSON body"}, status=400,
-            )
+    async def _handle_user_inbound(self, request: web.Request, channel: str) -> web.Response:
+        """Shared bridge handler — talker=user, sender auto-injected."""
+        body = await self._parse_body(request)
+        if isinstance(body, web.Response):
+            return body
 
         message = body.get("message", "").strip()
-        if not message:
+        attachments = self._extract_attachments(body)
+        if not message and not attachments:
             return self._json_response(
                 {"error": "\"message\" field is required"}, status=400,
             )
 
-        sender = f"http-{body.get('sender', 'default')}"
-        source_label = body.get("source", "")
-        ref = body.get("ref", "")
-
-        # Build LLM text with optional prefix brackets
-        parts = []
-        if source_label:
-            parts.append(f"[source: {source_label}]")
-        if ref:
-            parts.append(f"[ref: {ref}]")
-        parts.append(message)
-        text = " ".join(parts)
-
-        attachments = self._extract_attachments(body)
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
 
         queue_item: dict[str, Any] = {
-            "sender": sender,
-            "type": "system",
-            "text": f"[AUTOMATED SYSTEM MESSAGE] {text}",
-            "notify": True,
-            **self._extract_envelope(body, default_task_type="system"),
+            "talker": "user",
+            "sender": self.user_name,
+            "channel": channel,
+            "text": message,
+            "response_future": future,
         }
         if attachments:
             queue_item["attachments"] = attachments
 
         await self.queue.put(queue_item)
+        log.info("HTTP /inbound/%s queued: user:%s attachments=%d",
+                 channel, _log_safe(self.user_name),
+                 len(attachments) if attachments else 0)
 
-        log.info("HTTP /notify queued: sender=%s source=%s ref=%s attachments=%d",
-                 _log_safe(sender), _log_safe(source_label), _log_safe(ref),
+        try:
+            result = await asyncio.wait_for(future, timeout=self.agent_timeout)
+            self._encode_outbound_attachments(result)
+            return self._json_response(result, status=200)
+        except TimeoutError:
+            log.error("HTTP /inbound/%s timeout", channel)
+            return self._json_response({"error": "processing timeout"}, status=408)
+
+    async def _handle_system_event(self, request: web.Request) -> web.Response:
+        """POST /api/v1/system/event — external events (cron, webhooks, errors)."""
+        return await self._queue_ephemeral(request, "system", SYSTEM_SENDERS)
+
+    async def _handle_agent_action(self, request: web.Request) -> web.Response:
+        """POST /api/v1/agent/action — agent self-actions (reminders, a2a)."""
+        return await self._queue_ephemeral(request, "agent", AGENT_SENDERS)
+
+    async def _queue_ephemeral(
+        self, request: web.Request, talker: Talker, allowed: frozenset[str],
+    ) -> web.Response:
+        """Shared handler for fire-and-forget system/agent events."""
+        body = await self._parse_body(request)
+        if isinstance(body, web.Response):
+            return body
+
+        message = body.get("message", "").strip()
+        attachments = self._extract_attachments(body)
+        if not message and not attachments:
+            return self._json_response(
+                {"error": "\"message\" field is required"}, status=400,
+            )
+
+        sender = str(body.get("sender", ""))
+        err = self._validate_sender(sender, allowed, talker)
+        if err is not None:
+            return err
+
+        queue_item: dict[str, Any] = {
+            "talker": talker,
+            "sender": sender,
+            "text": message,
+        }
+        if attachments:
+            queue_item["attachments"] = attachments
+        await self.queue.put(queue_item)
+
+        log.info("HTTP queued: %s:%s attachments=%d",
+                 talker, _log_safe(sender),
                  len(attachments) if attachments else 0)
 
         return self._json_response(

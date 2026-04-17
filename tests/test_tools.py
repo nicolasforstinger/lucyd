@@ -45,20 +45,16 @@ class TestToolErrorHandling:
 
 
 class TestReminderPayload:
-    """Reminder curl payload must include task_type: system for auto-close."""
+    """Reminder curl payload targets /agent/action with sender=self."""
 
     @pytest.mark.asyncio
-    async def test_reminder_payload_includes_system_task_type(self) -> None:
-        """Reminder sends task_type 'system' so the session auto-closes."""
+    async def test_reminder_payload_targets_agent_action(self) -> None:
+        """Reminder posts to /api/v1/agent/action with sender 'self'."""
         from tools.reminder import tool_reminder
 
-        captured_cmd: str = ""
         captured_scripts: list[str] = []
 
         async def fake_subprocess(cmd: str, **_: object) -> AsyncMock:
-            nonlocal captured_cmd
-            captured_cmd = cmd
-            # Read the script file referenced by at -f
             if "at -f" in cmd:
                 script_path = cmd.split("at -f ")[1].split(" now")[0].strip("'\"")
                 from pathlib import Path
@@ -74,11 +70,10 @@ class TestReminderPayload:
             result = await tool_reminder("check logs", minutes=10)
 
         assert "Reminder set" in result
-        # Verify the script file contains the right JSON payload
         assert len(captured_scripts) == 1
         script = captured_scripts[0]
-        assert '"task_type": "system"' in script
-        assert '"sender": "system"' in script
+        assert "/api/v1/agent/action" in script
+        assert '"sender": "self"' in script
         assert "check logs" in script
 
     @pytest.mark.asyncio
@@ -105,9 +100,6 @@ class TestReminderPayload:
 
         assert "Reminder set" in result
         assert len(captured_scripts) == 1
-        # The script should contain the message — shlex.quote escapes the
-        # single quote as '"'"' which is valid shell.  Verify the key parts
-        # are present and the JSON structure is intact.
         script = captured_scripts[0]
         assert "time to check" in script
-        assert '"task_type": "system"' in script
+        assert '"sender": "self"' in script

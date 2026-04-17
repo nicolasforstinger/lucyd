@@ -12,7 +12,7 @@ try:
     # ── Per-message ──────────────────────────────────────────────────
 
     # Per-message label set: drill from aggregate down to individual conversation
-    _MSG_LABELS = ["channel_id", "task_type", "session_id", "sender"]
+    _MSG_LABELS = ["talker", "session_id", "sender"]
 
     MESSAGES_TOTAL = Counter(
         "lucyd_messages_total",

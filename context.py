@@ -47,8 +47,7 @@ class ContextBuilder:
 
     def build(
         self,
-        task_type: str = "conversational",
-        deliver: bool = True,
+        talker: str = "user",
         tool_descriptions: list[tuple[str, str]] | None = None,
         skill_index: str = "",
         always_on_skills: list[str] | None = None,
@@ -106,7 +105,7 @@ class ContextBuilder:
 
         # Dynamic block: runtime metadata
         dynamic = self._build_dynamic(
-            task_type=task_type, deliver=deliver, extra=extra_dynamic,
+            talker=talker, extra=extra_dynamic,
             silent_tokens=silent_tokens, max_turns=max_turns,
             max_cost=max_cost, compaction_threshold=compaction_threshold,
             has_images=has_images, sender=sender,
@@ -186,8 +185,7 @@ class ContextBuilder:
 
     def _build_dynamic(
         self,
-        task_type: str = "conversational",
-        deliver: bool = True,
+        talker: str = "user",
         extra: str = "",
         silent_tokens: list[str] | None = None,
         max_turns: int = 0,
@@ -200,30 +198,31 @@ class ContextBuilder:
         now = time.strftime("%a, %d. %b %Y - %H:%M %Z")
         parts = [f"Current date/time: {now}"]
 
-        # Session framing — tell agent the session lifecycle and intent
-        if task_type == "system" and not deliver:
+        # Session framing — tell agent who is speaking and how to treat the session
+        if talker == "user":
             parts.append(
-                "Session type: automated infrastructure. "
-                "Messages in this session are system automation, "
-                "not from the user. Execute tasks as instructed. "
-                "Replies are internal only — not delivered to any channel.",
+                "Talker: user. Messages come from the person you serve, "
+                "possibly via any of their whitelisted channels. Conversation "
+                "history is preserved and feeds your memory.",
             )
-        elif task_type == "system" and deliver:
+        elif talker == "operator":
             parts.append(
-                "Session type: notification routed to operator. "
-                "This is an automated notification delivered to the operator's session. "
-                "Your reply will be sent to the operator.",
+                "Talker: operator. Messages come from an administrator "
+                "(agentctl, cli, or web). Conversation persists for the "
+                "operator session but does NOT feed user memory.",
             )
-        elif task_type == "task":
+        elif talker == "system":
             parts.append(
-                "Session type: ephemeral task. "
-                "Process the request and return a response. "
-                "This session closes after your reply.",
+                "Talker: system. Messages are automated infrastructure events "
+                "(cron maintenance, webhooks, bridge errors). Process and "
+                "reply internally — nothing is delivered to any channel, "
+                "and this session closes after your reply.",
             )
-        else:
+        elif talker == "agent":
             parts.append(
-                "Session type: conversation. "
-                "Messages come from the user. Conversation history is preserved.",
+                "Talker: agent. This message is from you (a scheduled self-"
+                "action or agent-to-agent event). Execute and return — no "
+                "outbound delivery, session closes after reply.",
             )
 
         # Session contact

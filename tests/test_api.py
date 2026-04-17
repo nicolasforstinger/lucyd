@@ -99,6 +99,7 @@ def _make_http_config(**overrides):
 
 # Default kwargs for HTTPApi required params (provided by config in production)
 _HTTP_DEFAULTS = dict(
+    user_name="testuser",
     download_dir="/tmp/lucyd-http-test",
     max_body_bytes=10 * 1024 * 1024,
     rate_limit=30,
@@ -163,7 +164,10 @@ def _make_app(api_instance: HTTPApi) -> web.Application:
         client_max_size=api_instance._max_body_bytes,
     )
     app.router.add_post("/api/v1/chat", api_instance._handle_chat)
-    app.router.add_post("/api/v1/notify", api_instance._handle_notify)
+    app.router.add_post("/api/v1/inbound/telegram", api_instance._handle_inbound_telegram)
+    app.router.add_post("/api/v1/inbound/email", api_instance._handle_inbound_email)
+    app.router.add_post("/api/v1/system/event", api_instance._handle_system_event)
+    app.router.add_post("/api/v1/agent/action", api_instance._handle_agent_action)
     app.router.add_get("/api/v1/status", api_instance._handle_status)
     app.router.add_get("/api/v1/sessions", api_instance._handle_sessions)
     app.router.add_get("/api/v1/cost", api_instance._handle_cost)
@@ -355,10 +359,10 @@ class TestAuthEdgeCases:
         """Localhost bypasses auth on all endpoints."""
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
-            # Notify without auth — 202 (localhost trusted, async endpoint)
+            # system/event without auth — 202 (localhost trusted, async endpoint)
             resp = await client.post(
-                "/api/v1/notify",
-                json={"message": "test"},
+                "/api/v1/system/event",
+                json={"sender": "automation", "message": "test"},
             )
             assert resp.status == 202
 
@@ -537,227 +541,21 @@ class TestStatus:
             assert "application/json" in resp.headers["Content-Type"]
 
 
-# ─── Notify Endpoint ─────────────────────────────────────────────
-
-
-class TestNotify:
-    @pytest.mark.asyncio
-    async def test_queues_message(self, api, queue, auth_headers):
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "New email from alice@test.com"},
-            )
-            assert resp.status == 202
-            body = await resp.json()
-            assert body["accepted"] is True
-
-        item = queue.get_nowait()
-        assert item["type"] == "system"
-        assert "New email from alice@test.com" in item["text"]
-        assert item["type"] == "system"
-
-    @pytest.mark.asyncio
-    async def test_source_and_ref_in_text(self, api, queue, auth_headers):
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "Quote accepted", "source": "n8n-email", "ref": "Q-47"},
-            )
-
-        item = queue.get_nowait()
-        assert "[source: n8n-email]" in item["text"]
-        assert "[ref: Q-47]" in item["text"]
-        assert "Quote accepted" in item["text"]
-
-    @pytest.mark.asyncio
-    async def test_notify_flag_on_queue_item(self, api, queue, auth_headers):
-        """Queue item from /notify includes notify=True for notify_target routing."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "tweet summary"},
-            )
-
-        item = queue.get_nowait()
-        assert item.get("notify") is True
-
-    @pytest.mark.asyncio
-    async def test_no_source_no_ref(self, api, queue, auth_headers):
-        """Message without source/ref has no brackets in text."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "plain notification"},
-            )
-
-        item = queue.get_nowait()
-        assert "[source:" not in item["text"]
-        assert "[ref:" not in item["text"]
-        assert "plain notification" in item["text"]
-
-    @pytest.mark.asyncio
-    async def test_custom_sender(self, api, queue, auth_headers):
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "test", "sender": "n8n-email"},
-            )
-
-        item = queue.get_nowait()
-        assert item["sender"] == "http-n8n-email"
-
-    @pytest.mark.asyncio
-    async def test_missing_message_rejected(self, api, auth_headers):
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"source": "test"},
-            )
-            assert resp.status == 400
-
-    @pytest.mark.asyncio
-    async def test_invalid_json_rejected(self, api, auth_headers):
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/v1/notify",
-                headers={**auth_headers, "Content-Type": "application/json"},
-                data=b"not json",
-            )
-            assert resp.status == 400
-
-
-class TestNotifyEdgeCases:
-    """Edge cases for /api/v1/notify."""
-
-    @pytest.mark.asyncio
-    async def test_empty_message_string_rejected(self, api, auth_headers):
-        """Whitespace-only message should be rejected."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "   "},
-            )
-            assert resp.status == 400
-
-    @pytest.mark.asyncio
-    async def test_unicode_in_message(self, api, queue, auth_headers):
-        """Unicode characters in message are preserved."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "hello from caf\u00e9 \u2603"},
-            )
-
-        item = queue.get_nowait()
-        assert "caf\u00e9" in item["text"]
-        assert "\u2603" in item["text"]
-
-    @pytest.mark.asyncio
-    async def test_default_sender_is_http_default(self, api, queue, auth_headers):
-        """Omitting sender defaults to 'http-default'."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "test"},
-            )
-
-        item = queue.get_nowait()
-        assert item["sender"] == "http-default"
-
-    @pytest.mark.asyncio
-    async def test_response_has_queued_at_timestamp(self, api, auth_headers):
-        """Notify response includes queued_at ISO timestamp."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "test"},
-            )
-            body = await resp.json()
-            assert "queued_at" in body
-            assert "T" in body["queued_at"]
-
-    @pytest.mark.asyncio
-    async def test_text_format_includes_automated_prefix(self, api, queue, auth_headers):
-        """Queued text includes [AUTOMATED SYSTEM MESSAGE] prefix."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "test notification"},
-            )
-
-        item = queue.get_nowait()
-        assert item["text"].startswith("[AUTOMATED SYSTEM MESSAGE]")
-
-    @pytest.mark.asyncio
-    async def test_data_not_in_text(self, api, queue, auth_headers):
-        """Data field is not serialized into the LLM text."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "invoice ready", "data": {"amount": 42.50}},
-            )
-
-        item = queue.get_nowait()
-        assert "42.50" not in item["text"]
-
-    @pytest.mark.asyncio
-    async def test_source_only_no_ref(self, api, queue, auth_headers):
-        """Source without ref produces only source bracket."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/v1/notify",
-                headers=auth_headers,
-                json={"message": "ping", "source": "healthcheck"},
-            )
-
-        item = queue.get_nowait()
-        assert "[source: healthcheck]" in item["text"]
-        assert "[ref:" not in item["text"]
-
-
 # ─── Chat Endpoint ────────────────────────────────────────────────
 
 
 class TestChat:
     @pytest.mark.asyncio
     async def test_queues_message_with_future(self, api, queue, auth_headers):
-        """Chat request puts a dict with response_future on the queue."""
+        """Chat request puts a dict with talker=operator and response_future on the queue."""
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
-            # Start the request but resolve the future from another task
             async def resolve_future():
                 await asyncio.sleep(0.1)
                 item = await queue.get()
-                assert item["type"] == "http"
+                assert item["talker"] == "operator"
                 assert item["text"] == "hello"
-                assert item["sender"] == "http-default"
+                assert item["sender"] == "cli"
                 assert "response_future" in item
                 item["response_future"].set_result({
                     "reply": "hi back",
@@ -785,16 +583,28 @@ class TestChat:
             async def resolve():
                 await asyncio.sleep(0.1)
                 item = await queue.get()
-                assert item["sender"] == "http-n8n-calendar"
+                assert item["sender"] == "agentctl"
                 item["response_future"].set_result({"reply": "ok"})
 
             task = asyncio.create_task(resolve())
             await client.post(
                 "/api/v1/chat",
                 headers=auth_headers,
-                json={"message": "test", "sender": "n8n-calendar"},
+                json={"message": "test", "sender": "agentctl"},
             )
             await task
+
+    @pytest.mark.asyncio
+    async def test_invalid_operator_sender_rejected(self, api, auth_headers):
+        """/chat rejects senders not in OPERATOR_SENDERS."""
+        app = _make_app(api)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/v1/chat",
+                headers=auth_headers,
+                json={"message": "test", "sender": "n8n-calendar"},
+            )
+            assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_context_prepended(self, api, queue, auth_headers):
@@ -1037,14 +847,14 @@ class TestChatEdgeCases:
                 assert r.status == 200
 
     @pytest.mark.asyncio
-    async def test_chat_type_is_http(self, api, queue, auth_headers):
-        """Chat queue items have type='http' for source routing."""
+    async def test_chat_talker_is_operator(self, api, queue, auth_headers):
+        """/chat queue items declare talker='operator' — never overridable."""
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             async def resolve():
                 await asyncio.sleep(0.05)
                 item = await queue.get()
-                assert item["type"] == "http"
+                assert item["talker"] == "operator"
                 item["response_future"].set_result({"reply": "ok"})
 
             task = asyncio.create_task(resolve())
@@ -1101,7 +911,7 @@ class TestContentType:
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers={**auth_headers, "Content-Type": "application/json"},
                 data=b"",
             )
@@ -1127,7 +937,7 @@ class TestContentType:
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json=[{"message": "test"}],
             )
@@ -1311,16 +1121,16 @@ class TestRateLimiting:
         async with TestClient(TestServer(app)) as client:
             for i in range(3):
                 resp = await client.post(
-                    "/api/v1/notify",
+                    "/api/v1/system/event",
                     headers=headers,
-                    json={"message": f"test-{i}"},
+                    json={"sender": "automation", "message": f"test-{i}"},
                 )
                 assert resp.status == 202
             # 4th request should be rate limited
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=headers,
-                json={"message": "test-blocked"},
+                json={"sender": "automation", "message": "test-blocked"},
             )
             assert resp.status == 429
 
@@ -1340,94 +1150,27 @@ class TestRateLimiting:
             # Fill the limit
             for i in range(2):
                 resp = await client.post(
-                    "/api/v1/notify",
+                    "/api/v1/system/event",
                     headers=headers,
-                    json={"message": f"test-{i}"},
+                    json={"sender": "automation", "message": f"test-{i}"},
                 )
                 assert resp.status == 202
             # Should be blocked
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=headers,
-                json={"message": "blocked"},
+                json={"sender": "automation", "message": "blocked"},
             )
             assert resp.status == 429
             # Wait for window to pass
             await asyncio.sleep(0.15)
             # Should succeed again
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=headers,
-                json={"message": "recovered"},
+                json={"sender": "automation", "message": "recovered"},
             )
             assert resp.status == 202
-
-
-# ─── Sender Prefixing ────────────────────────────────────────────
-
-
-class TestSenderPrefixing:
-    """SEC-3: HTTP sender injection prevention."""
-
-    @pytest.mark.asyncio
-    async def test_sender_prefixed(self, api, queue, auth_headers):
-        """sender='foo' becomes 'http-foo'."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            async def resolve():
-                await asyncio.sleep(0.05)
-                item = await queue.get()
-                assert item["sender"] == "http-foo"
-                item["response_future"].set_result({"reply": "ok"})
-
-            task = asyncio.create_task(resolve())
-            await client.post(
-                "/api/v1/chat",
-                headers=auth_headers,
-                json={"message": "test", "sender": "foo"},
-            )
-            await task
-
-    @pytest.mark.asyncio
-    async def test_sender_default(self, api, queue, auth_headers):
-        """Missing sender becomes 'http-default'."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            async def resolve():
-                await asyncio.sleep(0.05)
-                item = await queue.get()
-                assert item["sender"] == "http-default"
-                item["response_future"].set_result({"reply": "ok"})
-
-            task = asyncio.create_task(resolve())
-            await client.post(
-                "/api/v1/chat",
-                headers=auth_headers,
-                json={"message": "test"},
-            )
-            await task
-
-    @pytest.mark.asyncio
-    async def test_sender_cannot_impersonate_channel(self, api, queue, auth_headers):
-        """Sender matching a phone number gets prefixed, preventing impersonation."""
-        app = _make_app(api)
-        async with TestClient(TestServer(app)) as client:
-            async def resolve():
-                await asyncio.sleep(0.05)
-                item = await queue.get()
-                assert item["sender"] == "http-+431234567890"
-                item["response_future"].set_result({"reply": "ok"})
-
-            task = asyncio.create_task(resolve())
-            await client.post(
-                "/api/v1/chat",
-                headers=auth_headers,
-                json={"message": "test", "sender": "+431234567890"},
-            )
-            await task
-
-
-# ─── Config Integration ──────────────────────────────────────────
 
 
 class TestHTTPConfig:
@@ -1482,12 +1225,12 @@ class TestConcurrentHTTPChat:
                 client.post(
                     "/api/v1/chat",
                     headers=auth_headers,
-                    json={"message": "hello from alice", "sender": "alice"},
+                    json={"message": "hello from cli", "sender": "cli"},
                 ),
                 client.post(
                     "/api/v1/chat",
                     headers=auth_headers,
-                    json={"message": "hello from bob", "sender": "bob"},
+                    json={"message": "hello from agentctl", "sender": "agentctl"},
                 ),
             )
             await task
@@ -1500,22 +1243,21 @@ class TestConcurrentHTTPChat:
 
             # Each response must contain its own sender's name — no cross-talk
             replies = {body_a["reply"], body_b["reply"]}
-            assert any("http-alice" in r and "hello from alice" in r for r in replies)
-            assert any("http-bob" in r and "hello from bob" in r for r in replies)
+            assert any("cli" in r and "hello from cli" in r for r in replies)
+            assert any("agentctl" in r and "hello from agentctl" in r for r in replies)
 
             # Session IDs must differ
             assert body_a["session_id"] != body_b["session_id"]
 
     @pytest.mark.asyncio
     async def test_concurrent_mixed_senders_all_succeed(self, api, queue, auth_headers):
-        """Four concurrent requests with a mix of default and custom senders
-        all resolve independently."""
+        """Concurrent requests across all operator sub-senders resolve independently."""
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             received_senders = []
 
             async def resolve_all():
-                for i in range(4):
+                for i in range(3):
                     item = await queue.get()
                     received_senders.append(item["sender"])
                     item["response_future"].set_result({
@@ -1527,13 +1269,11 @@ class TestConcurrentHTTPChat:
 
             responses = await asyncio.gather(
                 client.post("/api/v1/chat", headers=auth_headers,
-                            json={"message": "m0", "sender": "svc-a"}),
+                            json={"message": "m0", "sender": "cli"}),
                 client.post("/api/v1/chat", headers=auth_headers,
-                            json={"message": "m1", "sender": "svc-b"}),
+                            json={"message": "m1", "sender": "agentctl"}),
                 client.post("/api/v1/chat", headers=auth_headers,
-                            json={"message": "m2"}),  # default sender
-                client.post("/api/v1/chat", headers=auth_headers,
-                            json={"message": "m3", "sender": "svc-a"}),  # same as first
+                            json={"message": "m2", "sender": "web"}),
             )
             await task
 
@@ -1541,14 +1281,12 @@ class TestConcurrentHTTPChat:
                 assert resp.status == 200
 
             bodies = [await r.json() for r in responses]
-            # All four replies are distinct strings
             reply_set = {b["reply"] for b in bodies}
-            assert len(reply_set) == 4
+            assert len(reply_set) == 3
 
-            # Verify the queue saw correct sender prefixes
-            assert "http-svc-a" in received_senders
-            assert "http-svc-b" in received_senders
-            assert "http-default" in received_senders
+            assert "cli" in received_senders
+            assert "agentctl" in received_senders
+            assert "web" in received_senders
 
 
 # ─── Sessions Endpoint ───────────────────────────────────────────
@@ -1735,6 +1473,7 @@ class TestHTTPAttachments:
                 "/api/v1/chat",
                 headers=auth_headers,
                 json={
+                    "sender": "cli",
                     "message": "process this",
                     "attachments": [{
                         "content_type": "application/pdf",
@@ -1757,9 +1496,10 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json={
+                    "sender": "automation",
                     "message": "new photo",
                     "attachments": [{
                         "content_type": "image/png",
@@ -1785,9 +1525,10 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json={
+                    "sender": "automation",
                     "message": "two files",
                     "attachments": [
                         {"content_type": "text/plain", "filename": "a.txt", "data": base64.b64encode(b"aaa").decode()},
@@ -1807,9 +1548,9 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
-                json={"message": "plain text"},
+                json={"sender": "automation", "message": "plain text"},
             )
             assert resp.status == 202
 
@@ -1822,9 +1563,9 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
-                json={"message": "no files", "attachments": []},
+                json={"sender": "automation", "message": "no files", "attachments": []},
             )
             assert resp.status == 202
 
@@ -1839,9 +1580,10 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json={
+                    "sender": "automation",
                     "message": "partial",
                     "attachments": [
                         {"content_type": "text/plain", "filename": "no-data.txt"},
@@ -1863,9 +1605,10 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json={
+                    "sender": "automation",
                     "message": "partial",
                     "attachments": [
                         {"filename": "no-ct.txt", "data": base64.b64encode(b"x").decode()},
@@ -1891,9 +1634,10 @@ class TestHTTPAttachments:
         app = _make_app(api)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json={
+                    "sender": "automation",
                     "message": "file",
                     "attachments": [{"content_type": "text/plain", "filename": "test.txt",
                                      "data": base64.b64encode(b"hello").decode()}],
@@ -1915,9 +1659,10 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json={
+                    "sender": "automation",
                     "message": "binary file",
                     "attachments": [{"content_type": "application/octet-stream",
                                      "filename": "data.bin", "data": data_b64}],
@@ -1938,9 +1683,10 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json={
+                    "sender": "automation",
                     "message": "traversal test",
                     "attachments": [{"content_type": "text/plain",
                                      "filename": "../../evil.txt",
@@ -1966,9 +1712,10 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json={
+                    "sender": "automation",
                     "message": "voice test",
                     "attachments": [{
                         "content_type": "audio/ogg",
@@ -1992,9 +1739,10 @@ class TestHTTPAttachments:
         app = _make_app(api_with_dl)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 headers=auth_headers,
                 json={
+                    "sender": "automation",
                     "message": "audio file",
                     "attachments": [{
                         "content_type": "audio/mpeg",
@@ -2077,7 +1825,7 @@ class TestAgentIdentity:
         app = _make_app(api_with_name)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/v1/notify",
+                "/api/v1/system/event",
                 json={"message": "test"},
                 headers=auth_headers,
             )
@@ -2534,6 +2282,12 @@ class TestQueueRoutingInvariant:
         "_handle_maintain_cb",       # daemon._handle_maintain → run_blocking
     })
 
+    # Handlers that legitimately don't queue — they return early with an
+    # error status (e.g. 501 for unimplemented bridges).
+    _NON_QUEUEING_HANDLERS = frozenset({
+        "_handle_inbound_whatsapp",  # 501 Not Implemented until bridge exists
+    })
+
     @staticmethod
     def _get_post_handlers() -> list[str]:
         """Parse HTTPApi.start() AST to discover all POST route handlers.
@@ -2594,10 +2348,10 @@ class TestQueueRoutingInvariant:
                 ):
                     queue_calls.append(f"{val.attr}.{func.attr}")
 
-            # self._parse_and_queue() — internal helper that calls queue.put
+            # Shared inbound/event helpers that call queue.put internally.
             if isinstance(func.value, ast.Name) and func.value.id == "self":
-                if func.attr == "_parse_and_queue":
-                    queue_calls.append("_parse_and_queue")
+                if func.attr in ("_handle_user_inbound", "_queue_ephemeral"):
+                    queue_calls.append(func.attr)
 
             # self._handle_evolve_cb() etc — callback delegation
             if isinstance(func.value, ast.Attribute):
@@ -2623,7 +2377,16 @@ class TestQueueRoutingInvariant:
             f"Expected at least 5 POST handlers, found {len(handlers)}: {handlers}"
         )
         # These must always be present
-        for expected in ("_handle_chat", "_handle_notify", "_handle_reset", "_handle_evolve", "_handle_compact"):
+        for expected in (
+            "_handle_chat",
+            "_handle_inbound_telegram",
+            "_handle_inbound_email",
+            "_handle_system_event",
+            "_handle_agent_action",
+            "_handle_reset",
+            "_handle_evolve",
+            "_handle_compact",
+        ):
             assert expected in handlers, f"{expected} not found in POST handlers: {handlers}"
 
     def test_all_post_handlers_route_through_queue(self):
@@ -2641,6 +2404,8 @@ class TestQueueRoutingInvariant:
 
         violations = []
         for handler_name in handlers:
+            if handler_name in self._NON_QUEUEING_HANDLERS:
+                continue
             passes, reason = self._handler_uses_queue(handler_name)
             if not passes:
                 violations.append(f"  {handler_name}: {reason}")

@@ -326,8 +326,8 @@ class TestResolvePattern:
 
         await daemon._process_message(
             text="test",
-            sender="http-test",
-            source="http", deliver=False,
+            sender="cli",
+            talker="operator",
             response_future=future,
         )
 
@@ -348,7 +348,7 @@ class TestResolvePattern:
         await daemon._process_message(
             text="test",
             sender="test-sender",
-            source="system", deliver=False,
+            talker="system",
             response_future=None,
         )
 
@@ -449,8 +449,8 @@ class TestResolveIntegration:
         with patch("pipeline.run_agentic_loop", side_effect=RuntimeError("API down")):
             await daemon._process_message(
                 text="test",
-                sender="http-test",
-                source="http", deliver=False,
+                sender="cli",
+                talker="operator",
                 response_future=future,
             )
 
@@ -489,8 +489,8 @@ class TestResolveIntegration:
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="heartbeat trigger",
-                sender="http-test",
-                source="http", deliver=False,
+                sender="cli",
+                talker="operator",
                 response_future=future,
             )
 
@@ -527,8 +527,8 @@ class TestResolveIntegration:
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
                 text="test question",
-                sender="http-test",
-                source="http", deliver=False,
+                sender="cli",
+                talker="operator",
                 response_future=future,
             )
 
@@ -611,8 +611,7 @@ class TestContextBuilderSourcePassthrough:
 
         with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
-                text="test", sender="system", source="system", deliver=False,
-                task_type="system",
+                text="test", sender="system", talker="system",
             )
 
         daemon.context_builder.build.assert_called_once()
@@ -627,7 +626,7 @@ class TestContextBuilderSourcePassthrough:
 
         with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
-                text="test", sender="http", source="http", deliver=False,
+                text="test", sender="http", talker="operator",
                 response_future=future,
             )
 
@@ -641,8 +640,7 @@ class TestContextBuilderSourcePassthrough:
 
         with patch("pipeline.run_agentic_loop", return_value=resp):
             await daemon._process_message(
-                text="hello", sender="+431234567890", source="telegram",
-                task_type="task",
+                text="hello", sender="+431234567890", talker="user", channel="telegram",
             )
 
         daemon.context_builder.build.assert_called_once()
@@ -827,7 +825,7 @@ class TestProcessMessageIntegration:
             await daemon._process_message(
                 text="What is the weather?",
                 sender="+431234567890",
-                source="telegram",
+                talker="user", channel="telegram",
             )
 
         # Session should have add_user_message called
@@ -858,7 +856,7 @@ class TestProcessMessageIntegration:
             await daemon._process_message(
                 text="Run the status tool",
                 sender="+431234567890",
-                source="telegram",
+                talker="user", channel="telegram",
             )
 
         # add_assistant_message(persist_only=True) should be called for each assistant message
@@ -888,7 +886,7 @@ class TestProcessMessageIntegration:
             await daemon._process_message(
                 text="hello",
                 sender="+431234567890",
-                source="telegram",
+                talker="user", channel="telegram",
                 response_future=future,
             )
 
@@ -906,7 +904,7 @@ class TestProcessMessageIntegration:
             await daemon._process_message(
                 text="bad request",
                 sender="http",
-                source="http", deliver=False,
+                talker="operator",
                 response_future=future,
             )
 
@@ -948,7 +946,7 @@ class TestProcessMessageIntegration:
             await daemon._process_message(
                 text="What is in this picture?",
                 sender="+431234567890",
-                source="telegram",
+                talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -983,7 +981,7 @@ class TestProcessMessageIntegration:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="look", sender="+431234567890", source="telegram",
+                text="look", sender="+431234567890", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1009,7 +1007,7 @@ class TestProcessMessageIntegration:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="check this", sender="+431234567890", source="telegram",
+                text="check this", sender="+431234567890", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1031,7 +1029,7 @@ class TestProcessMessageIntegration:
             await daemon._process_message(
                 text="Continue working",
                 sender="+431234567890",
-                source="telegram",
+                talker="user", channel="telegram",
             )
 
         # compact_session should have been called
@@ -1327,15 +1325,15 @@ class TestMessageLoopDebounce:
     async def test_reset_user_alias_resolves_contact(self, loop_daemon):
         """Reset with sender='user' resolves to first non-http: contact."""
         daemon, session = loop_daemon
-        daemon.session_mgr._index = {"http:http-system": MagicMock(), "http:cli": MagicMock(), "telegram:Nicolas": MagicMock()}
-        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:http-system", "http:cli", "telegram:Nicolas"])
+        daemon.session_mgr._index = {"system:maintenance": MagicMock(), "operator:cli": MagicMock(), "user:Nicolas": MagicMock()}
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["system:maintenance", "operator:cli", "user:Nicolas"])
 
         await daemon.queue.put({"type": "reset", "sender": "user"})
         await daemon.queue.put(None)
 
         await daemon._message_loop()
 
-        daemon.session_mgr.close_session.assert_called_once_with("telegram:Nicolas")
+        daemon.session_mgr.close_session.assert_called_once_with("user:Nicolas")
 
     @pytest.mark.asyncio
     async def test_reset_unknown_sender_logs_warning(self, loop_daemon):
@@ -1584,36 +1582,29 @@ class TestResetSession:
         daemon.session_mgr.close_session.assert_called_once_with("alice")
 
     @pytest.mark.asyncio
-    async def test_reset_user_skips_internal_senders(self, tmp_path):
-        """'user' alias skips http: prefixed contacts."""
+    async def test_reset_user_targets_configured_user_session(self, tmp_path):
+        """'user' alias always targets f'user:{config.user_name}'."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
         daemon.session_mgr = MagicMock()
-        daemon.session_mgr._index = {
-            "http:http-system": {}, "http:cli": {}, "http:http-n8n": {},
-            "telegram:Nicolas": {},
-        }
-        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:http-system", "http:cli", "http:http-n8n", "telegram:Nicolas"])
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
 
         result = await daemon._reset_session("user")
 
         assert result["reset"] is True
-        daemon.session_mgr.close_session.assert_called_once_with("telegram:Nicolas")
+        daemon.session_mgr.close_session.assert_called_once_with(f"user:{config.user_name}")
 
     @pytest.mark.asyncio
-    async def test_reset_user_no_user_found(self, tmp_path):
-        """'user' alias with only http: contacts returns not found."""
+    async def test_reset_user_missing_session_returns_not_found(self, tmp_path):
+        """If no user:<name> session exists, reset reports not found."""
         config = _make_config(tmp_path)
         daemon = LucydDaemon(config)
         daemon.session_mgr = MagicMock()
-        daemon.session_mgr._index = {"http:http-system": {}, "http:http-api": {}}
-        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:http-system", "http:http-api"])
+        daemon.session_mgr.close_session = AsyncMock(return_value=False)
 
         result = await daemon._reset_session("user")
 
         assert result["reset"] is False
-        assert "no user session found" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_reset_no_session_mgr(self, tmp_path):

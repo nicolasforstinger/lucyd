@@ -274,14 +274,12 @@ async def poll_loop() -> None:
                 try:
                     request_body: dict[str, Any] = {
                         "message": msg["body"],
-                        "sender": msg["from"],
-                        "channel_id": "email",
                     }
                     if msg.get("attachments"):
                         request_body["attachments"] = msg["attachments"]
 
                     resp = await client.post(
-                        f"{URL}/api/v1/chat", json=request_body,
+                        f"{URL}/api/v1/inbound/email", json=request_body,
                     )
                     data = resp.json()
                     reply = data.get("reply", "")
@@ -313,12 +311,12 @@ async def poll_loop() -> None:
 async def _notify_delivery_failure(
     client: httpx.AsyncClient, recipient: str, error: Exception,
 ) -> None:
-    """POST delivery failure to daemon's /notify endpoint."""
+    """POST delivery failure to daemon's /system/event (talker=system, sender=error)."""
     message = f"Email delivery to {recipient} failed: {error}"
     try:
         await client.post(
-            f"{URL}/api/v1/notify",
-            json={"message": message, "source": "email"},
+            f"{URL}/api/v1/system/event",
+            json={"message": message, "sender": "error"},
             timeout=10,
         )
     except Exception as e:

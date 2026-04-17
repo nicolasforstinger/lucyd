@@ -29,7 +29,7 @@ import consolidation as consolidation_mod
 import metrics
 from agentic import LoopConfig, run_agentic_loop, run_single_shot
 from attachments import ImageTooLarge, extract_document_text, fit_image
-from config import Config
+from config import Config, Talker
 from context import ContextBuilder, _estimate_tokens
 from log_utils import _log_safe, set_log_context
 from metering import MeteringDB
@@ -168,13 +168,11 @@ class _MessageState:
     """Internal state bag for process_message phases."""
     text: str
     sender: str
-    source: str           # Message origin (channel name, "http", or "system")
+    talker: Talker                    # Envelope: who is speaking (user/operator/system/agent)
     trace_id: str
-    channel_id: str = "http"          # Envelope: which channel sent this
-    task_type: str = "conversational"  # Envelope: session lifecycle intent
-    reply_to: str = ""                # Envelope: response routing ("" = caller, "silent", or sender name)
-    session_key: str = ""             # channel_id:sender — computed in process_message
-    deliver: bool = True
+    channel: str = ""                 # Inbound channel for log/metric metadata only
+    reply_to: str = ""                # Envelope: response routing ("" = caller, "silent")
+    session_key: str = ""             # f"{talker}:{sender}" — computed in process_message
     image_blocks: list[dict[str, Any]] = field(default_factory=list)
     session: Any = None
     user_msg_idx: int = 0
@@ -413,7 +411,7 @@ class MessagePipeline:
         ctx.text = f"{timestamp}\n{ctx.text}"
 
         session.trace_id = ctx.trace_id
-        await session.add_user_message(ctx.text, sender=ctx.sender, source=ctx.source)
+        await session.add_user_message(ctx.text, sender=ctx.sender, source=ctx.channel or ctx.talker)
 
         # Transiently inject image content blocks for the API call
         ctx.user_msg_idx = len(session.messages) - 1
@@ -457,8 +455,7 @@ class MessagePipeline:
         recall_text = await self._build_recall(ctx, provider)
 
         system_blocks = self._context_builder.build(
-            task_type=ctx.task_type,
-            deliver=ctx.deliver,
+            talker=ctx.talker,
             tool_descriptions=tool_descs,
             skill_index=skill_index,
             always_on_skills=always_on,
@@ -496,7 +493,7 @@ class MessagePipeline:
             )
             if metrics.ENABLED:
                 metrics.CONTEXT_UTILIZATION.labels(
-                    channel_id=ctx.channel_id, task_type=ctx.task_type,
+                    talker=ctx.talker,
                     session_id=session.id if session else "",
                     sender=ctx.sender,
                 ).observe(used / max_ctx if max_ctx > 0 else 0)
@@ -596,15 +593,15 @@ class MessagePipeline:
         _resolve({"error": str(error), "session_id": session.id})
         # Auto-close ephemeral sessions even on error — but only if the
         # session was created by this event (not a pre-existing session).
-        if ctx.task_type in ("task", "system") and not ctx.session_preexisted:
+        if ctx.talker in ("system", "agent") and not ctx.session_preexisted:
             try:
                 await self._session_mgr.close_session(ctx.session_key)
-                log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
+                log.info("Auto-closed %s session for %s", ctx.talker, _log_safe(ctx.sender))
                 if metrics.ENABLED:
-                    metrics.SESSION_CLOSE_TOTAL.labels(reason=f"auto_{ctx.task_type}").inc()
+                    metrics.SESSION_CLOSE_TOTAL.labels(reason=f"auto_{ctx.talker}").inc()
             except Exception:
                 log.warning("Auto-close failed for %s session %s",
-                            ctx.task_type, ctx.sender, exc_info=True)
+                            ctx.talker, ctx.sender, exc_info=True)
 
     # ── Finalization ─────────────────────────────────────────────
 
@@ -631,11 +628,9 @@ class MessagePipeline:
     async def _deliver_reply(self, ctx: _MessageState, _resolve: Any) -> None:
         """Resolve HTTP future with reply content.
 
-        Routing via reply_to:
-        - "" (default): resolve the caller's HTTP future with the reply
-        - "silent": process and persist, but mark reply as silent (log only)
-        - "<sender>": resolve caller's future AND enqueue reply as system
-          message into <sender>'s session through the normal pipeline
+        system/agent talkers have no reply path — the future is resolved
+        with an empty body and nothing is delivered.  reply_to="silent"
+        suppresses normal reply delivery for user/operator.
         """
         session = ctx.session
         response = ctx.response
@@ -643,39 +638,18 @@ class MessagePipeline:
         if response.cost_limited and not reply.strip():
             reply = ("[cost limit reached — max_cost_per_message in lucyd.toml. "
                      "raise or set to 0 to disable.]")
-        silent = _is_silent(reply, self._config.silent_tokens)
+        silent = _is_silent(reply, self._config.silent_tokens) or ctx.reply_to == "silent"
+        if ctx.talker in ("system", "agent"):
+            silent = True
         token_info = {
             "input": response.usage.input_tokens,
             "output": response.usage.output_tokens,
         }
         reply_attachments = response.attachments or []
 
-        # Route: silent — suppress delivery
-        if ctx.reply_to == "silent":
-            log.info("[%s] reply_to=silent — reply logged, not delivered", ctx.trace_id[:8])
-            _resolve({"reply": reply, "silent": True, "session_id": session.id,
-                       "tokens": token_info, "attachments": reply_attachments})
-            return
-
-        # Route: redirect — resolve caller AND enqueue reply into target session
-        if ctx.reply_to:
-            log.info("[%s] reply_to=%s — redirecting reply", ctx.trace_id[:8], _log_safe(ctx.reply_to))
-            _resolve({"reply": reply, "session_id": session.id,
-                       "tokens": token_info, "attachments": reply_attachments,
-                       "redirected_to": ctx.reply_to})
-            if reply.strip():
-                await self._queue.put({
-                    "text": reply,
-                    "sender": ctx.reply_to,
-                    "type": "system",
-                    "channel_id": ctx.channel_id,
-                    "task_type": "system",
-                })
-            return
-
-        # Route: default — resolve HTTP future
         if silent:
-            log.info("Silent reply suppressed: %s", _log_safe(reply[:100]))
+            log.info("[%s] Silent reply (talker=%s): %s",
+                     ctx.trace_id[:8], ctx.talker, _log_safe(reply[:100]))
             _resolve({"reply": reply, "silent": True, "session_id": session.id,
                        "tokens": token_info, "attachments": reply_attachments})
         else:
@@ -816,19 +790,19 @@ class MessagePipeline:
                 metrics.COMPACTION_TOKENS_RECLAIMED.observe(reclaimed)
 
     async def _auto_close_if_ephemeral(self, ctx: _MessageState) -> None:
-        """Auto-close ephemeral sessions (task_type 'task' or 'system')."""
-        if ctx.task_type in ("task", "system") and not ctx.force_compact and not ctx.session_preexisted:
+        """Auto-close ephemeral sessions (talker 'system' or 'agent')."""
+        if ctx.talker in ("system", "agent") and not ctx.force_compact and not ctx.session_preexisted:
             # Fire pre-close hook (e.g., evolution validation + rollback)
             if self._on_pre_close is not None:
                 await self._on_pre_close(ctx.sender)
             try:
                 await self._session_mgr.close_session(ctx.session_key)
-                log.info("Auto-closed %s session for %s", ctx.task_type, _log_safe(ctx.sender))
+                log.info("Auto-closed %s session for %s", ctx.talker, _log_safe(ctx.sender))
                 if metrics.ENABLED:
-                    metrics.SESSION_CLOSE_TOTAL.labels(reason=f"auto_{ctx.task_type}").inc()
+                    metrics.SESSION_CLOSE_TOTAL.labels(reason=f"auto_{ctx.talker}").inc()
             except Exception:
                 log.warning("Auto-close failed for %s session %s",
-                            ctx.task_type, ctx.sender, exc_info=True)
+                            ctx.talker, ctx.sender, exc_info=True)
 
     # ── Entry Point ──────────────────────────────────────────────
 
@@ -836,15 +810,13 @@ class MessagePipeline:
         self,
         text: str,
         sender: str,
-        source: str,
+        talker: Talker,
         attachments: list[Any] | None = None,
         response_future: asyncio.Future[dict[str, Any]] | None = None,
         trace_id: str = "",
         force_compact: bool = False,
         stream_queue: Any = None,
-        deliver: bool = True,
-        channel_id: str = "http",
-        task_type: str = "conversational",
+        channel: str = "",
         reply_to: str = "",
         session_key: str = "",
     ) -> None:
@@ -878,13 +850,11 @@ class MessagePipeline:
         ctx = _MessageState(
             text=text,
             sender=sender,
-            source=source,
+            talker=talker,
             trace_id=trace_id,
-            channel_id=channel_id,
-            task_type=task_type,
+            channel=channel,
             reply_to=reply_to,
-            session_key=session_key or f"{channel_id}:{sender}",
-            deliver=deliver,
+            session_key=session_key or f"{talker}:{sender}",
             image_blocks=image_blocks,
             model_name=model_cfg.get("model", ""),
             provider_name=model_cfg.get("provider", ""),
@@ -997,7 +967,7 @@ class MessagePipeline:
         if metrics.ENABLED:
             _sid = ctx.session.id if ctx.session else ""
             _labels = {
-                "channel_id": ctx.channel_id, "task_type": ctx.task_type,
+                "talker": ctx.talker,
                 "session_id": _sid, "sender": ctx.sender,
             }
             metrics.MESSAGES_TOTAL.labels(**_labels).inc()

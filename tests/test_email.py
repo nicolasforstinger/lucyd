@@ -599,8 +599,8 @@ class TestPollLoop:
 
         mock_client.post.assert_called_once()
         post_kwargs = mock_client.post.call_args
+        assert post_kwargs[0][0].endswith("/api/v1/inbound/email")
         assert post_kwargs[1]["json"]["message"] == "Question?"
-        assert post_kwargs[1]["json"]["channel_id"] == "email"
 
         mock_send.assert_called_once_with("sender@example.com", "Re: Hello", "Answer!", None)
 
@@ -1006,7 +1006,7 @@ class TestMain:
 class TestDeliveryFailureNotification:
     @pytest.mark.asyncio
     async def test_smtp_failure_notifies_daemon(self) -> None:
-        """SMTP failure POSTs to /api/v1/notify."""
+        """SMTP failure POSTs to /api/v1/system/event with sender=error."""
         email_mod.URL = "http://daemon:8100"
         mock_client = AsyncMock()
         mock_client.post.return_value = MagicMock(status_code=202)
@@ -1016,10 +1016,10 @@ class TestDeliveryFailureNotification:
 
         mock_client.post.assert_called_once()
         call_args = mock_client.post.call_args
-        assert "/api/v1/notify" in call_args.args[0]
+        assert "/api/v1/system/event" in call_args.args[0]
         body = call_args.kwargs["json"]
         assert "user@x.com" in body["message"]
-        assert body["source"] == "email"
+        assert body["sender"] == "error"
 
     @pytest.mark.asyncio
     async def test_notify_failure_does_not_raise(self) -> None:

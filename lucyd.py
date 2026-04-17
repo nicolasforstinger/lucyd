@@ -106,8 +106,8 @@ class PriorityMessageQueue:
         self._seq = 0
 
     async def put(self, item: dict[str, Any]) -> None:
-        task_type = item.get("task_type", "conversational")
-        priority = _PRIORITY_SYSTEM if task_type == "system" else _PRIORITY_USER
+        talker = item.get("talker", "user")
+        priority = _PRIORITY_SYSTEM if talker in ("system", "agent") else _PRIORITY_USER
         item["_queued_at"] = time.time()
         item["_priority"] = priority
         self._seq += 1
@@ -562,16 +562,9 @@ class LucydDaemon:
                 return {"reset": True, "target": target, "type": "session_id"}
             return {"reset": False, "reason": f"no session found for ID: {target}"}
 
-        # "user" shortcut: find primary operator contact (non-HTTP channel)
+        # "user" shortcut: the single user session
         if target == "user":
-            for contact in await self.session_mgr.list_contacts():
-                # Skip HTTP API senders (automations, webhooks, system tasks)
-                if contact.startswith("http:"):
-                    continue
-                target = contact
-                break
-            else:
-                return {"reset": False, "reason": "no user session found"}
+            target = f"user:{self.config.user_name}"
 
         if await self.session_mgr.close_session(target):
             if metrics.ENABLED:
@@ -781,66 +774,57 @@ class LucydDaemon:
         """Main message processing loop — sequential."""
         self._ensure_pipeline()
         debounce_s = self.config.debounce_ms / 1000.0
-        pending: dict[str, list[dict[str, Any]]] = {}  # sender → [messages]
+        pending: dict[str, list[dict[str, Any]]] = {}  # session_key → [messages]
 
-        async def drain_pending(sender: str) -> None:
-            msgs = pending.pop(sender, [])
+        async def drain_pending(session_key: str) -> None:
+            msgs = pending.pop(session_key, [])
             if not msgs:
                 return
-            # Combine into one
             combined_text = "\n".join(m["text"] for m in msgs if m["text"])
-            # Collect attachments from all debounced messages
             combined_attachments = []
             for m in msgs:
                 if m.get("attachments"):
                     combined_attachments.extend(m["attachments"])
             first = msgs[0]
-            source = first.get("source", "")
-            deliver = first.get("deliver", True)
-            channel_id = first.get("channel_id", "http")
-            task_type = first.get("task_type", "conversational")
+            talker = first["talker"]
+            sender = first["sender"]
+            channel = first.get("channel", "")
             reply_to = first.get("reply_to", "")
             tid = str(uuid.uuid4())
-            sk = f"{channel_id}:{sender}"
-            log.info("[%s] Processing message from %s (source=%s channel=%s)",
-                     tid[:8], _log_safe(sender), _log_safe(source), channel_id)
-            async with self.pipeline.get_session_lock(sk):
+            log.info("[%s] Processing %s message from %s (channel=%s)",
+                     tid[:8], talker, _log_safe(sender), channel or "-")
+            async with self.pipeline.get_session_lock(session_key):
                 await self._process_message(
-                    text=combined_text, sender=sender, source=source,
+                    text=combined_text, sender=sender, talker=talker,
                     attachments=combined_attachments or None,
                     trace_id=tid,
-                    deliver=deliver,
-                    channel_id=channel_id,
-                    task_type=task_type,
+                    channel=channel,
                     reply_to=reply_to,
                 )
 
         async def process_http_immediate(item: dict[str, Any]) -> None:
-            """Process HTTP /chat messages immediately (no debounce).
+            """Process sync HTTP messages immediately (no debounce).
 
-            Each /chat request has its own Future — combining messages
-            would lose Futures and break response delivery.
+            Each request has its own Future — combining would lose Futures.
             """
             tid = str(uuid.uuid4())
-            http_sender = item.get("sender", "http")
-            channel_id = item.get("channel_id", "http")
-            task_type = item.get("task_type", "conversational")
+            talker = item["talker"]
+            sender = item["sender"]
+            channel = item.get("channel", "")
             reply_to = item.get("reply_to", "")
-            sk = f"{channel_id}:{http_sender}"
-            log.info("[%s] Processing HTTP message from %s (channel=%s)",
-                     tid[:8], _log_safe(http_sender), channel_id)
-            async with self.pipeline.get_session_lock(sk):
+            session_key = f"{talker}:{sender}"
+            log.info("[%s] Processing sync %s message from %s",
+                     tid[:8], talker, _log_safe(sender))
+            async with self.pipeline.get_session_lock(session_key):
                 await self._process_message(
                     text=item.get("text", ""),
-                    sender=http_sender,
-                    source=item.get("type", "http"),
+                    sender=sender,
+                    talker=talker,
                     attachments=item.get("attachments"),
                     response_future=item.get("response_future"),
                     trace_id=tid,
                     stream_queue=item.get("stream_queue"),
-                    deliver=False,
-                    channel_id=channel_id,
-                    task_type=task_type,
+                    channel=channel,
                     reply_to=reply_to,
                 )
 
@@ -878,7 +862,7 @@ class LucydDaemon:
                 await self._process_reset_item(item)
                 continue
 
-            # Forced compact — find primary session, diary + compact
+            # Forced compact — diary + compaction on user session
             if item.get("type") == "compact":
                 result = await self._handle_compact()
                 log.info("Compact: %s", result)
@@ -887,55 +871,39 @@ class LucydDaemon:
                     compact_future.set_result(result)
                 continue
 
-            # HTTP /chat — process immediately, bypass debouncing
+            # Sync HTTP (chat/stream, inbound bridge) — process immediately
             if item.get("response_future") is not None:
                 await process_http_immediate(item)
                 continue
 
-            # Queued message (from HTTP /message, /system, /notify)
-            sender = item.get("sender", "system")
-            source = item.get("type", "system")
+            # Async queued message (system/event, agent/action, etc.)
+            talker = item.get("talker")
+            sender = item.get("sender")
+            if not talker or not sender:
+                log.warning("Queue item missing talker/sender, dropping: %s", item)
+                continue
+
             text = item.get("text", "")
             attachments = item.get("attachments")
-
-            # Delivery: user messages deliver, system messages don't
-            deliver = source not in ("system", "http")
-
-            # Route notifications to primary session
-            if item.get("notify") and self.config.notify_target:
-                notify_target = self.config.notify_target
-                # Find operator's existing session key (e.g., "telegram:Nicolas")
-                for contact in await self.session_mgr.list_contacts():
-                    if contact.endswith(f":{notify_target}"):
-                        sender = contact.split(":", 1)[1]
-                        item["channel_id"] = contact.split(":", 1)[0]
-                        break
-                else:
-                    sender = notify_target
-                deliver = True
-
             if not text and not attachments:
                 continue
 
-            # Debounce: collect messages from same sender
-            if sender not in pending:
-                pending[sender] = []
-            pending[sender].append({
-                "text": text, "source": source, "deliver": deliver,
-                "channel_id": item.get("channel_id", "http"),
-                "task_type": item.get("task_type", "conversational"),
+            session_key = f"{talker}:{sender}"
+            pending.setdefault(session_key, []).append({
+                "text": text,
+                "talker": talker,
+                "sender": sender,
+                "channel": item.get("channel", ""),
                 "reply_to": item.get("reply_to", ""),
                 "attachments": attachments,
             })
 
-            # Wait for more messages
+            # Wait for more messages on the same session
             await asyncio.sleep(debounce_s)
 
-            # Drain all pending senders
             for s in list(pending.keys()):
                 await drain_pending(s)
 
-            # Drain control queue after message processing
             await self._drain_control_queue()
 
     def _setup_signals(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -1041,6 +1009,7 @@ class LucydDaemon:
                 port=cfg.http_port,
                 auth_token=cfg.http_auth_token,
                 agent_timeout=cfg.agent_timeout,
+                user_name=cfg.user_name,
                 get_status=self._build_status,
                 get_sessions=self._build_sessions,
                 get_monitor=self._build_monitor,

@@ -47,8 +47,7 @@ async def tool_reminder(message: str, minutes: int = 5) -> str:
     # Build JSON payload safely via json.dumps (handles all escaping)
     payload = json.dumps({
         "message": f"Reminder: {message}",
-        "sender": "system",
-        "task_type": "system",
+        "sender": "self",
     })
 
     # Write the curl command to a temp file — avoids all shell quoting issues.
@@ -63,7 +62,7 @@ async def tool_reminder(message: str, minutes: int = 5) -> str:
     )
     script_path = script.name
     script.write("#!/bin/sh\n")
-    script.write(f"curl -s -X POST http://localhost:{_http_port}/api/v1/message "
+    script.write(f"curl -s -X POST http://localhost:{_http_port}/api/v1/agent/action "
                  f"{headers} -d {shlex.quote(payload)}\n")
     script.write(f"rm -f {shlex.quote(script_path)}\n")
     script.close()

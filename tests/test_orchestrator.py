@@ -364,7 +364,7 @@ class TestBasicMessageFlow:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hi", sender="Nicolas", source="telegram",
+                text="hi", sender="Nicolas", talker="user", channel="telegram",
                 response_future=future,
             )
 
@@ -382,11 +382,11 @@ class TestBasicMessageFlow:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="alice", source="telegram",
+                text="hello", sender="alice", talker="user", channel="telegram",
             )
 
         daemon.session_mgr.get_or_create.assert_called_once_with(
-            "http:alice"
+            "user:alice"
         )
 
     @pytest.mark.asyncio
@@ -400,7 +400,7 @@ class TestBasicMessageFlow:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         session.add_user_message.assert_called_once()
@@ -426,7 +426,7 @@ class TestProviderErrorHandling:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
                 response_future=future,
             )
 
@@ -444,7 +444,7 @@ class TestProviderErrorHandling:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             # Should not raise
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
     @pytest.mark.asyncio
@@ -457,7 +457,7 @@ class TestProviderErrorHandling:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="heartbeat", sender="system", source="system", deliver=False,
+                text="heartbeat", sender="system", talker="system",
             )
 
     @pytest.mark.asyncio
@@ -469,7 +469,7 @@ class TestProviderErrorHandling:
 
         with patch("pipeline.run_agentic_loop") as mock_loop:
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         mock_loop.assert_not_called()
@@ -493,7 +493,7 @@ class TestSilentTokenSuppression:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="run heartbeat", sender="user", source="telegram",
+                text="run heartbeat", sender="user", talker="user", channel="telegram",
                 response_future=future,
             )
 
@@ -515,7 +515,7 @@ class TestSilentTokenSuppression:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
                 response_future=future,
             )
 
@@ -538,7 +538,7 @@ class TestWarningInjection:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         # Warning consumed
@@ -575,7 +575,7 @@ class TestWarningInjection:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         # _save_state must be called BEFORE agentic_loop
@@ -597,7 +597,7 @@ class TestWarningInjection:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         call_text = session.add_user_message.call_args[0][0]
@@ -622,7 +622,7 @@ class TestCompactionWarning:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("tools.status.MAX_CONTEXT_TOKENS", 200000):
                 await daemon._process_message(
-                    text="hello", sender="user", source="telegram",
+                    text="hello", sender="user", talker="user", channel="telegram",
                 )
 
         assert session.pending_system_warning != ""
@@ -644,7 +644,7 @@ class TestCompactionWarning:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         assert session.pending_system_warning == "" or session.pending_system_warning is None or not session.pending_system_warning
@@ -663,7 +663,7 @@ class TestCompactionWarning:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         # pending_system_warning should stay empty (not set again)
@@ -684,7 +684,7 @@ class TestCompactionWarning:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("tools.status.MAX_CONTEXT_TOKENS", 0):
                 await daemon._process_message(
-                    text="hello", sender="user", source="telegram",
+                    text="hello", sender="user", talker="user", channel="telegram",
                 )
 
         # Should not crash; warning may or may not be set but no ZeroDivisionError
@@ -708,7 +708,7 @@ class TestHardCompaction:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         daemon.session_mgr.compact_session.assert_called_once()
@@ -730,7 +730,7 @@ class TestHardCompaction:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         daemon.session_mgr.compact_session.assert_not_called()
@@ -751,7 +751,7 @@ class TestHTTPFutureResolution:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="question", sender="api", source="http", deliver=False,
+                text="question", sender="api", talker="operator",
                 response_future=future,
             )
 
@@ -773,7 +773,7 @@ class TestHTTPFutureResolution:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="question", sender="api", source="http", deliver=False,
+                text="question", sender="api", talker="operator",
                 response_future=future,
             )
 
@@ -794,7 +794,7 @@ class TestHTTPFutureResolution:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="heartbeat", sender="system", source="http", deliver=False,
+                text="heartbeat", sender="system", talker="operator",
                 response_future=future,
             )
 
@@ -813,7 +813,7 @@ class TestHTTPFutureResolution:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
                 response_future=None,
             )
 
@@ -834,7 +834,7 @@ class TestMessagePersistence:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         session.add_assistant_message.assert_called_once_with(
@@ -857,7 +857,7 @@ class TestMessagePersistence:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         session.add_tool_results.assert_called_once_with(
@@ -875,7 +875,7 @@ class TestMessagePersistence:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         session.save_state.assert_called()
@@ -905,7 +905,7 @@ class TestMemoryV2Wiring:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("pipeline.get_session_start_context", return_value=mock_context) as mock_gsc:
                 await daemon._process_message(
-                    text="hello", sender="user", source="telegram",
+                    text="hello", sender="user", talker="user", channel="telegram",
                 )
 
         mock_gsc.assert_called_once()
@@ -930,7 +930,7 @@ class TestMemoryV2Wiring:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("pipeline.get_session_start_context") as mock_gsc:
                 await daemon._process_message(
-                    text="hello", sender="user", source="telegram",
+                    text="hello", sender="user", talker="user", channel="telegram",
                 )
 
         mock_gsc.assert_not_called()
@@ -950,7 +950,7 @@ class TestMemoryV2Wiring:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("pipeline.get_session_start_context") as mock_gsc:
                 await daemon._process_message(
-                    text="hello", sender="user", source="telegram",
+                    text="hello", sender="user", talker="user", channel="telegram",
                 )
 
         mock_gsc.assert_not_called()
@@ -974,7 +974,7 @@ class TestMemoryV2Wiring:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("pipeline.get_session_start_context", side_effect=Exception("DB corrupt")):
                 await daemon._process_message(
-                    text="hello", sender="user", source="telegram",
+                    text="hello", sender="user", talker="user", channel="telegram",
                     response_future=future,
                 )
 
@@ -1003,7 +1003,7 @@ class TestMemoryV2Wiring:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock, return_value=mock_result) as mock_consol:
                 await daemon._process_message(
-                    text="hello", sender="user", source="telegram",
+                    text="hello", sender="user", talker="user", channel="telegram",
                 )
 
         mock_consol.assert_called_once()
@@ -1030,7 +1030,7 @@ class TestMemoryV2Wiring:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock, side_effect=RuntimeError("LLM timeout")):
                 await daemon._process_message(
-                    text="hello", sender="user", source="telegram",
+                    text="hello", sender="user", talker="user", channel="telegram",
                 )
 
         # Compaction blocked — don't summarize unconsolidated messages
@@ -1054,7 +1054,7 @@ class TestMemoryV2Wiring:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             with patch("consolidation.consolidate_session", new_callable=AsyncMock) as mock_consol:
                 await daemon._process_message(
-                    text="hello", sender="user", source="telegram",
+                    text="hello", sender="user", talker="user", channel="telegram",
                 )
 
         mock_consol.assert_not_called()
@@ -1126,7 +1126,7 @@ class TestErrorRecoveryOrphanedMessages:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         # Session must NOT end with an orphaned user message
@@ -1154,7 +1154,7 @@ class TestErrorRecoveryOrphanedMessages:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="second", sender="user", source="telegram",
+                text="second", sender="user", talker="user", channel="telegram",
             )
 
         # Prior exchange intact, orphaned user message removed
@@ -1189,7 +1189,7 @@ class TestErrorRecoveryOrphanedMessages:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="look at this", sender="user", source="telegram",
+                text="look at this", sender="user", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1222,12 +1222,12 @@ class TestErrorRecoveryOrphanedMessages:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             # First message — error
             await daemon._process_message(
-                text="msg1", sender="user", source="telegram",
+                text="msg1", sender="user", talker="user", channel="telegram",
                 response_future=future1,
             )
             # Second message — should succeed
             await daemon._process_message(
-                text="msg2", sender="user", source="telegram",
+                text="msg2", sender="user", talker="user", channel="telegram",
                 response_future=future2,
             )
 
@@ -1258,7 +1258,7 @@ class TestConsecutiveUserMessageRejection:
         session.add_user_message = AsyncMock(side_effect=fake_add_user)
 
         result = await daemon._process_message(
-            text="new message", sender="user", source="telegram",
+            text="new message", sender="user", talker="user", channel="telegram",
             response_future=asyncio.get_event_loop().create_future(),
         )
 
@@ -1283,7 +1283,7 @@ class TestConsecutiveUserMessageRejection:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="second", sender="user", source="telegram",
+                text="second", sender="user", talker="user", channel="telegram",
             )
 
         session.add_user_message.assert_called_once()
@@ -1305,7 +1305,7 @@ class TestConsecutiveUserMessageRejection:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="user", source="telegram",
+                text="hello", sender="user", talker="user", channel="telegram",
             )
 
         session.add_user_message.assert_called_once()
@@ -1454,7 +1454,7 @@ class TestDocumentExtractionIntegration:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="check this", sender="user", source="telegram",
+                text="check this", sender="user", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1486,7 +1486,7 @@ class TestDocumentExtractionIntegration:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="", sender="user", source="telegram",
+                text="", sender="user", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1514,7 +1514,7 @@ class TestDocumentExtractionIntegration:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="", sender="user", source="telegram",
+                text="", sender="user", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1546,7 +1546,7 @@ class TestDocumentExtractionIntegration:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="", sender="user", source="telegram",
+                text="", sender="user", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1578,7 +1578,7 @@ class TestDocumentExtractionIntegration:
         with patch("pipeline.run_agentic_loop", return_value=response):
             with patch("pipeline.extract_document_text", side_effect=OSError("disk error")):
                 await daemon._process_message(
-                    text="", sender="user", source="telegram",
+                    text="", sender="user", talker="user", channel="telegram",
                     attachments=[att],
                 )
 
@@ -1612,7 +1612,7 @@ class TestPdfLabelEmission:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="check this", sender="user", source="telegram",
+                text="check this", sender="user", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1641,7 +1641,7 @@ class TestPdfLabelEmission:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="", sender="user", source="telegram",
+                text="", sender="user", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1668,7 +1668,7 @@ class TestPdfLabelEmission:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="", sender="user", source="telegram",
+                text="", sender="user", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1699,7 +1699,7 @@ class TestPdfLabelEmission:
         with patch("pipeline.run_agentic_loop", return_value=response):
             with patch("pipeline.extract_document_text") as mock_extract:
                 await daemon._process_message(
-                    text="", sender="user", source="telegram",
+                    text="", sender="user", talker="user", channel="telegram",
                     attachments=[att],
                 )
 
@@ -1853,7 +1853,7 @@ class TestImageFitting:
 
         with patch("pipeline.run_agentic_loop", return_value=response):
             await daemon._process_message(
-                text="look", sender="user", source="telegram",
+                text="look", sender="user", talker="user", channel="telegram",
                 attachments=[att],
             )
 
@@ -1873,7 +1873,7 @@ class TestAutoCloseSystemSessions:
 
     @pytest.mark.asyncio
     async def test_system_source_triggers_close(self, tmp_path):
-        """task_type='system' → close_session called after processing."""
+        """talker='system' → close_session called after processing."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.session_mgr.close_session = AsyncMock(return_value=True)
         response = _make_response(text="done")
@@ -1883,11 +1883,10 @@ class TestAutoCloseSystemSessions:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="evolve", sender="evolution", source="system", deliver=False,
-                task_type="system",
+                text="evolve", sender="evolution", talker="system",
             )
 
-        daemon.session_mgr.close_session.assert_called_once_with("http:evolution")
+        daemon.session_mgr.close_session.assert_called_once_with("system:evolution")
 
     @pytest.mark.asyncio
     async def test_telegram_source_not_closed(self, tmp_path):
@@ -1901,7 +1900,7 @@ class TestAutoCloseSystemSessions:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hi", sender="Nicolas", source="telegram",
+                text="hi", sender="Nicolas", talker="user", channel="telegram",
             )
 
         daemon.session_mgr.close_session.assert_not_called()
@@ -1918,7 +1917,7 @@ class TestAutoCloseSystemSessions:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="check", sender="http-n8n", source="http", deliver=False,
+                text="check", sender="http-n8n", talker="operator",
             )
 
         daemon.session_mgr.close_session.assert_not_called()
@@ -1935,7 +1934,7 @@ class TestAutoCloseSystemSessions:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hello", sender="Claudio", source="cli",
+                text="hello", sender="Claudio", talker="operator",
             )
 
         daemon.session_mgr.close_session.assert_not_called()
@@ -1951,13 +1950,12 @@ class TestAutoCloseSystemSessions:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="evolve", sender="evolution", source="system", deliver=False,
-                task_type="system",
+                text="evolve", sender="evolution", talker="system",
             )
 
         # System sessions must auto-close even on error — otherwise they
         # accumulate messages and blow past context limits on next trigger.
-        daemon.session_mgr.close_session.assert_awaited_once_with("http:evolution")
+        daemon.session_mgr.close_session.assert_awaited_once_with("system:evolution")
 
 
 # ─── Primary Sender Routing ─────────────────────────────────────
@@ -1965,32 +1963,6 @@ class TestAutoCloseSystemSessions:
 
 class TestPrimarySenderRouting:
     """Notifications route to primary session when notify_target is configured."""
-
-    @pytest.mark.asyncio
-    async def test_notify_to_preexisting_session_no_autoclose(self, tmp_path):
-        """Notification routed to pre-existing primary session must NOT auto-close."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        # Pre-existing session
-        daemon.session_mgr._sessions = {"http:Nicolas": session}
-        daemon.session_mgr._index = {"http:Nicolas": {"session_id": session.id}}
-        daemon.session_mgr.has_session = AsyncMock(side_effect=lambda s: s in {"http:Nicolas"})
-        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:Nicolas"])
-        daemon.session_mgr.get_loaded = MagicMock(side_effect=lambda c: {"http:Nicolas": session}.get(c))
-        daemon.session_mgr.get_index = AsyncMock(return_value={"http:Nicolas": {"session_id": session.id}})
-        daemon.session_mgr.session_count = AsyncMock(return_value=1)
-        response = _make_response(text="processed")
-
-        async def fake_loop(**kwargs):
-            return response
-
-        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="[AUTOMATED SYSTEM MESSAGE] New tweet",
-                sender="Nicolas", source="system", deliver=False,
-                task_type="system",
-            )
-
-        daemon.session_mgr.close_session.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_fresh_system_session_still_autoclosed(self, tmp_path):
@@ -2006,35 +1978,11 @@ class TestPrimarySenderRouting:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="evolve", sender="evolution", source="system", deliver=False,
-                task_type="system",
+                text="evolve", sender="evolution", talker="system",
             )
 
-        daemon.session_mgr.close_session.assert_called_once_with("http:evolution")
+        daemon.session_mgr.close_session.assert_called_once_with("system:evolution")
 
-    @pytest.mark.asyncio
-    async def test_error_path_no_autoclose_on_preexisting(self, tmp_path):
-        """Error path: pre-existing session NOT auto-closed."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.session_mgr._sessions = {"http:Nicolas": session}
-        daemon.session_mgr._index = {"http:Nicolas": {"session_id": session.id}}
-        daemon.session_mgr.has_session = AsyncMock(side_effect=lambda s: s in {"http:Nicolas"})
-        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:Nicolas"])
-        daemon.session_mgr.get_loaded = MagicMock(side_effect=lambda c: {"http:Nicolas": session}.get(c))
-        daemon.session_mgr.get_index = AsyncMock(return_value={"http:Nicolas": {"session_id": session.id}})
-        daemon.session_mgr.session_count = AsyncMock(return_value=1)
-
-        async def fake_loop(**kwargs):
-            raise RuntimeError("API down")
-
-        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            await daemon._process_message(
-                text="[AUTOMATED SYSTEM MESSAGE] notification",
-                sender="Nicolas", source="system", deliver=False,
-                task_type="system",
-            )
-
-        daemon.session_mgr.close_session.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_error_path_fresh_session_still_autoclosed(self, tmp_path):
@@ -2048,11 +1996,10 @@ class TestPrimarySenderRouting:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="evolve", sender="evolution", source="system", deliver=False,
-                task_type="system",
+                text="evolve", sender="evolution", talker="system",
             )
 
-        daemon.session_mgr.close_session.assert_awaited_once_with("http:evolution")
+        daemon.session_mgr.close_session.assert_awaited_once_with("system:evolution")
 
     @pytest.mark.asyncio
     async def test_telegram_source_unaffected(self, tmp_path):
@@ -2067,7 +2014,7 @@ class TestPrimarySenderRouting:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="hi", sender="Nicolas", source="telegram",
+                text="hi", sender="Nicolas", talker="user", channel="telegram",
             )
 
         daemon.session_mgr.close_session.assert_not_called()
@@ -2089,53 +2036,42 @@ class TestForcedCompact:
         assert result["status"] == "skipped"
 
     @pytest.mark.asyncio
-    async def test_handle_compact_skips_system_senders(self, tmp_path):
-        """HTTP-channel contacts (system tasks, automations) are excluded from compact."""
+    async def test_handle_compact_skips_when_no_user_session(self, tmp_path):
+        """Only user:* sessions are targeted — non-user sessions don't trigger compaction."""
         daemon, provider, session = _make_daemon(tmp_path)
         evo_session = MagicMock()
         evo_session.messages = [{"role": "user"}] * 100
-        daemon.session_mgr._index = {"http:evolution": evo_session, "http:http-system": evo_session}
-        daemon.session_mgr.list_contacts = AsyncMock(return_value=["http:evolution", "http:http-system"])
+        daemon.session_mgr._index = {"system:evolution": evo_session, "system:maintenance": evo_session}
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=["system:evolution", "system:maintenance"])
 
         result = await daemon._handle_compact()
         assert result["status"] == "skipped"
 
     @pytest.mark.asyncio
-    async def test_handle_compact_picks_largest_session(self, tmp_path):
-        """Compact targets the session with most messages."""
+    async def test_handle_compact_targets_single_user_session(self, tmp_path):
+        """Compact targets the single user session, ignoring any other sessions."""
         daemon, provider, session = _make_daemon(tmp_path)
 
-        small_session = MagicMock()
-        small_session.messages = [{"role": "user"}] * 5
-        small_session.id = "small"
+        user_session = MagicMock()
+        user_session.messages = [{"role": "user"}] * 50
+        user_session.id = "user-sess"
 
-        large_session = MagicMock()
-        large_session.messages = [{"role": "user"}] * 50
-        large_session.id = "large"
+        user_key = f"user:{daemon.config.user_name}"
+        daemon.session_mgr._index = {user_key: {"session_id": "user-sess"}}
+        daemon.session_mgr.list_contacts = AsyncMock(return_value=[user_key])
+        daemon.session_mgr.get_or_create = AsyncMock(return_value=user_session)
 
-        # _index has contact→metadata entries; get_or_create loads real Session objects
-        daemon.session_mgr._index = {
-            "alice": {"session_id": "small"},
-            "bob": {"session_id": "large"},
-        }
-        daemon.session_mgr.list_contacts = AsyncMock(return_value=["alice", "bob"])
-        sessions_by_contact = {"alice": small_session, "bob": large_session}
-        daemon.session_mgr.get_or_create = AsyncMock(
-            side_effect=lambda contact, **kw: sessions_by_contact[contact]
-        )
-
-        # Mock _process_message to capture call
         daemon._process_message = AsyncMock()
 
         result = await daemon._handle_compact()
         assert result["status"] == "completed"
-        assert result["session"] == "large"
+        assert result["session"] == "user-sess"
 
-        # Verify _process_message called with force_compact=True
         daemon._process_message.assert_awaited_once()
         call_kwargs = daemon._process_message.call_args.kwargs
         assert call_kwargs["force_compact"] is True
-        assert call_kwargs["sender"] == "bob"
+        assert call_kwargs["sender"] == daemon.config.user_name
+        assert call_kwargs["talker"] == "user"
 
     @pytest.mark.asyncio
     async def test_force_compact_triggers_compaction_under_threshold(self, tmp_path):
@@ -2170,7 +2106,7 @@ class TestForcedCompact:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="Write diary", sender="Nicolas", source="system", deliver=False,
+                text="Write diary", sender="Nicolas", talker="system",
                 force_compact=True,
             )
 
@@ -2199,7 +2135,7 @@ class TestForcedCompact:
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
             await daemon._process_message(
-                text="compact diary", sender="Nicolas", source="system", deliver=False,
+                text="compact diary", sender="Nicolas", talker="system",
                 force_compact=True,
             )
 
@@ -2236,7 +2172,7 @@ class TestForcedCompact:
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop), \
              patch("consolidation.consolidate_session", side_effect=fake_consolidate):
             await daemon._process_message(
-                text="compact diary", sender="Nicolas", source="system", deliver=False,
+                text="compact diary", sender="Nicolas", talker="system",
                 force_compact=True,
             )
 

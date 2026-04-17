@@ -197,7 +197,14 @@ async def consolidate_on_close(
     context_builder: ContextBuilder,
     metering_db: MeteringDB | None,
 ) -> None:
-    """Consolidation callback fired before session archival."""
+    """Consolidation callback fired before session archival.
+
+    Only runs for ``user:*`` sessions — operator/system/agent sessions
+    don't feed memory, so extracting facts from them is noise.
+    """
+    contact = getattr(session, "contact", "")
+    if not contact.startswith("user:"):
+        return
     try:
         import consolidation
         start_idx, end_idx = await consolidation.get_unprocessed_range(
@@ -250,9 +257,8 @@ async def handle_evolve(
         set_rollback_tag(tag)
 
     msg = {
-        "type": "system",
-        "sender": "evolution",
-        "task_type": "system",
+        "talker": "system",
+        "sender": "maintenance",
         "text": (
             "[AUTOMATED SYSTEM MESSAGE] "
             "Load the evolution skill and evolve your memory files. "
@@ -260,7 +266,7 @@ async def handle_evolve(
         ),
     }
     await queue.put(msg)
-    return {"status": "queued", "session": "evolution"}
+    return {"status": "queued", "session": "system:maintenance"}
 
 
 # ─── Indexing ────────────────────────────────────────────────────
@@ -406,35 +412,32 @@ async def handle_compact(
     process_message: Callable[..., Awaitable[None]],
     get_session_lock: Callable[[str], Any],
 ) -> dict[str, Any]:
-    """Force-compact the primary session after agent writes diary."""
-    primary = None
-    for contact in await session_mgr.list_contacts():
-        if contact.startswith("http:"):
-            continue
-        session = await session_mgr.get_or_create(contact)
-        if primary is None or len(session.messages) > len(primary[1].messages):
-            primary = (contact, session)
+    """Force-compact the user session after agent writes diary.
 
-    if not primary:
-        return {"status": "skipped", "reason": "no active session"}
+    Targets the single ``user:<config.user.name>`` session only — non-user
+    sessions don't accumulate enough history to need nightly compaction,
+    and in-flight pressure is handled by per-message compaction.
+    """
+    user_key = f"user:{config.user_name}"
+    if user_key not in await session_mgr.list_contacts():
+        return {"status": "skipped", "reason": "no active user session"}
 
-    contact, session = primary
+    session = await session_mgr.get_or_create(user_key)
     today = time.strftime("%Y-%m-%d")
     diary_text = config.diary_prompt.replace("{date}", today)
 
     tid = str(uuid.uuid4())
-    log.info("[%s] Forced compact: diary + compaction for session %s (%s)",
-             tid[:8], session.id, contact)
+    log.info("[%s] Forced compact: diary + compaction for user session %s",
+             tid[:8], session.id)
 
-    async with get_session_lock(contact):
+    async with get_session_lock(user_key):
         await process_message(
             text=diary_text,
-            sender=contact,
-            source="system",
-            deliver=False,
+            sender=config.user_name,
+            talker="user",
             trace_id=tid,
             force_compact=True,
-            task_type="system",
-            session_key=contact,
+            reply_to="silent",
+            session_key=user_key,
         )
     return {"status": "completed", "session": session.id}

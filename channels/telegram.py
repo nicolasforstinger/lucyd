@@ -410,15 +410,15 @@ async def process_message(message: dict[str, Any], download_dir: Path,
     except Exception:
         pass
 
-    # POST to daemon
-    body: dict[str, Any] = {"message": text, "sender": sender, "channel_id": "telegram"}
+    # POST to daemon — /inbound/telegram forces talker=user, sender injected server-side
+    body: dict[str, Any] = {"message": text}
     if attachments:
         body["attachments"] = attachments
 
-    # POST to daemon
     try:
         client = await _get_client()
-        resp = await client.post(f"{DAEMON_URL}/api/v1/chat", json=body, timeout=300)
+        resp = await client.post(f"{DAEMON_URL}/api/v1/inbound/telegram",
+                                 json=body, timeout=300)
     except Exception as e:
         log.error("Daemon POST failed for %s: %s", sender, e, exc_info=True)
         return
@@ -487,18 +487,14 @@ def _decode_outbound_attachment(att: dict[str, str], download_dir: Path) -> str:
 
 
 async def _notify_delivery_failure(sender: str, failures: list[str]) -> None:
-    """POST delivery failure to daemon's /notify endpoint.
-
-    The daemon routes /notify messages to the primary session so the agent
-    learns about the failure on the next turn.
-    """
+    """POST delivery failure to daemon's /system/event endpoint (talker=system, sender=error)."""
     detail = "; ".join(failures)
-    message = f"Delivery to {sender} failed: {detail}"
+    message = f"Telegram delivery to {sender} failed: {detail}"
     try:
         client = await _get_client()
         await client.post(
-            f"{DAEMON_URL}/api/v1/notify",
-            json={"message": message, "source": "telegram"},
+            f"{DAEMON_URL}/api/v1/system/event",
+            json={"message": message, "sender": "error"},
             timeout=10,
         )
     except Exception as e:

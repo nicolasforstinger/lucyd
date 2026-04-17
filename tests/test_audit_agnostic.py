@@ -118,20 +118,12 @@ class TestChannelAgnosticism:
             + "\n".join(violations)
         )
 
-    def test_cli_is_pure_http_client(self):
-        """lucydctl is a thin HTTP client — no direct file/DB access."""
-        import importlib.util
-        import inspect
-        from importlib.machinery import SourceFileLoader
-
+    def test_no_bundled_cli_client(self):
+        """The daemon ships no CLI client — API-only operation."""
         bin_dir = _LUCYD_DIR / "bin"
-        loader = SourceFileLoader("lucydctl", str(bin_dir / "lucydctl"))
-        spec = importlib.util.spec_from_loader("lucydctl", loader)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        source = inspect.getsource(mod)
-        assert "sqlite3" not in source, "CLI must not access SQLite directly"
+        assert not (bin_dir / "lucydctl").exists(), (
+            "lucydctl has been removed; the API is the single interface"
+        )
 
 
 # ─── P-023: CLI/API Data Parity ─────────────────────────────────
