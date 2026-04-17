@@ -125,8 +125,8 @@ async def test_e2e_message_cycle(tmp_path, pool):
     response_future = asyncio.get_event_loop().create_future()
     await daemon.queue.put({
         "text": "Hello, agent!",
-        "sender": "e2e_user",
-        "source": "http",
+        "talker": "operator",
+        "sender": "cli",
         "response_future": response_future,
     })
     # Signal the loop to stop after processing

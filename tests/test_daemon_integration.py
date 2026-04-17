@@ -659,8 +659,8 @@ class TestMessageLoopHTTPBypass:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         item = {
-            "sender": "http",
-            "type": "http",
+            "talker": "operator",
+            "sender": "cli",
             "text": "test",
             "response_future": future,
         }
@@ -668,12 +668,12 @@ class TestMessageLoopHTTPBypass:
         assert item.get("response_future") is not None
 
     @pytest.mark.asyncio
-    async def test_notify_item_has_no_response_future(self):
-        """Notify items (type=system from HTTP) don't have response_future."""
+    async def test_async_system_event_has_no_response_future(self):
+        """System events are fire-and-forget — no response_future."""
         item = {
-            "sender": "http",
-            "type": "system",
-            "text": "[AUTOMATED SYSTEM MESSAGE] test",
+            "talker": "system",
+            "sender": "automation",
+            "text": "webhook fired",
         }
         assert item.get("response_future") is None
 
@@ -1106,6 +1106,7 @@ class TestMessageLoopDebounce:
         daemon.config.compaction_max_tokens = 2048
         daemon.config.compaction_prompt = "Summarize"
         daemon.config.agent_name = "TestAgent"
+        daemon.config.user_name = "Nicolas"
         daemon.config.consolidation_enabled = False
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
@@ -1132,8 +1133,8 @@ class TestMessageLoopDebounce:
 
         response = _mock_response(text="ok")
 
-        msg1 = {"text": "Hello", "sender": "+431234567890", "type": "user"}
-        msg2 = {"text": "How are you?", "sender": "+431234567890", "type": "user"}
+        msg1 = {"text": "Hello", "talker": "user", "sender": "nicolas"}
+        msg2 = {"text": "How are you?", "talker": "user", "sender": "nicolas"}
         await daemon.queue.put(msg1)
         await daemon.queue.put(msg2)
         await daemon.queue.put(None)
@@ -1201,8 +1202,8 @@ class TestMessageLoopDebounce:
         response = _mock_response(text="http reply")
 
         http_item = {
-            "sender": "http-client",
-            "type": "http",
+            "talker": "operator",
+            "sender": "cli",
             "text": "api question",
             "response_future": future,
         }
@@ -1222,7 +1223,7 @@ class TestMessageLoopDebounce:
         """Messages with empty text and no attachments are skipped."""
         daemon, session = loop_daemon
 
-        msg = {"text": "", "sender": "+431234567890", "type": "user"}
+        msg = {"text": "", "talker": "user", "sender": "nicolas"}
         await daemon.queue.put(msg)
         await daemon.queue.put(None)
 
@@ -1238,8 +1239,8 @@ class TestMessageLoopDebounce:
         daemon, session = loop_daemon
 
         # Put two messages from same sender into the queue before loop starts
-        msg1 = {"text": "A", "sender": "user1", "type": "user"}
-        msg2 = {"text": "B", "sender": "user1", "type": "user"}
+        msg1 = {"text": "A", "talker": "user", "sender": "nicolas"}
+        msg2 = {"text": "B", "talker": "user", "sender": "nicolas"}
         await daemon.queue.put(msg1)
 
         response = _mock_response(text="ok", input_tokens=100, output_tokens=50)
@@ -1268,8 +1269,8 @@ class TestMessageLoopDebounce:
         """Messages from different senders are each processed."""
         daemon, session = loop_daemon
 
-        msg1 = {"text": "Hello", "sender": "alice", "type": "user"}
-        msg2 = {"text": "World", "sender": "bob", "type": "user"}
+        msg1 = {"text": "Hello", "talker": "user", "sender": "alice"}
+        msg2 = {"text": "World", "talker": "user", "sender": "bob"}
         await daemon.queue.put(msg1)
         await daemon.queue.put(msg2)
         await daemon.queue.put(None)
@@ -1288,8 +1289,8 @@ class TestMessageLoopDebounce:
         daemon, session = loop_daemon
 
         queue_item = {
-            "sender": "system",
-            "type": "system",
+            "talker": "system",
+            "sender": "automation",
             "text": "queued message",
         }
         await daemon.queue.put(queue_item)
@@ -1354,7 +1355,7 @@ class TestMessageLoopDebounce:
 
         att = Attachment(content_type="image/png", local_path="/tmp/a.png",
                          filename="a.png", size=100)
-        msg = {"text": "pic", "sender": "user1", "type": "user",
+        msg = {"text": "pic", "talker": "user", "sender": "nicolas",
                "attachments": [att]}
 
         await daemon.queue.put(msg)

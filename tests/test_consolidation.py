@@ -617,6 +617,8 @@ class TestConsolidateSession:
 
         class FakeConfig:
             consolidation_confidence_threshold = 0.6
+            def model_config(self, _role: str) -> dict:
+                return {"cost_per_mtok": [], "model": "fake", "provider": "", "currency": "EUR"}
 
         result = await consolidate_session(
             session_id="sess1",

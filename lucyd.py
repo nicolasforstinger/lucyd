@@ -94,6 +94,7 @@ import metrics
 
 _PRIORITY_USER = 0
 _PRIORITY_SYSTEM = 1
+_PRIORITY_SENTINEL = 2  # drains after all real work — exit cleanly
 
 
 class PriorityMessageQueue:
@@ -111,7 +112,11 @@ class PriorityMessageQueue:
 
     def _prioritize(self, item: Any) -> tuple[int, int, Any]:
         self._seq += 1
-        if item is None or not isinstance(item, dict):
+        if item is None:
+            # Shutdown sentinel — drains after all queued work so real
+            # messages in flight get processed before the loop exits.
+            return (_PRIORITY_SENTINEL, self._seq, item)
+        if not isinstance(item, dict):
             return (_PRIORITY_USER, self._seq, item)
         talker = item.get("talker", "user")
         priority = _PRIORITY_SYSTEM if talker in ("system", "agent") else _PRIORITY_USER
