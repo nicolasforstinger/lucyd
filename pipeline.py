@@ -394,8 +394,12 @@ class MessagePipeline:
         )
 
         # Get or create session (keyed by talker:sender)
-        session = await self._session_mgr.get_or_create(ctx.session_key)
+        session = await self._session_mgr.get_or_create(ctx.session_key, model=ctx.model_name)
         ctx.session = session
+        # Keep session.model current: resumed sessions carry whatever was
+        # persisted last (including "" from before this field was populated).
+        if ctx.model_name and session.model != ctx.model_name:
+            session.model = ctx.model_name
 
         # Status tool reads session via callback (configured in _init_tools)
         self._current_session = session

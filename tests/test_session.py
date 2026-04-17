@@ -1204,11 +1204,12 @@ class TestBuildSessionInfo:
         assert info["compaction_count"] == 2
         assert info["context_tokens"] == 500 + 200  # input + cache_read (context, not billing)
         assert info["context_pct"] == 700 * 100 // 10000
+        assert info["model"] == "primary"
 
     @pytest.mark.asyncio
     async def test_from_db(self, pool):
         """Loads from DB when no live session."""
-        session = await _create_session(pool, "sess-2")
+        session = await _create_session(pool, "sess-2", model="primary")
         session.messages = [
             {"role": "user", "content": "test"},
             {"role": "agent", "text": "ok", "usage": {"input_tokens": 300}},
@@ -1224,6 +1225,8 @@ class TestBuildSessionInfo:
         assert info["message_count"] == 2
         assert info["compaction_count"] == 1
         assert info["context_tokens"] == 300
+        # Root fix for empty model column: from-DB path must also return model.
+        assert info["model"] == "primary"
 
     @pytest.mark.asyncio
     async def test_no_session_returns_defaults(self, pool):

@@ -384,8 +384,29 @@ class TestBasicMessageFlow:
             )
 
         daemon.session_mgr.get_or_create.assert_called_once_with(
-            "user:alice"
+            "user:alice", model="test-model"
         )
+
+    @pytest.mark.asyncio
+    async def test_session_model_updated_from_current_config(self, tmp_path):
+        """Resumed session adopts the current primary model name.
+
+        Prevents the schema-drift bug where sessions.sessions.model stayed
+        empty forever because pipeline never propagated ctx.model_name.
+        """
+        daemon, provider, session = _make_daemon(tmp_path)
+        session.model = ""  # Simulate a pre-fix session loaded from DB
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
+            await daemon._process_message(
+                text="hello", sender="alice", talker="user", channel="telegram",
+            )
+
+        assert session.model == "test-model"
 
     @pytest.mark.asyncio
     async def test_user_message_added_to_session(self, tmp_path):

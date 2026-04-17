@@ -641,16 +641,19 @@ async def build_session_info(
 
     messages: list[Message] = []
     compaction_count = 0
+    model = ""
     if session:
         messages = session.messages
         compaction_count = session.compaction_count
+        model = session.model
     else:
         row = await pool.fetchrow(
-            "SELECT compaction_count FROM sessions.sessions WHERE id = $1",
+            "SELECT compaction_count, model FROM sessions.sessions WHERE id = $1",
             session_id,
         )
         if row:
             compaction_count = row["compaction_count"]
+            model = row["model"] or ""
         msg_rows = await pool.fetch(
             "SELECT content FROM sessions.messages "
             "WHERE session_id = $1 ORDER BY ordinal",
@@ -660,6 +663,7 @@ async def build_session_info(
 
     info["message_count"] = len(messages)
     info["compaction_count"] = compaction_count
+    info["model"] = model
 
     context_tokens = 0
     for msg in reversed(messages):

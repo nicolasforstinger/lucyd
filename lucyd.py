@@ -640,8 +640,6 @@ class LucydDaemon:
             )
             info["contact"] = contact
             info["created_at"] = entry.get("created_at")
-            if live:
-                info["model"] = live.model
             result.append(info)
         return result
 

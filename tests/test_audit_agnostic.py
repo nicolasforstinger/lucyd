@@ -163,7 +163,7 @@ class TestInterfaceParity:
         # All required fields present
         required_fields = {
             "session_id", "context_tokens", "context_pct", "cost",
-            "message_count", "compaction_count",
+            "message_count", "compaction_count", "model",
         }
         assert required_fields.issubset(info.keys()), (
             f"Missing fields: {required_fields - info.keys()}"
@@ -242,7 +242,7 @@ class TestInterfaceParity:
 
         # Core data fields must match
         for field in ("session_id", "context_tokens", "context_pct",
-                      "message_count", "compaction_count"):
+                      "message_count", "compaction_count", "model"):
             assert http_info[field] == cli_info[field], (
                 f"Parity mismatch on '{field}': HTTP={http_info[field]}, CLI={cli_info[field]}"
             )
