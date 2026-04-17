@@ -28,6 +28,7 @@ def _make_e2e_config(tmp_path: Path) -> Config:
             "context": {"stable": ["SOUL.md"], "semi_stable": []},
             "skills": {"dir": "skills", "always_on": []},
         },
+        "user": {"name": "testuser"},
         "http": {
             "enabled": False, "host": "127.0.0.1", "port": 0, "token_env": "",
             "download_dir": str(tmp_path / "downloads"),

@@ -127,6 +127,7 @@ TOOLS: list[ToolSpec] = [
         description=(
             "Retrieve a file snippet from indexed memory by workspace-relative path. "
             "Paths are relative to the workspace root (e.g., 'memory/2026-02-23.md', 'MEMORY.md'). "
+            "Default range is lines 0–50 — increase end_line for longer files. "
             "Use memory_search to find available file paths first."
         ),
         input_schema={

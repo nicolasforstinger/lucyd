@@ -125,6 +125,9 @@ def minimal_toml_data():
                 "always_on": ["compute-routing"],
             },
         },
+        "user": {
+            "name": "testuser",
+        },
         "http": {
             "enabled": False,
             "host": "127.0.0.1",

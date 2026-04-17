@@ -28,7 +28,7 @@ from typing import Any
 import consolidation as consolidation_mod
 import metrics
 from agentic import LoopConfig, run_agentic_loop, run_single_shot
-from attachments import ImageTooLarge, extract_document_text, fit_image, render_pdf_pages
+from attachments import ImageTooLarge, extract_document_text, fit_image
 from config import Config
 from context import ContextBuilder, _estimate_tokens
 from log_utils import _log_safe, set_log_context
@@ -353,7 +353,19 @@ class MessagePipeline:
 
     def _process_document(self, text: str, att: Any,
                           supports_vision: bool) -> tuple[str, list[dict[str, Any]]]:
-        """Process a single document/file attachment. Returns (text, image_blocks)."""
+        """Process a single document/file attachment. Returns (text, image_blocks).
+
+        PDFs get a label only — the agent uses the ``pdf_read`` tool
+        for explicit text extraction with page control.
+        Non-PDF text documents are still auto-extracted as plumbing.
+        """
+        is_pdf = (att.content_type == "application/pdf"
+                  or (att.filename or "").lower().endswith(".pdf"))
+        if is_pdf:
+            label = att.filename or "document"
+            return _append(text, f"[pdf: {label}, saved: {att.local_path} — use pdf_read to extract text]"), []
+
+        # Non-PDF documents: extract text if enabled
         doc_text = None
         if self._config.documents_enabled:
             try:
@@ -370,47 +382,8 @@ class MessagePipeline:
             label = att.filename or "document"
             return _append(text, f"[document: {label}, saved: {att.local_path}]\n{doc_text}"), []
 
-        # Scanned PDF fallback — render pages as images for vision
-        is_pdf = (att.content_type == "application/pdf"
-                  or (att.filename or "").lower().endswith(".pdf"))
-        if is_pdf and supports_vision and self._config.documents_enabled:
-            blocks = self._render_pdf_as_images(att)
-            if blocks:
-                label = att.filename or "document"
-                return _append(text, f"[scanned document: {label}, "
-                               f"{len(blocks)} page(s) as images, "
-                               f"saved: {att.local_path}]"), blocks
-
         return _append(text, f"[attachment: {att.filename or 'file'}, "
                        f"{att.content_type}, saved: {att.local_path}]"), []
-
-    def _render_pdf_as_images(self, att: Any) -> list[dict[str, Any]]:
-        """Render PDF pages as images for vision. Returns image blocks."""
-        pages = render_pdf_pages(
-            att.local_path,
-            max_pages=self._config.documents_pdf_max_render_pages,
-            max_dimension=self._config.vision_max_dimension,
-        )
-        if not pages:
-            return []
-        blocks: list[dict[str, Any]] = []
-        for page_data in pages:
-            try:
-                page_data = fit_image(
-                    page_data, "image/jpeg",
-                    self._config.vision_max_image_bytes,
-                    self._config.vision_max_dimension,
-                    self._config.vision_jpeg_quality_steps,
-                    att.local_path,
-                )
-                blocks.append({
-                    "type": "image",
-                    "media_type": "image/jpeg",
-                    "data": base64.b64encode(page_data).decode("ascii"),
-                })
-            except ImageTooLarge:
-                log.warning("PDF page too large after compression, skipping")
-        return blocks
 
     # ── Session Setup ────────────────────────────────────────────
 

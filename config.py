@@ -14,11 +14,27 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any  # Any justified: TOML config values are polymorphic (str|int|float|bool|list|Path)
+from typing import Any, Literal  # Any justified: TOML config values are polymorphic (str|int|float|bool|list|Path)
 
 import tomllib
 
 log = logging.getLogger(__name__)
+
+
+# ─── Talker Model ────────────────────────────────────────────────
+# Every inbound message declares a talker (determined by entry point,
+# never spoofable from request body).  Behaviors (auto-close, memory
+# feed, reply path) derive from talker alone.
+
+Talker = Literal["user", "operator", "system", "agent"]
+
+TALKERS: frozenset[Talker] = frozenset(("user", "operator", "system", "agent"))
+
+# Sender enumerations per talker class.  "user" is validated against
+# config.user.name at API boundary, not listed here.
+OPERATOR_SENDERS: frozenset[str] = frozenset(("cli", "agentctl", "web"))
+SYSTEM_SENDERS: frozenset[str] = frozenset(("maintenance", "automation", "error"))
+AGENT_SENDERS: frozenset[str] = frozenset(("self", "other"))
 
 
 def today_start_ts() -> int:
@@ -144,8 +160,6 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     "documents_max_chars":      (("documents", "max_chars"),      int,  30000),
     "documents_max_file_bytes": (("documents", "max_file_bytes"), int,  10485760),
     "documents_text_extensions":(("documents", "text_extensions"), list, []),
-    "documents_pdf_max_render_pages": (("documents", "pdf_max_render_pages"), int, 5),
-
     # ── Vision ───────────────────────────────────────────────────
     "vision_max_image_bytes":   (("vision", "max_image_bytes"),  int,  5242880),
     "vision_max_dimension":     (("vision", "max_dimension"),    int,  1568),
@@ -243,6 +257,8 @@ class Config:
             errors.append("[agent] name is required")
         if not _deep_get(self._data, "agent", "workspace"):
             errors.append("[agent] workspace is required")
+        if not _deep_get(self._data, "user", "name"):
+            errors.append("[user] name is required")
         if not _deep_get(self._data, "models", "primary"):
             errors.append("[models.primary] section is required")
         primary = _deep_get(self._data, "models", "primary", default={})
@@ -401,6 +417,16 @@ class Config:
     @property
     def agent_name(self) -> str:
         return str(self._data["agent"]["name"])
+
+    @property
+    def user_name(self) -> str:
+        """The single user entity this agent serves.
+
+        All whitelisted channels/addresses route to this identity.
+        Used as the sender for talker='user' messages; session key
+        is always f"user:{user_name}".
+        """
+        return str(self._data["user"]["name"])
 
     @property
     def workspace(self) -> Path:

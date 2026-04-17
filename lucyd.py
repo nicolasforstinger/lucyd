@@ -255,6 +255,7 @@ class LucydDaemon:
         ("skills",             {"load_skill"}),
         ("tools.status",       {"session_status"}),
         ("tools.gdpr",         {"gdpr_search", "gdpr_redact"}),
+        ("tools.pdf",          {"pdf_read"}),
     ]
 
     def _init_tools(self) -> None:
@@ -413,6 +414,32 @@ class LucydDaemon:
             skills_dir=self.config.skills_dir,
         )
         self.skill_loader.scan()
+
+    def _write_tools_md(self) -> None:
+        """Generate TOOLS.md from registered tools and available skills.
+
+        Called after _init_tools() so the file always reflects the
+        actual tool set.  Eliminates manual TOOLS.md maintenance.
+        """
+        lines = ["# Tools", ""]
+        for name, description in self.tool_registry.get_brief_descriptions():
+            lines.append(f"- **{name}**: {description}")
+
+        if self.skill_loader:
+            index = self.skill_loader.build_index()
+            if index:
+                lines.append("")
+                lines.append("# Skills")
+                lines.append("")
+                lines.append('Load with `load_skill(name="...")` when you need specialized instructions.')
+                lines.append("")
+                lines.append(index)
+
+        tools_md = self.config.workspace / "TOOLS.md"
+        tools_md.write_text("\n".join(lines) + "\n")
+        log.info("Generated TOOLS.md (%d tools, %d skills)",
+                 len(self.tool_registry.tool_names),
+                 len(self.skill_loader.list_skill_names()) if self.skill_loader else 0)
 
     def _init_metering(self) -> None:
         self.metering_db = MeteringDB(
@@ -968,6 +995,7 @@ class LucydDaemon:
             self._init_metering()
             self._init_conversion()
             self._init_tools()
+            self._write_tools_md()
 
             # Create message pipeline — the core runtime path
             from pipeline import MessagePipeline

@@ -58,6 +58,7 @@ def _make_config(tmp_path, **overrides):
             "context": {"stable": ["SOUL.md"], "semi_stable": []},
             "skills": {"dir": "skills", "always_on": []},
         },
+        "user": {"name": "testuser"},
         "http": {
             "enabled": False, "host": "127.0.0.1", "port": 8100, "token_env": "",
             "download_dir": "/tmp/lucyd-http", "max_body_bytes": 10485760,
@@ -1386,89 +1387,18 @@ class TestExtractDocumentText:
         )
         assert result is None
 
-    def test_pdf_extraction(self, tmp_path):
-        """PDF with text content → text extracted."""
-        pytest.importorskip("pypdf")
-        from pypdf import PdfWriter
-
-        from attachments import extract_document_text as _extract_document_text
-
-        writer = PdfWriter()
-        writer.add_blank_page(width=72, height=72)
-        # pypdf blank pages have no text, so we create a real PDF via reportlab-free method
-        # Instead, use a PDF that has actual text by annotation
-        pdf_path = tmp_path / "test.pdf"
-        writer.write(str(pdf_path))
-
-        # This returns None or empty for blank pages — that's correct behavior
-        result = _extract_document_text(
-            str(pdf_path), "application/pdf", "test.pdf",
-            max_chars=30000, max_bytes=10_000_000,
-            text_extensions=[],
-        )
-        # Blank PDF has no text → returns None (empty string becomes None via `or None`)
-        assert result is None
-
-    def test_pdf_by_extension(self, tmp_path):
-        """PDF detected by .pdf extension even with generic MIME type."""
-        pytest.importorskip("pypdf")
-        from pypdf import PdfWriter
-
-        from attachments import extract_document_text as _extract_document_text
-
-        writer = PdfWriter()
-        writer.add_blank_page(width=72, height=72)
-        pdf_path = tmp_path / "report.pdf"
-        writer.write(str(pdf_path))
-
-        # Should not crash — gracefully handles blank PDF
-        result = _extract_document_text(
-            str(pdf_path), "application/octet-stream", "report.pdf",
-            max_chars=30000, max_bytes=10_000_000,
-            text_extensions=[],
-        )
-        assert result is None  # blank PDF → None
-
-    def test_pypdf_not_installed(self, tmp_path):
-        """When pypdf is not importable, PDF falls through to None."""
-        import builtins
-
+    def test_pdf_returns_none(self, tmp_path):
+        """PDF content type → None (PDFs handled by pdf_read tool, not extraction)."""
         from attachments import extract_document_text as _extract_document_text
 
         f = tmp_path / "doc.pdf"
         f.write_bytes(b"%PDF-1.4 fake")
-
-        real_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "pypdf":
-                raise ImportError("no pypdf")
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            result = _extract_document_text(
-                str(f), "application/pdf", "doc.pdf",
-                max_chars=30000, max_bytes=10_000_000,
-                text_extensions=[],
-            )
+        result = _extract_document_text(
+            str(f), "application/pdf", "doc.pdf",
+            max_chars=30000, max_bytes=10_000_000,
+            text_extensions=[],
+        )
         assert result is None
-
-    def test_corrupt_pdf_raises(self, tmp_path):
-        """Corrupt PDF → exception propagates (caller catches it)."""
-        pytest.importorskip("pypdf")
-        import pypdf.errors
-
-        from attachments import extract_document_text as _extract_document_text
-
-        f = tmp_path / "corrupt.pdf"
-        f.write_bytes(b"not a pdf at all")
-
-        with pytest.raises(pypdf.errors.PdfReadError):
-            _extract_document_text(
-                str(f), "application/pdf", "corrupt.pdf",
-                max_chars=30000, max_bytes=10_000_000,
-                text_extensions=[],
-            )
 
     def test_md_extension_extracted(self, tmp_path):
         """Markdown file matched by extension."""
@@ -1656,100 +1586,18 @@ class TestDocumentExtractionIntegration:
         assert "[attachment: bad.txt, text/plain, saved:" in call_text
 
 
-# ─── PDF Page Rendering ──────────────────────────────────────────
+# ─── PDF Label Emission ──────────────────────────────────────────
 
 
-class TestRenderPdfPages:
-    """Unit tests for render_pdf_pages (pdftoppm wrapper)."""
-
-    def test_no_pdftoppm_returns_none(self):
-        """Missing pdftoppm → returns None gracefully."""
-        from attachments import render_pdf_pages
-
-        with patch("shutil.which", return_value=None):
-            assert render_pdf_pages("/fake/doc.pdf", max_pages=5, max_dimension=1568) is None
-
-    def test_subprocess_failure_returns_none(self, tmp_path):
-        """pdftoppm exits non-zero → returns None."""
-        from attachments import render_pdf_pages
-
-        f = tmp_path / "bad.pdf"
-        f.write_bytes(b"%PDF-1.4 fake")
-
-        with patch("shutil.which", return_value="/usr/bin/pdftoppm"):
-            with patch("subprocess.run", return_value=MagicMock(returncode=1, stderr=b"error")):
-                assert render_pdf_pages(str(f), max_pages=5, max_dimension=1568) is None
-
-    def test_timeout_returns_none(self, tmp_path):
-        """pdftoppm exceeds timeout → returns None."""
-        import subprocess as sp
-
-        from attachments import render_pdf_pages
-
-        f = tmp_path / "slow.pdf"
-        f.write_bytes(b"%PDF-1.4 fake")
-
-        with patch("shutil.which", return_value="/usr/bin/pdftoppm"):
-            with patch("subprocess.run", side_effect=sp.TimeoutExpired(cmd="pdftoppm", timeout=60)):
-                assert render_pdf_pages(str(f), max_pages=5, max_dimension=1568) is None
-
-
-class TestScannedPdfVisionFallback:
-    """Integration tests for scanned PDF → vision image fallback."""
+class TestPdfLabelEmission:
+    """PDFs get a label only — agent uses pdf_read tool for extraction."""
 
     @pytest.mark.asyncio
-    async def test_scanned_pdf_renders_images_for_vision(self, tmp_path):
-        """Empty-text PDF + vision-capable model → image blocks returned."""
+    async def test_pdf_gets_label_with_path(self, tmp_path):
+        """PDF attachment → [pdf: filename, saved: /path] label."""
         daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.documents_enabled = True
-        daemon.config.documents_max_chars = 30000
-        daemon.config.documents_max_file_bytes = 10_000_000
-        daemon.config.documents_text_extensions = []
-        daemon.config.documents_pdf_max_render_pages = 5
-        daemon.config.vision_max_image_bytes = 5_000_000
-        daemon.config.vision_max_dimension = 1568
-        daemon.config.vision_jpeg_quality_steps = [85, 60, 40]
-        provider.capabilities.supports_vision = True
 
-        pdf_path = tmp_path / "scan.pdf"
-        pdf_path.write_bytes(b"%PDF-1.4 fake")
-
-        def fake_add_user(text, sender="", source=""):
-            session.messages.append({"role": "user", "content": text})
-        session.add_user_message = AsyncMock(side_effect=fake_add_user)
-
-        response = _make_response(text="I can read this")
-
-        from attachments import Attachment
-        att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
-                         filename="scan.pdf", size=100)
-
-        # Mock: text extraction returns None (scanned), rendering returns JPEG bytes
-        fake_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 100  # minimal JPEG header
-        with patch("pipeline.run_agentic_loop", return_value=response):
-            with patch("pipeline.extract_document_text", return_value=None):
-                with patch("pipeline.render_pdf_pages", return_value=[fake_jpeg]):
-                    with patch("pipeline.fit_image", return_value=fake_jpeg):
-                        await daemon._process_message(
-                            text="read this", sender="user", source="telegram",
-                            attachments=[att],
-                        )
-
-        call_text = session.add_user_message.call_args[0][0]
-        assert "[scanned document: scan.pdf" in call_text
-        assert "1 page(s) as images" in call_text
-
-    @pytest.mark.asyncio
-    async def test_scanned_pdf_no_vision_falls_to_label(self, tmp_path):
-        """Empty-text PDF + no vision → plain attachment label, no render attempt."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.documents_enabled = True
-        daemon.config.documents_max_chars = 30000
-        daemon.config.documents_max_file_bytes = 10_000_000
-        daemon.config.documents_text_extensions = []
-        provider.capabilities.supports_vision = False
-
-        pdf_path = tmp_path / "scan.pdf"
+        pdf_path = tmp_path / "report.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 fake")
 
         def fake_add_user(text, sender="", source=""):
@@ -1760,31 +1608,25 @@ class TestScannedPdfVisionFallback:
 
         from attachments import Attachment
         att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
-                         filename="scan.pdf", size=100)
+                         filename="report.pdf", size=100)
 
         with patch("pipeline.run_agentic_loop", return_value=response):
-            with patch("pipeline.extract_document_text", return_value=None):
-                with patch("pipeline.render_pdf_pages") as mock_render:
-                    await daemon._process_message(
-                        text="", sender="user", source="telegram",
-                        attachments=[att],
-                    )
+            await daemon._process_message(
+                text="check this", sender="user", source="telegram",
+                attachments=[att],
+            )
 
-        mock_render.assert_not_called()
         call_text = session.add_user_message.call_args[0][0]
-        assert "[attachment: scan.pdf, application/pdf, saved:" in call_text
+        assert "[pdf: report.pdf, saved:" in call_text
+        assert str(pdf_path) in call_text
 
     @pytest.mark.asyncio
-    async def test_text_pdf_no_fallback(self, tmp_path):
-        """PDF with text content → text extracted, render never called."""
+    async def test_pdf_label_regardless_of_documents_enabled(self, tmp_path):
+        """PDF label emitted even when documents_enabled=False."""
         daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.documents_enabled = True
-        daemon.config.documents_max_chars = 30000
-        daemon.config.documents_max_file_bytes = 10_000_000
-        daemon.config.documents_text_extensions = []
-        provider.capabilities.supports_vision = True
+        daemon.config.documents_enabled = False
 
-        pdf_path = tmp_path / "text.pdf"
+        pdf_path = tmp_path / "report.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 fake")
 
         def fake_add_user(text, sender="", source=""):
@@ -1795,36 +1637,23 @@ class TestScannedPdfVisionFallback:
 
         from attachments import Attachment
         att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
-                         filename="text.pdf", size=100)
+                         filename="report.pdf", size=100)
 
         with patch("pipeline.run_agentic_loop", return_value=response):
-            with patch("pipeline.extract_document_text", return_value="Page 1 content here"):
-                with patch("pipeline.render_pdf_pages") as mock_render:
-                    await daemon._process_message(
-                        text="", sender="user", source="telegram",
-                        attachments=[att],
-                    )
+            await daemon._process_message(
+                text="", sender="user", source="telegram",
+                attachments=[att],
+            )
 
-        mock_render.assert_not_called()
         call_text = session.add_user_message.call_args[0][0]
-        assert "[document: text.pdf, saved:" in call_text
-        assert "Page 1 content here" in call_text
+        assert "[pdf: report.pdf, saved:" in call_text
 
     @pytest.mark.asyncio
-    async def test_all_pages_too_large_falls_to_label(self, tmp_path):
-        """render_pdf_pages returns images but fit_image fails on all → label fallback."""
+    async def test_pdf_detected_by_extension(self, tmp_path):
+        """PDF detected by .pdf extension even with generic MIME type."""
         daemon, provider, session = _make_daemon(tmp_path)
-        daemon.config.documents_enabled = True
-        daemon.config.documents_max_chars = 30000
-        daemon.config.documents_max_file_bytes = 10_000_000
-        daemon.config.documents_text_extensions = []
-        daemon.config.documents_pdf_max_render_pages = 5
-        daemon.config.vision_max_image_bytes = 5_000_000
-        daemon.config.vision_max_dimension = 1568
-        daemon.config.vision_jpeg_quality_steps = [85, 60, 40]
-        provider.capabilities.supports_vision = True
 
-        pdf_path = tmp_path / "huge_scan.pdf"
+        pdf_path = tmp_path / "report.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 fake")
 
         def fake_add_user(text, sender="", source=""):
@@ -1833,22 +1662,50 @@ class TestScannedPdfVisionFallback:
 
         response = _make_response(text="ok")
 
-        from attachments import Attachment, ImageTooLarge
-        att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
-                         filename="huge_scan.pdf", size=100)
+        from attachments import Attachment
+        att = Attachment(content_type="application/octet-stream", local_path=str(pdf_path),
+                         filename="report.pdf", size=100)
 
-        fake_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 100
         with patch("pipeline.run_agentic_loop", return_value=response):
-            with patch("pipeline.extract_document_text", return_value=None):
-                with patch("pipeline.render_pdf_pages", return_value=[fake_jpeg, fake_jpeg]):
-                    with patch("pipeline.fit_image", side_effect=ImageTooLarge("50MB")):
-                        await daemon._process_message(
-                            text="", sender="user", source="telegram",
-                            attachments=[att],
-                        )
+            await daemon._process_message(
+                text="", sender="user", source="telegram",
+                attachments=[att],
+            )
 
         call_text = session.add_user_message.call_args[0][0]
-        assert "[attachment: huge_scan.pdf, application/pdf, saved:" in call_text
+        assert "[pdf: report.pdf, saved:" in call_text
+
+    @pytest.mark.asyncio
+    async def test_pdf_no_text_extraction_attempted(self, tmp_path):
+        """PDF attachment does not call extract_document_text."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.documents_enabled = True
+        daemon.config.documents_max_chars = 30000
+        daemon.config.documents_max_file_bytes = 10_000_000
+
+        pdf_path = tmp_path / "doc.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        def fake_add_user(text, sender="", source=""):
+            session.messages.append({"role": "user", "content": text})
+        session.add_user_message = AsyncMock(side_effect=fake_add_user)
+
+        response = _make_response(text="ok")
+
+        from attachments import Attachment
+        att = Attachment(content_type="application/pdf", local_path=str(pdf_path),
+                         filename="doc.pdf", size=100)
+
+        with patch("pipeline.run_agentic_loop", return_value=response):
+            with patch("pipeline.extract_document_text") as mock_extract:
+                await daemon._process_message(
+                    text="", sender="user", source="telegram",
+                    attachments=[att],
+                )
+
+        mock_extract.assert_not_called()
+        call_text = session.add_user_message.call_args[0][0]
+        assert "[pdf: doc.pdf, saved:" in call_text
 
 
 # ─── Image Dimension Check ───────────────────────────────────────

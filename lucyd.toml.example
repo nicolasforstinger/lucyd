@@ -15,6 +15,15 @@ workspace = "~/.lucyd/workspace"                               # REQUIRED — wo
 # client_id = "your-org"                                       # Tenant identifier — shared across agents for the same client
 # id = ""                                                      # Agent identifier for metering ("" = use agent name)
 
+# ─── User Identity (REQUIRED) ────────────────────────────────────
+# The single user entity this agent serves.  All whitelisted channels
+# (telegram contacts, allowed email senders, etc.) route to this
+# identity — one person messaging from multiple devices/addresses
+# all appear as the same user.  Session key is always user:<name>.
+
+[user]
+name = "nicolas"                                               # REQUIRED — user identity key (lowercase recommended)
+
 # Context files are injected into the system prompt and consume the model's context window.
 # Stable + semi-stable + tool schemas + recall = system prompt size. The remainder is available
 # for conversation history. When input_tokens exceeds [behavior.compaction] threshold_tokens,
@@ -107,6 +116,7 @@ enabled = [
     "session_status",
     "sessions_spawn", "load_skill",
     "tts",
+    "pdf_read",
 ]
 output_truncation = 30000                                  # Truncate tool output beyond this many characters
 plugins_dir = "plugins.d"                                  # Directory for custom tool plugins
@@ -145,10 +155,6 @@ text_extensions = [
     ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
     ".ini", ".cfg", ".log", ".sql", ".css",
 ]
-
-# Scanned PDF fallback — when text extraction yields nothing, render first N
-# pages as images for vision-capable models. Requires poppler-utils (pdftoppm).
-pdf_max_render_pages = 5
 
 # ─── Vision (OPTIONAL — entire section can be omitted) ──────────
 

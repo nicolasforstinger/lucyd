@@ -9,6 +9,9 @@ MINIMAL_TOML = """\
 name = "TestAgent"
 workspace = "/tmp/test-workspace"
 
+[user]
+name = "testuser"
+
 [models.primary]
 provider = "anthropic"
 model = "claude-haiku-4-5-20251001"
@@ -44,6 +47,7 @@ class TestMissingFields:
         """Missing [agent] name should raise ConfigError."""
         data = {
             "agent": {"workspace": "/tmp"},
+            "user": {"name": "testuser"},
             "models": {"primary": {"provider": "anthropic", "model": "x"}},
         }
         with pytest.raises(ConfigError, match="name"):
@@ -53,10 +57,69 @@ class TestMissingFields:
         """Missing [models.primary] should raise ConfigError."""
         data = {
             "agent": {"name": "Test", "workspace": "/tmp"},
+            "user": {"name": "testuser"},
             "models": {},
         }
         with pytest.raises(ConfigError, match="primary"):
             Config(data)
+
+    def test_missing_user_name_raises(self):
+        """Missing [user] name should raise ConfigError."""
+        data = {
+            "agent": {"name": "Test", "workspace": "/tmp"},
+            "models": {"primary": {"provider": "anthropic", "model": "x"}},
+        }
+        with pytest.raises(ConfigError, match=r"\[user\] name"):
+            Config(data)
+
+    def test_empty_user_name_raises(self):
+        """Empty [user] name should raise ConfigError."""
+        data = {
+            "agent": {"name": "Test", "workspace": "/tmp"},
+            "user": {"name": ""},
+            "models": {"primary": {"provider": "anthropic", "model": "x"}},
+        }
+        with pytest.raises(ConfigError, match=r"\[user\] name"):
+            Config(data)
+
+
+class TestUserIdentity:
+    def test_user_name_accessible(self, minimal_toml_data):
+        """user_name property returns the configured value."""
+        cfg = Config(minimal_toml_data)
+        assert cfg.user_name == "testuser"
+
+    def test_user_name_preserves_case(self):
+        """user_name is returned as configured (case-sensitive)."""
+        data = {
+            "agent": {"name": "Test", "workspace": "/tmp"},
+            "user": {"name": "Nicolas"},
+            "models": {"primary": {"provider": "anthropic", "model": "x"}},
+        }
+        cfg = Config(data)
+        assert cfg.user_name == "Nicolas"
+
+
+class TestTalkerConstants:
+    def test_talkers_enum(self):
+        """TALKERS contains the four talker classes."""
+        from config import TALKERS
+        assert TALKERS == frozenset(("user", "operator", "system", "agent"))
+
+    def test_operator_senders(self):
+        """OPERATOR_SENDERS enumerates allowed operator surfaces."""
+        from config import OPERATOR_SENDERS
+        assert OPERATOR_SENDERS == frozenset(("cli", "agentctl", "web"))
+
+    def test_system_senders(self):
+        """SYSTEM_SENDERS enumerates allowed system event buckets."""
+        from config import SYSTEM_SENDERS
+        assert SYSTEM_SENDERS == frozenset(("maintenance", "automation", "error"))
+
+    def test_agent_senders(self):
+        """AGENT_SENDERS enumerates allowed agent targets."""
+        from config import AGENT_SENDERS
+        assert AGENT_SENDERS == frozenset(("self", "other"))
 
 class TestToolFiltering:
     def test_tools_enabled_list(self, minimal_toml_data):
@@ -73,6 +136,7 @@ class TestModelConfig:
     def test_model_config_missing_raises(self):
         cfg = Config({
             "agent": {"name": "Test", "workspace": "/tmp/test"},
+            "user": {"name": "testuser"},
             "models": {"primary": {"provider": "anthropic", "model": "test"}},
         })
         with pytest.raises(ValueError, match="nonexistent"):
@@ -111,6 +175,7 @@ class TestWebSearchApiKey:
         monkeypatch.setenv("MY_BRAVE_KEY", "sk-brave-123")
         cfg = Config({
             "agent": {"name": "Test", "workspace": "/tmp/test"},
+            "user": {"name": "testuser"},
             "models": {"primary": {"provider": "anthropic", "model": "test"}},
             "tools": {"web_search": {"api_key_env": "MY_BRAVE_KEY"}},
         })
@@ -119,6 +184,7 @@ class TestWebSearchApiKey:
     def test_web_search_api_key_missing_env(self):
         cfg = Config({
             "agent": {"name": "Test", "workspace": "/tmp/test"},
+            "user": {"name": "testuser"},
             "models": {"primary": {"provider": "anthropic", "model": "test"}},
             "tools": {"web_search": {"api_key_env": "NONEXISTENT_KEY"}},
         })

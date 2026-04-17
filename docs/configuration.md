@@ -308,7 +308,7 @@ Each plugin loads its own config via `tomllib` at startup. Core does not referen
 
 ## [documents]
 
-Document attachment processing. Extracts text from attachments (PDF, text files) so the agent sees content, not just `[attachment: file, type]` labels. Text-layer PDF support requires `pypdf`. Scanned PDFs with no extractable text fall back to rendering pages as images for vision-capable models (requires `poppler-utils`).
+Document attachment processing for non-PDF text files. Extracts text from attachments so the agent sees content, not just `[attachment: file, type]` labels. PDFs are not auto-extracted — the agent uses the `pdf_read` tool for explicit extraction with page control.
 
 ```toml
 [documents]
@@ -320,13 +320,9 @@ text_extensions = [
     ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
     ".ini", ".cfg", ".log", ".sql", ".css",
 ]
-
-# Scanned PDF fallback — render first N pages as images for vision-capable models.
-# Requires poppler-utils (pdftoppm). Only triggers when text extraction yields nothing.
-pdf_max_render_pages = 5          # Max pages to render (default: 5)
 ```
 
-Files are matched by extension (for text) or MIME type (for PDF). Non-extractable formats fall through to label-only. Scanned PDFs (no text layer) are rendered as images and injected into the vision pipeline when the model supports vision.
+Files are matched by extension or `text/*` MIME type. Non-extractable formats fall through to label-only. PDF attachments always emit a `[pdf: filename, saved: /path]` label regardless of `enabled` — the agent reads them explicitly via `pdf_read`.
 
 ## [vision]
 

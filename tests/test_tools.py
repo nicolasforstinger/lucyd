@@ -53,10 +53,17 @@ class TestReminderPayload:
         from tools.reminder import tool_reminder
 
         captured_cmd: str = ""
+        captured_scripts: list[str] = []
 
         async def fake_subprocess(cmd: str, **_: object) -> AsyncMock:
             nonlocal captured_cmd
             captured_cmd = cmd
+            # Read the script file referenced by at -f
+            if "at -f" in cmd:
+                script_path = cmd.split("at -f ")[1].split(" now")[0].strip("'\"")
+                from pathlib import Path
+                if Path(script_path).exists():
+                    captured_scripts.append(Path(script_path).read_text())
             proc = AsyncMock()
             proc.communicate = AsyncMock(return_value=(b"", b"job 1 at ..."))
             proc.returncode = 0
@@ -67,6 +74,40 @@ class TestReminderPayload:
             result = await tool_reminder("check logs", minutes=10)
 
         assert "Reminder set" in result
-        # Extract the JSON payload from the curl command
-        assert '"task_type": "system"' in captured_cmd
-        assert '"sender": "system"' in captured_cmd
+        # Verify the script file contains the right JSON payload
+        assert len(captured_scripts) == 1
+        script = captured_scripts[0]
+        assert '"task_type": "system"' in script
+        assert '"sender": "system"' in script
+        assert "check logs" in script
+
+    @pytest.mark.asyncio
+    async def test_reminder_handles_single_quotes_in_message(self) -> None:
+        """Single quotes in reminder message don't break shell quoting."""
+        from tools.reminder import tool_reminder
+
+        captured_scripts: list[str] = []
+
+        async def fake_subprocess(cmd: str, **_: object) -> AsyncMock:
+            if "at -f" in cmd:
+                script_path = cmd.split("at -f ")[1].split(" now")[0].strip("'\"")
+                from pathlib import Path
+                if Path(script_path).exists():
+                    captured_scripts.append(Path(script_path).read_text())
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b"", b"job 1 at ..."))
+            proc.returncode = 0
+            return proc
+
+        with patch("shutil.which", return_value="/usr/bin/at"), \
+             patch("asyncio.create_subprocess_shell", side_effect=fake_subprocess):
+            result = await tool_reminder("it's time to check", minutes=5)
+
+        assert "Reminder set" in result
+        assert len(captured_scripts) == 1
+        # The script should contain the message — shlex.quote escapes the
+        # single quote as '"'"' which is valid shell.  Verify the key parts
+        # are present and the JSON structure is intact.
+        script = captured_scripts[0]
+        assert "time to check" in script
+        assert '"task_type": "system"' in script

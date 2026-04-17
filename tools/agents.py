@@ -250,6 +250,7 @@ TOOLS: list[ToolSpec] = [
                     "description": "Tool names to make available (default: all except sessions_spawn and subagent_deny list)",
                 },
                 "timeout": {"type": "number", "description": "Timeout per API call in seconds (default: same as parent agent)"},
+                "max_turns": {"type": "integer", "description": "Maximum turns for the sub-agent (0 = use default)", "default": 0},
             },
             "required": ["prompt"],
         },
