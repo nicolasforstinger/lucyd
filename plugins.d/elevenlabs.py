@@ -28,8 +28,8 @@ try:
     from elevenlabs.client import AsyncElevenLabs
     from elevenlabs.types import VoiceSettings
 except ImportError:
-    AsyncElevenLabs = None
-    VoiceSettings = None
+    AsyncElevenLabs = None  # type: ignore[misc,assignment]  # optional SDK — same pattern as mistral_stt.py
+    VoiceSettings = None  # type: ignore[misc,assignment]  # optional SDK
 
 # ─── Module config (set by configure()) ─────────────────────────
 
