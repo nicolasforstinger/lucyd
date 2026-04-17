@@ -1019,43 +1019,8 @@ class TestRunSingleShot:
         assert provider._call_count == 1  # exactly one call
 
 
-class TestContextTrimming:
-    """Verify context budget enforcement trims messages."""
-
-    async def test_trims_when_over_budget(self):
-        """Messages are trimmed when context exceeds max_context_tokens."""
-        caps = ModelCapabilities(max_context_tokens=500)
-        provider = MockProvider([_end_turn_response("OK")], caps=caps)
-        reg = ToolRegistry()
-        messages = [
-            {"role": "user", "content": "first"},
-            {"role": "agent", "content": "A " * 500},
-            {"role": "user", "content": "B " * 500},
-            {"role": "user", "content": "latest"},
-        ]
-        original_count = len(messages)
-        resp = await run_agentic_loop(
-            provider=provider, system=[], messages=messages,
-            tools=[], tool_executor=reg,
-            config=replace(_LOOP_CONFIG, max_turns=1),
-        )
-        assert resp.text == "OK"
-        assert len(messages) < original_count + 1
-
-    async def test_no_trim_when_under_budget(self):
-        """Messages not trimmed when within budget."""
-        caps = ModelCapabilities(max_context_tokens=100000)
-        provider = MockProvider([_end_turn_response("OK")], caps=caps)
-        reg = ToolRegistry()
-        messages = [
-            {"role": "user", "content": "Hello"},
-            {"role": "agent", "content": "Hi"},
-            {"role": "user", "content": "test"},
-        ]
-        resp = await run_agentic_loop(
-            provider=provider, system=[], messages=messages,
-            tools=[], tool_executor=reg,
-            config=replace(_LOOP_CONFIG, max_turns=1),
-        )
-        assert resp.text == "OK"
-        assert len(messages) == 4
+# Context budget management is no longer handled inside the agentic
+# loop — the pipeline's _ensure_context_budget compacts before dispatch
+# (see pipeline.py:_ensure_context_budget and docs/diagrams.md). The
+# loop trusts that context fits. Tests for budget enforcement live
+# alongside that path, not here.
