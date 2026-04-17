@@ -80,7 +80,7 @@ max_attachment_bytes = 52428800  # Max size for base64-decoded attachments (defa
 
 Auth token is loaded from the environment variable named by `token_env` (default: `LUCYD_HTTP_TOKEN`). All protected endpoints require a valid `Bearer` token. The `/api/v1/status` and `/metrics` endpoints are always auth-exempt.
 
-**`trust_localhost`:** When `true`, requests from `127.0.0.1` / `::1` bypass auth (no token required). Default is `false` — all requests require a bearer token. Enable this for Docker bridge networks where channel bridges (Telegram, email) and cron jobs (`lucydctl`) run as separate containers on the same host. When `false`, bridges and `lucydctl` must provide a valid token via `LUCYD_HTTP_TOKEN`.
+**`trust_localhost`:** When `true`, requests from `127.0.0.1` / `::1` bypass auth (no token required). Default is `false` — all requests require a bearer token. Enable this for Docker bridge networks where channel bridges (Telegram, email) run as separate containers on the same host. When `false`, bridges and ad-hoc clients must provide a valid token via `LUCYD_HTTP_TOKEN`.
 
 See [operations — HTTP API](operations.md#http-api) for endpoint details.
 
@@ -197,7 +197,7 @@ enabled = true                        # Enable structured memory extraction (cod
 confidence_threshold = 0.6            # Minimum confidence for extracted facts
 ```
 
-When enabled, `lucydctl --consolidate` (cron at `:15`) extracts facts, episodes, commitments, and entity aliases from workspace files. Also triggers on session close and pre-compaction. See `memory_schema.py` for table definitions.
+When enabled, `cron job POST /api/v1/consolidate` (cron at `:15`) extracts facts, episodes, commitments, and entity aliases from workspace files. Also triggers on session close and pre-compaction. See `memory_schema.py` for table definitions.
 
 ### [memory.maintenance]
 
@@ -208,11 +208,11 @@ Periodic cleanup of structured memory.
 stale_threshold_days = 90             # Remove unaccessed facts older than this (default: 90)
 ```
 
-Runs via `lucydctl --maintain` (cron daily at `04:05`).
+Runs via `cron job POST /api/v1/maintain` (cron daily at `04:05`).
 
 ### Memory evolution
 
-Evolution is triggered via `bin/lucydctl --evolve` (cron daily at `04:20`, after maintenance) or `POST /api/v1/evolve`. No config section — evolution behavior is entirely defined by the `evolution` skill file in workspace. The daemon queues a message, and the agent loads the skill and rewrites workspace files through the full agentic loop.
+Evolution is triggered via `cron job POST /api/v1/evolve` (cron daily at `04:20`, after maintenance) or `POST /api/v1/evolve`. No config section — evolution behavior is entirely defined by the `evolution` skill file in workspace. The daemon queues a message, and the agent loads the skill and rewrites workspace files through the full agentic loop.
 
 ### [memory.recall]
 
@@ -243,7 +243,7 @@ chunk_overlap_chars = 320                          # Overlap between chunks (def
 embed_batch_limit = 100                            # Max chunks per embedding API batch (default: 100)
 ```
 
-The indexer (`lucydctl --index`) runs hourly at `:10` via cron. Incremental — skips files whose content hash hasn't changed.
+The indexer (`cron job POST /api/v1/index`) runs hourly at `:10` via cron. Incremental — skips files whose content hash hasn't changed.
 
 ## [tools]
 
@@ -351,12 +351,9 @@ max_turns_per_message = 50                                             # Max too
 max_cost_per_message = 5.0                                             # USD circuit breaker per message (0.0 = disabled)
 api_retries = 2                                                        # Retry attempts for transient API errors (429, 5xx, connection). Default: 2
 api_retry_base_delay = 2.0                                             # Initial backoff delay in seconds (exponential with jitter). Default: 2.0
-notify_target = ""                                                    # Route all notifications to this sender's session (default: "" = disabled)
 # max_context_for_tools = 0                                             # Inject wrap-up hint when context exceeds this during tool use (0 = disabled)
 # thinking_concise_hint = false                                         # Inject "respond concisely" hint after tool results to reduce thinking overhead
 ```
-
-**`notify_target`:** When set, all notifications (`/notify`, `--notify`) route to the named sender's session instead of creating throwaway sessions per source. Keeps notification context in the agent's main conversation. Empty string disables.
 
 **Retry architecture:** `api_retries` handles transient errors (429, 5xx, connection) within the agentic loop (fast, 1–8s exponential backoff with jitter). This is the single retry point — there is no message-level retry. If all API retries are exhausted, the error propagates to the caller.
 
@@ -380,7 +377,7 @@ diary_prompt = "..."         # Diary prompt for forced compact (supports {date})
 
 Compaction takes the oldest messages (1 - `keep_recent_pct`), summarizes them, and replaces them with the summary. The JSONL audit trail retains the full history.
 
-**Forced compact:** `lucydctl --compact` / `POST /api/v1/compact` sends a diary prompt to the primary session. The agent writes a daily memory log via the `write` tool, then compaction fires regardless of token threshold.
+**Forced compact:** `cron job POST /api/v1/compact` / `POST /api/v1/compact` sends a diary prompt to the primary session. The agent writes a daily memory log via the `write` tool, then compaction fires regardless of token threshold.
 
 ## [logging]
 
@@ -399,7 +396,7 @@ Cost tracking configuration.
 ```toml
 [metering]
 currency = "EUR"           # Display currency for cost reports (default: EUR)
-retention_months = 12      # Delete metering records older than this via lucydctl --maintain (default: 12)
+retention_months = 12      # Delete metering records older than this via cron job POST /api/v1/maintain (default: 12)
 ```
 
 ## [conversion]

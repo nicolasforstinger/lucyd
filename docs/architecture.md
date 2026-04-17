@@ -27,9 +27,8 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 | `attachments.py` | `Attachment` type, image fitting (`fit_image`), document text extraction (`extract_document_text`). Pure functions. |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
 | `async_utils.py` | `run_blocking()` for safe blocking I/O offload. |
-| `channels/telegram.py` | Telegram bridge. Polls getUpdates, POSTs to daemon, delivers replies. Config: `[telegram]` section in `lucyd.toml`. |
-| `bin/lucydctl` | CLI control client. HTTP wrapper for daemon endpoints. `lucydctl chat` for interactive SSE streaming. |
-| `channels/email.py` | Email bridge. IMAP polling, SMTP replies. Config: `[email]` section in `lucyd.toml`. |
+| `channels/telegram.py` | Telegram bridge. Polls getUpdates, POSTs `/inbound/telegram`, delivers replies. Config: `[telegram]` section in `lucyd.toml`. |
+| `channels/email.py` | Email bridge. IMAP polling, POSTs `/inbound/email`, SMTP replies. Config: `[email]` section in `lucyd.toml`. |
 | `providers/__init__.py` | `LLMProvider` protocol, data types (`LLMResponse`, `StreamDelta`, `Usage`, `ModelCapabilities`), factory. |
 | `providers/anthropic.py` | Anthropic provider. Prompt caching, extended thinking. SDK required. |
 | `providers/openai.py` | OpenAI-compatible provider. Embeddings, thinking detection. SDK required. |
@@ -52,27 +51,29 @@ HTTP API is the single boundary. Bridges (Telegram, CLI, email) are standalone H
 ## Message Flow
 
 ```
-Bridge (Telegram/CLI/email)
-  | POST /api/v1/chat
-  | body: {message, sender, channel_id, task_type, reply_to, attachments}
+Caller (bridge / cron / webhook / tool)
+  | POST /api/v1/<endpoint>
+  | body: {message, sender?, reply_to?, attachments?}
   v
 HTTP API (api.py)
-  | _extract_envelope: channel_id (default "http"), task_type (validated), reply_to
-  | _parse_and_queue: validate body, build queue item, attach asyncio.Future for /chat
+  | endpoint pins talker (user|operator|system|agent)
+  | validate sender against talker's enumerated set
+  | /chat, /chat/stream, /inbound/*: attach asyncio.Future (sync)
   v
-asyncio.Queue (maxsize=1000)
+asyncio.Queue (priority: user/operator -> USER, system/agent -> SYSTEM)
   v
 _message_loop (lucyd.py)
-  | /chat items: process_http_immediate (no debounce, Future attached)
-  | /message /notify items: debounce per sender, then drain_pending
+  | sync items (Future attached): process_http_immediate (no debounce)
+  | async items: debounce per session_key, then drain_pending
   v
-_process_message(text, sender, source, channel_id, task_type, reply_to, ...)
+_process_message(text, sender, talker, channel?, reply_to?, ...)
   |
   |-- _run_preprocessors          plugins claim/transform attachments sequentially
   |-- _process_attachments        images scaled (fit_image), documents extracted
-  |-- _setup_session              get_or_create(channel_id:sender), inject timestamp
+  |-- _setup_session              get_or_create(f"{talker}:{sender}"), inject timestamp
   |-- _build_recall               structured memory recall (facts, episodes, commitments)
   |-- _build_context              system prompt: stable + semi-stable + dynamic tiers
+  |                                (dynamic framing is talker-keyed)
   |-- _ensure_context_budget       pre-loop compaction if context > 80%
   |-- _run_agentic                  agentic loop (API-level retry only)
   |     |
@@ -83,13 +84,12 @@ _process_message(text, sender, source, channel_id, task_type, reply_to, ...)
   |
   +-- _finalize_response
         |-- _persist_response     JSONL append + state snapshot
-        |-- _deliver_reply        route by reply_to:
-        |     "" (default)        resolve HTTP future with reply
-        |     "silent"            resolve future with silent:true (log only)
-        |     "<sender>"          resolve future + enqueue reply as system message to target
+        |-- _deliver_reply        system/agent: silent (no reply path)
+        |                          reply_to="silent": silent
+        |                          otherwise: resolve HTTP future with reply
         |-- _check_compaction_warning
         |-- _run_compaction_if_needed
-        +-- _auto_close_if_ephemeral   close if task_type in ("task", "system")
+        +-- _auto_close_if_ephemeral   close if talker in ("system", "agent")
 ```
 
 Metrics fire at: preprocessor execution, context utilization calculation, agentic loop (API calls, tokens, cost, latency), tool execution, message completion (count, duration, cost, turns), session close, compaction, errors.
@@ -151,47 +151,60 @@ Every heavily-shared attribute has exactly one write site. After startup, no mut
 
 ## HTTP API
 
-17 endpoints. All registered in `api.py` lines 158–176.
+All registered in `api.py`. Auth: Bearer token from `LUCYD_HTTP_TOKEN`.
+Auth-exempt: `/api/v1/status`, `/metrics`.
 
-| Endpoint | Method | Auth | Purpose |
+| Endpoint | Method | Talker | Purpose |
 |---|---|---|---|
-| `/api/v1/chat` | POST | yes | Send message, await response |
-| `/api/v1/chat/stream` | POST | yes | Send message, stream response via SSE |
-| `/api/v1/message` | POST | yes | Fire-and-forget user message (202) |
-| `/api/v1/notify` | POST | yes | Fire-and-forget notification (202) |
-| `/api/v1/status` | GET | no | Health check + daemon stats |
-| `/metrics` | GET | no | Prometheus metrics exposition |
-| `/api/v1/sessions` | GET | yes | List active sessions |
-| `/api/v1/cost` | GET | yes | Cost breakdown by period |
-| `/api/v1/monitor` | GET | yes | Live agentic loop state |
-| `/api/v1/sessions/reset` | POST | yes | Reset/archive sessions |
-| `/api/v1/sessions/{id}/history` | GET | yes | Session event history |
-| `/api/v1/evolve` | POST | yes | Trigger memory evolution |
-| `/api/v1/compact` | POST | yes | Force diary write + compaction |
-| `/api/v1/index` | POST | yes | Run workspace indexing |
-| `/api/v1/index/status` | GET | yes | Workspace index status |
-| `/api/v1/consolidate` | POST | yes | Extract facts from workspace files |
-| `/api/v1/maintain` | POST | yes | Run memory maintenance |
-
-Auth: Bearer token from `LUCYD_HTTP_TOKEN` env var. Auth-exempt paths: `/api/v1/status`, `/metrics`.
+| `/api/v1/chat` | POST | operator | Sync message, await response |
+| `/api/v1/chat/stream` | POST | operator | Sync message, stream response via SSE |
+| `/api/v1/inbound/telegram` | POST | user | Telegram bridge inbound |
+| `/api/v1/inbound/email` | POST | user | Email bridge inbound |
+| `/api/v1/inbound/whatsapp` | POST | user | Reserved (501 until implemented) |
+| `/api/v1/system/event` | POST | system | External events (cron, webhooks, errors) |
+| `/api/v1/agent/action` | POST | agent | Agent self-actions (reminders, a2a) |
+| `/api/v1/status` | GET | — | Health check + daemon stats |
+| `/metrics` | GET | — | Prometheus metrics exposition |
+| `/api/v1/sessions` | GET | — | List active sessions |
+| `/api/v1/cost` | GET | — | Cost breakdown by period |
+| `/api/v1/monitor` | GET | — | Live agentic loop state |
+| `/api/v1/sessions/reset` | POST | — | Reset/archive sessions |
+| `/api/v1/sessions/{id}/history` | GET | — | Session event history |
+| `/api/v1/evolve` | POST | — | Trigger memory evolution |
+| `/api/v1/compact` | POST | — | Force diary write + compaction |
+| `/api/v1/index` | POST | — | Run workspace indexing |
+| `/api/v1/index/status` | GET | — | Workspace index status |
+| `/api/v1/consolidate` | POST | — | Extract facts from workspace files |
+| `/api/v1/maintain` | POST | — | Run memory maintenance |
 
 ### Message Envelope
 
-All inbound message endpoints (`/chat`, `/chat/stream`, `/message`, `/notify`) accept envelope fields extracted by `_extract_envelope()` (api.py):
+Every inbound message endpoint declares the `talker` internally — never
+overridable from the request body. The client only supplies content plus
+the within-talker `sender`:
 
-| Field | Type | Default | Purpose |
+| Field | Type | Required | Purpose |
 |---|---|---|---|
-| `channel_id` | string | `"http"` | Channel identifier. Used in session keying and metrics labels. |
-| `task_type` | string | `"conversational"` | Session lifecycle: `"conversational"` (stays open), `"task"` (auto-close), `"system"` (auto-close, internal). Validated against `_VALID_TASK_TYPES`. |
-| `reply_to` | string | absent | Response routing: omit for normal reply, `"silent"` for log-only, or a sender name to redirect. |
+| `message` | string | yes | The content |
+| `sender` | string | depends | Within-talker identity. Operator: `cli`/`agentctl`/`web`. System: `maintenance`/`automation`/`error`. Agent: `self`/`other`. User: auto-injected as `config.user.name` by `/inbound/*`. |
+| `reply_to` | string | no | `"silent"` suppresses delivery (reply still processed). |
+| `attachments` | list | no | Base64-encoded files |
+
+Invalid `sender` for the talker class → 400.
 
 ### Request Flow
 
-For `/chat`: an `asyncio.Future` is attached to the queue item. `_process_message` resolves it via `_deliver_reply`. The HTTP handler awaits the Future with `agent_timeout_seconds` timeout, returns 408 on expiry.
+For `/chat`, `/chat/stream`, and `/inbound/*`: an `asyncio.Future` is
+attached to the queue item. `_process_message` resolves it via
+`_deliver_reply`. The HTTP handler awaits the Future with
+`agent_timeout_seconds` timeout, returns 408 on expiry.
 
-For `/chat/stream`: an `asyncio.Queue` is attached instead. `_on_stream_delta` pushes SSE events as the provider streams. The HTTP handler reads the queue and writes SSE frames.
+For `/chat/stream`: an additional `asyncio.Queue` is attached. Stream
+callbacks push SSE events as the provider streams. The HTTP handler
+reads the queue and writes SSE frames.
 
-For `/message`, `/notify`: fire-and-forget. No Future. Returns 202 immediately.
+For `/system/event`, `/agent/action`: fire-and-forget. No Future.
+Returns 202 immediately. Sessions auto-close after processing.
 
 ## Plugin System
 
@@ -212,9 +225,15 @@ Dual-format persistence in `$DATA_DIR/sessions/`:
 | JSONL | `{id}.{YYYY-MM-DD}.jsonl` | Append-only audit trail (daily-split) |
 | State | `{id}.state.json` | Atomic snapshot for fast resume |
 
-Sessions are keyed by `channel_id:sender` (e.g., `telegram:Nicolas`, `http:n8n-daily`). The key is computed in `_process_message` as `f"{channel_id}:{sender}"` and passed to `session_mgr.get_or_create()`.
+Sessions are keyed by `talker:sender` (e.g., `user:nicolas`,
+`operator:cli`, `system:maintenance`, `agent:self`). The key is computed
+in `_process_message` as `f"{talker}:{sender}"` and passed to
+`session_mgr.get_or_create()`.
 
-Ephemeral sessions (`task_type` "task" or "system") auto-close after processing via `_auto_close_if_ephemeral`. Pre-existing sessions are never auto-closed.
+Ephemeral sessions (talker `system` or `agent`) auto-close after
+processing via `_auto_close_if_ephemeral`. Pre-existing sessions are
+never auto-closed. `user` and `operator` sessions stay open until
+manually reset.
 
 Compaction triggers when `input_tokens` exceeds `compaction.threshold_tokens`: oldest messages are summarized via LLM, keeping the newest `keep_recent_pct` fraction verbatim (`session:compact_session()`).
 
@@ -230,14 +249,15 @@ System prompt assembled in `ContextBuilder.build()` (context.py) across three ca
 | semi-stable | MEMORY.md, always-on skill bodies, skill index | Shorter TTL |
 | dynamic | Date/time, sender, task-type framing, memory recall, limits | Never cached |
 
-Task-type framing (`ContextBuilder._build_dynamic()`) tells the agent what kind of session it's in:
+Talker framing (`ContextBuilder._build_dynamic()`) tells the agent who
+is speaking and how to treat the session:
 
-| task_type + deliver | Framing |
+| talker | Framing |
 |---|---|
-| `system` + no deliver | "automated infrastructure — replies internal only" |
-| `system` + deliver | "notification routed to operator" |
-| `task` | "ephemeral task — session closes after reply" |
-| `conversational` | "conversation — history preserved" |
+| `user` | "Messages come from the person you serve, possibly via any of their whitelisted channels. History feeds your memory." |
+| `operator` | "Messages come from an administrator. History persists but does NOT feed user memory." |
+| `system` | "Automated infrastructure events. Process and reply internally — session closes after your reply." |
+| `agent` | "This message is from you (scheduled self-action or agent-to-agent). No outbound delivery." |
 
 Token budget enforcement trims dynamic first, then semi-stable. Stable tier is never trimmed.
 
@@ -266,7 +286,7 @@ Four implementations: Anthropic (prompt caching, extended thinking), OpenAI-comp
 
 | Scope | Metrics | Labels |
 |---|---|---|
-| Per-message | `messages_total`, `message_duration_seconds`, `message_cost_eur`, `agentic_turns`, `context_utilization_ratio`, `message_outcome_total` | channel_id, task_type, session_id, sender; outcome |
+| Per-message | `messages_total`, `message_duration_seconds`, `message_cost_eur`, `agentic_turns`, `context_utilization_ratio`, `message_outcome_total` | talker, session_id, sender; outcome |
 | Per-provider | `api_calls_total`, `api_latency_seconds`, `tokens_total`, `api_cost_eur_total`, `ttft_seconds`, `api_retries_total` | model, provider, status/direction |
 | Per-tool | `tool_calls_total`, `tool_duration_seconds` | tool_name, status |
 | Per-preprocessor | `preprocessor_total`, `preprocessor_duration_seconds` | name, status |
@@ -277,4 +297,4 @@ Four implementations: Anthropic (prompt caching, extended thinking), OpenAI-comp
 
 ## Cost Tracking
 
-Every LLM call records to PostgreSQL via `MeteringDB` (metering.py): tokens, cost_eur, fx_rate, model, provider, session, latency. Query via `lucydctl --cost` or `GET /api/v1/cost`.
+Every LLM call records to PostgreSQL via `MeteringDB` (metering.py): tokens, cost_eur, fx_rate, model, provider, session, latency. Query via `GET /api/v1/cost`.

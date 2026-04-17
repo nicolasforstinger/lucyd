@@ -10,89 +10,98 @@ Inbound message to response delivery. Source: `api.py` routes, `lucyd.py` `_mess
 
 ### Inbound endpoints
 
-| Endpoint | Handler | Waits | Key behavior |
-|---|---|---|---|
-| `POST /chat` | `_handle_chat` | Yes — `asyncio.Future` | Synchronous request/response |
-| `POST /chat/stream` | `_handle_chat_stream` | Yes — SSE via `asyncio.Queue` | Streams deltas as SSE frames; separate handler, separate route |
-| `POST /message` | `_handle_message` | No — 202 | Fire-and-forget. When `task_type: "system"`: auto-promotes to system behavior (prefix, sender default, delivery suppressed) |
-| `POST /notify` | `_handle_notify` | No — 202 | Fire-and-forget. Adds `[source]`/`[ref]` metadata. `notify` flag routes inbound message to operator session |
+Each endpoint pins a `talker` class; the body supplies `sender` (validated
+against the talker's enumerated set) and content.
 
-All endpoints share `_extract_envelope()`: extracts `channel_id` (default `"http"`), `task_type` (validated), `reply_to` (optional).
+| Endpoint | Talker | Waits | Key behavior |
+|---|---|---|---|
+| `POST /chat` | operator | Yes — `asyncio.Future` | Synchronous request/response |
+| `POST /chat/stream` | operator | Yes — SSE via `asyncio.Queue` | Streams deltas as SSE frames |
+| `POST /inbound/telegram` | user | Yes — Future | Telegram bridge; sender auto-injected as `config.user.name` |
+| `POST /inbound/email` | user | Yes — Future | Email bridge; sender auto-injected |
+| `POST /inbound/whatsapp` | user | — | Reserved (501) |
+| `POST /system/event` | system | No — 202 | External events (cron, webhooks, bridge errors). Auto-closes. |
+| `POST /agent/action` | agent | No — 202 | Agent self-actions (reminders, a2a). Auto-closes. |
 
 ### Callers
 
-Bridges are persistent processes that poll an external source and POST to the daemon. `lucydctl` is the CLI tool — interactive chat (`lucydctl chat` via `/chat/stream`) and one-shot commands. Other HTTP clients get `channel_id: "http"` by default.
-
-| Caller | channel_id | Endpoints used |
+| Caller | Endpoint | Sender |
 |---|---|---|
-| `channels/telegram.py` | `"telegram"` | `/chat` |
-| `channels/email.py` | `"email"` | `/chat` |
-| `bin/lucydctl` | `"lucydctl"` | `/chat`, `/chat/stream`, `/message`, `/notify`, management |
-| n8n / scripts | `"http"` (default) | any |
+| `channels/telegram.py` | `/inbound/telegram` | auto-injected |
+| `channels/email.py` | `/inbound/email` | auto-injected |
+| agentctl / agentctl web | `/chat`, `/chat/stream` | `agentctl` or `web` |
+| ad-hoc shell (curl) | `/chat` | `cli` |
+| n8n / webhooks | `/system/event` | `automation` |
+| bridges (delivery failures) | `/system/event` | `error` |
+| cron jobs | specialized maintenance endpoints | — |
+| `tools/reminder.py` (scheduled) | `/agent/action` | `self` |
 
 ```mermaid
 flowchart TD
-    subgraph Bridges["Channel Bridges (persistent)"]
-        TG["Telegram<br/>channel_id: telegram"]
-        EMAIL["Email<br/>channel_id: email"]
+    subgraph Bridges["Channel Bridges (user talker)"]
+        TG["Telegram<br/>/inbound/telegram"]
+        EMAIL["Email<br/>/inbound/email"]
     end
 
-    subgraph CLI["lucydctl (channel_id: lucydctl)"]
-        CHAT_MODE["lucydctl chat<br/>interactive SSE"]
-        CMD["lucydctl --message/--system/--notify<br/>one-shot commands"]
+    subgraph Ops["Operator surfaces"]
+        CLI["curl / agentctl web<br/>/chat, /chat/stream"]
     end
 
-    subgraph Other["Other HTTP Clients"]
-        N8N["n8n / scripts<br/>channel_id: http (default)"]
+    subgraph Auto["Automation / errors"]
+        N8N["n8n / webhooks<br/>/system/event"]
+        ERR["Bridge delivery-fail<br/>/system/event sender=error"]
+    end
+
+    subgraph Self["Agent self-actions"]
+        REM["reminder at-job<br/>/agent/action sender=self"]
     end
 
     subgraph API["HTTP API — api.py"]
         CHAT["/chat — Future"]
         STREAM["/chat/stream — SSE Queue"]
-        MSG["/message — 202"]
-        NOTIFY["/notify — 202"]
+        INBOUND["/inbound/* — Future"]
+        SYS["/system/event — 202"]
+        AGENT["/agent/action — 202"]
     end
 
-    Q["asyncio.Queue (maxsize=1000)"]
+    Q["asyncio.PriorityQueue<br/>(user/operator = USER, system/agent = SYSTEM)"]
 
     subgraph Loop["_message_loop"]
         TYPE{"Item type?"}
         IMMEDIATE["process_http_immediate<br/>(no debounce, Future attached)"]
-        DEB["Debounce per sender<br/>→ drain_pending"]
+        DEB["Debounce per session_key<br/>→ drain_pending"]
         RESET["_process_reset_item"]
         COMPACT["_handle_compact"]
     end
 
     subgraph Process["_process_message"]
         PREPROC["_run_preprocessors"]
-        ATTACH["_process_attachments<br/>fit_image, extract_document_text<br/>(PDFs → label only, agent uses pdf_read)"]
-        SETUP["_setup_session<br/>key = channel_id:sender"]
-        RECALL["_build_recall<br/>facts, episodes, commitments"]
-        BUILD["_build_context<br/>stable + semi-stable + dynamic tiers"]
+        ATTACH["_process_attachments<br/>fit_image, extract_document_text<br/>(PDFs → label, agent uses pdf_read)"]
+        SETUP["_setup_session<br/>key = talker:sender"]
+        RECALL["_build_recall"]
+        BUILD["_build_context<br/>(talker-keyed dynamic framing)"]
         RUN["_run_agentic"]
     end
 
     subgraph Finalize["_finalize_response"]
-        PERSIST["_persist_response<br/>JSONL + state snapshot"]
-        DELIVER{"_deliver_reply<br/>reply_to?"}
-        DEFAULT["Resolve HTTP future"]
-        SILENT["Log only — silent: true"]
-        REDIRECT["Resolve future +<br/>enqueue to target session"]
-        COMPACT_CHECK["_check_compaction_warning<br/>_run_compaction_if_needed"]
-        AUTOCLOSE["_auto_close_if_ephemeral<br/>task_type ∈ task, system"]
+        PERSIST["_persist_response"]
+        DELIVER{"_deliver_reply"}
+        SYNC["Resolve HTTP future"]
+        SILENT["silent — log only"]
+        COMPACT_CHECK["compaction checks"]
+        AUTOCLOSE["_auto_close_if_ephemeral<br/>talker ∈ system, agent"]
     end
 
-    TG --> CHAT
-    EMAIL --> CHAT
-    CHAT_MODE --> STREAM
-    CMD --> CHAT & MSG & NOTIFY
-    N8N --> CHAT & MSG & NOTIFY
+    TG & EMAIL --> INBOUND
+    CLI --> CHAT & STREAM
+    N8N & ERR --> SYS
+    REM --> AGENT
 
-    CHAT & STREAM --> Q
-    MSG & NOTIFY --> Q
+    CHAT & STREAM & INBOUND --> Q
+    SYS & AGENT --> Q
     Q --> TYPE
-    TYPE -->|"/chat, /chat/stream<br/>(has Future)"| IMMEDIATE
-    TYPE -->|"/message, /notify"| DEB
+    TYPE -->|"has Future"| IMMEDIATE
+    TYPE -->|"async (system/agent)"| DEB
     TYPE -->|reset| RESET
     TYPE -->|compact| COMPACT
 
@@ -100,9 +109,8 @@ flowchart TD
     DEB --> PREPROC
     PREPROC --> ATTACH --> SETUP --> RECALL --> BUILD --> RUN
     RUN --> PERSIST --> DELIVER
-    DELIVER -->|"reply_to absent"| DEFAULT --> COMPACT_CHECK
-    DELIVER -->|"reply_to = silent"| SILENT --> COMPACT_CHECK
-    DELIVER -->|"reply_to = sender"| REDIRECT --> COMPACT_CHECK
+    DELIVER -->|"talker user/operator"| SYNC --> COMPACT_CHECK
+    DELIVER -->|"talker system/agent or reply_to=silent"| SILENT --> COMPACT_CHECK
     COMPACT_CHECK --> AUTOCLOSE
 ```
 
@@ -245,16 +253,17 @@ flowchart TD
     TOOL_GATE -->|no| NO_TOOLS
 ```
 
-### Task-type framing
+### Talker framing
 
-The dynamic tier includes session framing — 4 combinations based on `task_type` and `deliver`:
+The dynamic tier includes session framing — one of four combinations,
+keyed on the declared talker:
 
-| task_type + deliver | Framing |
+| talker | Framing |
 |---|---|
-| `system` + no deliver | "automated infrastructure — replies internal only" |
-| `system` + deliver | "notification routed to operator" |
-| `task` | "ephemeral task — session closes after reply" |
-| `conversational` | "conversation — history preserved" |
+| `user` | "Messages come from the person you serve, possibly via any whitelisted channel — history feeds memory" |
+| `operator` | "Messages come from an administrator — persists but does NOT feed user memory" |
+| `system` | "Automated infrastructure events — session closes after reply" |
+| `agent` | "Self-action or agent-to-agent — no outbound delivery" |
 
 ### Recall injection
 
@@ -417,7 +426,7 @@ flowchart TD
         COMPACT_CHECK{"input_tokens ><br/>threshold?"}
         CONSOLIDATE["consolidation.consolidate_session<br/>extract facts + episode via LLM"]
         COMPACT["compact_session<br/>LLM summarizes oldest messages"]
-        AUTOCLOSE{"task_type ∈<br/>task, system?"}
+        AUTOCLOSE{"talker ∈<br/>system, agent?"}
     end
 
     subgraph Close["close_session"]
@@ -442,7 +451,11 @@ flowchart TD
 
 ### Session keying
 
-Sessions are keyed by `channel_id:sender` (e.g., `telegram:Nicolas`, `lucydctl:cli`). The key is computed in `_process_message` as `f"{channel_id}:{sender}"` and passed to `get_or_create`. `sessions.json` maps these keys to session UUIDs.
+Sessions are keyed by `talker:sender` (e.g., `user:nicolas`,
+`operator:cli`, `system:maintenance`, `agent:self`). The key is computed
+in `_process_message` as `f"{talker}:{sender}"` and passed to
+`get_or_create`. The talker is pinned by the HTTP endpoint — never
+overridable from the body.
 
 ### Dual storage
 
@@ -576,7 +589,7 @@ Per tool call: `TOOL_CALLS_TOTAL{tool_name, status}` (success/error), `TOOL_DURA
 
 ## 8. HTTP Core + Bridge Pattern
 
-Source: `api.py` middleware + route registration (lines 158–176), `channels/*.py`, `bin/lucydctl`.
+Source: `api.py` middleware + route registration, `channels/*.py`.
 
 See diagram 1 for the full message lifecycle including caller → endpoint → queue → processing flow. This section covers the HTTP layer internals and bridge contract.
 
@@ -594,8 +607,8 @@ flowchart TD
     end
 
     subgraph Handlers["Route handlers"]
-        SYNC["/chat — Future<br/>/chat/stream — SSE Queue"]
-        ASYNC["/message, /notify — 202"]
+        SYNC["/chat, /chat/stream — Future<br/>/inbound/* — Future"]
+        ASYNC["/system/event, /agent/action — 202"]
         MGMT["management endpoints<br/>status, sessions, cost, etc."]
     end
 
@@ -626,18 +639,18 @@ Two middleware layers, applied in order:
 
 Bridges are standalone processes. They don't import framework code. The contract:
 
-1. Poll external source (Telegram getUpdates, IMAP, stdin)
-2. POST to daemon HTTP API with message envelope (`message`, `sender`, `channel_id`, optional `task_type`, `reply_to`, `attachments`)
-3. Receive reply in HTTP response (for `/chat`) or SSE stream (for `/chat/stream`)
-4. Deliver reply via external source (Telegram sendMessage, SMTP, stdout)
+1. Poll external source (Telegram getUpdates, IMAP)
+2. Resolve the inbound sender against the per-channel whitelist; drop if not allowed
+3. POST to `/api/v1/inbound/<channel>` with `{message, attachments?}` — the daemon pins `talker=user` and injects `sender=config.user.name`
+4. Receive reply synchronously; deliver via external channel (Telegram sendMessage, SMTP)
+5. On delivery failure: POST `/api/v1/system/event` with `{sender: "error", message: ...}`
 
-No outbound push from daemon to bridges.
+No outbound push from daemon to bridges — the bridge always initiates.
 
-| Bridge | File | channel_id | Config | Auth |
-|--------|------|------------|--------|------|
-| Telegram | `channels/telegram.py` | `"telegram"` | `lucyd.toml [telegram]` | Bearer token from `LUCYD_HTTP_TOKEN` |
-| Email | `channels/email.py` | `"email"` | `lucyd.toml [email]` | Bearer token from `LUCYD_HTTP_TOKEN` |
-| lucydctl | `bin/lucydctl` | `"lucydctl"` | env vars only | Bearer token from `LUCYD_HTTP_TOKEN` |
+| Bridge | File | Inbound endpoint | Config | Auth |
+|--------|------|------------------|--------|------|
+| Telegram | `channels/telegram.py` | `/api/v1/inbound/telegram` | `lucyd.toml [telegram]` | Bearer token from `LUCYD_HTTP_TOKEN` |
+| Email | `channels/email.py` | `/api/v1/inbound/email` | `lucyd.toml [email]` | Bearer token from `LUCYD_HTTP_TOKEN` |
 
 ---
 
@@ -691,7 +704,7 @@ flowchart LR
 Per session UUID:
 - `{uuid}.state.json` — atomic snapshot (tmp + rename). Full messages array, token counts, compaction state.
 - `{uuid}.{YYYY-MM-DD}.jsonl` — append-only audit trail. One event per line, daily-split. Events: session creation, messages, tool results, compaction.
-- `sessions.json` — index mapping `channel_id:sender` to session UUIDs.
+- `sessions.json` — index mapping `talker:sender` to session UUIDs.
 - `.archive/` — closed sessions moved here by `close_session()`.
 
 ### Monitor state

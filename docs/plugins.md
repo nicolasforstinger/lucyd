@@ -182,26 +182,22 @@ There is no outbound push from the daemon to channels.
 
 ### Message Envelope
 
-All envelope fields are optional. Missing fields get safe defaults.
+Each endpoint pins the `talker`; the bridge only supplies content.
+User-class inbound endpoints auto-inject `sender = config.user.name`.
 
-| Field | Type | Default | Description |
+| Field | Type | Required | Description |
 |---|---|---|---|
-| `message` | string | *required* | Message text |
-| `sender` | string | `"default"` | Sender identifier (prefixed with `http-` by the API) |
-| `channel_id` | string | `"http"` | Channel identifier. Used in session keying and metrics. |
-| `task_type` | string | `"conversational"` | `"conversational"` (session stays open), `"task"` (auto-close after response), `"system"` (auto-close, internal) |
-| `reply_to` | string | — | Response routing: omit for normal reply, `"silent"` to suppress delivery, or a sender name to redirect the reply into that sender's session |
-| `attachments` | list | `[]` | Base64-encoded file attachments |
-| `context` | string | — | Freeform label prepended as `[context]` |
+| `message` | string | yes | Message text |
+| `sender` | string | depends | Within-talker identity. Bridges (user talker) don't set it — the daemon injects `config.user.name`. Operator/system/agent callers must send one of the enum values (see `config.OPERATOR_SENDERS`, `SYSTEM_SENDERS`, `AGENT_SENDERS`). |
+| `reply_to` | string | no | `"silent"` suppresses delivery (reply still processed and logged). |
+| `attachments` | list | no | Base64-encoded file attachments |
+| `context` | string | no | Freeform label prepended as `[context]` (operator `/chat` only) |
 
-Example:
+Example — a channel bridge POSTing a user message:
 
 ```python
-resp = await client.post(f"{URL}/api/v1/chat", json={
+resp = await client.post(f"{URL}/api/v1/inbound/telegram", json={
     "message": user_text,
-    "sender": username,
-    "channel_id": "telegram",
-    "task_type": "conversational",
 })
 data = resp.json()
 reply = data.get("reply", "")
@@ -232,7 +228,10 @@ Channel bridges read their config from sections in `lucyd.toml` (path from `LUCY
 | **Telegram** | `channels/telegram.py` | `lucyd.toml [telegram]` | Full-featured: long polling, reconnect backoff, media groups, photo albums, contacts |
 | **Email** | `channels/email.py` | `lucyd.toml [email]` | IMAP polling + SMTP reply |
 
-`lucydctl chat` provides interactive CLI chat via SSE streaming — it's part of `bin/lucydctl`, not a separate channel bridge. Use Telegram as the reference for production channel patterns (error handling, reconnection, config structure).
+Interactive CLI chat is not bundled — API-only operation is the standard.
+Callers speak directly to `/api/v1/chat/stream` (or will consume it via
+the planned `agentctl web` UI). Use Telegram as the reference for
+production channel patterns (error handling, reconnection, config structure).
 
 ## Custom Metrics
 
