@@ -97,30 +97,42 @@ _PRIORITY_SYSTEM = 1
 
 
 class PriorityMessageQueue:
-    """Two-tier priority queue: user messages before system tasks, FIFO within tier."""
+    """Two-tier priority queue: user messages before system tasks, FIFO within tier.
+
+    None is a legal item — used as a shutdown sentinel by the message loop.
+    Sentinels go in at USER priority to ensure they drain ahead of queued work.
+    """
 
     def __init__(self, maxsize: int = 1000) -> None:
-        self._queue: asyncio.PriorityQueue[tuple[int, int, dict[str, Any]]] = (
+        self._queue: asyncio.PriorityQueue[tuple[int, int, Any]] = (
             asyncio.PriorityQueue(maxsize=maxsize)
         )
         self._seq = 0
 
-    async def put(self, item: dict[str, Any]) -> None:
+    def _prioritize(self, item: Any) -> tuple[int, int, Any]:
+        self._seq += 1
+        if item is None or not isinstance(item, dict):
+            return (_PRIORITY_USER, self._seq, item)
         talker = item.get("talker", "user")
         priority = _PRIORITY_SYSTEM if talker in ("system", "agent") else _PRIORITY_USER
         item["_queued_at"] = time.time()
         item["_priority"] = priority
-        self._seq += 1
-        await self._queue.put((priority, self._seq, item))
+        return (priority, self._seq, item)
 
-    async def get(self) -> dict[str, Any]:
+    async def put(self, item: Any) -> None:
+        await self._queue.put(self._prioritize(item))
+
+    def put_nowait(self, item: Any) -> None:
+        self._queue.put_nowait(self._prioritize(item))
+
+    async def get(self) -> Any:
         _, _, item = await self._queue.get()
         return item
 
     def qsize(self) -> int:
         return self._queue.qsize()
 
-    def get_nowait(self) -> dict[str, Any]:
+    def get_nowait(self) -> Any:
         _, _, item = self._queue.get_nowait()
         return item
 
