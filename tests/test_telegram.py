@@ -24,7 +24,7 @@ _GLOBALS_KEYS = [
     "TOKEN", "DAEMON_URL", "API_BASE", "CHUNK_LIMIT", "POLL_TIMEOUT",
     "HTTP_TIMEOUT", "CONNECT_TIMEOUT", "RECONNECT_INITIAL", "RECONNECT_MAX",
     "RECONNECT_FACTOR", "RECONNECT_JITTER", "MEDIA_GROUP_DELAY",
-    "MAX_ATTACHMENT_BYTES", "ID_TO_NAME", "ALLOW_FROM",
+    "MAX_ATTACHMENT_BYTES", "ID_TO_NAME", "ALLOWED_SENDERS",
     "_client", "_bot_id", "_offset",
 ]
 
@@ -179,18 +179,18 @@ class TestLoadConfig:
         tg.load_config()
         assert tg.ID_TO_NAME == {111: "Alice", 222: "Bob"}
 
-    def test_allow_from_populates_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_allowed_senders_populates_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = tmp_path / "lucyd.toml"
         cfg.write_text(
             '[telegram]\n'
             'token_env = "TG_TOK"\n'
-            'allow_from = [111, 222]\n'
+            'allowed_senders = [111, 222]\n'
         )
         monkeypatch.setenv("LUCYD_CONFIG", str(cfg))
         monkeypatch.setenv("TG_TOK", "x")
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg.load_config()
-        assert tg.ALLOW_FROM == {111, 222}
+        assert tg.ALLOWED_SENDERS == {111, 222}
 
     def test_exits_when_lucyd_config_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LUCYD_CONFIG", raising=False)
@@ -638,7 +638,7 @@ def _b64_attachment(filename: str = "audio.mp3", content: bytes = b"audiodata",
 class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_text_message_forwarded_and_reply_sent(self, tmp_path: Path) -> None:
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg._bot_id = 0
         tg.DAEMON_URL = "http://daemon:8100"
 
@@ -662,7 +662,7 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_bot_own_message_is_ignored(self, tmp_path: Path) -> None:
         tg._bot_id = 42
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         with (
@@ -678,7 +678,7 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_non_allowed_user_filtered(self, tmp_path: Path) -> None:
         tg._bot_id = 0
-        tg.ALLOW_FROM = {5555}
+        tg.ALLOWED_SENDERS = {5555}
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         with (
@@ -694,7 +694,7 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_quote_prepended_to_text(self, tmp_path: Path) -> None:
         tg._bot_id = 0
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg.DAEMON_URL = "http://daemon:8100"
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -716,7 +716,7 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_pre_attachments_used_instead_of_extracting(self, tmp_path: Path) -> None:
         tg._bot_id = 0
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg.DAEMON_URL = "http://daemon:8100"
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -738,7 +738,7 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_empty_text_and_no_attachments_skipped(self, tmp_path: Path) -> None:
         tg._bot_id = 0
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         with (
@@ -755,7 +755,7 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_daemon_error_is_caught_and_logged(self, tmp_path: Path) -> None:
         tg._bot_id = 0
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg.DAEMON_URL = "http://daemon:8100"
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -776,7 +776,7 @@ class TestProcessMessage:
     async def test_daemon_returns_attachments_decoded_and_sent(self, tmp_path: Path) -> None:
         """Outbound base64 attachments are decoded to temp files and sent."""
         tg._bot_id = 0
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg.DAEMON_URL = "http://daemon:8100"
 
         atts = [
@@ -808,7 +808,7 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_sender_resolved_from_id_to_name(self, tmp_path: Path) -> None:
         tg._bot_id = 0
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg.DAEMON_URL = "http://daemon:8100"
         tg.ID_TO_NAME = {1001: "Alice"}
 
@@ -870,7 +870,7 @@ class TestSendWithRetry:
     @pytest.mark.asyncio
     async def test_daemon_non_200_no_send(self, tmp_path: Path) -> None:
         """Daemon returns 500 → error logged, no Telegram send attempted."""
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg._bot_id = 0
         tg.DAEMON_URL = "http://daemon:8100"
 
@@ -889,7 +889,7 @@ class TestSendWithRetry:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 7. Poll loop (inbound_loop)
+# 7. Poll loop (poll_loop)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
@@ -944,7 +944,7 @@ class TestInboundLoop:
             patch.object(tg, "extract_attachments", new_callable=AsyncMock, return_value=[]),
             patch.object(tg, "process_message", new_callable=AsyncMock) as mock_pm,
         ):
-            await tg.inbound_loop()
+            await tg.poll_loop()
 
         # Should have been called once with combined text from both messages
         mock_pm.assert_called_once()
@@ -977,7 +977,7 @@ class TestInboundLoop:
             patch.object(tg, "tg_api", side_effect=mock_tg_api),
             patch.object(tg, "process_message", new_callable=AsyncMock),
         ):
-            await tg.inbound_loop()
+            await tg.poll_loop()
 
         assert tg._offset == 102
 
@@ -1006,7 +1006,7 @@ class TestInboundLoop:
             patch.object(tg, "tg_api", side_effect=mock_tg_api),
             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
-            await tg.inbound_loop()
+            await tg.poll_loop()
 
         mock_sleep.assert_called_once()
         slept = mock_sleep.call_args.args[0]
@@ -1035,7 +1035,7 @@ class TestInboundLoop:
             patch.object(tg, "tg_api", side_effect=mock_tg_api),
             patch.object(tg, "process_message", new_callable=AsyncMock) as mock_pm,
         ):
-            await tg.inbound_loop()
+            await tg.poll_loop()
 
         mock_pm.assert_not_called()
         assert tg._offset == 51  # offset still advances
@@ -1053,7 +1053,7 @@ class TestInboundLoop:
 
         with patch.object(tg, "tg_api", side_effect=mock_tg_api):
             # Should return without error
-            await tg.inbound_loop()
+            await tg.poll_loop()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1091,7 +1091,7 @@ class TestDeliveryFailureNotification:
         mock_client.post.return_value = MagicMock(status_code=202)
 
         with patch.object(tg, "_get_client", return_value=mock_client):
-            await tg._notify_delivery_failure("Alice", ["text: ConnectError"])
+            await tg._notify_delivery_failure("Alice", "text: ConnectError")
 
         mock_client.post.assert_called_once()
         call_args = mock_client.post.call_args
@@ -1109,13 +1109,13 @@ class TestDeliveryFailureNotification:
 
         with patch.object(tg, "_get_client", return_value=mock_client):
             # Must not raise
-            await tg._notify_delivery_failure("Alice", ["text: error"])
+            await tg._notify_delivery_failure("Alice", "text: error")
 
     @pytest.mark.asyncio
     async def test_partial_delivery_notifies_for_attachment_only(self, tmp_path: Path) -> None:
         """Text succeeds but attachment fails → notify includes only attachment."""
         tg._bot_id = 0
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg.DAEMON_URL = "http://daemon:8100"
 
         att = _b64_attachment("voice.mp3", b"data", "audio/mpeg")
@@ -1134,15 +1134,14 @@ class TestDeliveryFailureNotification:
             await tg.process_message(_msg(), tmp_path)
 
         mock_notify.assert_called_once()
-        failures = mock_notify.call_args.args[1]
-        assert len(failures) == 1
-        assert "voice.mp3" in failures[0]
+        detail = mock_notify.call_args.args[1]
+        assert "voice.mp3" in detail
 
     @pytest.mark.asyncio
     async def test_all_deliveries_succeed_no_notification(self, tmp_path: Path) -> None:
         """Successful delivery → no notify POST."""
         tg._bot_id = 0
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg.DAEMON_URL = "http://daemon:8100"
 
         att = _b64_attachment("voice.mp3", b"data", "audio/mpeg")
@@ -1165,7 +1164,7 @@ class TestDeliveryFailureNotification:
     async def test_temp_files_cleaned_up_after_send(self, tmp_path: Path) -> None:
         """Decoded temp files are deleted after sending."""
         tg._bot_id = 0
-        tg.ALLOW_FROM = set()
+        tg.ALLOWED_SENDERS = set()
         tg.DAEMON_URL = "http://daemon:8100"
 
         att = _b64_attachment("voice.mp3", b"audiodata", "audio/mpeg")

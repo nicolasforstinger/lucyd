@@ -216,7 +216,7 @@ token_env = "LUCYD_HTTP_TOKEN"
 # ─── Protocol-Specific ─────────────────────────────────────
 [telegram]
 token_env = "LUCYD_TELEGRAM_TOKEN"
-allow_from = [123456789]
+allowed_senders = [123456789]
 ```
 
 Channel bridges read their config from sections in `lucyd.toml` (path from `LUCYD_CONFIG` env var). Secrets are never in the TOML file — only env var *names* that point to secrets.

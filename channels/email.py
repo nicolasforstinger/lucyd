@@ -265,7 +265,7 @@ async def poll_loop() -> None:
                     continue
 
                 if ALLOWED_SENDERS and msg["from"].lower() not in ALLOWED_SENDERS:
-                    log.info("Ignoring email from unauthorized sender %s", msg["from"])
+                    log.info("Dropped message from non-allowlisted sender: %s", msg["from"])
                     processed_uids.append(msg["uid"])
                     continue
 
@@ -295,9 +295,7 @@ async def poll_loop() -> None:
                                 reply, outbound_atts or None,
                             )
                         except Exception as smtp_err:
-                            await _notify_delivery_failure(
-                                client, msg["from"], smtp_err,
-                            )
+                            await _notify_delivery_failure(msg["from"], str(smtp_err))
                             continue  # don't mark UID processed — retry next poll
 
                     processed_uids.append(msg["uid"])
@@ -308,17 +306,17 @@ async def poll_loop() -> None:
             await asyncio.sleep(POLL_INTERVAL)
 
 
-async def _notify_delivery_failure(
-    client: httpx.AsyncClient, recipient: str, error: Exception,
-) -> None:
+async def _notify_delivery_failure(recipient: str, detail: str) -> None:
     """POST delivery failure to daemon's /system/event (talker=system, sender=error)."""
-    message = f"Email delivery to {recipient} failed: {error}"
+    message = f"Email delivery to {recipient} failed: {detail}"
+    token = os.environ.get("LUCYD_HTTP_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        await client.post(
-            f"{URL}/api/v1/system/event",
-            json={"message": message, "sender": "error"},
-            timeout=10,
-        )
+        async with httpx.AsyncClient(timeout=10, headers=headers) as client:
+            await client.post(
+                f"{URL}/api/v1/system/event",
+                json={"message": message, "sender": "error"},
+            )
     except Exception as e:
         log.error("Failed to notify daemon of delivery failure: %s", e)
 

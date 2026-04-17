@@ -371,7 +371,7 @@ rm ~/.lucyd/lucyd.pid              # only if dead
 ### Messages not delivered
 
 1. Check the bridge process is running (`ps aux | grep telegram.py`)
-2. Check `allow_from` in `[telegram]` section of `lucyd.toml`
+2. Check `allowed_senders` in `[telegram]` section of `lucyd.toml`
 3. Check daemon log: `tail -50 ~/.lucyd/lucyd.log`
 
 ### Empty replies

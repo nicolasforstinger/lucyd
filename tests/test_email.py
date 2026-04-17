@@ -1009,10 +1009,12 @@ class TestDeliveryFailureNotification:
         """SMTP failure POSTs to /api/v1/system/event with sender=error."""
         email_mod.URL = "http://daemon:8100"
         mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client.post.return_value = MagicMock(status_code=202)
 
-        err = smtplib.SMTPException("relay denied")
-        await email_mod._notify_delivery_failure(mock_client, "user@x.com", err)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            await email_mod._notify_delivery_failure("user@x.com", "relay denied")
 
         mock_client.post.assert_called_once()
         call_args = mock_client.post.call_args
@@ -1026,12 +1028,13 @@ class TestDeliveryFailureNotification:
         """If notify POST fails, it logs but doesn't raise."""
         email_mod.URL = "http://daemon:8100"
         mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client.post.side_effect = Exception("daemon down")
 
-        # Must not raise
-        await email_mod._notify_delivery_failure(
-            mock_client, "user@x.com", Exception("smtp fail"),
-        )
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            # Must not raise
+            await email_mod._notify_delivery_failure("user@x.com", "smtp fail")
 
     @pytest.mark.asyncio
     async def test_smtp_failure_uid_not_marked_processed(self) -> None:

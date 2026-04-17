@@ -43,7 +43,7 @@ MAX_ATTACHMENT_BYTES = 0  # 0 = no limit
 
 # Contact resolution
 ID_TO_NAME: dict[int, str] = {}    # user_id → name
-ALLOW_FROM: set[int] = set()
+ALLOWED_SENDERS: set[int] = set()
 
 # ─── Telegram API ────────────────────────────────────────────────
 
@@ -303,7 +303,7 @@ async def extract_attachments(message: dict[str, Any], download_dir: Path) -> li
 # ─── Inbound: Poll Loop ──────────────────────────────────────────
 
 
-async def inbound_loop() -> None:
+async def poll_loop() -> None:
     """Poll Telegram → POST to daemon → deliver response."""
     global _bot_id, _offset
 
@@ -382,8 +382,8 @@ async def process_message(message: dict[str, Any], download_dir: Path,
     # Filter
     if user_id == _bot_id:
         return
-    if ALLOW_FROM and user_id not in ALLOW_FROM:
-        log.info("Dropped Telegram message from non-allowlisted user_id=%d", user_id)
+    if ALLOWED_SENDERS and user_id not in ALLOWED_SENDERS:
+        log.info("Dropped message from non-allowlisted sender: user_id=%d", user_id)
         return
 
     # Resolve sender
@@ -467,7 +467,7 @@ async def process_message(message: dict[str, Any], download_dir: Path,
                 Path(local_path).unlink(missing_ok=True)
 
     if failures:
-        await _notify_delivery_failure(sender, failures)
+        await _notify_delivery_failure(sender, "; ".join(failures))
 
 
 def _decode_outbound_attachment(att: dict[str, str], download_dir: Path) -> str:
@@ -487,10 +487,9 @@ def _decode_outbound_attachment(att: dict[str, str], download_dir: Path) -> str:
     return str(local_path)
 
 
-async def _notify_delivery_failure(sender: str, failures: list[str]) -> None:
+async def _notify_delivery_failure(recipient: str, detail: str) -> None:
     """POST delivery failure to daemon's /system/event endpoint (talker=system, sender=error)."""
-    detail = "; ".join(failures)
-    message = f"Telegram delivery to {sender} failed: {detail}"
+    message = f"Telegram delivery to {recipient} failed: {detail}"
     try:
         client = await _get_client()
         await client.post(
@@ -510,7 +509,7 @@ def load_config() -> None:
     global TOKEN, DAEMON_URL, API_BASE, CHUNK_LIMIT, POLL_TIMEOUT
     global HTTP_TIMEOUT, CONNECT_TIMEOUT, RECONNECT_INITIAL, RECONNECT_MAX
     global RECONNECT_FACTOR, RECONNECT_JITTER, MEDIA_GROUP_DELAY
-    global MAX_ATTACHMENT_BYTES, ID_TO_NAME, ALLOW_FROM
+    global MAX_ATTACHMENT_BYTES, ID_TO_NAME, ALLOWED_SENDERS
 
     import tomllib
 
@@ -533,9 +532,9 @@ def load_config() -> None:
     TOKEN = os.environ.get(token_env, "")
     API_BASE = f"https://api.telegram.org/bot{TOKEN}"
 
-    allow = tg.get("allow_from", [])
+    allow = tg.get("allowed_senders", [])
     if allow:
-        ALLOW_FROM = set(allow)
+        ALLOWED_SENDERS = set(allow)
 
     CHUNK_LIMIT = tg.get("text_chunk_limit", CHUNK_LIMIT)
     POLL_TIMEOUT = tg.get("poll_timeout", POLL_TIMEOUT)
@@ -565,7 +564,7 @@ async def main() -> None:
     if not TOKEN:
         sys.exit("LUCYD_TELEGRAM_TOKEN not set")
 
-    await inbound_loop()
+    await poll_loop()
 
 
 if __name__ == "__main__":
