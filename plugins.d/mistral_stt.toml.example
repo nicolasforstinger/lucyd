@@ -1,0 +1,9 @@
+# Mistral Voxtral speech-to-text plugin config.
+
+api_key_env = "LUCYD_MISTRAL_KEY"
+model = "voxtral-mini-latest"
+timeout = 60
+
+[cost]
+per_minute = 0.0
+currency = "USD"

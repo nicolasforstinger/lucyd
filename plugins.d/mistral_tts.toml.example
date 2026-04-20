@@ -1,0 +1,14 @@
+# Mistral Voxtral text-to-speech plugin config.
+
+api_key_env = "LUCYD_MISTRAL_KEY"
+api_url = "https://api.mistral.ai/v1/audio/speech"
+default_voice = "gb_jane_sarcasm"
+default_model = "voxtral-mini-tts-2603"
+timeout = 60
+
+# See available voices: GET https://api.mistral.ai/v1/audio/voices
+# with Authorization: Bearer $LUCYD_MISTRAL_KEY
+
+[cost]
+per_1k_chars = 0.0
+currency = "USD"

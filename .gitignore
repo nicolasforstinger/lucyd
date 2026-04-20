@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.sqlite
+*.db
+
+# Config
+lucyd.toml
+lucyd.service
+providers.d/*.toml
+!providers.d/*.toml.example
+
+# Plugins
+plugins.d/*
+!plugins.d/.gitkeep
+!plugins.d/elevenlabs.py
+!plugins.d/elevenlabs.toml.example
+!plugins.d/whisper.py
+!plugins.d/whisper.toml.example
+!plugins.d/mistral_tts.py
+!plugins.d/mistral_tts.toml.example
+!plugins.d/mistral_stt.py
+!plugins.d/mistral_stt.toml.example
+
+# Testing
+.coverage
+.coverage.*
+.pytest_cache/
+.mutmut-cache/
+mutants/
+htmlcov/
+coverage.xml
+AUDIT.md
+
+# Build
+.mypy_cache/
+.ruff_cache/
+ruff.toml
+
+# Local
+build
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Codex
+.codex
+
+# Packaging
+*.egg-info/
+dist/
+
+# OS
+.DS_Store
+.nfs*
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Runtime state (never committed — lives under $DATA_DIR)
+*.pid
+monitor.json

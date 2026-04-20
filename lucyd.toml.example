@@ -1,0 +1,49 @@
+# Lucyd daemon configuration.
+# Copy this file to lucyd.toml and edit for your setup.
+# API keys live in .env (see .env.example).
+
+# ─── Required ────────────────────────────────────────────────────
+
+[agent]
+name      = "default"
+workspace = "~/.lucyd/workspace"
+# id        = ""         # Optional log label; defaults to agent name
+# client_id = ""         # Optional log label; only needed when running
+                         # multiple agents under one log/metrics aggregator
+
+[user]
+name = "user"            # Identity key for every inbound message.
+                         # One user, many channels — all route to this name.
+
+[providers]
+load = ["anthropic"]     # Files loaded from providers.d/<name>.toml
+
+# ─── Workspace files injected into the system prompt ─────────────
+# stable      = never trimmed (personality, tools, user context)
+# semi_stable = trimmed first under context-budget pressure
+
+[agent.context]
+stable      = ["SOUL.md", "IDENTITY.md", "USER.md", "AGENTS.md", "TOOLS.md"]
+semi_stable = ["MEMORY.md"]
+
+[agent.skills]
+dir        = "skills"
+always_on  = []          # Skill file stems (without .md) loaded on every turn
+
+# ─── HTTP API ────────────────────────────────────────────────────
+# Defaults: host = "0.0.0.0", port = 8100, no auth.
+# Set token_env to an env var holding a bearer token to require auth.
+
+[http]
+host      = "127.0.0.1"
+port      = 8100
+token_env = "LUCYD_HTTP_TOKEN"
+
+# ─── PostgreSQL ──────────────────────────────────────────────────
+# Optional: omit this section to run without persistence.  Without a
+# database, sessions and memory tools disable themselves at runtime.
+
+[database]
+url_env  = "LUCYD_DATABASE_URL"
+pool_min = 2
+pool_max = 10

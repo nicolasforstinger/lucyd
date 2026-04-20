@@ -1,0 +1,138 @@
+"""Tests for session lifecycle callbacks (on_close, async/sync, ordering)."""
+
+import logging
+
+import pytest
+
+from session import SessionManager
+
+TEST_CLIENT_ID = "test"
+TEST_AGENT_ID = "test_agent"
+
+
+@pytest.fixture
+async def session_mgr(pool):
+    """SessionManager with a test session ready."""
+    mgr = SessionManager(pool, agent_name="TestAgent")
+    session = await mgr.get_or_create("test-user")
+    await session.add_user_message("hello")
+    await session.add_assistant_message({"role": "agent", "text": "hi there"})
+    await session.save_state()
+    return mgr
+
+
+class TestSyncCallback:
+    @pytest.mark.asyncio
+    async def test_sync_callback_fires(self, session_mgr):
+        called = []
+
+        def on_close(session):
+            called.append(session.id)
+
+        session_mgr.on_close(on_close)
+        await session_mgr.close_session("test-user")
+        assert len(called) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_callback_receives_session(self, session_mgr):
+        received_messages = []
+
+        def on_close(session):
+            received_messages.extend(session.messages)
+
+        session_mgr.on_close(on_close)
+        await session_mgr.close_session("test-user")
+        assert len(received_messages) >= 2  # user + assistant
+
+
+class TestAsyncCallback:
+    @pytest.mark.asyncio
+    async def test_async_callback_fires(self, session_mgr):
+        called = []
+
+        async def on_close(session):
+            called.append(session.id)
+
+        session_mgr.on_close(on_close)
+        await session_mgr.close_session("test-user")
+        assert len(called) == 1
+
+
+class TestCallbackFailure:
+    @pytest.mark.asyncio
+    async def test_failure_logged_not_raised(self, session_mgr, caplog):
+        def bad_callback(session):
+            raise RuntimeError("callback error")
+
+        session_mgr.on_close(bad_callback)
+
+        with caplog.at_level(logging.ERROR):
+            # Should not raise
+            result = await session_mgr.close_session("test-user")
+
+        assert result is True
+        assert "on_close callback failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_async_failure_logged(self, session_mgr, caplog):
+        async def bad_async_callback(session):
+            raise RuntimeError("async error")
+
+        session_mgr.on_close(bad_async_callback)
+
+        with caplog.at_level(logging.ERROR):
+            result = await session_mgr.close_session("test-user")
+
+        assert result is True
+        assert "on_close callback failed" in caplog.text
+
+
+class TestCallbackOrdering:
+    @pytest.mark.asyncio
+    async def test_multiple_callbacks_fire_in_order(self, session_mgr):
+        order = []
+
+        def cb1(session):
+            order.append("first")
+
+        async def cb2(session):
+            order.append("second")
+
+        def cb3(session):
+            order.append("third")
+
+        session_mgr.on_close(cb1)
+        session_mgr.on_close(cb2)
+        session_mgr.on_close(cb3)
+
+        await session_mgr.close_session("test-user")
+        assert order == ["first", "second", "third"]
+
+    @pytest.mark.asyncio
+    async def test_callback_fires_before_archive(self, session_mgr):
+        """Callback should see the session before it's archived/removed."""
+        session_id = None
+        messages_count = 0
+
+        def on_close(session):
+            nonlocal session_id, messages_count
+            session_id = session.id
+            messages_count = len(session.messages)
+
+        session_mgr.on_close(on_close)
+        await session_mgr.close_session("test-user")
+
+        assert session_id is not None
+        assert messages_count >= 2  # had messages before close
+
+
+class TestAgentName:
+    @pytest.mark.asyncio
+    async def test_agent_name_stored(self, pool):
+        mgr = SessionManager(pool, agent_name="Lucy")
+        assert mgr.agent_name == "Lucy"
+
+    @pytest.mark.asyncio
+    async def test_agent_name_default(self, pool):
+        mgr = SessionManager(pool)
+        assert mgr.agent_name == "Assistant"
