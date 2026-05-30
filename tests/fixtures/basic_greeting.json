@@ -1,0 +1,12 @@
+{
+  "description": "Basic greeting — single-turn, no tools",
+  "system": [{"text": "You are a helpful assistant.", "tier": "stable"}],
+  "messages": [
+    {"role": "user", "content": "Hello!"}
+  ],
+  "expected": {
+    "stop_reason": "end_turn",
+    "has_text": true,
+    "has_tool_calls": false
+  }
+}

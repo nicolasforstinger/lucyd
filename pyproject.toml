@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lucyd"
+version = "0.1.0"
+description = "Single-tenant AI agent daemon with agentic tool-use, persistent sessions, and structured memory"
+readme = "README.md"
+requires-python = ">=3.13"
+license = {text = "MIT"}
+authors = [{name = "Nicolas A. Forstinger"}]
+dependencies = [
+    "aiohttp>=3.9,<4",
+    "asyncpg>=0.30,<1",
+    "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+elevenlabs = ["elevenlabs>=1.0,<3"]
+vision = ["Pillow~=12.0"]
+documents = ["pypdf~=6.7.5"]
+metrics = ["prometheus_client"]
+all = [
+    "elevenlabs>=1.0,<3",
+    "Pillow~=12.0",
+    "pypdf~=6.7.5",
+    "prometheus_client",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+
+[project.urls]
+Repository = "https://github.com/nicolasforstinger/lucyd"
+
+[tool.mutmut]
+paths_to_mutate = ["tools/"]
+tests_dir = [
+    "tests/test_agents.py",
+    "tests/test_filesystem.py",
+    "tests/test_indexer.py",
+    "tests/test_memory_tools_structured.py",
+    "tests/test_shell_security.py",
+    "tests/test_skills.py",
+    "tests/test_tool_registry.py",
+    "tests/test_tools.py",
+    "tests/test_web_security.py",
+    "tests/test_zero_kill_modules.py",
+]
+pythonpath = ["."]
+debug = false
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[[tool.mypy.overrides]]
+module = [
+    "anthropic",
+    "anthropic.*",
+    "openai",
+    "openai.*",
+    "mistralai",
+    "elevenlabs",
+    "elevenlabs.*",
+    "PIL",
+    "PIL.*",
+    "pypdf",
+    "pypdf.*",
+    "prometheus_client",
+    "prometheus_client.*",
+    "tiktoken",
+    "tiktoken.*",
+    "aiohttp",
+    "aiohttp.*",
+    "asyncpg",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    # AsyncMock GC artifact in Python 3.13 — coroutine never awaited during mock teardown.
+    # Not a real issue: the mock's internal coroutine is created but never consumed.
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "bin/*", "deploy/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

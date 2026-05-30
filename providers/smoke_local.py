@@ -1,0 +1,76 @@
+"""Deterministic local provider for audit smoke tests.
+
+Uses no external SDKs and no network. Intended for audit/integration plumbing
+checks where the daemon must complete a full message cycle autonomously.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from typing import Any, cast
+
+from context import _estimate_tokens
+from messages import Message
+
+from . import LLMResponse, ModelCapabilities, StreamDelta, SystemPrompt, Usage, stream_fallback
+
+
+class SmokeLocalProvider:
+    def __init__(
+        self,
+        model: str,
+        reply_text: str = "SMOKE_TEST_OK",
+        max_tokens: int = 64,
+        capabilities: ModelCapabilities | None = None,
+        provider_name: str = "",
+    ):
+        self.provider_name = provider_name
+        self.model = model
+        self.reply_text = reply_text
+        self.max_tokens = max_tokens
+        self._capabilities = capabilities or ModelCapabilities(
+            supports_tools=False,
+            supports_streaming=False,
+            max_context_tokens=8192,
+        )
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        return self._capabilities
+
+    def format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return []
+
+    def format_system(self, blocks: list[dict[str, str]]) -> SystemPrompt:
+        return "\n\n".join(b.get("text", "") for b in blocks)
+
+    def format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
+        return cast(list[dict[str, Any]], messages)  # passthrough — TypedDicts are dicts at runtime
+
+    async def complete(
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+    ) -> LLMResponse:
+        usage = Usage(
+            input_tokens=max(
+                1,
+                _estimate_tokens(system if isinstance(system, str) else "")
+                + sum(
+                    _estimate_tokens(msg.get("content", msg.get("text", "")))
+                    for msg in messages
+                ),
+            ),
+            output_tokens=max(1, _estimate_tokens(self.reply_text)),
+        )
+        return LLMResponse(
+            text=self.reply_text,
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=usage,
+            raw={"provider": "smoke-local", "model": self.model},
+        )
+
+    async def stream(
+        self, system: SystemPrompt, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+    ) -> AsyncIterator[StreamDelta]:
+        async for delta in stream_fallback(self, system, messages, tools, **kwargs):
+            yield delta

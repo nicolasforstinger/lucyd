@@ -1,0 +1,240 @@
+# lucyd.toml.example — Template configuration for Lucyd daemon
+# Copy to lucyd.toml and customize for your setup.
+# API keys are loaded from .env via environment variables.
+#
+# REQUIRED sections: [agent], [models.primary], [paths]
+# OPTIONAL sections: everything else — missing sections use sensible defaults.
+# Feature-gated: [vision], [documents], [tools.web_search] — only needed when enabled.
+# Plugin config: each plugin loads its own .toml from plugins.d/ (see plugins.d/*.toml.example).
+
+# ─── Agent Identity (REQUIRED) ───────────────────────────────────
+
+[agent]
+name = "YourAgent"                                             # REQUIRED — agent display name
+workspace = "~/.lucyd/workspace"                               # REQUIRED — workspace root for context files
+# id = ""                                                      # Agent identifier for metering ("" = use agent name)
+
+# ─── User Identity (REQUIRED) ────────────────────────────────────
+# The single user entity this agent serves.  All whitelisted channels
+# (telegram contacts, allowed email senders, etc.) route to this
+# identity — one person messaging from multiple devices/addresses
+# all appear as the same user.  Session key is always user:<name>.
+
+[user]
+name = "nicolas"                                               # REQUIRED — user identity key (lowercase recommended)
+
+# Context files are injected into the system prompt and consume the model's context window.
+# Stable + semi-stable + tool schemas + recall = system prompt size. The remainder is available
+# for conversation history. When input_tokens exceeds [behavior.compaction] threshold_tokens,
+# old messages are compacted. For small-context models (4k-8k), minimize stable files.
+[agent.context]
+stable = ["SOUL.md", "AGENTS.md", "USER.md", "IDENTITY.md", "TOOLS.md"]
+semi_stable = ["MEMORY.md"]
+# max_system_tokens = 0                                       # Cap system prompt size (0 = unlimited). Semi-stable trimmed first, then dynamic. Stable never trimmed.
+
+[agent.skills]
+dir = "skills"
+always_on = []
+
+# ─── Providers ───────────────────────────────────────────────────
+# Models loaded from providers.d/{name}.toml files.
+# Each file defines type, api_key_env, base_url, and [models.*] sections.
+# Switch providers by changing the load list — one line, no model editing.
+
+[providers]
+load = ["anthropic", "openai"]
+# dir = "providers.d"  # default: providers.d/ relative to this file
+
+# ─── HTTP API (REQUIRED — lucydctl and external integrations) ────
+# REST API for CLI control (lucydctl), n8n, scripts, webhooks.
+# Auth token is loaded from env var named by token_env.
+
+[http]
+host = "127.0.0.1"
+port = 8100
+token_env = "LUCYD_HTTP_TOKEN"                             # Env var containing the bearer token
+# trust_localhost = false                                    # Skip auth for 127.0.0.1/::1 (default: false). Enable for Docker bridge networks where bridges run as separate containers on the same host.
+download_dir = "/tmp/lucyd-http"                           # Temp dir for HTTP attachment downloads
+max_body_bytes = 10485760                                  # Max request body size (10 MB)
+rate_limit = 30                                            # Max requests per rate_window per sender
+rate_window = 60                                           # Rate limit window (seconds)
+status_rate_limit = 60                                     # Max /status requests per rate_window
+# max_attachment_bytes = 52428800                              # Max attachment size (50 MB)
+
+# ─── Database (REQUIRED) ─────────────────────────────────────────
+# PostgreSQL connection. Requires pgvector/pgvector:pg17 image (Postgres 17 + pgvector).
+# Schema applied automatically on startup via schema/ SQL files.
+
+[database]
+url_env = "LUCYD_DATABASE_URL"                             # Env var containing postgres://user:pass@host:5432/lucyd
+pool_min = 2                                               # Minimum connections in pool
+pool_max = 10                                              # Maximum connections in pool
+
+# ─── Memory ──────────────────────────────────────────────────────
+
+[memory]
+search_top_k = 10                                          # Default result limit for memory searches
+embedding_timeout = 15                                     # Embedding API request timeout (seconds)
+vector_search_limit = 10000                                # Raw DB query cap for vector search
+
+[memory.consolidation]
+enabled = true
+confidence_threshold = 0.6                                 # Minimum confidence for extracted facts
+
+[memory.maintenance]
+# Mechanical maintenance (stale-fact detection + metering retention) runs on every
+# POST /api/v1/maintain call. No enabled flag — controlled by cron schedule.
+stale_threshold_days = 90                                  # Remove unaccessed facts older than this
+
+[maintain]
+# Self-maintenance heartbeat. The /maintain cron fires hourly; the LLM pass
+# (reads workspace MAINTAIN.md, runs as a system:maintenance turn with tools)
+# dispatches only when elapsed since the last pass exceeds a randomized interval
+# in [interval_min_minutes, interval_max_minutes]. Mechanical maintenance still
+# runs every call. Disabled by default — no LLM cost until turned on.
+enabled = false
+interval_min_minutes = 240                                 # Earliest the next pass may fire
+interval_max_minutes = 480                                 # Latest the next pass may fire
+idle_minutes = 360                                         # Reported in the brief; the agent gates its reach-out on it
+
+# Evolution: no config keys — behavior defined by the evolution skill file in workspace.
+# Triggered via `lucydctl --evolve` (cron) or `POST /api/v1/evolve`.
+
+[memory.recall]
+decay_rate = 0.03                                          # Exponential decay factor for relevance scoring
+max_facts_in_context = 20                                  # Maximum facts injected into context
+max_dynamic_tokens = 1500                                  # Token budget for dynamic recall (0 = unlimited)
+max_episodes_at_start = 3                                  # Maximum episodes injected at session start
+
+# Recall personality: priority and formatting are hardcoded constants in memory.py.
+# Drop order under budget pressure: facts (15) → episodes (25) → vector (35) → commitments (40).
+
+[memory.indexer]
+include_patterns = ["memory/*.md", "MEMORY.md"]
+exclude_dirs = []
+chunk_size_chars = 1600                                    # Characters per text chunk
+chunk_overlap_chars = 320                                  # Overlap between chunks (for context continuity)
+embed_batch_limit = 100                                    # Max chunks per embedding API batch call
+
+# ─── Tools ───────────────────────────────────────────────────────
+
+[tools]
+enabled = [
+    "read", "write", "edit", "exec",
+    "web_search", "web_fetch",
+    "memory_search", "memory_get",
+    "memory_write", "memory_forget", "commitment_update",
+    "session_status",
+    "sessions_spawn", "load_skill",
+    "tts",
+    "pdf_read",
+]
+output_truncation = 30000                                  # Truncate tool output beyond this many characters
+plugins_dir = "plugins.d"                                  # Directory for custom tool plugins
+exec_timeout = 120                                         # Default exec tool timeout (seconds)
+exec_max_timeout = 600                                     # Maximum allowed exec timeout (seconds)
+subagent_deny = ["sessions_spawn"]                         # Tools denied to sub-agents
+subagent_max_turns = 0                                     # Max turns for sub-agents (0 = use max_turns_per_message)
+subagent_timeout = 0                                       # Timeout for sub-agents in seconds (0 = use agent_timeout_seconds)
+# tool_call_retry = false                                    # Retry tool calls with guidance when args are invalid (for small models)
+# tool_success_warn_threshold = 0.5                          # Warn when tool success rate drops below this (0.0–1.0)
+
+[tools.filesystem]
+allowed_paths = ["~/.lucyd/workspace", "/tmp/"]            # Path prefixes the agent can read/write
+default_read_limit = 2000                                  # Max lines returned by the read tool
+
+[tools.web_search]
+provider = "brave"                                         # Web search provider (currently only "brave")
+api_key_env = "LUCYD_BRAVE_KEY"                            # Env var for web search API key
+api_url = ""                                               # Override API endpoint ("" = provider default, e.g. https://api.search.brave.com/res/v1/web/search)
+timeout = 15                                               # Web search request timeout (seconds)
+
+[tools.web_fetch]
+timeout = 15                                               # Web fetch request timeout (seconds)
+
+# ─── Documents (OPTIONAL — defaults to disabled) ────────────────
+# Extract text from document attachments (PDF, text files, etc.)
+# so the agent sees content, not just "[attachment: file.pdf, application/pdf]".
+# PDF support requires pypdf (pip install pypdf).
+
+[documents]
+enabled = true
+max_chars = 30000                                          # Truncation limit
+max_file_bytes = 10485760                                  # 10 MB — skip huge files
+text_extensions = [
+    ".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
+    ".html", ".htm", ".py", ".js", ".ts", ".sh", ".toml",
+    ".ini", ".cfg", ".log", ".sql", ".css",
+]
+
+# ─── Vision (OPTIONAL — entire section can be omitted) ──────────
+
+[vision]
+max_image_bytes = 5242880                                  # Max inbound image size (5 MB)
+max_dimension = 1568                                       # Max px on longest side
+jpeg_quality_steps = [85, 60, 40]                          # JPEG quality reduction steps for fitting images
+
+# ─── Behavior ────────────────────────────────────────────────────
+
+[behavior]
+debounce_ms = 500                                          # Debounce window for queued messages (milliseconds)
+silent_tokens = ["NO_REPLY"]                               # Replies matching these are not delivered
+typing_indicators = true                                   # Send typing indicator before processing
+error_message = "I'm having trouble connecting right now. Try again in a moment."
+agent_timeout_seconds = 600                                # Timeout per API call in the agentic loop
+max_turns_per_message = 50                                 # Max tool-use iterations per inbound message
+max_cost_per_message = 5.0                                 # EUR circuit breaker per message (0.0 = disabled)
+api_retries = 2                                            # API-level retries for transient errors (429, 5xx, connection)
+api_retry_base_delay = 2.0                                 # Initial backoff delay for API retries (seconds)
+message_retries = 2                                        # Message-level retries on persistent failure
+message_retry_base_delay = 30                              # Base delay between message retries (seconds)
+# max_context_for_tools = 0                                  # Inject wrap-up hint when context exceeds this during tool use (0 = disabled, auto-set by local profiles)
+# thinking_concise_hint = false                              # Inject "respond concisely" hint after tool results to reduce thinking overhead
+
+# Compaction — summarizes old messages when tokens exceed threshold
+[behavior.compaction]
+threshold_tokens = 150000                                  # Trigger compaction when input_tokens exceeds this
+warning_pct = 0.8                                          # Fraction of threshold at which to inject context warning
+min_messages = 4                                           # Minimum messages before compaction can trigger
+keep_recent_pct = 0.33                                     # Keep newest fraction of messages verbatim (0.0–1.0)
+keep_recent_pct_min = 0.05                                 # Floor for keep_recent_pct
+keep_recent_pct_max = 0.9                                  # Ceiling for keep_recent_pct
+max_tokens = 2048                                          # Max output tokens for compaction summary
+tool_result_max_chars = 2000                               # Max chars per tool result kept in compacted context
+
+# Compaction prompt — {agent_name} and {max_tokens} substituted prompt = """Summarize this conversation."""
+
+# Diary prompt — used by --compact / POST /compact, {date} substituted
+diary_prompt = """[AUTOMATED DAILY MAINTENANCE] Write a memory log for {date}."""
+
+# ─── Logging ────────────────────────────────────────────────────
+
+[logging]
+suppress = ["httpx", "httpcore", "anthropic", "openai"]    # Third-party loggers suppressed to WARNING
+# format = "text"                                            # "text" (default) or "json" (one JSON object per line, for Docker log drivers)
+# pii_safe = true                                            # true (default): message content never logged, only length markers (GDPR-safe). false: log truncated previews for debugging.
+
+# ─── Paths (all derive from data_dir; default /data) ────────────
+# Local dev: ~/.lucyd/...  |  Docker: /data/... (set via compose volumes)
+
+[paths]
+# data_dir = "/data"                                            # Root data directory (env: LUCYD_DATA_DIR). Docker default: /data, local: derived from state_dir.
+state_dir = "~/.lucyd"
+log_file = "~/.lucyd/lucyd.log"
+
+# ─── Metering (OPTIONAL) ──────────────────────────────────────────
+# [metering]
+# currency = "EUR"                                             # Display currency for cost reports
+# retention_months = 84                                        # Delete metering records older than this, enforced by the /api/v1/maintain pass. Default 84 (7y, BAO §132).
+
+# ─── Media Lifecycle (OPTIONAL) ───────────────────────────────────
+# [media]
+# ttl_hours = 24                                               # Delete downloaded media files older than this
+
+# ─── Model Routing (OPTIONAL) ────────────────────────────────────
+# Route specific tasks to cheaper/different models. Empty = use primary.
+# Values are config-key names that match a [models.<key>] block in providers.d/.
+# [models.routing]
+# compaction = ""                                              # config-key for compaction model (matches a [models.<key>] block)
+# consolidation = ""                                           # config-key for fact extraction model
+# subagent = ""                                                # config-key for sub-agent model

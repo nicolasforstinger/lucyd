@@ -1,0 +1,18 @@
+# Lucyd — production dependencies
+
+asyncpg>=0.30,<1     # PostgreSQL async driver
+tiktoken>=0.7,<1     # Token counting (cl100k_base)
+anthropic>=0.45      # Anthropic SDK
+openai>=2.0,<3       # OpenAI SDK (also used for memory embeddings)
+mistralai>=1.0,<2    # Mistral SDK
+httpx>=0.27,<1       # Required for Whisper voice transcription (transitive dep of anthropic, but explicit for standalone use)
+aiohttp>=3.9,<4      # HTTP API server
+
+# Optional — install if using these features
+elevenlabs>=1.0,<3   # Required if using plugins.d/elevenlabs.py (TTS)
+Pillow~=12.0         # Required if [vision] enabled (image processing)
+pypdf~=6.7.5         # Required if [documents] enabled (PDF text extraction). >=6.7.5 for CVE-2026-28804 fix.
+prometheus_client>=0.21,<1  # Required for Prometheus /metrics endpoint
+python-docx>=1.1,<2        # Required if using skills/docx (Word document creation/editing)
+python-pptx>=1.0,<2        # Required if using skills/pptx (PowerPoint creation/editing)
+openpyxl>=3.1,<4           # Required if using skills/xlsx (Excel creation/editing)
