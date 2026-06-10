@@ -52,10 +52,10 @@ def _make_config(tmp_path, **overrides):
         "memory": {
             "db": "", "search_top_k": 10, "vector_search_limit": 10000,
             "embedding_timeout": 15,
-            "consolidation": {"enabled": False, "confidence_threshold": 0.6},
+            "consolidation": {"enabled": False},
             "recall": {
-                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
-                "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
+                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes": 3, "archive_messages": 20,
+                "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15,
                                "fact_format": "natural", "show_emotional_tone": True, "episode_section_header": "Recent conversations"},
             },
             "maintenance": {"stale_threshold_days": 90},
@@ -78,7 +78,7 @@ def _make_config(tmp_path, **overrides):
                    },
         "behavior": {
             "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error",
-            "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
+            "api_retries": 2, "api_retry_base_delay": 2.0,
             "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
             "compaction": {
@@ -90,7 +90,6 @@ def _make_config(tmp_path, **overrides):
         },
         "paths": {
             "state_dir": str(tmp_path / "state"),
-            "sessions_dir": str(tmp_path / "sessions"),
             "log_file": str(tmp_path / "lucyd.log"),
         },
     }
@@ -167,8 +166,6 @@ def _make_daemon_for_monitor(tmp_path):
     daemon.config.compaction_threshold = 150000
     daemon.config.always_on_skills = []
     daemon.config.error_message = "Error"
-    daemon.config.message_retries = 0
-    daemon.config.message_retry_base_delay = 0.01
     daemon.config.consolidation_enabled = False
     daemon.config.raw = MagicMock(return_value=0.0)
 

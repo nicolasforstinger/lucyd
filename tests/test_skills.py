@@ -1,7 +1,7 @@
 """Tests for skills.py — _parse_frontmatter() and SkillLoader."""
 
 
-from skills import SkillLoader, _parse_frontmatter
+from skills import SkillLoader, _parse_frontmatter, configure, tool_load_skill
 
 # ─── Frontmatter Parser ─────────────────────────────────────────
 
@@ -128,3 +128,40 @@ class TestSkillLoader:
         names = loader.list_skill_names()
         assert loader._loaded
         assert len(names) == 2
+
+
+# ─── tool_load_skill (rescan-on-miss) ───────────────────────────
+
+class TestToolLoadSkill:
+    def test_loads_existing_skill(self, skill_workspace):
+        loader = SkillLoader(skill_workspace)
+        loader.scan()
+        configure(skill_loader=loader)
+        assert "Haiku" in tool_load_skill("compute-routing")
+
+    def test_rescans_on_miss_for_skill_added_after_startup(self, skill_workspace):
+        # Simulate the daemon's startup snapshot: scan, then a skill is added.
+        loader = SkillLoader(skill_workspace)
+        loader.scan()
+        configure(skill_loader=loader)
+        assert "late-skill" not in loader.list_skill_names()
+
+        late = skill_workspace / "skills" / "late-skill"
+        late.mkdir()
+        (late / "SKILL.md").write_text(
+            "---\nname: late-skill\n---\nBody added after the startup scan.\n"
+        )
+
+        # Without rescan-on-miss this would return the misleading "not found"
+        # error while exec/read see the file live; the loader must refresh.
+        result = tool_load_skill("late-skill")
+        assert "Body added after the startup scan." in result
+        assert "not found" not in result
+
+    def test_genuinely_absent_skill_still_errors(self, skill_workspace):
+        loader = SkillLoader(skill_workspace)
+        loader.scan()
+        configure(skill_loader=loader)
+        result = tool_load_skill("does-not-exist")
+        assert "not found" in result
+        assert "compute-routing" in result  # available list still rendered

@@ -276,7 +276,6 @@ async def extract_attachments(message: dict[str, Any], download_dir: Path) -> li
     attachments: list[dict[str, Any]] = []
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    from collections.abc import Callable
     Extractor = Callable[[dict[str, Any]], Any]
     media_types: list[tuple[str, Extractor, str | None]] = [
         ("photo", lambda m: m.get("photo", [])[-1] if m.get("photo") else None, "image/jpeg"),
@@ -578,11 +577,13 @@ def load_config() -> None:
 
 
 async def _start_outbound_server() -> web.AppRunner:
-    """Bind the outbound /send server on the conventional telegram port (8101).
+    """Bind the outbound /send server on the conventional telegram port.
 
-    chat_id is resolved from the [telegram.contacts] section already
-    parsed by load_config() into ID_TO_NAME. Single-tenant single-user
-    assumption: exactly one contact is expected.
+    Port and attachment cap come from the daemon-side
+    ``bridge_client.BRIDGE_LIMITS`` row — the single source of truth for
+    the bridge contract. chat_id is resolved from the [telegram.contacts]
+    section already parsed by load_config() into ID_TO_NAME.
+    Single-tenant single-user assumption: exactly one contact is expected.
     """
     token = os.environ.get("LUCYD_HTTP_TOKEN", "")
     if not token:
@@ -597,24 +598,22 @@ async def _start_outbound_server() -> web.AppRunner:
             len(ID_TO_NAME),
         )
     chat_id = next(iter(ID_TO_NAME.keys()))
-    # Use the daemon-side BRIDGE_LIMITS as source of truth for attachment cap
-    # rather than hard-coding here. Keeps the cap aligned with what the daemon
-    # tells the agent it can send.
     from bridge_client import BRIDGE_LIMITS
+    limits = BRIDGE_LIMITS["telegram"]
     app = build_outbound_app(
         token=token,
-        chat_id=chat_id,
+        recipient=chat_id,
         send_text=send_text,
         send_attachment=send_attachment,
-        max_attachment_bytes=BRIDGE_LIMITS["telegram"]["max_attachment_bytes"],
+        max_attachment_bytes=limits["max_attachment_bytes"],
     )
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 8101)
+    site = web.TCPSite(runner, "127.0.0.1", limits["port"])
     await site.start()
     log.info(
-        "Telegram outbound server listening on 127.0.0.1:8101 (chat_id=%d)",
-        chat_id,
+        "Telegram outbound server listening on 127.0.0.1:%d (chat_id=%d)",
+        limits["port"], chat_id,
     )
     return runner
 

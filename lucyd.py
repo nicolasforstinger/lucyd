@@ -11,6 +11,9 @@ import argparse
 import asyncio
 import contextlib
 import fcntl
+import importlib
+import importlib.util
+import inspect
 import logging
 import logging.handlers
 import os
@@ -20,29 +23,30 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from types import ModuleType
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import asyncpg
+import httpx
 
 import db as lucyd_db
 import metrics
 import operations as ops
+from api import HTTPApi
 from config import Config, ConfigError, EPHEMERAL_TALKERS, load_config
 from context import ContextBuilder, _estimate_tokens
-from log_utils import _log_safe, set_pii_safe
+from conversion import CurrencyConverter
+from log_utils import StructuredJSONFormatter, _log_safe, set_pii_safe
+from memory import MemoryInterface
 from metering import MeteringDB
-from plugins import PreprocessorSpec
+from pipeline import MessagePipeline
+from plugins import PreprocessorSpec, verify_plugin_declared_state
 from providers import LLMProvider, create_provider
-from session import SessionManager
+from session import Session, SessionManager, build_session_info, read_history_events
 from skills import SkillLoader
 from tools import ToolRegistry
-
-if TYPE_CHECKING:
-    from api import HTTPApi
-    from conversion import CurrencyConverter
-    from pipeline import MessagePipeline
 
 log = logging.getLogger("lucyd")
 
@@ -119,6 +123,11 @@ _PRIORITY_USER = 0
 _PRIORITY_SYSTEM = 1
 _PRIORITY_SENTINEL = 2  # drains after all real work — exit cleanly
 
+# The workspace-bytes gauge is refreshed on every /status and /metrics scrape;
+# recompute the rglob at most this often so a scrape storm can't turn into a
+# filesystem-walk storm.
+_WORKSPACE_BYTES_TTL_S = 60.0
+
 
 class PriorityMessageQueue:
     """Two-tier priority queue: user messages before system tasks, FIFO within tier.
@@ -128,39 +137,37 @@ class PriorityMessageQueue:
     """
 
     def __init__(self, maxsize: int = 1000) -> None:
-        self._queue: asyncio.PriorityQueue[tuple[int, int, Any]] = (
+        self._queue: asyncio.PriorityQueue[tuple[int, int, dict[str, Any] | None]] = (
             asyncio.PriorityQueue(maxsize=maxsize)
         )
         self._seq = 0
 
-    def _prioritize(self, item: Any) -> tuple[int, int, Any]:
+    def _prioritize(self, item: dict[str, Any] | None) -> tuple[int, int, dict[str, Any] | None]:
         self._seq += 1
         if item is None:
             # Shutdown sentinel — drains after all queued work so real
             # messages in flight get processed before the loop exits.
             return (_PRIORITY_SENTINEL, self._seq, item)
-        if not isinstance(item, dict):
-            return (_PRIORITY_USER, self._seq, item)
         talker = item.get("talker", "user")
         priority = _PRIORITY_SYSTEM if talker in EPHEMERAL_TALKERS else _PRIORITY_USER
         item["_queued_at"] = time.time()
         item["_priority"] = priority
         return (priority, self._seq, item)
 
-    async def put(self, item: Any) -> None:
+    async def put(self, item: dict[str, Any] | None) -> None:
         await self._queue.put(self._prioritize(item))
 
-    def put_nowait(self, item: Any) -> None:
+    def put_nowait(self, item: dict[str, Any] | None) -> None:
         self._queue.put_nowait(self._prioritize(item))
 
-    async def get(self) -> Any:
+    async def get(self) -> dict[str, Any] | None:
         _, _, item = await self._queue.get()
         return item
 
     def qsize(self) -> int:
         return self._queue.qsize()
 
-    def get_nowait(self) -> Any:
+    def get_nowait(self) -> dict[str, Any] | None:
         _, _, item = self._queue.get_nowait()
         return item
 
@@ -180,7 +187,7 @@ class _LockFactoryHolder:
     def set(self, pipeline: MessagePipeline) -> None:
         self._pipeline = pipeline
 
-    def __call__(self, key: str) -> Any:
+    def __call__(self, key: str) -> asyncio.Lock:
         if self._pipeline is None:
             raise RuntimeError("pipeline_lock_factory called before pipeline init")
         return self._pipeline.get_session_lock(key)
@@ -204,13 +211,14 @@ class LucydDaemon:
         self.pool: asyncpg.Pool | None = None
         self.metering_db: MeteringDB = None  # type: ignore[assignment]  # set in _init_metering
         self.converter: CurrencyConverter | None = None
+        self._memory_interface: MemoryInterface | None = None  # set in _init_tools when memory tools are enabled
         self.pipeline: MessagePipeline = None  # type: ignore[assignment]  # set in run()
         self._lock_factory_holder = _LockFactoryHolder()
         # httpx client used by send_message (in-process) and the
         # /api/v1/outbound/send endpoint (at-job callback) to reach the
         # primary bridge. Created eagerly so _init_tools can wire it.
-        import httpx
-        self._outbound_http_client: Any = httpx.AsyncClient(timeout=15.0)
+        self._outbound_http_client: httpx.AsyncClient = httpx.AsyncClient(timeout=15.0)
+        self._ws_bytes_cache: tuple[float, int] = (0.0, 0)  # (computed_at, bytes)
 
     def _setup_logging(self) -> None:
         """Configure logging to file + stderr.
@@ -224,7 +232,6 @@ class LucydDaemon:
 
         # JSON logging format for Docker (stdout → Docker log driver)
         if self.config.log_format == "json":
-            from log_utils import StructuredJSONFormatter
             fmt: logging.Formatter = StructuredJSONFormatter()
         else:
             fmt = logging.Formatter(
@@ -316,7 +323,7 @@ class LucydDaemon:
         ("tools.send_message",  {"send_message"}),
         ("tools.web",           {"web_search", "web_fetch"}),
         ("tools.memory_read",   {"memory_search", "memory_get"}),
-        ("tools.memory_write",  {"memory_write", "memory_forget", "commitment_update"}),
+        ("tools.memory_write",  {"memory_write", "memory_forget", "record_episode"}),
         ("tools.agents",        {"sessions_spawn"}),
         ("skills",              {"load_skill"}),
         ("tools.status",        {"session_status"}),
@@ -331,10 +338,6 @@ class LucydDaemon:
         2. Scan plugins.d/*.py via importlib.util.spec_from_file_location.
         Both paths share the same configure + register logic.
         """
-        import importlib
-        import importlib.util
-        import inspect
-
         # Derive max_result_tokens: ~25% of context for any single tool result
         max_ctx = self.provider.capabilities.max_context_tokens if self.provider else 0
         max_result_tokens = int(max_ctx * 0.25) if max_ctx > 0 else 0
@@ -350,9 +353,8 @@ class LucydDaemon:
         memory = None
         if self.pool and (enabled & {
             "memory_search", "memory_get",
-            "memory_write", "memory_forget", "commitment_update",
+            "memory_write", "memory_forget", "record_episode",
         }):
-            from memory import MemoryInterface
             memory = MemoryInterface(
                 pool=self.pool,
                 embedding_api_key=self.config.embedding_api_key,
@@ -371,6 +373,9 @@ class LucydDaemon:
                 memory.metering = self.metering_db
             if self.converter:
                 memory.converter = self.converter
+
+        # Stash for the pipeline (None when memory tools are disabled)
+        self._memory_interface = memory
 
         # Dependency dict — configure() pulls what it needs by parameter name
         deps = {
@@ -396,7 +401,7 @@ class LucydDaemon:
             "pipeline_lock_factory": self._lock_factory_holder,
         }
 
-        def _configure_and_register(module: Any, source: str = "") -> None:
+        def _configure_and_register(module: ModuleType, source: str = "") -> None:
             """Call configure() with inspect-based injection, register enabled tools."""
             configure_fn = getattr(module, "configure", None)
             if callable(configure_fn):
@@ -443,7 +448,6 @@ class LucydDaemon:
                     # Contract check: plugin must call mark_configured /
                     # mark_unconfigured so the health endpoint + dashboards
                     # see a complete picture. Warn only — runtime still works.
-                    from plugins import verify_plugin_declared_state
                     if not verify_plugin_declared_state(plugin_file.stem):
                         log.warning(
                             "Plugin %s did not declare configured state. "
@@ -483,6 +487,7 @@ class LucydDaemon:
             stable_files=self.config.context_stable,
             semi_stable_files=self.config.context_semi_stable,
             max_system_tokens=self.config.max_system_tokens,
+            user_timezone=self.config.user_timezone,
         )
 
     def _validate_persona_budget(self) -> None:
@@ -558,7 +563,6 @@ class LucydDaemon:
         api_url = self.config.conversion_api_url
         static_rate = self.config.conversion_static_rate
         if api_url or static_rate != 1.0:
-            from conversion import CurrencyConverter
             self.converter = CurrencyConverter(
                 api_url=api_url, static_rate=static_rate,
             )
@@ -579,7 +583,6 @@ class LucydDaemon:
             return
         if self.provider is None:
             raise RuntimeError("Cannot build pipeline before _init_provider() has set self.provider")
-        from pipeline import MessagePipeline
         self.pipeline = MessagePipeline(
             config=self.config,
             provider=self.provider,
@@ -590,8 +593,10 @@ class LucydDaemon:
             skill_loader=self.skill_loader,
             metering_db=self.metering_db,
             pool=self.pool,
+            memory_interface=self._memory_interface,
             preprocessors=self._preprocessors,
             queue=self.queue,
+            converter=self.converter,
         )
         self._lock_factory_holder.set(self.pipeline)
 
@@ -606,10 +611,11 @@ class LucydDaemon:
 
     # ── Session-close hooks ────────────────────────────────────────
 
-    async def _consolidate_on_close(self, session: Any) -> None:
-        await ops.consolidate_on_close(
+    async def _consolidate_on_close(self, session: Session) -> None:
+        self._ensure_pipeline()
+        await ops.harvest_conversation(
             session, self.config, self.pool,
-            self.get_provider, self.context_builder, self.metering_db,
+            self._process_message, self.pipeline.get_session_lock,
         )
 
     async def _reset_session(self, target: str, by_id: bool = False) -> dict[str, Any]:
@@ -677,8 +683,6 @@ class LucydDaemon:
                 await self._process_reset_item(item)
 
     async def _build_sessions(self) -> list[dict[str, Any]]:
-        from session import build_session_info
-
         if not self.session_mgr:
             return []
 
@@ -717,6 +721,19 @@ class LucydDaemon:
         if swept:
             log.info("Media sweep: deleted %d files older than 24h", swept)
 
+    def _cached_workspace_bytes(self) -> int:
+        """Workspace size for the metrics gauge, recomputed at most once per TTL.
+
+        Refreshed on every /status and /metrics scrape; without the cache a
+        scrape storm would rglob the whole workspace on every hit.
+        """
+        now = time.time()
+        ts, value = self._ws_bytes_cache
+        if now - ts >= _WORKSPACE_BYTES_TTL_S:
+            value = _workspace_bytes(self.config.workspace)
+            self._ws_bytes_cache = (now, value)
+        return value
+
     def _build_monitor(self) -> dict[str, Any]:
         return dict(self.pipeline.monitor_state) if self.pipeline else {"state": "idle"}
 
@@ -725,8 +742,6 @@ class LucydDaemon:
 
         Target can be a session UUID or a contact name (case-insensitive).
         """
-        from session import read_history_events
-
         if not self.session_mgr:
             return {"session_id": target, "events": []}
 
@@ -746,15 +761,7 @@ class LucydDaemon:
         return {"session_id": session_id, "events": events}
 
     async def _build_status(self) -> dict[str, Any]:
-        from config import today_start_ts
-
-        today_cost = 0.0
-        rows = await self.metering_db.query(
-            "SELECT SUM(cost_eur) AS total FROM metering.costs WHERE timestamp >= to_timestamp($1)",
-            today_start_ts(),
-        )
-        if rows and rows[0]["total"]:
-            today_cost = float(rows[0]["total"])
+        today_cost = await self.metering_db.today_cost()
 
         active_sessions = 0
         if self.session_mgr:
@@ -765,7 +772,7 @@ class LucydDaemon:
             metrics.UPTIME.set(time.time() - self.start_time)
             metrics.ACTIVE_SESSIONS.set(active_sessions)
             metrics.QUEUE_DEPTH.set(self.queue.qsize())
-            metrics.WORKSPACE_BYTES.set(_workspace_bytes(self.config.workspace))
+            metrics.WORKSPACE_BYTES.set(self._cached_workspace_bytes())
 
         return {
             "status": "ok",
@@ -796,18 +803,18 @@ class LucydDaemon:
     async def _handle_index_status(self) -> dict[str, Any]:
         return await ops.handle_index_status(self.config, pool=self.pool)
 
-    async def _handle_consolidate(self) -> dict[str, Any]:
-        return await ops.handle_consolidate(
-            self.config, self.pool,
-            self.get_provider, self.metering_db,
-            converter=self.converter,
-        )
-
     async def _handle_maintain(self) -> dict[str, Any]:
         self._ensure_pipeline()
         return await ops.handle_maintain(
-            self.config, self.pool, self.metering_db,
+            self.config, self.pool, self.metering_db, self.session_mgr,
             self._process_message, self.pipeline.get_session_lock,
+        )
+
+    async def _handle_session_reset(self) -> dict[str, Any]:
+        self._ensure_pipeline()
+        return await ops.handle_session_reset(
+            self.config, self.session_mgr, self.pool,
+            self.pipeline.get_session_lock,
         )
 
     async def _message_loop(self) -> None:
@@ -880,7 +887,7 @@ class LucydDaemon:
                 break
 
             # Record queue wait time
-            if metrics.ENABLED and isinstance(item, dict):
+            if metrics.ENABLED and item is not None:
                 queued_at = item.pop("_queued_at", None)
                 priority_label = "user" if item.pop("_priority", 0) == 0 else "system"
                 if queued_at is not None:
@@ -893,9 +900,6 @@ class LucydDaemon:
                     await drain_pending(s)
                 self.running = False
                 break
-
-            if not isinstance(item, dict):
-                continue
 
             # Handle session reset (safety net — normally via control queue)
             if item.get("type") == "reset":
@@ -1006,30 +1010,8 @@ class LucydDaemon:
             self._init_tools()
             self._write_tools_md()
 
-            # Create message pipeline — the core runtime path. _init_provider
-            # above guarantees self.provider is set; assertion for mypy's narrowing.
-            assert self.provider is not None
-            from pipeline import MessagePipeline
-            self.pipeline = MessagePipeline(
-                config=cfg,
-                provider=self.provider,
-                get_provider=self.get_provider,
-                session_mgr=self.session_mgr,
-                context_builder=self.context_builder,
-                tool_registry=self.tool_registry,
-                skill_loader=self.skill_loader,
-                metering_db=self.metering_db,
-                pool=self.pool,
-                preprocessors=self._preprocessors,
-                queue=self.queue,
-                    converter=self.converter,
-            )
-            self._lock_factory_holder.set(self.pipeline)
-
-            # Patch session_getter to point at pipeline's current_session
-            # (tool deps were wired before pipeline existed)
-            import tools.status as _status_mod
-            _status_mod._session_getter = lambda: self.pipeline.current_session
+            # Create message pipeline — the core runtime path.
+            self._ensure_pipeline()
 
             # Sweep expired media downloads
             self._sweep_expired_media()
@@ -1042,7 +1024,6 @@ class LucydDaemon:
             self._setup_signals(loop)
 
             # Start HTTP API (always on)
-            from api import HTTPApi
             self._http_api = HTTPApi(
                 queue=self.queue,
                 control_queue=self._control_queue,
@@ -1057,8 +1038,8 @@ class LucydDaemon:
                 get_history=self._build_history,
                 handle_index=self._handle_index,
                 handle_index_status=self._handle_index_status,
-                handle_consolidate=self._handle_consolidate,
                 handle_maintain=self._handle_maintain,
+                handle_session_reset=self._handle_session_reset,
                 download_dir=cfg.http_download_dir,
                 max_body_bytes=cfg.http_max_body_bytes,
                 max_attachment_bytes=cfg.http_max_attachment_bytes,

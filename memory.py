@@ -3,8 +3,8 @@
 FTS-first, vector fallback. Keyword search handles ~80% of queries
 without an API call. Vector is the fallback for semantic gaps.
 
-Structured recall (v2): entity-attribute-value facts, episodes,
-commitments. Budget-aware context injection via RecallBlock.
+Structured recall (v2): entity-attribute-value facts and episodes.
+Budget-aware context injection via RecallBlock.
 """
 
 from __future__ import annotations
@@ -244,7 +244,19 @@ class MemoryInterface:
         )
         if not rows:
             return f"No chunks found for {file_path} lines {start_line}-{end_line}"
-        return "\n".join(row["text"] for row in rows)
+        # Indexer chunks slide with overlap, so adjacent chunks share lines.
+        # Concatenating their text verbatim would re-emit the overlap; stitch
+        # by absolute line number (chunk line i maps to chunk.start_line + i)
+        # so each line appears once.
+        merged: list[str] = []
+        next_line: int | None = None
+        for row in rows:
+            chunk_lines = row["text"].split("\n")
+            skip = 0 if next_line is None else next_line - row["start_line"]
+            if skip < len(chunk_lines):
+                merged.extend(chunk_lines[max(skip, 0):])
+                next_line = row["start_line"] + len(chunk_lines)
+        return "\n".join(merged)
 
 
 # ─── Structured Recall (Memory v2) ──────────────────────────────
@@ -252,10 +264,15 @@ class MemoryInterface:
 RECALL_PRIORITY_VECTOR = 35
 RECALL_PRIORITY_EPISODES = 25
 RECALL_PRIORITY_FACTS = 15
-RECALL_PRIORITY_COMMITMENTS = 40
 RECALL_FACT_FORMAT = "natural"
 RECALL_SHOW_EMOTIONAL_TONE = True
 RECALL_EPISODE_SECTION_HEADER = "Recent conversations"
+
+# Vector matches pulled per automatic per-turn recall. Deliberately lighter than
+# [memory] search_top_k (which governs the explicit memory_search tool): per-turn
+# recall fires on every user message and is budget-trimmed downstream, so it
+# leans on a tight set rather than the full search depth.
+_PER_TURN_VECTOR_TOP_K = 5
 
 
 @dataclass
@@ -281,27 +298,6 @@ def _format_fact(f: asyncpg.Record | dict[str, str] | tuple[str, ...] | list[str
     if fmt == "compact":
         return f"  {entity}.{attr}: {value}"
     return f"  {entity.replace('_', ' ')} — {attr.replace('_', ' ')}: {value}"
-
-
-async def _build_commitment_block(
-    pool: asyncpg.Pool,
-    priority: int,
-) -> RecallBlock | None:
-    """Build a RecallBlock for open commitments, or None if empty."""
-    commitments = await get_open_commitments(pool)
-    if not commitments:
-        return None
-    lines = []
-    for c in commitments:
-        deadline = f" (by {c['deadline']})" if c["deadline"] else ""
-        lines.append(f"  #{c['id']} - {c['who']}: {c['what']}{deadline}")
-    text = "\n".join(lines)
-    return RecallBlock(
-        priority=priority,
-        section="[Open commitments]",
-        text=text,
-        est_tokens=_estimate_tokens(text),
-    )
 
 
 def _format_episode(e: asyncpg.Record | tuple[str, ...] | list[str], show_tone: bool = True) -> str:
@@ -345,23 +341,29 @@ async def extract_query_entities(
     candidates = list(words)
     candidates.extend(f"{words[i]}_{words[i+1]}" for i in range(len(words) - 1))
     candidates.extend(f"{words[i]}_{words[i+1]}_{words[i+2]}" for i in range(len(words) - 2))
+    # Candidates are already normalized (lowercased, underscore-joined, no
+    # spaces), so they match the alias table's normalized keys directly — no
+    # per-candidate resolve_entity round-trip needed.
+    candidate_list = [c for c in dict.fromkeys(candidates) if c]
+    if not candidate_list:
+        return set()
 
+    # Two set-based queries instead of two round-trips per candidate: which
+    # candidates are live fact entities, and which are aliases pointing elsewhere.
     entities: set[str] = set()
-    for candidate in candidates:
-        if not candidate:
-            continue
+    fact_rows = await pool.fetch(
+        "SELECT DISTINCT entity FROM knowledge.facts "
+        "WHERE entity = ANY($1::text[]) AND invalidated_at IS NULL",
+        candidate_list,
+    )
+    entities.update(r["entity"] for r in fact_rows)
 
-        exists = await pool.fetchval(
-            "SELECT 1 FROM knowledge.facts "
-            "WHERE entity = $1 AND invalidated_at IS NULL LIMIT 1",
-            candidate,
-        )
-        if exists:
-            entities.add(candidate)
-
-        canonical = await resolve_entity(candidate, pool)
-        if canonical != candidate:
-            entities.add(canonical)
+    alias_rows = await pool.fetch(
+        "SELECT alias, canonical FROM knowledge.entity_aliases "
+        "WHERE alias = ANY($1::text[])",
+        candidate_list,
+    )
+    entities.update(r["canonical"] for r in alias_rows if r["canonical"] != r["alias"])
 
     return entities
 
@@ -440,31 +442,20 @@ async def search_episodes(
     return rows
 
 
-async def get_open_commitments(pool: asyncpg.Pool) -> list[asyncpg.Record]:
-    """Get all open commitments, ordered by deadline."""
-    rows: list[asyncpg.Record] = await pool.fetch(
-        """SELECT id, who, what, deadline, created_at
-           FROM knowledge.commitments
-           WHERE status = 'open'
-           ORDER BY deadline IS NULL, deadline ASC, created_at DESC""",
-    )
-    return rows
-
-
 async def recall(
     query: str,
     pool: asyncpg.Pool,
     memory_interface: MemoryInterface,
     config: Config,
-    top_k: int = 5,
+    top_k: int = _PER_TURN_VECTOR_TOP_K,
 ) -> list[RecallBlock]:
     """Three-stage recall: facts -> episodes -> vector fallback.
 
     Returns list of RecallBlocks ordered by priority (highest first).
     """
     blocks: list[RecallBlock] = []
-    max_facts = getattr(config, "recall_max_facts", 20)
-    decay_rate = getattr(config, "recall_decay_rate", 0.03)
+    max_facts = config.recall_max_facts
+    decay_rate = config.recall_decay_rate
 
     # Stage 1: Structured fact lookup
     entities = await extract_query_entities(query, pool)
@@ -481,7 +472,7 @@ async def recall(
             ))
 
     # Stage 2: Episode search
-    max_ep = getattr(config, "recall_max_episodes_at_start", 3)
+    max_ep = config.recall_max_episodes
     keywords = [w for w in query.lower().split() if len(w) > 3]
     if keywords:
         episodes = await search_episodes(keywords, pool, max_results=max_ep)
@@ -512,11 +503,6 @@ async def recall(
             text=text,
             est_tokens=_estimate_tokens(text),
         ))
-
-    # Stage 4: Open commitments (always included)
-    cb = await _build_commitment_block(pool, RECALL_PRIORITY_COMMITMENTS)
-    if cb:
-        blocks.append(cb)
 
     blocks.sort(key=lambda b: b.priority, reverse=True)
     return blocks
@@ -578,68 +564,13 @@ EMPTY_RECALL_FALLBACK = (
 )
 
 
-async def get_session_start_context(
-    pool: asyncpg.Pool,
-    max_facts: int = 20,
-    max_episodes: int = 3,
-    max_tokens: int = 0,
-) -> str:
-    """Build structured context for the first message of a session.
-
-    Includes facts, recent episodes, and open commitments.
-    """
-    blocks: list[RecallBlock] = []
-
-    facts = await pool.fetch(
-        """SELECT entity, attribute, value
-           FROM knowledge.facts
-           WHERE invalidated_at IS NULL
-           ORDER BY accessed_at DESC LIMIT $1""",
-        max_facts,
-    )
-
-    if facts:
-        lines = [_format_fact(f, RECALL_FACT_FORMAT) for f in facts]
-        text = "\n".join(lines)
-        blocks.append(RecallBlock(
-            priority=RECALL_PRIORITY_FACTS,
-            section="[Known facts]",
-            text=text,
-            est_tokens=_estimate_tokens(text),
-        ))
-
-    episodes = await pool.fetch(
-        """SELECT date, summary, emotional_tone
-           FROM knowledge.episodes
-           ORDER BY date DESC LIMIT $1""",
-        max_episodes,
-    )
-
-    if episodes:
-        lines = [_format_episode(e, RECALL_SHOW_EMOTIONAL_TONE) for e in episodes]
-        text = "\n".join(lines)
-        blocks.append(RecallBlock(
-            priority=RECALL_PRIORITY_EPISODES,
-            section=f"[{RECALL_EPISODE_SECTION_HEADER}]",
-            text=text,
-            est_tokens=_estimate_tokens(text),
-        ))
-
-    cb = await _build_commitment_block(pool, RECALL_PRIORITY_COMMITMENTS)
-    if cb:
-        blocks.append(cb)
-
-    return inject_recall(blocks, max_tokens)
-
-
 async def run_maintenance(
     pool: asyncpg.Pool,
     stale_threshold_days: int,
 ) -> dict[str, int]:  # all values are counts
-    """Run memory maintenance: stale facts, expired commitments, conflict detection.
+    """Run memory maintenance: stale facts and conflict detection.
 
-    Returns a stats dict with counts for facts, episodes, open_commitments,
-    stale, expired, and conflicts.
+    Returns a stats dict with counts for facts, episodes, stale, and conflicts.
     """
     stale = await pool.fetch(
         """SELECT id, entity, attribute, value
@@ -648,14 +579,6 @@ async def run_maintenance(
            AND now() - accessed_at > make_interval(days => $1)""",
         stale_threshold_days,
     )
-
-    result: str = await pool.execute(
-        """UPDATE knowledge.commitments SET status = 'expired'
-           WHERE status = 'open'
-           AND deadline IS NOT NULL
-           AND deadline < CURRENT_DATE::text""",
-    )
-    expired = int(result.split()[-1]) if result else 0
 
     conflicts = await pool.fetch(
         """SELECT f1.entity, f1.attribute,
@@ -672,15 +595,10 @@ async def run_maintenance(
         "SELECT COUNT(*) FROM knowledge.facts WHERE invalidated_at IS NULL",
     )
     episode_count = await pool.fetchval("SELECT COUNT(*) FROM knowledge.episodes")
-    commitment_count = await pool.fetchval(
-        "SELECT COUNT(*) FROM knowledge.commitments WHERE status = 'open'",
-    )
 
     return {
         "facts": fact_count or 0,
         "episodes": episode_count or 0,
-        "open_commitments": commitment_count or 0,
         "stale": len(stale),
-        "expired": expired,
         "conflicts": len(conflicts),
     }

@@ -16,6 +16,7 @@ import email
 import email.utils
 import imaplib
 import logging
+import mimetypes
 import os
 import smtplib
 import sys
@@ -25,11 +26,20 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.parser import BytesParser
+from pathlib import Path
 from typing import Any
 
 import httpx
+from aiohttp import web
 
-from pathlib import Path
+# Put the parent dir (/app in container) on sys.path so `channels` imports
+# resolve — the bridge is launched via `python -P channels/email.py`, which
+# excludes the script dir and cwd from sys.path.
+_app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _app_dir not in sys.path:
+    sys.path.insert(0, _app_dir)
+
+from channels.bridge_outbound_server import build_outbound_app  # noqa: E402
 
 log = logging.getLogger("bridge.email")
 
@@ -47,12 +57,13 @@ IMAP_PORT = 0
 SMTP_PORT = 0
 SECURITY = "ssl"  # "ssl" or "starttls"
 ALLOWED_SENDERS: list[str] = []  # empty = allow all
+USER_ADDRESS = ""  # proactive-outbound destination ([email] user_address)
 
 
 def load_config() -> None:
     """Load bridge config from [email] section in lucyd.toml."""
     global URL, IMAP_HOST, SMTP_HOST, USER, PASSWORD, FOLDER, POLL_INTERVAL, FROM_ADDR, \
-        IMAP_PORT, SMTP_PORT, SECURITY, ALLOWED_SENDERS
+        IMAP_PORT, SMTP_PORT, SECURITY, ALLOWED_SENDERS, USER_ADDRESS
 
     import tomllib
 
@@ -86,6 +97,12 @@ def load_config() -> None:
     ALLOWED_SENDERS = [
         s.lower() for s in em.get("allowed_senders", [])
     ]
+    # Proactive-outbound destination. Distinct from allowed_senders (an inbound
+    # filter): this is the single address the daemon's /send pushes to. Defaults
+    # to the first allowed sender when unset.
+    USER_ADDRESS = em.get("user_address", "") or (
+        ALLOWED_SENDERS[0] if ALLOWED_SENDERS else ""
+    )
 
     log.info("Loaded email config from %s", config_path)
 
@@ -145,7 +162,7 @@ def fetch_and_mark(processed_uids: list[bytes]) -> list[dict[str, Any]]:
             for uid in processed_uids:
                 try:
                     imap.store(uid.decode(), "+FLAGS", "\\Seen")
-                except Exception as e:
+                except (imaplib.IMAP4.error, OSError) as e:
                     log.warning("Failed to mark %s as read: %s", uid, e)
 
             # Fetch new unread
@@ -244,6 +261,80 @@ def send_reply(
         raise
 
 
+# ─── Outbound (proactive /send listener) ─────────────────────────
+
+_SUBJECT_MAX = 60
+
+
+def _subject_for(text: str) -> str:
+    """Synthesize an email subject from the message text.
+
+    Telegram has no subject; email needs one. Use the first line (clipped),
+    falling back to a generic line for attachment-only sends.
+    """
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    return first[:_SUBJECT_MAX] if first else "Message from your assistant"
+
+
+async def send_text(recipient: str, text: str) -> None:
+    """Outbound adapter for the /send listener — SMTP a proactive message."""
+    await asyncio.get_event_loop().run_in_executor(
+        None, send_reply, recipient, _subject_for(text), text, None,
+    )
+
+
+async def send_attachment(recipient: str, path: str, *, caption: str = "") -> None:
+    """Outbound adapter for the /send listener — SMTP an attachment.
+
+    The shared outbound server decodes the attachment to a tempfile and passes
+    its path; re-encode it into the dict shape send_reply expects.
+    """
+    p = Path(path)
+    ctype, _enc = mimetypes.guess_type(p.name)
+    att = {
+        "content_type": ctype or "application/octet-stream",
+        "data": base64.b64encode(p.read_bytes()).decode("ascii"),
+        "filename": p.name,
+    }
+    subject = _subject_for(caption) if caption else f"Attachment: {p.name}"
+    await asyncio.get_event_loop().run_in_executor(
+        None, send_reply, recipient, subject, caption, [att],
+    )
+
+
+async def _start_outbound_server() -> web.AppRunner:
+    """Bind the outbound /send server on the conventional email port.
+
+    Port and attachment cap come from bridge_client.BRIDGE_LIMITS (the single
+    source of truth for the bridge contract). The recipient is [email]
+    user_address, resolved by load_config().
+    """
+    token = os.environ.get("LUCYD_HTTP_TOKEN", "")
+    if not token:
+        log.error("LUCYD_HTTP_TOKEN not set; outbound server refusing to start")
+        raise RuntimeError("LUCYD_HTTP_TOKEN required for outbound server")
+    if not USER_ADDRESS:
+        log.error("No [email] user_address (or allowed_senders) configured; "
+                  "outbound server refusing to start")
+        raise RuntimeError("No email user_address configured for proactive outbound")
+    from bridge_client import BRIDGE_LIMITS
+    limits = BRIDGE_LIMITS["email"]
+    app = build_outbound_app(
+        token=token,
+        recipient=USER_ADDRESS,
+        send_text=send_text,
+        send_attachment=send_attachment,
+        max_attachment_bytes=limits["max_attachment_bytes"],
+    )
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", limits["port"])
+    await site.start()
+    log.info("Email outbound server listening on 127.0.0.1:%d (to=%s)",
+             limits["port"], USER_ADDRESS)
+    return runner
+
+
 async def poll_loop() -> None:
     """Main loop: fetch unread → POST to daemon → reply via SMTP."""
     log.info("Email bridge started: %s@%s → %s", USER, IMAP_HOST, URL)
@@ -326,7 +417,11 @@ async def main() -> None:
     if not all([IMAP_HOST, SMTP_HOST, USER, PASSWORD]):
         sys.exit("Email bridge requires imap_host, smtp_host, user, and password "
                  "in [email] section of lucyd.toml.")
-    await poll_loop()
+    runner = await _start_outbound_server()
+    try:
+        await poll_loop()
+    finally:
+        await runner.cleanup()
 
 
 if __name__ == "__main__":

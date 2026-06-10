@@ -65,7 +65,7 @@ def _guard_locked(file_path: str) -> str | None:
     name = Path(file_path).name
     if name in _LOCKED_BASENAMES:
         return (
-            f"Error: {name} is operator-owned; raise changes with Nicolas, "
+            f"Error: {name} is operator-owned; raise changes with the operator, "
             "don't edit it directly."
         )
     return None

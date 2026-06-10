@@ -49,14 +49,14 @@ def _make_config(tmp_path: Path) -> Config:
         "memory": {
             "db": "", "search_top_k": 10, "vector_search_limit": 10000,
             "embedding_timeout": 15,
-            "consolidation": {"enabled": False, "confidence_threshold": 0.6},
+            "consolidation": {"enabled": False},
             "recall": {
                 "decay_rate": 0.03, "max_facts_in_context": 20,
-                "max_dynamic_tokens": 1500, "max_episodes_at_start": 3,
+                "max_dynamic_tokens": 1500, "max_episodes": 3,
                 "archive_messages": 20,
                 "personality": {
                     "priority_vector": 35, "priority_episodes": 25,
-                    "priority_facts": 15, "priority_commitments": 40,
+                    "priority_facts": 15,
                     "fact_format": "natural", "show_emotional_tone": True,
                     "episode_section_header": "Recent conversations",
                 },
@@ -84,7 +84,6 @@ def _make_config(tmp_path: Path) -> Config:
             "silent_tokens": [], "typing_indicators": False,
             "debounce_ms": 0,
             "api_retries": 0, "api_retry_base_delay": 0,
-            "message_retries": 0, "message_retry_base_delay": 0,
             "agent_timeout_seconds": 30,
             "max_turns_per_message": 5, "max_cost_per_message": 0.0,
             "compaction": {
@@ -96,8 +95,6 @@ def _make_config(tmp_path: Path) -> Config:
         },
         "paths": {
             "state_dir": str(tmp_path / "state"),
-            "sessions_dir": str(tmp_path / "sessions"),
-            "metering_db": str(tmp_path / "metering.db"),
             "log_file": str(tmp_path / "logs" / "lucyd.log"),
         },
     }

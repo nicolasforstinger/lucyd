@@ -14,18 +14,18 @@ Bridges are **bidirectional**: alongside their inbound poll loop, each bridge ru
 |---|---|
 | `lucyd.py` | Daemon coordinator. Bootstrap, priority message queue, signal handlers, init methods. Delegates processing to `MessagePipeline` and periodic operations to `operations.py`. |
 | `pipeline.py` | `MessagePipeline`. Complete message processing: preprocessors, attachments, session setup, recall, context, agentic loop, response finalization. Owns monitor state, error counts, per-session locks. |
-| `operations.py` | Periodic operations: index, consolidate, maintain, compact. Standalone functions called by daemon HTTP handlers. |
+| `operations.py` | Periodic operations: index, maintain (incl. the consolidation harvest), compact; plus `harvest_conversation` (pre-compaction / pre-close). Standalone functions called by daemon HTTP handlers + the pipeline. |
 | `agentic.py` | Provider-agnostic tool-use loop. `run_agentic_loop` (multi-turn) and `run_single_shot` dispatch. Collects tool attachments. |
 | `api.py` | HTTP API server (aiohttp). Envelope extraction, sender validation, auth, rate limiting. |
 | `config.py` | TOML config loader with env overrides. `_SCHEMA`-based typed properties + `raw()` for plugin config. Defines `Talker`, `OPERATOR_SENDERS`, `SYSTEM_SENDERS`, `AGENT_SENDERS`. |
 | `context.py` | System prompt builder. Three cache tiers (stable / semi-stable / dynamic). Token budget enforcement. |
 | `db.py` | PostgreSQL connection pool (asyncpg) + forward-only schema versioning from `schema/*.sql`. |
 | `session.py` | Session manager. PostgreSQL-backed sessions, messages, events. Compaction via LLM. `append_outbound_to_user` for cross-session outbound. |
-| `memory.py` | Long-term memory. PostgreSQL tsvector FTS + pgvector similarity. Structured recall (facts, episodes, commitments). |
-| `consolidation.py` | Structured data extraction from sessions and workspace files via LLM. Facts, episodes, commitments, aliases. |
+| `memory.py` | Long-term memory. PostgreSQL tsvector FTS + pgvector similarity. Structured recall (facts, episodes). |
+| `consolidation.py` | Knowledge-schema storage helpers + the consolidation watermark: fact upsert, episode storage, message serialization. Extraction itself is the agent's job (the maintenance harvest), not a neutral LLM pass. |
 | `skills.py` | Skill loader + `load_skill` tool. Markdown with YAML frontmatter. |
 | `metering.py` | Per-call cost recording to PostgreSQL (`metering.costs`). Retention via `enforce_retention`. EUR. |
-| `metrics.py` | Prometheus metrics. 34 metric families, graceful no-op if `prometheus_client` not installed. |
+| `metrics.py` | Prometheus metrics. 33 metric families, graceful no-op if `prometheus_client` not installed. |
 | `attachments.py` | `Attachment` dataclass, image fitting (`fit_image`), document text extraction (`extract_document_text`). Pure functions. |
 | `guardrails.py` | Tripwire registry. Async input/output predicates raising `GuardrailTripped`; pipeline halts the run on trip. |
 | `log_utils.py` | Log sanitization, structured JSON formatter, context vars. |
@@ -46,7 +46,7 @@ Bridges are **bidirectional**: alongside their inbound poll loop, each bridge ru
 | `tools/shell.py` | `exec`. Subprocess with timeout, env filtering, process group kill. |
 | `tools/web.py` | `web_search` (Brave), `web_fetch`. SSRF protection, DNS pinning. |
 | `tools/memory_read.py` | `memory_search`, `memory_get`. tsvector + vector + structured recall. |
-| `tools/memory_write.py` | `memory_write`, `memory_forget`, `commitment_update`. |
+| `tools/memory_write.py` | `memory_write`, `memory_forget`, `record_episode`. |
 | `tools/reminder.py` | `remind_user` (literal scheduled message via `at` → `/api/v1/outbound/send`), `schedule_self_task` (future agent:self turn via `at` → `/api/v1/agent/action`), `list_scheduled` / `cancel_scheduled` (manage the at-spool). |
 | `tools/send_message.py` | Proactive outbound to user — gated to `talkers={"agent"}`. Validates per-bridge attachment caps, calls `bridge_client.send_to_user`, then `SessionManager.append_outbound_to_user`. |
 | `tools/agents.py` | `sessions_spawn`. Sub-agent with scoped tools and deny-list. |
@@ -147,8 +147,7 @@ LucydDaemon (lucyd.py)
         │           monitor_state, current_session, session locks
         └── operations.py
               handle_index, handle_index_status,
-              handle_consolidate, handle_maintain, handle_compact,
-              consolidate_on_close
+              handle_maintain, handle_compact, harvest_conversation
 ```
 
 `LucydDaemon._process_message()` is a thin delegator to `pipeline.process_message()`. The daemon owns init, the priority queue, signal handling, and HTTP-handler callbacks; the pipeline owns per-message processing.
@@ -178,7 +177,7 @@ Most heavily-shared attributes are written exactly once at startup:
 
 ## HTTP API
 
-Endpoints registered in `api.py::HTTPApi.start()`.
+Endpoints registered in `api.py::HTTPApi.start()`. Full request/response schemas follow in the endpoint table below.
 
 | Endpoint | Method | Auth | Talker | Purpose |
 |---|---|---|---|---|
@@ -198,8 +197,7 @@ Endpoints registered in `api.py::HTTPApi.start()`.
 | `/api/v1/compact` | POST | yes | — | Force diary write + compaction on user session |
 | `/api/v1/index` | POST | yes | — | Run workspace indexing |
 | `/api/v1/index/status` | GET | yes | — | Workspace index status |
-| `/api/v1/consolidate` | POST | yes | — | Extract facts from workspace files |
-| `/api/v1/maintain` | POST | yes | — | Run memory maintenance + metering retention |
+| `/api/v1/maintain` | POST | yes | — | Run the maintenance pass (consolidation harvest + tend) + metering retention |
 | `/api/v1/plugins` | GET | yes | — | Plugin registration state (configured / unconfigured) |
 | `/api/v1/plugins/{name}/health` | GET | yes | — | Single plugin health |
 
@@ -312,9 +310,9 @@ Sessions are keyed by `talker:sender` (e.g., `user:Nicolas`, `operator:agentctl`
 
 Ephemeral sessions (talker `system` or `agent`) auto-close after processing via `_auto_close_if_ephemeral` — but only if the session was created by this event (pre-existing sessions are never auto-closed).
 
-Compaction triggers when `input_tokens` exceeds `compaction.threshold_tokens` OR when the pre-loop context budget exceeds 80% (emergency compaction). Oldest messages are summarized via the `compaction` model role, keeping the newest `keep_recent_pct` fraction verbatim (`SessionManager.compact_session`). Consolidation runs first when `[memory.consolidation] enabled = true` — fact extraction from messages must succeed before compaction overwrites them.
+Compaction triggers when `input_tokens` exceeds `compaction.threshold_tokens` OR when the pre-loop context budget exceeds 80% (emergency compaction). Oldest messages are summarized via the `compaction` model role, keeping the newest `keep_recent_pct` fraction verbatim (`SessionManager.compact_session`). When `[memory.consolidation] enabled = true`, the agent first harvests the unconsolidated messages (`operations.harvest_conversation` — facts + an episode, in her own voice) before compaction overwrites them; if the harvest can't complete, compaction is skipped to avoid fact loss.
 
-On close, `on_close` callbacks fire (consolidation); the row in `sessions.sessions` is marked `closed_at` and removed from the in-memory pool.
+On close, `on_close` callbacks fire (the same harvest, so trailing facts aren't lost); the row in `sessions.sessions` is marked `closed_at` and removed from the in-memory pool.
 
 ## Context Building
 
@@ -341,9 +339,9 @@ Token budget enforcement trims dynamic first, then semi-stable. Stable tier is n
 
 PostgreSQL tsvector FTS + pgvector similarity (knowledge + search schemas).
 
-**Structured memory:** Facts (entity-attribute-value), episodes (session summaries), commitments (trackable promises). Extracted on session close via `consolidation.py` and written directly by agent tools (`memory_write`, `commitment_update`).
+**Structured memory:** Facts (entity-attribute-value), episodes (session summaries). Written by the agent herself — in the maintenance harvest and before compaction/close — via her tools (`memory_write`, `record_episode`). She knows the entities, so there's no neutral extractor and no auto-generated aliases.
 
-**Recall:** At session start, `_build_recall` injects relevant facts, episodes, and open commitments into the dynamic context tier. Priority: commitments > vector > episodes > facts. Budget-aware.
+**Recall:** On every user turn, `_build_recall` calls `recall()` keyed to the message and injects relevant facts, episodes, and vector matches over the indexed workspace into the dynamic context tier. Priority: vector > episodes > facts. Budget-aware (`recall_max_dynamic_tokens`).
 
 ## Provider Abstraction
 
@@ -358,7 +356,7 @@ Four implementations, all SDK-only (no HTTP fallback): Anthropic (prompt caching
 
 ## Metrics
 
-34 Prometheus metric families (metrics.py). Graceful no-op when `prometheus_client` is not installed. Exposed at `GET /metrics`.
+33 Prometheus metric families (metrics.py). Graceful no-op when `prometheus_client` is not installed. Exposed at `GET /metrics`.
 
 | Scope | Metrics | Labels |
 |---|---|---|
@@ -368,7 +366,7 @@ Four implementations, all SDK-only (no HTTP fallback): Anthropic (prompt caching
 | Per-preprocessor | `lucyd_preprocessor_total`, `lucyd_preprocessor_duration_seconds` | name, status |
 | Per-plugin | `lucyd_plugin_calls_total`, `lucyd_plugin_duration_seconds`, `lucyd_plugin_retries_total`, `lucyd_plugin_configured` | plugin, operation, status, code, backend |
 | Memory | `lucyd_memory_ops_total`, `lucyd_memory_search_duration_seconds` | operation; search_type |
-| Session | `lucyd_active_sessions`, `lucyd_compaction_total`, `lucyd_compaction_tokens_reclaimed`, `lucyd_session_close_total`, `lucyd_session_open_total`, `lucyd_consolidation_duration_seconds` | reason (close only) |
+| Session | `lucyd_active_sessions`, `lucyd_compaction_total`, `lucyd_compaction_tokens_reclaimed`, `lucyd_session_close_total`, `lucyd_session_open_total` | reason (close only) |
 | Queue | `lucyd_queue_depth`, `lucyd_queue_wait_seconds` | priority |
 | System | `lucyd_uptime_seconds`, `lucyd_workspace_bytes`, `lucyd_errors_total`, `lucyd_fx_fetch_errors_total` | error_type (errors only) |
 

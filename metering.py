@@ -8,6 +8,7 @@ segmentation.  Agent and client identity are set once at init.  Consumers
 from __future__ import annotations
 
 import datetime
+import decimal
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 
 import metrics
+from config import today_start_ts
 
 if TYPE_CHECKING:
     from conversion import CurrencyConverter
@@ -28,10 +30,9 @@ def _current_billing_period() -> str:
 
 
 def _serialize(v: object) -> str | float | object:
-    import datetime as _dt
-    if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+    if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
         return v.isoformat()
-    if isinstance(v, __import__("decimal").Decimal):
+    if isinstance(v, decimal.Decimal):
         return float(v)
     return v
 
@@ -145,6 +146,23 @@ class MeteringDB:
         """Read-only query. ``args`` are SQL bind params (any type asyncpg accepts)."""
         rows: list[asyncpg.Record] = await self._pool.fetch(sql, *args)
         return rows
+
+    async def today_cost(self) -> float:
+        """Total cost (EUR) recorded since local midnight today."""
+        rows = await self.query(
+            "SELECT SUM(cost_eur) AS total FROM metering.costs "
+            "WHERE timestamp >= to_timestamp($1)",
+            today_start_ts(),
+        )
+        return float(rows[0]["total"]) if rows and rows[0]["total"] else 0.0
+
+    async def session_cost(self, session_id: str) -> float:
+        """Total cost (EUR) recorded for one session."""
+        rows = await self.query(
+            "SELECT SUM(cost_eur) AS total FROM metering.costs WHERE session_id = $1",
+            session_id,
+        )
+        return float(rows[0]["total"]) if rows and rows[0]["total"] else 0.0
 
     # ── Records ─────────────────────────────────────────────────────
 

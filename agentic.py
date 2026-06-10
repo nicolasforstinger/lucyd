@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import metrics
-from messages import Message, ToolResultsMessage
+from messages import Message, ToolResultEntry, ToolResultsMessage
 
 from providers import CostContext, LLMProvider, LLMResponse, StreamDelta, SystemPrompt, ToolCall, Usage
 from tools import ToolRegistry
@@ -47,7 +47,6 @@ class LoopConfig:
     max_context_for_tools: int = 0
     tool_call_retry: bool = False
     tool_success_warn_threshold: float = 0.5
-    thinking_concise_hint: bool = False
     trace_id: str = ""
 
 
@@ -271,7 +270,6 @@ async def run_agentic_loop(
     max_cost = cfg.max_cost
     max_context_for_tools = cfg.max_context_for_tools
     tool_call_retry = cfg.tool_call_retry
-    thinking_concise_hint = cfg.thinking_concise_hint
     fmt_tools = provider.format_tools(tools) if tools else []
     accumulated_cost = 0.0
     fallback_text: list[str] = []
@@ -315,7 +313,7 @@ async def run_agentic_loop(
 
         # Max cost circuit breaker
         if max_cost > 0 and accumulated_cost > max_cost:
-            log.warning("[%s] Cost limit reached: $%.4f > $%.2f (turn %d)",
+            log.warning("[%s] Cost limit reached: %.4f > %.2f EUR (turn %d)",
                         trace_id[:8], accumulated_cost, max_cost, turn)
             response.cost_limited = True
             if not response.text and fallback_text:
@@ -385,11 +383,6 @@ async def run_agentic_loop(
                     ),
                 })
 
-        # Concise thinking hint for tool-result processing turns
-        concise_hint_injected = False
-        if thinking_concise_hint and response.tool_calls:
-            concise_hint_injected = True
-
         # Notify consumer about tool execution status
         if on_stream_delta:
             tool_names = [tc.name for tc in response.tool_calls]
@@ -400,23 +393,23 @@ async def run_agentic_loop(
                 on_stream_delta(status_delta)
 
         # Execute tool calls in parallel
-        async def _execute_tool(tc: ToolCall) -> dict[str, Any]:
+        async def _execute_tool(tc: ToolCall) -> tuple[ToolResultEntry, list[str]]:
             log.info("[%s] Tool call: %s(%s)",
                      trace_id[:8], tc.name, _truncate_args(tc.arguments))
             tool_result = await tool_executor.execute(tc.name, tc.arguments)
             # tool_result is {"text": str, "attachments": list[str]}
-            return {
+            entry: ToolResultEntry = {
                 "tool_call_id": tc.id,
                 "tool_name": tc.name,
                 "content": tool_result["text"],
-                "_attachments": tool_result.get("attachments", []),
             }
+            return entry, tool_result.get("attachments", [])
 
         tasks = [_execute_tool(tc) for tc in response.tool_calls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Handle any exceptions from parallel execution
-        final_results = []
+        final_results: list[ToolResultEntry] = []
         for i, result in enumerate(results):
             tc = response.tool_calls[i]
             tool_calls_total += 1
@@ -430,33 +423,27 @@ async def run_agentic_loop(
                     "content": f"Error: {type(result).__name__}: {result}",
                 })
             else:
+                entry, tool_attachments = result
                 # Collect file attachments produced by tools (deduplicate)
-                for _att in result.pop("_attachments", []):
+                for _att in tool_attachments:
                     if _att not in all_attachments:
                         all_attachments.append(_att)
                 # Check if tool returned an error (argument errors, etc.)
-                content = result.get("content", "")
-                if isinstance(content, str) and content.startswith("Error:"):
+                content = entry["content"]
+                if content.startswith("Error:"):
                     tool_calls_failed += 1
                     # Tool call retry: give the model one chance to fix bad args
                     if tool_call_retry and "Invalid arguments" in content:
-                        result["content"] = (
+                        entry["content"] = (
                             f"{content}\n\n"
                             f"Your tool call had invalid arguments. "
                             f"Here is what you sent: {_truncate_args(tc.arguments)}. "
                             f"Please try again with valid JSON arguments."
                         )
-                final_results.append(result)
+                final_results.append(entry)
 
         results_msg: ToolResultsMessage = {"role": "tool_result", "results": final_results}
         messages.append(results_msg)
-
-        # Inject concise thinking hint after tool results
-        if concise_hint_injected:
-            messages.append({
-                "role": "user",
-                "content": "[system: Respond concisely. Choose next action quickly.]",
-            })
 
         if on_tool_results:
             await on_tool_results(results_msg) if inspect.iscoroutinefunction(on_tool_results) \

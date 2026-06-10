@@ -1,4 +1,19 @@
-"""Shell execution tool — exec."""
+"""Shell execution tool — exec.
+
+Security boundary: exec runs at the daemon's own uid (1000). It is NOT a
+sandbox against a determined caller — same-uid means a command can read the
+daemon's own secrets via /proc/<pid>/environ, alternate path spellings, or an
+inline interpreter, so no command-string filter is real protection. The
+container is the security boundary. What IS enforced here is real but narrow:
+the child process's environment is scrubbed of secret-shaped vars (_safe_env),
+the command runs with a timeout in its own process group (killed as a group on
+timeout), and there is no shell escalation beyond uid 1000.
+
+To close the file-read vector for `/config/.env`, lock it to root:0600 on the
+host — the entrypoint sources it as root and exports the vars before dropping
+to uid 1000, and config._load_dotenv tolerates an unreadable .env (it relies on
+the already-exported env). The /proc same-uid vector remains by design.
+"""
 
 from __future__ import annotations
 
@@ -21,9 +36,6 @@ _MAX_TIMEOUT = 600
 # Environment variable patterns to filter out of child processes
 _SECRET_PREFIXES = ("LUCYD_",)
 _SECRET_SUFFIXES = ("_KEY", "_KEY_ID", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIALS", "_CODE", "_PASS")
-
-# Paths the agent must not access via exec (credentials, config secrets)
-_DENIED_PATHS = ("/config/", "/proc/self/environ", "/proc/1/environ")
 
 
 def configure(default_timeout: int | None = None, max_timeout: int | None = None,
@@ -53,10 +65,12 @@ def _safe_env() -> dict[str, str]:
 
 
 async def tool_exec(command: str, timeout: int | None = None) -> str:
-    """Execute a shell command and return stdout + stderr."""
-    for denied in _DENIED_PATHS:
-        if denied in command:
-            return f"Error: Access denied — {denied} is not accessible from exec"
+    """Execute a shell command and return stdout + stderr.
+
+    No command-string path filtering: exec runs at the daemon's uid, so such a
+    filter is trivially bypassable and gives false confidence. See the module
+    docstring for the actual security boundary.
+    """
     if timeout is None:
         timeout = _DEFAULT_TIMEOUT
     timeout = min(timeout, _MAX_TIMEOUT)

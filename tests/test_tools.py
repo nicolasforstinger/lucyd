@@ -99,15 +99,15 @@ class TestArgumentCoercion:
 
     Weaker models emit integer/number/boolean params as JSON strings; the
     framework coerces at the boundary so handlers trusting their type
-    annotations don't crash downstream (the commitment_update asyncpg int4
-    DataError, dev-2026-05-25-001).
+    annotations don't crash downstream (e.g. an asyncpg int4 DataError when a
+    string reaches an integer-typed query parameter).
     """
 
     @staticmethod
     def _int_param_tool(received: dict[str, object]):
         """A tool whose schema declares an integer param; records what it got."""
-        def fn(commitment_id, status):
-            received["commitment_id"] = commitment_id
+        def fn(item_id, status):
+            received["item_id"] = item_id
             received["status"] = status
             return "ok"
         return ToolSpec(
@@ -116,10 +116,10 @@ class TestArgumentCoercion:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "commitment_id": {"type": "integer"},
+                    "item_id": {"type": "integer"},
                     "status": {"type": "string"},
                 },
-                "required": ["commitment_id", "status"],
+                "required": ["item_id", "status"],
             },
             function=fn,
         )
@@ -130,10 +130,10 @@ class TestArgumentCoercion:
         reg = ToolRegistry()
         received: dict[str, object] = {}
         reg.register(self._int_param_tool(received))
-        result = await reg.execute("commit", {"commitment_id": "92", "status": "done"})
+        result = await reg.execute("commit", {"item_id": "92", "status": "done"})
         assert "Error:" not in result["text"]
-        assert received["commitment_id"] == 92
-        assert isinstance(received["commitment_id"], int)
+        assert received["item_id"] == 92
+        assert isinstance(received["item_id"], int)
         assert received["status"] == "done"
 
     @pytest.mark.asyncio
@@ -142,9 +142,9 @@ class TestArgumentCoercion:
         reg = ToolRegistry()
         received: dict[str, object] = {}
         reg.register(self._int_param_tool(received))
-        await reg.execute("commit", {"commitment_id": 7, "status": "done"})
-        assert received["commitment_id"] == 7
-        assert isinstance(received["commitment_id"], int)
+        await reg.execute("commit", {"item_id": 7, "status": "done"})
+        assert received["item_id"] == 7
+        assert isinstance(received["item_id"], int)
 
     @pytest.mark.asyncio
     async def test_uncoercible_int_returns_clean_error_not_crash(self):
@@ -152,11 +152,11 @@ class TestArgumentCoercion:
         reg = ToolRegistry()
         received: dict[str, object] = {}
         reg.register(self._int_param_tool(received))
-        result = await reg.execute("commit", {"commitment_id": "abc", "status": "done"})
+        result = await reg.execute("commit", {"item_id": "abc", "status": "done"})
         assert "Error: Invalid arguments for 'commit'" in result["text"]
-        assert "commitment_id must be an integer" in result["text"]
+        assert "item_id must be an integer" in result["text"]
         # handler must NOT have been called with the bad value
-        assert "commitment_id" not in received
+        assert "item_id" not in received
 
     @pytest.mark.asyncio
     async def test_stringified_number_is_coerced(self):

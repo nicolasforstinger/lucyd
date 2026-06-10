@@ -29,8 +29,8 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
-import consolidation as consolidation_mod
 import metrics
+import operations
 from agentic import LoopConfig, run_agentic_loop, run_single_shot
 from attachments import ImageTooLarge, extract_document_text, fit_image
 from config import Config, EPHEMERAL_TALKERS, Talker
@@ -38,14 +38,16 @@ from context import ContextBuilder, _estimate_tokens
 from guardrails import GuardrailTripped, Guardrails
 from log_utils import _log_safe, redact_content, set_log_context
 from metering import MeteringDB
-from memory import get_session_start_context
+from memory import MemoryInterface, inject_recall, recall
 from plugins import PluginError, PreprocessorSpec
-from providers import CostContext, LLMProvider
-from session import ConsecutiveRoleError, SessionManager
+from messages import Message, ToolResultsMessage
+from providers import CostContext, LLMProvider, LLMResponse, StreamDelta, SystemPrompt
+from session import ConsecutiveRoleError, Session, SessionManager
 from skills import SkillLoader
 from tools import ToolRegistry
 
 if TYPE_CHECKING:
+    from conversion import CurrencyConverter
     from lucyd import PriorityMessageQueue
 
 log = logging.getLogger("lucyd")
@@ -85,8 +87,8 @@ def _inject_warning(text: str, warning: str) -> tuple[str, bool]:
 
 
 # Max chars of cleaned semantic text kept per recent-exchange line in the
-# situational brief. Larger than the old 240 because the budget now applies to
-# stripped content, not raw JSON + metadata overhead (dev-2026-05-21-001).
+# situational brief. The budget applies to stripped content, not raw
+# JSON + metadata overhead.
 _BRIEF_SNIPPET_CHARS = 400
 # Leading timestamp header the pipeline prepends to every user turn,
 # e.g. "[Thu, 21. May 2026 - 21:33 UTC]\n".
@@ -197,6 +199,30 @@ async def _recent_user_context(
     )
 
 
+def _history_tokens(messages: list[Message]) -> int:
+    """Estimate tokens in the conversation history the provider receives.
+
+    Counts every message body that gets serialized into the request: user
+    content, agent text + tool-call arguments, and tool_result content. The
+    budget math previously counted only user content + agent text, so a turn
+    carrying large tool outputs (web fetches, file reads) was undercounted and
+    emergency compaction fired late. Still an estimate — role/format overhead
+    and thinking blocks are not modelled — but no longer blind to tool traffic.
+    """
+    total = 0
+    for m in messages:
+        if m["role"] == "user":
+            total += _estimate_tokens(m["content"])
+        elif m["role"] == "agent":
+            total += _estimate_tokens(m.get("text", ""))
+            for tc in m.get("tool_calls", []):
+                total += _estimate_tokens(str(tc.get("arguments", "")))
+        elif m["role"] == "tool_result":
+            for r in m["results"]:
+                total += _estimate_tokens(r["content"])
+    return total
+
+
 def _append(text: str, suffix: str) -> str:
     """Append suffix to text with newline separator."""
     return f"{text}\n{suffix}" if text else suffix
@@ -259,7 +285,7 @@ class _MonitorWriter:
             "updated_at": time.time(),
         })
 
-    def on_response(self, response: Any) -> None:
+    def on_response(self, response: LLMResponse) -> None:
         duration_ms = int((time.time() - self._turn_started_at) * 1000)
         tool_names = [tc.name for tc in response.tool_calls] if response.tool_calls else []
         self._turns.append({
@@ -276,7 +302,8 @@ class _MonitorWriter:
         else:
             self.write("idle")
 
-    def on_tool_results(self, results_msg: Any) -> None:
+    def on_tool_results(self, results_msg: object) -> None:
+        """Advance the turn counter; the results payload itself is unused."""
         self._turn += 1
         self._turn_started_at = time.time()
         self.write("thinking")
@@ -296,17 +323,17 @@ class _MessageState:
     reply_to: str = ""                # Envelope: response routing ("" = caller, "silent")
     session_key: str = ""             # f"{talker}:{sender}" — computed in process_message
     image_blocks: list[dict[str, Any]] = field(default_factory=list)
-    session: Any = None
+    session: Session | None = None
     user_msg_idx: int = 0
     session_preexisted: bool = False
     model_name: str = ""
     provider_name: str = ""
     cost_rates: list[float] = field(default_factory=list)
     currency: str = "EUR"
-    fmt_system: Any = None
+    fmt_system: SystemPrompt | None = None
     tools: list[dict[str, Any]] = field(default_factory=list)
     msg_count_before: int = 0
-    response: Any = None
+    response: LLMResponse | None = None
     force_compact: bool = False
 
 
@@ -332,10 +359,11 @@ class MessagePipeline:
         skill_loader: SkillLoader | None,
         metering_db: MeteringDB | None,
         pool: asyncpg.Pool,
+        memory_interface: MemoryInterface | None,
         preprocessors: list[PreprocessorSpec],
         queue: PriorityMessageQueue,
         on_pre_close: Callable[[str], Awaitable[None]] | None = None,
-        converter: Any = None,
+        converter: CurrencyConverter | None = None,
         guardrails: Guardrails | None = None,
     ) -> None:
         self._config = config
@@ -348,10 +376,19 @@ class MessagePipeline:
         self._metering_db = metering_db
         self._converter = converter
         self._pool = pool
+        self._memory_interface = memory_interface
         self._preprocessors = preprocessors
         self._queue = queue
         self._on_pre_close = on_pre_close
         self._guardrails = guardrails or Guardrails()
+
+        # User wall-clock zone for the per-turn timestamp the agent reads (the
+        # same zone ContextBuilder uses for "Current date/time"). Infrastructure
+        # stays UTC; the agent's user-facing time is localized.
+        try:
+            self._user_tz: _dt.tzinfo = ZoneInfo(config.user_timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            self._user_tz = _dt.timezone.utc
 
         # Dispatch mode: single-shot vs agentic loop
         caps = provider.capabilities if provider else None
@@ -363,7 +400,7 @@ class MessagePipeline:
         # Mutable state — daemon reads via properties
         self._monitor_state: dict[str, Any] = {"state": "idle"}
         self._error_counts: dict[str, int] = {}
-        self._current_session: Any = None
+        self._current_session: Session | None = None
         self._session_locks: dict[str, asyncio.Lock] = {}
 
     # ── Public interface ─────────────────────────────────────────
@@ -377,7 +414,7 @@ class MessagePipeline:
         return self._error_counts
 
     @property
-    def current_session(self) -> Any:
+    def current_session(self) -> Session | None:
         return self._current_session
 
     def get_session_lock(self, sender: str) -> asyncio.Lock:
@@ -553,8 +590,10 @@ class MessagePipeline:
             )
             ctx.text = f"[system: {brief}]\n\n{ctx.text}"
 
-        # Inject timestamp so the agent always knows the current time
-        timestamp = time.strftime("[%a, %d. %b %Y - %H:%M %Z]")
+        # Inject timestamp so the agent always knows the current time — in the
+        # user's wall-clock zone, matching the dynamic-tier "Current date/time"
+        # (no two clocks for the agent to reconcile).
+        timestamp = _dt.datetime.now(self._user_tz).strftime("[%a, %d. %b %Y - %H:%M %Z]")
         ctx.text = f"{timestamp}\n{ctx.text}"
 
         session.trace_id = ctx.trace_id
@@ -568,36 +607,50 @@ class MessagePipeline:
 
     # ── Context Building ─────────────────────────────────────────
 
-    async def _build_recall(self, ctx: _MessageState, provider: LLMProvider) -> str:
-        """Build recall text for fresh sessions via structured memory."""
-        session = ctx.session
-        if len(session.messages) > 1:
+    async def _build_recall(self, ctx: _MessageState) -> str:
+        """Retrieve memory relevant to the current user message, formatted for injection.
+
+        Runs on every user turn, keyed to the message text: structured facts,
+        recent episodes, and vector search over the indexed workspace —
+        budget-capped by ``recall_max_dynamic_tokens``. Non-user
+        talkers (operator/system/agent) carry their own context and get no
+        recall; likewise when consolidation is off or no memory subsystem exists.
+        """
+        if ctx.talker != "user":
             return ""
         if not self._config.consolidation_enabled:
             return ""
+        if self._memory_interface is None:
+            return ""
+        # Key recall on the user's actual words: strip the leading [timestamp]
+        # header and any [..saved: /path]: attachment prefix (the same prefixes
+        # _brief_snippet strips) so retrieval isn't polluted by metadata tokens.
+        query = _ATTACHMENT_PREFIX_RE.sub("", _TS_PREFIX_RE.sub("", ctx.text)).strip()
         try:
-            result = await get_session_start_context(
+            blocks = await recall(
+                query=query,
                 pool=self._pool,
-                max_facts=self._config.recall_max_facts,
-                max_episodes=self._config.recall_max_episodes_at_start,
-                max_tokens=self._config.recall_max_dynamic_tokens,
-            ) or ""
+                memory_interface=self._memory_interface,
+                config=self._config,
+            )
+            result = inject_recall(blocks, self._config.recall_max_dynamic_tokens)
             if result and metrics.ENABLED:
                 metrics.MEMORY_OPS_TOTAL.labels(operation="recall_triggered").inc()
             return result
         except Exception:
-            log.exception("structured recall at session start failed")
+            log.exception("per-turn recall failed")
             return "[Memory recall unavailable — use memory_search to access memory manually.]"
 
     async def _build_context(self, ctx: _MessageState, provider: LLMProvider) -> None:
         """Build system prompt, recall, and tools list."""
         session = ctx.session
+        assert session is not None  # set by _setup_session before any context build
         tool_descs = self._tool_registry.get_brief_descriptions()
         skill_index = self._skill_loader.build_index() if self._skill_loader else ""
         always_on = self._config.always_on_skills
         skill_bodies = self._skill_loader.get_bodies(always_on) if self._skill_loader else {}
 
-        recall_text = await self._build_recall(ctx, provider)
+        recall_text = await self._build_recall(ctx)
 
         system_blocks = self._context_builder.build(
             talker=ctx.talker,
@@ -619,12 +672,7 @@ class MessagePipeline:
         max_ctx = provider.capabilities.max_context_tokens
         if max_ctx > 0:
             sys_tokens = sum(_estimate_tokens(b.get("text", "")) for b in system_blocks)
-            history_tokens = 0
-            for m in session.messages:
-                if m["role"] == "user":
-                    history_tokens += _estimate_tokens(m["content"])
-                elif m["role"] == "agent":
-                    history_tokens += _estimate_tokens(m.get("text", ""))
+            history_tokens = _history_tokens(session.messages)
             tool_def_tokens = sum(
                 _estimate_tokens(t["description"])
                 for t in self._tool_registry.get_schemas_for_talker(ctx.talker)
@@ -660,6 +708,7 @@ class MessagePipeline:
 
     def _build_cost_context(self, ctx: _MessageState) -> CostContext:
         """Build CostContext from message state — shared by agentic loop and compaction."""
+        assert ctx.session is not None  # set by _setup_session
         return CostContext(
             metering=self._metering_db,
             session_id=ctx.session.id,
@@ -670,15 +719,19 @@ class MessagePipeline:
             converter=self._converter,
         )
 
-    async def _run_agentic(self, ctx: _MessageState, provider: LLMProvider,
-                           on_response: Any, on_tool_results: Any,
-                           on_stream_delta: Any = None) -> None:
+    async def _run_agentic(
+        self, ctx: _MessageState, provider: LLMProvider,
+        on_response: Callable[[LLMResponse], Any],  # Any justified: callbacks may be sync or async
+        on_tool_results: Callable[[ToolResultsMessage], Any],  # Any justified: callbacks may be sync or async
+        on_stream_delta: Callable[[StreamDelta], Any] | None = None,  # Any justified: callbacks may be sync or async
+    ) -> None:
         """Run the agentic loop. Sets ctx.response.
 
         No message-level retry — API-level retry in _call_provider_with_retry
         handles transient errors. If the loop fails, the error propagates.
         """
         session = ctx.session
+        assert session is not None and ctx.fmt_system is not None  # set by _setup_session / _build_context
         cost_ctx = self._build_cost_context(ctx)
         loop_cfg = LoopConfig(
             max_turns=self._config.max_turns,
@@ -688,8 +741,6 @@ class MessagePipeline:
             max_cost=float(self._config.max_cost_per_message),
             max_context_for_tools=self._config.max_context_for_tools,
             tool_call_retry=self._config.tool_call_retry,
-            tool_success_warn_threshold=0.5,
-            thinking_concise_hint=False,
             trace_id=ctx.trace_id,
         )
         if self._single_shot:
@@ -719,17 +770,21 @@ class MessagePipeline:
                 on_stream_delta=on_stream_delta,
             )
 
-    async def _handle_agentic_error(self, ctx: _MessageState, error: Any, _resolve: Any) -> None:
+    async def _handle_agentic_error(
+        self, ctx: _MessageState, error: BaseException,
+        _resolve: Callable[[dict[str, Any]], None],
+    ) -> None:
         """Handle agentic loop failure: cleanup, resolve future, deliver error."""
         session = ctx.session
+        assert session is not None  # set by _setup_session before the loop can fail
         log.error("[%s] Agentic loop failed: %s", ctx.trace_id[:8], error)
-        err_type = type(error).__name__ if isinstance(error, BaseException) else "unknown"
+        err_type = type(error).__name__
         self._error_counts[err_type] = self._error_counts.get(err_type, 0) + 1
         if metrics.ENABLED:
             metrics.ERRORS_TOTAL.labels(error_type=err_type).inc()
         # Strip transient image metadata before returning
         if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
-            session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
+            session.messages[ctx.user_msg_idx].pop("_image_blocks", None)  # type: ignore[typeddict-item]  # transient key, stripped before persistence
         # Roll back all messages the agentic loop added (assistant, tool_results,
         # system hints) so the session stays in a valid pre-loop state.
         if len(session.messages) > ctx.msg_count_before:
@@ -738,7 +793,14 @@ class MessagePipeline:
         if session.messages and session.messages[-1]["role"] == "user":
             session.messages.pop()
         await self._session_mgr.save_state(session)
-        _resolve({"error": str(error), "session_id": session.id})
+        # Deliver the configured friendly message to the user instead of silence.
+        # The user's bridge reads `reply`; an error-only body sends nothing, so a
+        # failed turn would otherwise vanish. Operator (agentctl) reads the raw
+        # error itself, and system/agent talkers have no delivery path.
+        result: dict[str, Any] = {"error": str(error), "session_id": session.id}
+        if ctx.talker == "user":
+            result["reply"] = self._config.error_message
+        _resolve(result)
         # Auto-close ephemeral sessions even on error — but only if the
         # session was created by this event (not a pre-existing session).
         if ctx.talker in EPHEMERAL_TALKERS and not ctx.session_preexisted:
@@ -753,7 +815,9 @@ class MessagePipeline:
 
     # ── Finalization ─────────────────────────────────────────────
 
-    async def _finalize_response(self, ctx: _MessageState, _resolve: Any) -> None:
+    async def _finalize_response(
+        self, ctx: _MessageState, _resolve: Callable[[dict[str, Any]], None],
+    ) -> None:
         """Post-loop work: persist, deliver, compact."""
         await self._persist_response(ctx)
 
@@ -778,16 +842,19 @@ class MessagePipeline:
     async def _persist_response(self, ctx: _MessageState) -> None:
         """Persist new messages and restore text-only content."""
         session = ctx.session
+        assert session is not None  # set by _setup_session
         for msg in session.messages[ctx.msg_count_before:]:
             if msg["role"] == "agent":
                 await session.add_assistant_message(msg, persist_only=True)
             elif msg["role"] == "tool_result":
                 await session.add_tool_results(msg["results"], persist_only=True)
         if ctx.image_blocks and ctx.user_msg_idx < len(session.messages):
-            session.messages[ctx.user_msg_idx].pop("_image_blocks", None)
+            session.messages[ctx.user_msg_idx].pop("_image_blocks", None)  # type: ignore[typeddict-item]  # transient key, stripped before persistence
         await self._session_mgr.save_state(session)
 
-    async def _deliver_reply(self, ctx: _MessageState, _resolve: Any) -> None:
+    async def _deliver_reply(
+        self, ctx: _MessageState, _resolve: Callable[[dict[str, Any]], None],
+    ) -> None:
         """Resolve HTTP future with reply content.
 
         system/agent talkers have no reply path — the future is resolved
@@ -796,6 +863,7 @@ class MessagePipeline:
         """
         session = ctx.session
         response = ctx.response
+        assert session is not None and response is not None  # finalize runs only after a successful loop
         reply = response.text or ""
         if response.cost_limited and not reply.strip():
             reply = ("[cost limit reached — max_cost_per_message in lucyd.toml. "
@@ -821,6 +889,7 @@ class MessagePipeline:
     async def _check_compaction_warning(self, ctx: _MessageState) -> None:
         """Inject context-pressure warning at 80% threshold."""
         session = ctx.session
+        assert session is not None  # set by _setup_session
         if _should_warn_context(
             input_tokens=session.last_input_tokens,
             compaction_threshold=self._config.compaction_threshold,
@@ -843,6 +912,7 @@ class MessagePipeline:
 
     async def _compact_session(self, ctx: _MessageState, keep_recent_pct: float) -> None:
         """Run compaction with shared prompt, cost, and config. Emits Prometheus metric."""
+        assert ctx.session is not None  # set by _setup_session
         prompt = self._config.compaction_prompt.replace(
             "{agent_name}", self._config.agent_name,
         ).replace("{max_tokens}", str(self._config.compaction_max_tokens))
@@ -867,15 +937,13 @@ class MessagePipeline:
         could not be brought within budget (caller should fail).
         """
         session = ctx.session
+        assert session is not None  # set by _setup_session
         max_ctx = self._provider.capabilities.max_context_tokens
         if max_ctx <= 0:
             return True
 
         for attempt in range(2):
-            used = sum(
-                _estimate_tokens(m["content"] if m["role"] == "user" else m.get("text", ""))
-                for m in session.messages
-            )
+            used = _history_tokens(session.messages)
             ratio = used / max_ctx
             if ratio <= 0.80:
                 return True
@@ -910,31 +978,21 @@ class MessagePipeline:
         crosses the threshold retries consolidation.
         """
         session = ctx.session
+        assert session is not None  # set by _setup_session
         _needs_compact = ctx.force_compact or session.needs_compaction(
             self._config.compaction_threshold)
         if not _needs_compact:
             return
         if self._config.consolidation_enabled:
-            try:
-                result = await consolidation_mod.consolidate_session(
-                    session_id=session.id,
-                    messages=session.messages,
-                    compaction_count=session.compaction_count,
-                    config=self._config,
-                    provider=self._get_provider("consolidation"),
-                    context_builder=self._context_builder,
-                    pool=self._pool,
-                    metering=self._metering_db,
-                    trace_id=ctx.trace_id,
-                    converter=self._converter,
-                )
-                if result["facts_added"] or result.get("episode_id"):
-                    log.info("consolidation: %d facts, episode=%s",
-                             result["facts_added"], result.get("episode_id"))
-            except (TimeoutError, RuntimeError, OSError) as e:
-                log.error("Consolidation failed, blocking compaction: %s", e, exc_info=True)
+            # Harvest the about-to-be-compacted messages (facts + an episode, in
+            # her voice) before they're summarized away — the same job the
+            # scheduled maintenance pass does, fired here so nothing is lost.
+            harvest = await operations.harvest_conversation(
+                session, self._config, self._pool,
+                self.process_message, self.get_session_lock,
+            )
+            if not harvest["ok_to_compact"]:
                 if metrics.ENABLED:
-                    metrics.ERRORS_TOTAL.labels(error_type="consolidation_failure").inc()
                     metrics.ERRORS_TOTAL.labels(error_type="consolidation_blocked_compaction").inc()
                 return  # Skip compaction — don't summarize unconsolidated messages
         _pre_tokens = session.last_input_tokens
@@ -969,7 +1027,7 @@ class MessagePipeline:
         response_future: asyncio.Future[dict[str, Any]] | None = None,
         trace_id: str = "",
         force_compact: bool = False,
-        stream_queue: Any = None,
+        stream_queue: asyncio.Queue[dict[str, Any] | None] | None = None,
         channel: str = "",
         reply_to: str = "",
         session_key: str = "",
@@ -1049,6 +1107,7 @@ class MessagePipeline:
             return
 
         session = ctx.session
+        assert session is not None  # set by _setup_session above
 
         # ── Monitor ──────────────────────────────────────────────
         monitor = _MonitorWriter(
@@ -1064,7 +1123,7 @@ class MessagePipeline:
         stream_delta_cb = None
         _sse_done_sent = False
         if stream_queue is not None:
-            async def _on_stream_delta(delta: Any) -> None:
+            async def _on_stream_delta(delta: StreamDelta) -> None:
                 nonlocal _sse_done_sent
                 event: dict[str, Any] = {}
                 if delta.text:

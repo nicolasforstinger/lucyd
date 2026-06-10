@@ -7,9 +7,10 @@ Supports max_system_tokens cap and context budget logging.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
-import time
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import tiktoken
 
@@ -39,11 +40,18 @@ class ContextBuilder:
         stable_files: list[str],
         semi_stable_files: list[str],
         max_system_tokens: int = 0,
+        user_timezone: str = "UTC",
     ):
         self.workspace = workspace
         self.stable_files = stable_files
         self.semi_stable_files = semi_stable_files
         self.max_system_tokens = max_system_tokens
+        try:
+            self._user_tz: dt.tzinfo = ZoneInfo(user_timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            log.warning("Unknown user timezone %r; context clock falls back to UTC",
+                        user_timezone)
+            self._user_tz = dt.timezone.utc
 
     def build(
         self,
@@ -195,7 +203,7 @@ class ContextBuilder:
         sender: str = "",
     ) -> str:
         """Build dynamic context block (changes every turn)."""
-        now = time.strftime("%a, %d. %b %Y - %H:%M %Z")
+        now = dt.datetime.now(self._user_tz).strftime("%a, %d. %b %Y - %H:%M %Z")
         parts = [f"Current date/time: {now}"]
 
         # Session framing — tell agent who is speaking and how to treat the session
@@ -236,9 +244,10 @@ class ContextBuilder:
 
         # Consolidation pipeline awareness
         parts.append(
-            "Background pipeline: facts, episodes, and commitments are automatically "
-            "extracted from your sessions and stored in structured memory. You do not "
-            "need to manually summarize conversations — the pipeline handles this.",
+            "Background pipeline: your conversations are harvested into "
+            "structured memory (facts + episodes) during maintenance passes "
+            "and before compaction — no need to summarize a conversation "
+            "mid-chat.",
         )
 
         # Silent tokens
@@ -254,7 +263,7 @@ class ContextBuilder:
         if max_turns:
             parts.append(f"Tool-use turn limit: {max_turns} per message.")
         if max_cost > 0:
-            parts.append(f"Cost limit: ${max_cost:.2f} per message. Loop stops if exceeded.")
+            parts.append(f"Cost limit: {max_cost:.2f} EUR per message. Loop stops if exceeded.")
         if compaction_threshold:
             parts.append(
                 f"Compaction threshold: {compaction_threshold:,} tokens. "

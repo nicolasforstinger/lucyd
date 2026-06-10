@@ -115,6 +115,22 @@ def _resolve_when(when: str) -> tuple[str, str, str]:
     )
 
 
+def _to_user_tz_display(at_when: str) -> str:
+    """Render an ``at -l`` UTC timestamp in the user's timezone (DST-aware).
+
+    ``at -l`` prints job times in the container clock (UTC). Parse and convert
+    to ``_user_tz`` so the agent sees reminders in the user's local wall-clock.
+    On an unexpected ``at`` output format, return the raw string so one odd
+    entry never breaks the whole listing.
+    """
+    try:
+        utc = dt.datetime.strptime(at_when, "%a %b %d %H:%M:%S %Y").replace(
+            tzinfo=dt.timezone.utc)
+    except ValueError:
+        return at_when
+    return utc.astimezone(_user_tz).strftime("%A %Y-%m-%d %H:%M %Z")
+
+
 async def _schedule_at_job(script_body: str, at_stamp: str) -> str:
     """Write the script to a tempfile and submit it via ``at -t``.
 
@@ -243,11 +259,12 @@ async def tool_list_scheduled() -> str:
         if not m:
             continue
         job_id, when_str = m.group(1), m.group(2).strip()
-        rendered.append(f"  [{job_id}] {when_str} — {await _job_intent(job_id)}")
+        rendered.append(
+            f"  [{job_id}] {_to_user_tz_display(when_str)} — {await _job_intent(job_id)}")
     if not rendered:
         return "No scheduled jobs pending."
     return (
-        "Pending scheduled jobs (times shown in the container's UTC clock):\n"
+        "Pending scheduled jobs (times in the user's local timezone):\n"
         + "\n".join(rendered)
         + "\nTo reschedule: cancel_scheduled the old id, then create the new one."
     )

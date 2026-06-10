@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 
 import metrics
-from messages import AssistantMessage, Message, ToolResultsMessage, UserMessage
+from messages import AssistantMessage, Message, ToolResultEntry, ToolResultsMessage, UserMessage
 
 if TYPE_CHECKING:
     from metering import MeteringDB
@@ -126,7 +126,6 @@ class Session:
         self.messages: list[Message] = []
         self.model = model
         self.contact = contact
-        self.created_at = time.time()
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.compaction_count = 0
@@ -146,7 +145,6 @@ class Session:
 
         self.model = row["model"]
         self.contact = row["contact"]
-        self.created_at = row["created_at"].timestamp()
         self.total_input_tokens = row["total_input_tokens"]
         self.total_output_tokens = row["total_output_tokens"]
         self.compaction_count = row["compaction_count"]
@@ -307,7 +305,7 @@ class Session:
         if not persist_only:
             await self.save_state()
 
-    async def add_tool_results(self, results: list[dict[str, str]], persist_only: bool = False) -> None:
+    async def add_tool_results(self, results: list[ToolResultEntry], persist_only: bool = False) -> None:
         """Add tool results to session.
 
         When persist_only=True, skip appending to self.messages (use when the
@@ -561,8 +559,6 @@ class SessionManager:
         session: Session,
         provider: LLMProvider,
         compaction_prompt: str,
-        model_name: str = "",
-        cost_rates: list[float] | None = None,
         trace_id: str = "",
         *,
         keep_recent_pct: float = 0.33,
@@ -573,17 +569,6 @@ class SessionManager:
         cost: CostContext | None = None,
     ) -> None:
         """Compact old messages using a summarization model."""
-        metering = None
-        converter = None
-        provider_name = ""
-        currency = "EUR"
-        if cost is not None:
-            metering = cost.metering
-            model_name = cost.model_name
-            cost_rates = cost.cost_rates
-            provider_name = cost.provider_name
-            converter = cost.converter
-            currency = cost.currency
         if len(session.messages) < min_messages:
             return
 
@@ -649,13 +634,13 @@ class SessionManager:
             return
 
         # Record compaction cost
-        if metering and cost_rates and response.usage:
-            await metering.record(
+        if cost is not None and cost.metering and cost.cost_rates and response.usage:
+            await cost.metering.record(
                 session_id=session.id,
-                model=model_name, provider=provider_name,
-                usage=response.usage, cost_rates=cost_rates,
+                model=cost.model_name, provider=cost.provider_name,
+                usage=response.usage, cost_rates=cost.cost_rates,
                 call_type="compaction", trace_id=trace_id,
-                converter=converter, currency=currency,
+                converter=cost.converter, currency=cost.currency,
             )
 
         # Replace old messages with summary + compaction marker
@@ -748,15 +733,7 @@ async def build_session_info(
         info["context_pct"] = 0
 
     # Per-session cost
-    session_cost = 0.0
-    if metering:
-        rows = await metering.query(
-            "SELECT SUM(cost_eur) AS total FROM metering.costs "
-            "WHERE session_id = $1",
-            session_id,
-        )
-        if rows and rows[0]["total"]:
-            session_cost = float(rows[0]["total"])
+    session_cost = await metering.session_cost(session_id) if metering else 0.0
     info["cost"] = round(session_cost, 6)
 
     # Event count

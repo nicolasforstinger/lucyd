@@ -19,13 +19,20 @@ import json
 import logging
 import mimetypes
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import bridge_client
 from bridge_client import BRIDGE_LIMITS, BridgeDeliveryError, OutboundAttachment
 from . import ToolSpec
+
+if TYPE_CHECKING:
+    import asyncio
+
+    import httpx
+
+    from session import SessionManager
 
 log = logging.getLogger(__name__)
 
@@ -36,10 +43,9 @@ _bridges_primary: str = ""
 _http_auth_token: str = ""
 _user_session_key: str = ""
 _allowed_paths: list[str] = []
-_http_client: Any = None
-_session_mgr: Any = None
-_pipeline_lock_factory: Callable[[str], Any] | None = None
-_bridge_send_override: Callable[..., Awaitable[None]] | None = None
+_http_client: httpx.AsyncClient | None = None
+_session_mgr: SessionManager | None = None
+_pipeline_lock_factory: Callable[[str], asyncio.Lock] | None = None
 
 
 def configure(
@@ -48,15 +54,14 @@ def configure(
     http_auth_token: str = "",
     user_session_key: str = "",
     allowed_paths: list[str] | None = None,
-    http_client: Any = None,
-    session_mgr: Any = None,
-    pipeline_lock_factory: Callable[[str], Any] | None = None,
-    bridge_send_override: Callable[..., Awaitable[None]] | None = None,
+    http_client: httpx.AsyncClient | None = None,
+    session_mgr: SessionManager | None = None,
+    pipeline_lock_factory: Callable[[str], asyncio.Lock] | None = None,
     **_: object,
 ) -> None:
     """Wire dependencies. Called once at daemon startup."""
     global _bridges_primary, _http_auth_token, _user_session_key, _allowed_paths
-    global _http_client, _session_mgr, _pipeline_lock_factory, _bridge_send_override
+    global _http_client, _session_mgr, _pipeline_lock_factory
     _bridges_primary = bridges_primary
     _http_auth_token = http_auth_token
     _user_session_key = user_session_key
@@ -64,7 +69,6 @@ def configure(
     _http_client = http_client
     _session_mgr = session_mgr
     _pipeline_lock_factory = pipeline_lock_factory
-    _bridge_send_override = bridge_send_override
 
 
 def _check_path(path: str) -> str | None:
@@ -133,6 +137,9 @@ async def tool_send_message(
     if not _bridges_primary:
         return {"text": "Error: no primary bridge configured", "attachments": []}
 
+    if _http_client is None:
+        return {"text": "Error: outbound http client not configured", "attachments": []}
+
     info = BRIDGE_LIMITS.get(_bridges_primary)
     if info is None:
         return {
@@ -183,9 +190,8 @@ async def tool_send_message(
         })
 
     # Deliver to bridge.
-    sender_fn = _bridge_send_override or bridge_client.send_to_user
     try:
-        await sender_fn(
+        await bridge_client.send_to_user(
             text=text,
             attachments=outbound,
             primary=_bridges_primary,

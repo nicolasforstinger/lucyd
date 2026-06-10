@@ -8,7 +8,6 @@ import pytest
 
 from memory import (
     EMPTY_RECALL_FALLBACK,
-    RECALL_PRIORITY_COMMITMENTS,
     RECALL_PRIORITY_EPISODES,
     RECALL_PRIORITY_FACTS,
     RECALL_PRIORITY_VECTOR,
@@ -16,8 +15,6 @@ from memory import (
     _format_episode,
     _format_fact,
     extract_query_entities,
-    get_open_commitments,
-    get_session_start_context,
     inject_recall,
     lookup_facts,
     recall,
@@ -29,7 +26,7 @@ from memory import (
 
 @pytest.fixture
 async def populated_pool(pool: Any) -> Any:
-    """Pool with test facts, episodes, commitments, and aliases."""
+    """Pool with test facts, episodes, and aliases."""
     # Facts
     await pool.execute(
         "INSERT INTO knowledge.facts "
@@ -84,45 +81,23 @@ async def populated_pool(pool: Any) -> Any:
     )
 
     # Episodes
-    ep1_id: int = await pool.fetchval(
+    await pool.execute(
         "INSERT INTO knowledge.episodes "
         "(session_id, date, topics, decisions, "
         "summary, emotional_tone) "
-        "VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6) "
-        "RETURNING id",
+        "VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)",
         "sess1", datetime.date(2026, 2, 18),
         '["memory system", "architecture"]', '["use SQLite"]',
         "Discussed memory architecture.", "productive",
     )
-    ep2_id: int = await pool.fetchval(
+    await pool.execute(
         "INSERT INTO knowledge.episodes "
         "(session_id, date, topics, decisions, "
         "summary, emotional_tone) "
-        "VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6) "
-        "RETURNING id",
+        "VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)",
         "sess2", datetime.date(2026, 2, 19),
         '["deployment"]', '[]',
         "Planned deployment steps.", "focused",
-    )
-
-    # Commitments
-    await pool.execute(
-        "INSERT INTO knowledge.commitments "
-        "(who, what, deadline, status, episode_id) "
-        "VALUES ($1, $2, $3, $4, $5)",
-        "nicolas", "review PR", "2026-02-20", "open", ep1_id,
-    )
-    await pool.execute(
-        "INSERT INTO knowledge.commitments "
-        "(who, what, deadline, status, episode_id) "
-        "VALUES ($1, $2, $3, $4, $5)",
-        "lucy", "send briefing", None, "open", ep2_id,
-    )
-    await pool.execute(
-        "INSERT INTO knowledge.commitments "
-        "(who, what, deadline, status, episode_id) "
-        "VALUES ($1, $2, $3, $4, $5)",
-        "nicolas", "old task", "2026-01-01", "done", ep1_id,
     )
 
     return pool
@@ -132,7 +107,7 @@ class FakeConfig:
     """Config mock with recall attributes."""
     recall_max_facts = 20
     recall_decay_rate = 0.03
-    recall_max_episodes_at_start = 3
+    recall_max_episodes = 3
     recall_max_dynamic_tokens = 1500
 
 
@@ -302,37 +277,6 @@ class TestSearchEpisodes:
         assert isinstance(episodes, list)
 
 
-# ─── Commitments ─────────────────────────────────────────────────
-
-
-class TestGetOpenCommitments:
-    @pytest.mark.asyncio
-    async def test_returns_open_only(self, populated_pool: Any) -> None:
-        commits = await get_open_commitments(
-            populated_pool,
-        )
-        assert len(commits) == 2
-        statuses = set()
-        for c in commits:
-            # All returned should be open
-            row = await populated_pool.fetchrow(
-                "SELECT status FROM knowledge.commitments "
-                "WHERE id = $1",
-                c["id"],
-            )
-            statuses.add(row["status"])
-        assert statuses == {"open"}
-
-    @pytest.mark.asyncio
-    async def test_ordered_by_deadline(self, populated_pool: Any) -> None:
-        commits = await get_open_commitments(
-            populated_pool,
-        )
-        # First should be the one with deadline, then the one without
-        assert commits[0]["deadline"] is not None
-        assert commits[1]["deadline"] is None
-
-
 # ─── Format Helpers ──────────────────────────────────────────────
 
 
@@ -444,7 +388,7 @@ class TestFormatEpisode:
 
 class TestRecall:
     @pytest.mark.asyncio
-    async def test_integrates_facts_episodes_vector_commitments(
+    async def test_integrates_facts_episodes_vector(
         self, populated_pool: Any,
     ) -> None:
         mock_memory = AsyncMock()
@@ -459,7 +403,6 @@ class TestRecall:
 
         sections = {b.section for b in blocks}
         assert "[Known facts]" in sections
-        assert "[Open commitments]" in sections
         assert "[Memory search]" in sections
 
     @pytest.mark.asyncio
@@ -496,7 +439,7 @@ class TestRecall:
         assert actual_k == 5
 
     @pytest.mark.asyncio
-    async def test_empty_query_returns_commitments_only(
+    async def test_no_matches_returns_no_blocks(
         self, populated_pool: Any,
     ) -> None:
         mock_memory = AsyncMock()
@@ -507,8 +450,7 @@ class TestRecall:
             mock_memory, FakeConfig(),
         )
 
-        has_commitments = any(b.section == "[Open commitments]" for b in blocks)
-        assert has_commitments
+        assert blocks == []
 
     @pytest.mark.asyncio
     async def test_uses_hardcoded_priorities(self, populated_pool: Any) -> None:
@@ -630,93 +572,6 @@ class TestInjectRecall:
         assert "[Low]" not in result
 
 
-# ─── get_session_start_context ───────────────────────────────────
-
-
-class TestGetSessionStartContext:
-    @pytest.mark.asyncio
-    async def test_returns_facts_episodes_and_commitments(
-        self, populated_pool: Any,
-    ) -> None:
-        result = await get_session_start_context(
-            populated_pool,
-        )
-        assert "[Known facts]" in result
-        assert "[Recent conversations]" in result
-        assert "[Open commitments]" in result
-
-    @pytest.mark.asyncio
-    async def test_respects_max_facts(self, populated_pool: Any) -> None:
-        result = await get_session_start_context(
-            populated_pool,
-            max_facts=1,
-        )
-        # Facts section follows [Known facts] header (lowest priority, last in output)
-        assert "[Known facts]" in result
-        facts_section = result.split("[Known facts]")[1].split("[Memory loaded")[0]
-        fact_lines = [
-            line for line in facts_section.split("\n")
-            if line.strip() and " — " in line
-        ]
-        assert len(fact_lines) <= 1
-
-    @pytest.mark.asyncio
-    async def test_respects_max_episodes(self, populated_pool: Any) -> None:
-        result = await get_session_start_context(
-            populated_pool,
-            max_episodes=1,
-        )
-        # Episodes section follows [Recent conversations] header
-        assert "[Recent conversations]" in result
-        episode_section = result.split("[Recent conversations]")[1].split("[Known facts]")[0]
-        episode_lines = [
-            line for line in episode_section.split("\n")
-            if line.strip() and line.strip().startswith("[")
-        ]
-        assert len(episode_lines) <= 1
-
-    @pytest.mark.asyncio
-    async def test_empty_db_returns_empty(self, pool: Any) -> None:
-        result = await get_session_start_context(
-            pool,
-        )
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_budget_constraint(self, populated_pool: Any) -> None:
-        result = await get_session_start_context(
-            populated_pool,
-            max_tokens=10,
-        )
-        assert isinstance(result, str)
-
-    @pytest.mark.asyncio
-    async def test_works_with_defaults(self, populated_pool: Any) -> None:
-        """Returns context with default parameters."""
-        result = await get_session_start_context(
-            populated_pool,
-        )
-        assert "[Known facts]" in result
-        assert "[Open commitments]" in result
-
-    @pytest.mark.asyncio
-    async def test_uses_natural_fact_format(self, populated_pool: Any) -> None:
-        result = await get_session_start_context(
-            populated_pool,
-        )
-        # Natural format uses em-dashes in the facts section
-        facts_section = result.split("[Known facts]")[1].split("[Memory loaded")[0]
-        assert " — " in facts_section
-
-    @pytest.mark.asyncio
-    async def test_episode_tone_in_output(self, populated_pool: Any) -> None:
-        result = await get_session_start_context(
-            populated_pool,
-        )
-        # Fixture episodes have non-neutral tones
-        assert "tone:" in result
-
-
 # ─── Defaults ────────────────────────────────────────────────────
 
 
@@ -725,12 +580,11 @@ class TestDefaults:
         assert RECALL_PRIORITY_VECTOR == 35
         assert RECALL_PRIORITY_EPISODES == 25
         assert RECALL_PRIORITY_FACTS == 15
-        assert RECALL_PRIORITY_COMMITMENTS == 40
 
-    def test_commitments_highest(self) -> None:
-        assert RECALL_PRIORITY_COMMITMENTS > RECALL_PRIORITY_VECTOR
-        assert RECALL_PRIORITY_COMMITMENTS > RECALL_PRIORITY_EPISODES
-        assert RECALL_PRIORITY_COMMITMENTS > RECALL_PRIORITY_FACTS
+    def test_vector_outranks_episodes_and_facts(self) -> None:
+        """Vector is the highest-priority recall block."""
+        assert RECALL_PRIORITY_VECTOR > RECALL_PRIORITY_EPISODES
+        assert RECALL_PRIORITY_VECTOR > RECALL_PRIORITY_FACTS
 
     def test_vector_outranks_facts(self) -> None:
         """Vector > facts (warmth over clinical precision)."""

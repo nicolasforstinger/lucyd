@@ -4,7 +4,6 @@ All tests use temporary directories and mock objects.
 Nothing touches ~/.lucyd/ or the running daemon.
 """
 
-import asyncio
 import multiprocessing
 import os
 import sys
@@ -12,52 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-# ─── Force-exit after session completes ──────────────────────────
-# pytest-asyncio leaves a non-daemon thread alive after all tests pass,
-# preventing the process from exiting.  os._exit() after pytest's own
-# exit hooks have run is the only reliable fix.
-#
-# Under mutmut (detected via MUTANT_UNDER_TEST env var), os._exit() would
-# kill mutmut's own process since it runs pytest.main() in-process.
-# Instead, explicitly shut down the asyncio event loop to clear the thread.
-
-_pytest_exit_code = 0
-
-
-def pytest_sessionfinish(session, exitstatus):
-    global _pytest_exit_code
-    _pytest_exit_code = exitstatus
-
-
-def _running_under_mutmut() -> bool:
-    # MUTANT_UNDER_TEST is set by mutmut (even to '' for clean tests).
-    # MUTMUT_RUNNING is the original env var name (still checked for compatibility).
-    return "MUTANT_UNDER_TEST" in os.environ or bool(os.environ.get("MUTMUT_RUNNING"))
-
-
-def pytest_unconfigure(config):
-    """Force-exit to avoid hanging on stale asyncio threads.
-
-    pytest_unconfigure is the last hook — all output (including the
-    summary line) has been written by this point.
-    Under mutmut: clean up asyncio loop explicitly instead of os._exit().
-    """
-    if _running_under_mutmut():
-        # Shut down asyncio loop to release dangling threads without killing
-        # mutmut's parent process.
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.call_soon_threadsafe(loop.stop)
-            elif not loop.is_closed():
-                loop.close()
-        except RuntimeError:
-            pass
-        return
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(_pytest_exit_code)
 
 # Add project root to path so imports work
 _root = Path(__file__).parent.parent
@@ -81,12 +34,6 @@ def _safe_set_start_method(*args, **kwargs):
 multiprocessing.set_start_method = _safe_set_start_method
 
 
-@pytest.fixture
-def tmp_sessions(tmp_path):
-    """Temp directory acting as sessions_dir."""
-    d = tmp_path / "sessions"
-    d.mkdir()
-    return d
 
 
 @pytest.fixture
@@ -159,19 +106,17 @@ def minimal_toml_data():
             "embedding_timeout": 15,
             "consolidation": {
                 "enabled": False,
-                "confidence_threshold": 0.6,
             },
             "recall": {
                 "decay_rate": 0.03,
                 "max_facts_in_context": 20,
                 "max_dynamic_tokens": 1500,
-                "max_episodes_at_start": 3,
+                "max_episodes": 3,
                 "archive_messages": 20,
                 "personality": {
                     "priority_vector": 35,
                     "priority_episodes": 25,
                     "priority_facts": 15,
-                    "priority_commitments": 40,
                     "fact_format": "natural",
                     "show_emotional_tone": True,
                     "episode_section_header": "Recent conversations",
@@ -223,8 +168,6 @@ def minimal_toml_data():
             "error_message": "connection error",
             "api_retries": 2,
             "api_retry_base_delay": 2.0,
-            "message_retries": 2,
-            "message_retry_base_delay": 30.0,
             "agent_timeout_seconds": 600,
             "max_turns_per_message": 50,
             "max_cost_per_message": 0.0,
@@ -241,7 +184,6 @@ def minimal_toml_data():
         },
         "paths": {
             "state_dir": "/tmp/test-state",
-            "sessions_dir": "/tmp/test-sessions",
             "log_file": "/tmp/test-lucyd.log",
         },
     }
@@ -341,6 +283,16 @@ async def pool() -> Any:
         "TEST_DATABASE_URL",
         "postgres://lucyd:lucyd@localhost:5432/lucyd_test",
     )
+    # Safety: this fixture TRUNCATEs every table in four schemas on teardown.
+    # Refuse to run against a database whose name doesn't mark it as a test DB,
+    # so a stray TEST_DATABASE_URL pointing at a live agent DB can't wipe it.
+    db_name = dsn.rsplit("/", 1)[-1].split("?", 1)[0]
+    if "test" not in db_name.lower():
+        raise RuntimeError(
+            f"Refusing to run DB tests against {db_name!r}: the name must contain "
+            "'test' (this fixture truncates every table on teardown). "
+            "Point TEST_DATABASE_URL at a dedicated test database."
+        )
     p: Any = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
     await lucyd_db.ensure_schema(p)
     try:

@@ -221,12 +221,6 @@ try:
         "Sessions created",
     )
 
-    CONSOLIDATION_DURATION = Histogram(
-        "lucyd_consolidation_duration_seconds",
-        "Consolidation wall-clock duration including LLM extraction",
-        buckets=(0.5, 1, 2, 5, 10, 20, 30, 60),
-    )
-
     MEMORY_SEARCH_DURATION = Histogram(
         "lucyd_memory_search_duration_seconds",
         "Memory search latency",

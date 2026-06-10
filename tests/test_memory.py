@@ -70,6 +70,41 @@ class TestOverlapQuery:
         assert "hello" in result
 
 
+@pytest.fixture
+async def overlapping_chunks_db(pool):
+    """Insert chunks that overlap each other on shared lines.
+
+    The workspace indexer emits sliding-window chunks, so adjacent chunks
+    share lines (here lines 4-5). Mirrors the real search.chunks layout.
+    """
+    await pool.execute(
+        "INSERT INTO search.chunks (id, path, source, text, start_line, end_line, hash, model) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "ov1", "ov.md", "file",
+        "L1\nL2\nL3\nL4\nL5", 1, 5, "ho1", "model",
+    )
+    await pool.execute(
+        "INSERT INTO search.chunks (id, path, source, text, start_line, end_line, hash, model) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "ov2", "ov.md", "file",
+        "L4\nL5\nL6\nL7\nL8", 4, 8, "ho2", "model",
+    )
+    return pool
+
+
+class TestOverlapDedup:
+    """get_file_snippet must not duplicate lines shared by overlapping chunks."""
+
+    @pytest.mark.asyncio
+    async def test_overlapping_chunks_emit_each_line_once(self, overlapping_chunks_db):
+        """Lines 4-5 are in both chunks; the snippet must contain them once."""
+        mem = MemoryInterface(pool=overlapping_chunks_db, **_MEM_DEFAULTS)
+        result = await mem.get_file_snippet("ov.md", start_line=0, end_line=10)
+        assert result == "L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8"
+        assert result.count("L4") == 1
+        assert result.count("L5") == 1
+
+
 class TestVectorSearchLimit:
     """Vector search has a LIMIT clause."""
 

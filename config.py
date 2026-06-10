@@ -28,8 +28,6 @@ log = logging.getLogger(__name__)
 
 Talker = Literal["user", "operator", "system", "agent"]
 
-TALKERS: frozenset[Talker] = frozenset(("user", "operator", "system", "agent"))
-
 # Sender enumerations per talker class.  "user" is validated against
 # config.user.name at API boundary, not listed here.
 OPERATOR_SENDERS: frozenset[str] = frozenset(("agentctl",))
@@ -123,25 +121,30 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
 
     # ── Memory: Consolidation ────────────────────────────────────
     "consolidation_enabled":            (("memory", "consolidation", "enabled"),            bool,  False),
-    "consolidation_confidence_threshold":(("memory", "consolidation", "confidence_threshold"), float, 0.6),
 
     # ── Memory: Recall ───────────────────────────────────────────
     "recall_decay_rate":            (("memory", "recall", "decay_rate"),            float, 0.03),
     "recall_max_facts":             (("memory", "recall", "max_facts_in_context"), int,   20),
-    "recall_max_dynamic_tokens":    (("memory", "recall", "max_dynamic_tokens"),   int,   0),
-    "recall_max_episodes_at_start": (("memory", "recall", "max_episodes_at_start"), int,  3),
+    "recall_max_dynamic_tokens":    (("memory", "recall", "max_dynamic_tokens"),   int,   1500),
+    "recall_max_episodes":          (("memory", "recall", "max_episodes"),         int,   3),
 
     # ── Memory: Maintenance ──────────────────────────────────────
     "maintenance_stale_threshold_days": (("memory", "maintenance", "stale_threshold_days"), int, 90),
 
     # ── Maintain (self-maintenance heartbeat) ───────────────────
-    # The /maintain cron fires hourly; the LLM pass dispatches only when
-    # elapsed since last pass exceeds a randomized interval in
-    # [min, max] minutes. Idle minutes gates the agent's reach-out.
+    # The /maintain cron fires on a fixed schedule (see bin/entrypoint.sh). The
+    # LLM pass (harvest, tend, optional reach-out) runs only once the user has
+    # been idle >= idle_minutes, so a proactive message can't interrupt an
+    # active conversation; mechanical maintenance runs on every fire regardless.
     "maintain_enabled":              (("maintain", "enabled"),              bool, False),
-    "maintain_interval_min_minutes": (("maintain", "interval_min_minutes"), int,  240),
-    "maintain_interval_max_minutes": (("maintain", "interval_max_minutes"), int,  480),
-    "maintain_idle_minutes":         (("maintain", "idle_minutes"),         int,  360),
+    "maintain_idle_minutes":         (("maintain", "idle_minutes"),         int,  30),
+
+    # ── Session (weekly auto-reset) ──────────────────────────────
+    # A Monday-morning cron fires /sessions/auto-reset; the handler closes the
+    # user session — fresh context for the new week — only once the daily diary
+    # has run, the session predates this week, and the user has been idle.
+    "session_auto_reset_enabled":      (("session", "auto_reset", "enabled"),      bool, False),
+    "session_auto_reset_idle_minutes": (("session", "auto_reset", "idle_minutes"), int,  60),
 
     # ── Memory: Indexer ──────────────────────────────────────────
     "indexer_include_patterns": (("memory", "indexer", "include_patterns"),   list, []),
@@ -191,12 +194,9 @@ _SCHEMA: dict[str, tuple[tuple[str, ...], type, Any]] = {
     # ── Behavior ─────────────────────────────────────────────────
     "debounce_ms":              (("behavior", "debounce_ms"),              int,   500),
     "silent_tokens":            (("behavior", "silent_tokens"),            list,  ["NO_REPLY"]),
-    "typing_indicators":        (("behavior", "typing_indicators"),        bool,  True),
     "error_message":            (("behavior", "error_message"),            str,   "connection error"),
     "api_retries":              (("behavior", "api_retries"),              int,   2),
     "api_retry_base_delay":     (("behavior", "api_retry_base_delay"),     float, 2.0),
-    "message_retries":          (("behavior", "message_retries"),          int,   2),
-    "message_retry_base_delay": (("behavior", "message_retry_base_delay"), float, 30.0),
     "agent_timeout":            (("behavior", "agent_timeout_seconds"),     float, 600.0),
     "max_turns":                (("behavior", "max_turns_per_message"),     int,   50),
     "max_cost_per_message":     (("behavior", "max_cost_per_message"),     float, 0.0),
@@ -311,12 +311,7 @@ class Config:
             v = primary["max_context_tokens"]
             if isinstance(v, (int, float)) and v <= 0:
                 errors.append("[models.primary] max_context_tokens must be > 0")
-        for key in ("agent_timeout_seconds", "api_retry_base_delay",
-                     "message_retry_base_delay"):
-            val = _deep_get(self._data, "behavior", key)
-            if val is not None and (not isinstance(val, (int, float)) or val < 0):
-                errors.append(f"[behavior] {key} must be >= 0")
-        for key in ("api_retries", "message_retries"):
+        for key in ("agent_timeout_seconds", "api_retry_base_delay", "api_retries"):
             val = _deep_get(self._data, "behavior", key)
             if val is not None and (not isinstance(val, (int, float)) or val < 0):
                 errors.append(f"[behavior] {key} must be >= 0")
@@ -474,22 +469,22 @@ class Config:
 
     @property
     def embedding_model(self) -> str:
-        """Read from [models.embeddings] (provider file) or [memory] override. Empty = not configured."""
+        """Read from [models.embeddings] (provider file). Empty = not configured."""
         if "embeddings" in self._data.get("models", {}):
             return str(self.model_config("embeddings").get("model", ""))
-        return str(_deep_get(self._data, "memory", "embedding_model", default=""))
+        return ""
 
     @property
     def embedding_base_url(self) -> str:
         if "embeddings" in self._data.get("models", {}):
             return str(self.model_config("embeddings").get("base_url", ""))
-        return str(_deep_get(self._data, "memory", "embedding_base_url", default=""))
+        return ""
 
     @property
     def embedding_provider(self) -> str:
         if "embeddings" in self._data.get("models", {}):
             return str(self.model_config("embeddings").get("provider", ""))
-        return str(_deep_get(self._data, "memory", "embedding_provider", default=""))
+        return ""
 
     @property
     def embedding_api_key(self) -> str:
@@ -594,6 +589,13 @@ def _load_dotenv(toml_path: Path) -> None:
                 # Only set if not already in environment (env takes precedence)
                 if key not in os.environ:
                     os.environ[key] = val
+    except PermissionError:
+        # .env may be intentionally locked to root (0600) so the unprivileged
+        # daemon — and the exec tool sharing its uid — can't read secrets from
+        # the file. The entrypoint sources it as root and exports the vars before
+        # dropping privileges, so they're already in the environment; reading it
+        # here is then unnecessary. Missing vars surface at use with a clear error.
+        log.warning(".env not readable (%s) — relying on already-exported env vars", env_file)
     except (OSError, UnicodeDecodeError) as e:
         raise ConfigError(f"Failed to read .env file ({env_file}): {e}") from e
 

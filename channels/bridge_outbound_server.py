@@ -11,32 +11,36 @@ Bridges customize delivery by passing in their own ``send_text`` /
 from __future__ import annotations
 
 import base64
+import hmac
 import logging
 import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TypeVar
 
 from aiohttp import web
 
 log = logging.getLogger(__name__)
 
-SendText = Callable[[int, str], Awaitable[None]]
-SendAttachment = Callable[..., Awaitable[None]]  # (chat_id, path, *, caption="") -> None
+# The recipient the bridge addresses: a telegram chat_id (int) or an email
+# address (str). Opaque to this module — passed straight to the send callables.
+_Recipient = TypeVar("_Recipient", int, str)
 
 
 def build_outbound_app(
     *,
     token: str,
-    chat_id: int,
-    send_text: SendText,
-    send_attachment: SendAttachment,
+    recipient: _Recipient,
+    send_text: Callable[[_Recipient, str], Awaitable[None]],
+    send_attachment: Callable[..., Awaitable[None]],  # (recipient, path, *, caption="") -> None
     max_attachment_bytes: int,
 ) -> web.Application:
     """Build the aiohttp app implementing POST /send for a bridge.
 
     ``token`` is the bearer credential the daemon must present
-    (typically LUCYD_HTTP_TOKEN). ``chat_id`` is the user's channel ID
-    derived from config — single-tenant single-user means it's static.
+    (typically LUCYD_HTTP_TOKEN). ``recipient`` is the user's channel id
+    or address derived from config — single-tenant single-user means it's
+    static.
 
     ``max_attachment_bytes`` is the bridge's published attachment cap
     (from ``bridge_client.BRIDGE_LIMITS``). The aiohttp app's
@@ -49,7 +53,7 @@ def build_outbound_app(
     async def _handle_send(request: web.Request) -> web.Response:
         auth = request.headers.get("Authorization", "")
         expected = f"Bearer {token}"
-        if not token or auth != expected:
+        if not token or not hmac.compare_digest(auth, expected):
             return web.json_response({"error": "unauthorized"}, status=401)
 
         try:
@@ -80,7 +84,8 @@ def build_outbound_app(
                         status=400,
                     )
                 with tempfile.NamedTemporaryFile(
-                    delete=False, prefix="lucyd-outbound-", suffix=f"-{filename}",
+                    delete=False, prefix="lucyd-outbound-",
+                    suffix=f"-{Path(filename).name}",
                 ) as f:
                     f.write(data)
                     tmpfiles.append(Path(f.name))
@@ -90,9 +95,9 @@ def build_outbound_app(
                 # additional attachments get empty captions to avoid duplication.
                 for i, p in enumerate(tmpfiles):
                     caption = text if i == 0 else ""
-                    await send_attachment(chat_id, str(p), caption=caption)
+                    await send_attachment(recipient, str(p), caption=caption)
             elif text:
-                await send_text(chat_id, text)
+                await send_text(recipient, text)
 
             return web.json_response({"delivered": True}, status=200)
         finally:

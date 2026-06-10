@@ -10,9 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any
 
-import asyncpg  # Core dependency — always installed. No type stubs.
+import asyncpg  # Core dependency — always installed.
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +30,7 @@ async def create_pool(
     *,
     min_size: int = 2,
     max_size: int = 10,
-) -> Any:
+) -> asyncpg.Pool:
     """Create and return an ``asyncpg.Pool``.
 
     Retries with exponential backoff on transient errors (e.g. PostgreSQL
@@ -40,7 +39,7 @@ async def create_pool(
     last_exc: Exception | None = None
     for attempt in range(_CONNECT_RETRY_MAX):
         try:
-            pool: Any = await asyncpg.create_pool(
+            pool: asyncpg.Pool = await asyncpg.create_pool(
                 dsn,
                 min_size=min_size,
                 max_size=max_size,
@@ -63,7 +62,7 @@ async def create_pool(
     raise last_exc
 
 
-async def close_pool(pool: Any) -> None:
+async def close_pool(pool: asyncpg.Pool) -> None:
     await pool.close()
 
 
@@ -71,7 +70,7 @@ async def close_pool(pool: Any) -> None:
 # Schema versioning
 # ---------------------------------------------------------------------------
 
-async def ensure_schema(pool: Any) -> None:
+async def ensure_schema(pool: asyncpg.Pool) -> None:
     """Apply unapplied schema files from ``schema/``.
 
     Each ``.sql`` file is named ``NNN_description.sql`` where *NNN* is a

@@ -102,11 +102,6 @@ class TestUserIdentity:
 
 
 class TestTalkerConstants:
-    def test_talkers_enum(self):
-        """TALKERS contains the four talker classes."""
-        from config import TALKERS
-        assert TALKERS == frozenset(("user", "operator", "system", "agent"))
-
     def test_operator_senders(self):
         """OPERATOR_SENDERS enumerates allowed operator surfaces.
 
@@ -385,12 +380,6 @@ class TestEmbeddingConfig:
         cfg = Config(minimal_toml_data)
         assert cfg.embedding_currency == "EUR"
 
-    def test_embedding_fallback_to_memory_section(self, minimal_toml_data):
-        del minimal_toml_data["models"]["embeddings"]
-        minimal_toml_data["memory"] = {"embedding_model": "local-embed"}
-        cfg = Config(minimal_toml_data)
-        assert cfg.embedding_model == "local-embed"
-
     def test_embedding_api_key_from_env(self, minimal_toml_data, monkeypatch):
         minimal_toml_data["models"]["embeddings"]["api_key_env"] = "TEST_EMBED_KEY"
         monkeypatch.setenv("TEST_EMBED_KEY", "sk-test-123")
@@ -439,21 +428,15 @@ class TestMaintainConfig:
     def test_defaults(self, minimal_toml_data):
         cfg = Config(minimal_toml_data)
         assert cfg.maintain_enabled is False
-        assert cfg.maintain_interval_min_minutes == 240
-        assert cfg.maintain_interval_max_minutes == 480
-        assert cfg.maintain_idle_minutes == 360
+        assert cfg.maintain_idle_minutes == 30
 
     def test_overrides(self, minimal_toml_data):
         minimal_toml_data["maintain"] = {
             "enabled": True,
-            "interval_min_minutes": 120,
-            "interval_max_minutes": 300,
             "idle_minutes": 90,
         }
         cfg = Config(minimal_toml_data)
         assert cfg.maintain_enabled is True
-        assert cfg.maintain_interval_min_minutes == 120
-        assert cfg.maintain_interval_max_minutes == 300
         assert cfg.maintain_idle_minutes == 90
 
 

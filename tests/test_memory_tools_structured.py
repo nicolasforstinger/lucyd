@@ -1,11 +1,10 @@
-"""Tests for tools/memory_write.py — memory_write, memory_forget, commitment_update."""
+"""Tests for tools/memory_write.py — memory_write, memory_forget, record_episode."""
 
 import pytest
 
 from tools.memory_write import (
     TOOLS,
     configure,
-    handle_commitment_update,
     handle_memory_forget,
     handle_memory_write,
 )
@@ -23,7 +22,7 @@ async def mem_pool(pool):
 
 @pytest.fixture
 async def seeded_pool(mem_pool):
-    """Pool with pre-existing facts, aliases, and commitments for update/forget tests."""
+    """Pool with pre-existing facts and aliases for update/forget tests."""
     await mem_pool.execute(
         "INSERT INTO knowledge.facts (entity, attribute, value, confidence, source_session) "
         "VALUES ($1, $2, $3, $4, $5)",
@@ -39,18 +38,6 @@ async def seeded_pool(mem_pool):
         "INSERT INTO knowledge.entity_aliases (alias, canonical) "
         "VALUES ($1, $2)",
         "nic", "nicolas",
-    )
-    # Open commitment
-    await mem_pool.execute(
-        "INSERT INTO knowledge.commitments (who, what, deadline, status) "
-        "VALUES ($1, $2, $3, $4)",
-        "nicolas", "review PR", "2026-02-20", "open",
-    )
-    # Done commitment (should not be re-updatable)
-    await mem_pool.execute(
-        "INSERT INTO knowledge.commitments (who, what, deadline, status) "
-        "VALUES ($1, $2, $3, $4)",
-        "nicolas", "old task", "2026-01-01", "done",
     )
     return mem_pool
 
@@ -157,164 +144,76 @@ class TestMemoryForget:
         assert "Error" in result
 
 
-# --- commitment_update ---------------------------------------------------
+# --- user-entity pin (entity-alias-cycle-corruption) ---------------------
 
 
-class TestCommitmentUpdate:
+class _StubConfig:
+    """Minimal stand-in: configure() only reads config.user_name."""
+
+    def __init__(self, user_name: str) -> None:
+        self.user_name = user_name
+
+
+@pytest.fixture
+async def cyclic_user_pool(mem_pool):
+    """A fact under the user entity plus a nicolas <-> nicolas_forstinger
+    alias 2-cycle, mirroring the corrupted live state. Without the pin,
+    _resolve_entity('nicolas') would hop to nicolas_forstinger (no fact)."""
+    await mem_pool.execute(
+        "INSERT INTO knowledge.facts (entity, attribute, value, confidence, source_session) "
+        "VALUES ($1, $2, $3, $4, $5)",
+        "nicolas", "streaming_gear_arrived", "2026-05-28", 0.9, "test",
+    )
+    await mem_pool.execute(
+        "INSERT INTO knowledge.entity_aliases (alias, canonical) VALUES "
+        "('nicolas', 'nicolas_forstinger'), ('nicolas_forstinger', 'nicolas')",
+    )
+    return mem_pool
+
+
+class TestUserEntityPin:
     @pytest.mark.asyncio
-    async def test_changes_status(self, seeded_pool):
-        row = await seeded_pool.fetchrow(
-            "SELECT id FROM knowledge.commitments "
-            "WHERE status = 'open'",
+    async def test_forget_user_fact_bypasses_cyclic_alias(self, cyclic_user_pool):
+        configure(pool=cyclic_user_pool, config=_StubConfig("nicolas"))
+        try:
+            result = await handle_memory_forget("nicolas", "streaming_gear_arrived")
+            assert "Forgotten: nicolas.streaming_gear_arrived" in result
+            row = await cyclic_user_pool.fetchrow(
+                "SELECT invalidated_at FROM knowledge.facts "
+                "WHERE entity = 'nicolas' AND attribute = 'streaming_gear_arrived'",
             )
-        cid = row["id"]
-
-        result = await handle_commitment_update(cid, "done")
-        assert f"#{cid}" in result
-        assert "updated" in result
-
-        updated = await seeded_pool.fetchrow(
-            "SELECT status FROM knowledge.commitments "
-            "WHERE id = $1",
-            cid,
-        )
-        assert updated["status"] == "done"
+            assert row["invalidated_at"] is not None
+        finally:
+            configure(pool=None, config=None)
 
     @pytest.mark.asyncio
-    async def test_corrects_deadline_only(self, seeded_pool):
-        """A deadline-only edit updates the date and leaves status/what intact."""
-        row = await seeded_pool.fetchrow(
-            "SELECT id FROM knowledge.commitments "
-            "WHERE status = 'open'",
+    async def test_write_user_fact_lands_on_user_entity(self, cyclic_user_pool):
+        configure(pool=cyclic_user_pool, config=_StubConfig("nicolas"))
+        try:
+            result = await handle_memory_write("nicolas", "favorite_color", "black")
+            assert "nicolas.favorite_color" in result
+            exists = await cyclic_user_pool.fetchval(
+                "SELECT 1 FROM knowledge.facts "
+                "WHERE entity = 'nicolas' AND attribute = 'favorite_color' "
+                "AND invalidated_at IS NULL",
             )
-        cid = row["id"]
-
-        result = await handle_commitment_update(cid, deadline="2026-05-28")
-        assert f"#{cid}" in result
-        assert "updated" in result
-
-        updated = await seeded_pool.fetchrow(
-            "SELECT status, deadline, what FROM knowledge.commitments "
-            "WHERE id = $1",
-            cid,
-        )
-        assert updated["deadline"] == "2026-05-28"
-        assert updated["status"] == "open"
-        assert updated["what"] == "review PR"
+            assert exists == 1
+        finally:
+            configure(pool=None, config=None)
 
     @pytest.mark.asyncio
-    async def test_corrects_what_only(self, seeded_pool):
-        """A what-only edit updates the description and leaves status/deadline intact."""
-        row = await seeded_pool.fetchrow(
-            "SELECT id FROM knowledge.commitments "
-            "WHERE status = 'open'",
-            )
-        cid = row["id"]
-
-        result = await handle_commitment_update(cid, what="review the deploy PR")
-        assert f"#{cid}" in result
-
-        updated = await seeded_pool.fetchrow(
-            "SELECT status, deadline, what FROM knowledge.commitments "
-            "WHERE id = $1",
-            cid,
+    async def test_non_user_entity_still_alias_resolves(self, cyclic_user_pool):
+        # The pin must not interfere with ordinary alias resolution for other
+        # entities — 'nic' still resolves through the alias table to 'nicolas'.
+        await cyclic_user_pool.execute(
+            "INSERT INTO knowledge.entity_aliases (alias, canonical) VALUES ('nic', 'nicolas')",
         )
-        assert updated["what"] == "review the deploy PR"
-        assert updated["status"] == "open"
-        assert updated["deadline"] == "2026-02-20"
-
-    @pytest.mark.asyncio
-    async def test_corrects_deadline_and_what_combined(self, seeded_pool):
-        """Multiple fields in one call all apply."""
-        row = await seeded_pool.fetchrow(
-            "SELECT id FROM knowledge.commitments "
-            "WHERE status = 'open'",
-            )
-        cid = row["id"]
-
-        result = await handle_commitment_update(
-            cid, deadline="2026-05-28", what="attend FH Hagenberg event",
-        )
-        assert f"#{cid}" in result
-
-        updated = await seeded_pool.fetchrow(
-            "SELECT deadline, what FROM knowledge.commitments "
-            "WHERE id = $1",
-            cid,
-        )
-        assert updated["deadline"] == "2026-05-28"
-        assert updated["what"] == "attend FH Hagenberg event"
-
-    @pytest.mark.asyncio
-    async def test_no_fields_returns_error(self, seeded_pool):
-        """Calling with only commitment_id is rejected without touching the row."""
-        row = await seeded_pool.fetchrow(
-            "SELECT id FROM knowledge.commitments "
-            "WHERE status = 'open'",
-            )
-        cid = row["id"]
-
-        result = await handle_commitment_update(cid)
-        assert "at least one" in result
-
-        unchanged = await seeded_pool.fetchrow(
-            "SELECT what, deadline FROM knowledge.commitments "
-            "WHERE id = $1",
-            cid,
-        )
-        assert unchanged["what"] == "review PR"
-        assert unchanged["deadline"] == "2026-02-20"
-
-    @pytest.mark.asyncio
-    async def test_bad_deadline_string_returns_error(self, seeded_pool):
-        """A non-ISO deadline returns a clean error rather than raising."""
-        row = await seeded_pool.fetchrow(
-            "SELECT id FROM knowledge.commitments "
-            "WHERE status = 'open'",
-            )
-        cid = row["id"]
-
-        result = await handle_commitment_update(cid, deadline="next thursday")
-        assert "Error" in result
-        assert "ISO date" in result
-
-        unchanged = await seeded_pool.fetchrow(
-            "SELECT deadline FROM knowledge.commitments "
-            "WHERE id = $1",
-            cid,
-        )
-        assert unchanged["deadline"] == "2026-02-20"
-
-    @pytest.mark.asyncio
-    async def test_no_match_returns_not_found(self, seeded_pool):
-        result = await handle_commitment_update(9999, "done")
-        assert "No open commitment" in result
-
-    @pytest.mark.asyncio
-    async def test_only_affects_open(self, seeded_pool):
-        """Cannot re-update an already-closed commitment."""
-        row = await seeded_pool.fetchrow(
-            "SELECT id FROM knowledge.commitments "
-            "WHERE status = 'done'",
-            )
-        cid = row["id"]
-
-        result = await handle_commitment_update(cid, "cancelled")
-        assert "No open commitment" in result
-
-        # Status unchanged
-        check = await seeded_pool.fetchrow(
-            "SELECT status FROM knowledge.commitments "
-            "WHERE id = $1",
-            cid,
-        )
-        assert check["status"] == "done"
-
-    @pytest.mark.asyncio
-    async def test_not_configured_returns_error(self):
-        configure(pool=None,)
-        result = await handle_commitment_update(1, "done")
-        assert "Error" in result
+        configure(pool=cyclic_user_pool, config=_StubConfig("nicolas"))
+        try:
+            result = await handle_memory_write("nic", "age", "30")
+            assert "nicolas.age" in result
+        finally:
+            configure(pool=None, config=None)
 
 
 # --- Tool Definitions ----------------------------------------------------
@@ -326,7 +225,7 @@ class TestToolDefinitions:
 
     def test_tool_names(self):
         names = {t.name for t in TOOLS}
-        assert names == {"memory_write", "memory_forget", "commitment_update"}
+        assert names == {"memory_write", "memory_forget", "record_episode"}
 
     def test_tools_have_functions(self):
         for tool in TOOLS:

@@ -10,10 +10,46 @@ import pytest
 from lucyd import _acquire_pid_file, _release_pid_file
 from pipeline import (
     _brief_snippet,
+    _history_tokens,
     _is_silent,
     _recent_user_context,
     _time_of_day_steer,
 )
+
+
+class TestHistoryTokens:
+    """_history_tokens counts the full request body, not just user+agent text."""
+
+    def test_counts_user_and_agent_text(self):
+        msgs = [
+            {"role": "user", "content": "hello there friend"},
+            {"role": "agent", "text": "hi back to you"},
+        ]
+        assert _history_tokens(msgs) > 0
+
+    def test_counts_tool_result_content(self):
+        """A tool_result body must add to the total — the path the old math skipped."""
+        without = [
+            {"role": "user", "content": "fetch the page"},
+            {"role": "agent", "text": "", "tool_calls": [
+                {"id": "t1", "name": "web_fetch", "arguments": {"url": "x"}}]},
+        ]
+        with_result = [
+            *without,
+            {"role": "tool_result", "results": [
+                {"tool_call_id": "t1", "tool_name": "web_fetch",
+                 "content": "a very long page body " * 200}]},
+        ]
+        assert _history_tokens(with_result) > _history_tokens(without) + 100
+
+    def test_counts_tool_call_arguments(self):
+        """A write with a large content arg counts even when agent text is empty."""
+        small = [{"role": "agent", "text": "", "tool_calls": [
+            {"id": "t1", "name": "write", "arguments": {"path": "/a"}}]}]
+        big = [{"role": "agent", "text": "", "tool_calls": [
+            {"id": "t1", "name": "write",
+             "arguments": {"path": "/a", "content": "x" * 5000}}]}]
+        assert _history_tokens(big) > _history_tokens(small) + 100
 
 
 def _user_row(content: str, ts: float):

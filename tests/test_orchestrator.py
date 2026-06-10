@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lucyd import LucydDaemon
+from memory import RecallBlock
 from pipeline import _inject_warning, _should_warn_context
 
 _TEST_DAEMONS: list[LucydDaemon] = []
@@ -75,10 +76,10 @@ def _make_config(tmp_path, **overrides):
         "memory": {
             "db": "", "search_top_k": 10, "vector_search_limit": 10000,
             "embedding_timeout": 15,
-            "consolidation": {"enabled": False, "confidence_threshold": 0.6},
+            "consolidation": {"enabled": False},
             "recall": {
-                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
-                "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
+                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes": 3, "archive_messages": 20,
+                "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15,
                                "fact_format": "natural", "show_emotional_tone": True, "episode_section_header": "Recent conversations"},
             },
             "maintenance": {"stale_threshold_days": 90},
@@ -101,7 +102,7 @@ def _make_config(tmp_path, **overrides):
                    },
         "behavior": {
             "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error", "debounce_ms": 500,
-            "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
+            "api_retries": 2, "api_retry_base_delay": 2.0,
             "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
             "compaction": {
@@ -113,7 +114,6 @@ def _make_config(tmp_path, **overrides):
         },
         "paths": {
             "state_dir": str(tmp_path / "state"),
-            "sessions_dir": str(tmp_path / "sessions"),
             "log_file": str(tmp_path / "lucyd.log"),
         },
     }
@@ -195,10 +195,9 @@ def _make_daemon(tmp_path):
     daemon.config.agent_id = "test"
     daemon.config.silent_tokens = []
     daemon.config.compaction_threshold = 150000
+    daemon.config.recall_max_dynamic_tokens = 1500
     daemon.config.always_on_skills = []
     daemon.config.error_message = "Something went wrong."
-    daemon.config.message_retries = 0
-    daemon.config.message_retry_base_delay = 0.01
     daemon.config.raw = MagicMock(return_value=0.0)
     daemon.config.compaction_max_tokens = 2048
     daemon.config.compaction_prompt = "Compact this."
@@ -889,39 +888,82 @@ class TestMemoryV2Wiring:
     """Contract: Memory v2 structured recall and consolidation wiring."""
 
     @pytest.mark.asyncio
-    async def test_structured_recall_injected_at_session_start(self, tmp_path):
-        """When consolidation_enabled and first message, structured recall is injected."""
+    async def test_recall_injected_on_user_turn(self, tmp_path):
+        """A user turn with consolidation enabled injects per-turn recall."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.consolidation_enabled = True
-        # First message: session.messages is empty before add_user_message
+        daemon._memory_interface = MagicMock()
         session.messages = []
+        daemon.pool = MagicMock()
         response = _make_response()
 
         async def fake_loop(**kwargs):
             return response
 
-        mock_context = "Facts:\n- nicolas — lives in: Austria"
-        daemon.pool = MagicMock()
-
+        block = RecallBlock(priority=10, section="[Known facts]",
+                            text="nicolas — lives in: Austria", est_tokens=12)
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            with patch("pipeline.get_session_start_context", return_value=mock_context) as mock_gsc:
+            with patch("pipeline.recall", new=AsyncMock(return_value=[block])) as mock_recall:
                 await daemon._process_message(
-                    text="hello", sender="user", talker="user", channel="telegram",
+                    text="where do I live?", sender="user", talker="user", channel="telegram",
                 )
 
-        mock_gsc.assert_called_once()
-        # Verify context_builder.build received the recall text
-        build_kwargs = daemon.context_builder.build.call_args
-        extra = build_kwargs.kwargs.get("extra_dynamic", "") or (
-            build_kwargs[1].get("extra_dynamic", "") if len(build_kwargs) > 1 else ""
-        )
-        assert mock_context in extra
+        mock_recall.assert_called_once()
+        # The recalled block text reaches context_builder.build as extra_dynamic
+        extra = daemon.context_builder.build.call_args.kwargs.get("extra_dynamic", "")
+        assert "nicolas — lives in: Austria" in extra
 
     @pytest.mark.asyncio
-    async def test_no_structured_recall_when_disabled(self, tmp_path):
-        """When consolidation_enabled=False, no structured recall."""
+    async def test_recall_keyed_to_user_message(self, tmp_path):
+        """Recall is keyed to the current message — query == ctx.text."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = True
+        daemon._memory_interface = MagicMock()
+        session.messages = []
+        daemon.pool = MagicMock()
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
+            with patch("pipeline.recall", new=AsyncMock(return_value=[])) as mock_recall:
+                await daemon._process_message(
+                    text="what did we decide about the database?", sender="user",
+                    talker="user", channel="telegram",
+                )
+
+        mock_recall.assert_called_once()
+        assert mock_recall.call_args.kwargs["query"] == "what did we decide about the database?"
+
+    @pytest.mark.asyncio
+    async def test_recall_runs_on_subsequent_messages(self, tmp_path):
+        """Per-turn recall runs on every user turn, not just the first."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = True
+        daemon._memory_interface = MagicMock()
+        # Mid-conversation: history already present
+        session.messages = [{"role": "user", "content": "prior"}, {"role": "agent", "text": "reply"}]
+        daemon.pool = MagicMock()
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
+            with patch("pipeline.recall", new=AsyncMock(return_value=[])) as mock_recall:
+                await daemon._process_message(
+                    text="follow-up question", sender="user", talker="user", channel="telegram",
+                )
+
+        mock_recall.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_recall_when_consolidation_disabled(self, tmp_path):
+        """consolidation_enabled=False → no recall."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.consolidation_enabled = False
+        daemon._memory_interface = MagicMock()
         session.messages = []
         response = _make_response()
 
@@ -929,38 +971,62 @@ class TestMemoryV2Wiring:
             return response
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            with patch("pipeline.get_session_start_context") as mock_gsc:
+            with patch("pipeline.recall") as mock_recall:
                 await daemon._process_message(
                     text="hello", sender="user", talker="user", channel="telegram",
                 )
 
-        mock_gsc.assert_not_called()
+        mock_recall.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_structured_recall_on_subsequent_messages(self, tmp_path):
-        """Structured recall only on first message (len(messages) <= 1)."""
+    async def test_no_recall_for_non_user_talker(self, tmp_path):
+        """Non-user talkers (system/operator/agent) carry their own context — no recall."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.consolidation_enabled = True
-        # Simulate existing messages (not first message)
-        session.messages = [{"role": "user", "content": "prior"}, {"role": "agent", "content": "reply"}]
+        daemon._memory_interface = MagicMock()
+        session.messages = []
+        daemon.pool = MagicMock()
         response = _make_response()
 
         async def fake_loop(**kwargs):
             return response
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            with patch("pipeline.get_session_start_context") as mock_gsc:
+            with patch("pipeline.recall") as mock_recall:
+                await daemon._process_message(
+                    text="post-deploy smoke test", sender="maintenance",
+                    talker="system", channel=None,
+                )
+
+        mock_recall.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_recall_without_memory_interface(self, tmp_path):
+        """No memory subsystem (memory tools disabled) → recall is skipped."""
+        daemon, provider, session = _make_daemon(tmp_path)
+        daemon.config.consolidation_enabled = True
+        daemon._memory_interface = None
+        session.messages = []
+        daemon.pool = MagicMock()
+        response = _make_response()
+
+        async def fake_loop(**kwargs):
+            return response
+
+        with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
+            with patch("pipeline.recall") as mock_recall:
                 await daemon._process_message(
                     text="hello", sender="user", talker="user", channel="telegram",
                 )
 
-        mock_gsc.assert_not_called()
+        mock_recall.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_structured_recall_failure_does_not_crash(self, tmp_path):
-        """Structured recall failure is caught — _process_message continues."""
+    async def test_recall_failure_does_not_crash(self, tmp_path):
+        """Recall failure is caught — the turn still completes and replies."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.config.consolidation_enabled = True
+        daemon._memory_interface = MagicMock()
         session.messages = []
         response = _make_response(text="reply despite recall failure")
 
@@ -973,7 +1039,7 @@ class TestMemoryV2Wiring:
         daemon.pool = MagicMock()
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            with patch("pipeline.get_session_start_context", side_effect=Exception("DB corrupt")):
+            with patch("pipeline.recall", new=AsyncMock(side_effect=Exception("DB corrupt"))):
                 await daemon._process_message(
                     text="hello", sender="user", talker="user", channel="telegram",
                     response_future=future,
@@ -998,16 +1064,16 @@ class TestMemoryV2Wiring:
         async def fake_loop(**kwargs):
             return response
 
-        mock_result = {"facts_added": 3, "episode_id": "ep-1"}
         daemon.pool = MagicMock()
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            with patch("consolidation.consolidate_session", new_callable=AsyncMock, return_value=mock_result) as mock_consol:
+            with patch("operations.harvest_conversation", new_callable=AsyncMock,
+                       return_value={"ok_to_compact": True, "harvested": True}) as mock_harvest:
                 await daemon._process_message(
                     text="hello", sender="user", talker="user", channel="telegram",
                 )
 
-        mock_consol.assert_called_once()
+        mock_harvest.assert_called_once()
         # Compaction should also proceed
         daemon.session_mgr.compact_session.assert_called_once()
 
@@ -1029,12 +1095,13 @@ class TestMemoryV2Wiring:
         daemon.pool = MagicMock()
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            with patch("consolidation.consolidate_session", new_callable=AsyncMock, side_effect=RuntimeError("LLM timeout")):
+            with patch("operations.harvest_conversation", new_callable=AsyncMock,
+                       return_value={"ok_to_compact": False, "harvested": False}):
                 await daemon._process_message(
                     text="hello", sender="user", talker="user", channel="telegram",
                 )
 
-        # Compaction blocked — don't summarize unconsolidated messages
+        # Harvest failed (ok_to_compact False) — don't summarize unconsolidated messages
         daemon.session_mgr.compact_session.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1052,57 +1119,31 @@ class TestMemoryV2Wiring:
             return response
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop):
-            with patch("consolidation.consolidate_session", new_callable=AsyncMock) as mock_consol:
+            with patch("operations.harvest_conversation", new_callable=AsyncMock) as mock_harvest:
                 await daemon._process_message(
                     text="hello", sender="user", talker="user", channel="telegram",
                 )
 
-        mock_consol.assert_not_called()
+        mock_harvest.assert_not_called()
         # Compaction still proceeds
         daemon.session_mgr.compact_session.assert_called_once()
 
 
 class TestConsolidateOnClose:
-    """Contract: session close callback fires consolidation."""
+    """Contract: session close callback fires the harvest."""
 
     @pytest.mark.asyncio
-    async def test_consolidate_on_close_calls_consolidation(self, tmp_path):
-        """_consolidate_on_close calls consolidation.consolidate_session."""
+    async def test_consolidate_on_close_runs_harvest(self, tmp_path):
+        """_consolidate_on_close dispatches the agentic harvest."""
         daemon, provider, session = _make_daemon(tmp_path)
         daemon.pool = MagicMock()
         session.compaction_count = 0
 
-        mock_result = {"facts_added": 1, "episode_id": "ep-close"}
-
-        with patch("consolidation.get_unprocessed_range", return_value=(0, 5)):
-            with patch("consolidation.consolidate_session", new_callable=AsyncMock, return_value=mock_result) as mock_consol:
-                await daemon._consolidate_on_close(session)
-
-        mock_consol.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_consolidate_on_close_skips_when_no_unprocessed(self, tmp_path):
-        """No unprocessed messages → consolidation not called."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.pool = MagicMock()
-        session.compaction_count = 0
-
-        with patch("consolidation.get_unprocessed_range", return_value=(5, 5)):
-            with patch("consolidation.consolidate_session", new_callable=AsyncMock) as mock_consol:
-                await daemon._consolidate_on_close(session)
-
-        mock_consol.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_consolidate_on_close_failure_does_not_crash(self, tmp_path):
-        """Consolidation failure on close is caught — no exception propagated."""
-        daemon, provider, session = _make_daemon(tmp_path)
-        daemon.pool = MagicMock()
-        session.compaction_count = 0
-
-        with patch("consolidation.get_unprocessed_range", side_effect=RuntimeError("DB locked")):
-            # Should not raise
+        with patch("operations.harvest_conversation", new_callable=AsyncMock,
+                   return_value={"ok_to_compact": True, "harvested": True}) as mock_harvest:
             await daemon._consolidate_on_close(session)
+
+        mock_harvest.assert_called_once()
 
 
 # ─── Error Recovery: Orphaned User Messages ──────────────────────
@@ -2210,12 +2251,12 @@ class TestForcedCompact:
 
         consolidation_called = []
 
-        async def fake_consolidate(**kwargs):
+        async def fake_harvest(*args, **kwargs):
             consolidation_called.append(True)
-            return {"facts_added": 0, "episode_id": None}
+            return {"ok_to_compact": True, "harvested": False}
 
         with patch("pipeline.run_agentic_loop", side_effect=fake_loop), \
-             patch("consolidation.consolidate_session", side_effect=fake_consolidate):
+             patch("operations.harvest_conversation", side_effect=fake_harvest):
             await daemon._process_message(
                 text="compact diary", sender="Nicolas", talker="system",
                 force_compact=True,

@@ -60,16 +60,6 @@ class TestToolSessionStatus:
         finally:
             mod._session_getter, mod._daemon_start_time = original
 
-    def test_configure_sets_max_context_tokens(self):
-        """configure() with max_context_tokens updates the module global."""
-        import tools.status as mod
-        original = mod.MAX_CONTEXT_TOKENS
-        mod.configure(max_context_tokens=300000)
-        try:
-            assert mod.MAX_CONTEXT_TOKENS == 300000
-        finally:
-            mod.MAX_CONTEXT_TOKENS = original
-
     def test_session_getter_callback(self):
         """session_getter callback replaces set_current_session."""
         import tools.status as mod
@@ -166,6 +156,7 @@ class TestToolMemorySearch:
             recall_max_facts = 20
             recall_decay_rate = 0.03
             recall_max_dynamic_tokens = 1000
+            recall_max_episodes = 3
 
         original = (mod._memory, mod._pool, mod._config)
         mod._memory = mock_mem
@@ -190,6 +181,7 @@ class TestToolMemorySearch:
             recall_max_facts = 20
             recall_decay_rate = 0.03
             recall_max_dynamic_tokens = 1000
+            recall_max_episodes = 3
 
         original = (mod._memory, mod._pool, mod._config)
         mod._memory = mock_mem
@@ -224,6 +216,7 @@ class TestToolMemorySearch:
             recall_max_facts = 20
             recall_decay_rate = 0.03
             recall_max_dynamic_tokens = 1000
+            recall_max_episodes = 3
 
         original = (mod._memory, mod._pool, mod._config)
         mod._memory = mock_mem
@@ -254,6 +247,7 @@ class TestToolMemorySearch:
             recall_max_facts = 20
             recall_decay_rate = 0.03
             recall_max_dynamic_tokens = 1000
+            recall_max_episodes = 3
 
         original = (mod._memory, mod._pool, mod._config)
         mod._memory = mock_mem

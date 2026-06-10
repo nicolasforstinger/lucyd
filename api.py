@@ -22,8 +22,8 @@ Endpoints:
     POST /api/v1/compact                    — Force diary write + compaction
     POST /api/v1/index                      — Run workspace indexing
     GET  /api/v1/index/status               — Workspace index status
-    POST /api/v1/consolidate                — Run memory consolidation
     POST /api/v1/maintain                   — Run memory maintenance
+    POST /api/v1/sessions/auto-reset        — Gated weekly user-session reset
 """
 
 from __future__ import annotations
@@ -43,13 +43,16 @@ import httpx
 from aiohttp import web
 
 import bridge_client
+import metrics
 from config import AGENT_SENDERS, OPERATOR_SENDERS, SYSTEM_SENDERS, Talker
 from log_utils import _log_safe
 from attachments import Attachment
+from plugins import list_plugin_health, plugin_health
 
 if TYPE_CHECKING:
     from metering import MeteringDB
     from lucyd import PriorityMessageQueue
+    from session import SessionManager
 
 
 log = logging.getLogger(__name__)
@@ -105,8 +108,8 @@ class HTTPApi:
         get_history: Callable[[str, bool], Coroutine[None, None, dict[str, Any]]] | None = None,
         handle_index: Callable[..., Coroutine[None, None, dict[str, Any]]] | None = None,  # Any justified: keyword args vary
         handle_index_status: Callable[[], Coroutine[None, None, dict[str, Any]]] | None = None,
-        handle_consolidate: Callable[[], Coroutine[None, None, dict[str, Any]]] | None = None,
         handle_maintain: Callable[[], Coroutine[None, None, dict[str, Any]]] | None = None,
+        handle_session_reset: Callable[[], Coroutine[None, None, dict[str, Any]]] | None = None,
         metering_db: MeteringDB | None = None,
         *,
         download_dir: str,
@@ -121,8 +124,8 @@ class HTTPApi:
         trust_localhost: bool = False,
         bridges_primary: str = "",
         outbound_http_client: httpx.AsyncClient | None = None,
-        session_mgr: Any = None,
-        pipeline_lock_factory: Callable[[str], Any] | None = None,
+        session_mgr: SessionManager | None = None,
+        pipeline_lock_factory: Callable[[str], asyncio.Lock] | None = None,
     ):
         self.queue = queue
         self._control_queue = control_queue or queue
@@ -143,8 +146,8 @@ class HTTPApi:
         self._get_history = get_history
         self._handle_index_cb = handle_index
         self._handle_index_status_cb = handle_index_status
-        self._handle_consolidate_cb = handle_consolidate
         self._handle_maintain_cb = handle_maintain
+        self._handle_session_reset_cb = handle_session_reset
         self._metering_db = metering_db
         self._download_dir = download_dir
         self._max_body_bytes = max_body_bytes
@@ -194,8 +197,8 @@ class HTTPApi:
         app.router.add_post("/api/v1/compact", self._handle_compact)
         app.router.add_post("/api/v1/index", self._handle_index)
         app.router.add_get("/api/v1/index/status", self._handle_index_status)
-        app.router.add_post("/api/v1/consolidate", self._handle_consolidate)
         app.router.add_post("/api/v1/maintain", self._handle_maintain)
+        app.router.add_post("/api/v1/sessions/auto-reset", self._handle_session_reset)
         app.router.add_get("/api/v1/plugins", self._handle_plugins_list)
         app.router.add_get(
             "/api/v1/plugins/{name}/health", self._handle_plugin_health,
@@ -305,7 +308,7 @@ class HTTPApi:
 
             try:
                 data = base64.b64decode(data_b64)
-            except Exception:
+            except (ValueError, TypeError):  # binascii.Error is a ValueError; TypeError for non-str input
                 raise web.HTTPBadRequest(
                     text='{"error": "invalid base64 in attachment"}',
                     content_type="application/json",
@@ -822,14 +825,13 @@ class HTTPApi:
 
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         """GET /metrics — Prometheus text format."""
-        import metrics as m
-        if not m.ENABLED or m.generate_latest is None:  # type: ignore[attr-defined]  # conditional export from try/except
+        if not metrics.ENABLED or metrics.generate_latest is None:  # type: ignore[attr-defined]  # conditional export from try/except
             return web.Response(text="# prometheus_client not installed\n",
                                 content_type="text/plain")
         # Update gauges that are only refreshed on scrape
         if self._get_status:
             await self._get_status()  # triggers gauge updates in _build_status
-        body = m.generate_latest()  # type: ignore[attr-defined]  # conditional export from try/except
+        body = metrics.generate_latest()  # type: ignore[attr-defined]  # conditional export from try/except
         return web.Response(body=body, content_type="text/plain",
                             charset="utf-8")
 
@@ -847,8 +849,7 @@ class HTTPApi:
 
     async def _handle_cost(self, request: web.Request) -> web.Response:
         """GET /api/v1/cost — raw cost records for a billing period (YYYY-MM)."""
-        import time as _time
-        period = request.query.get("period", _time.strftime("%Y-%m"))
+        period = request.query.get("period", time.strftime("%Y-%m"))
         if not self._metering_db:
             return self._json_response({"error": "metering not available"}, status=400)
         return self._json_response(await self._metering_db.get_records(period))
@@ -861,12 +862,10 @@ class HTTPApi:
 
     async def _handle_plugins_list(self, request: web.Request) -> web.Response:
         """GET /api/v1/plugins — list loaded plugins with their configured state."""
-        from plugins import list_plugin_health
         return self._json_response({"plugins": list_plugin_health()}, status=200)
 
     async def _handle_plugin_health(self, request: web.Request) -> web.Response:
         """GET /api/v1/plugins/{name}/health — health for a single plugin."""
-        from plugins import plugin_health
         name = request.match_info["name"]
         health = plugin_health(name)
         if health is None:
@@ -994,23 +993,6 @@ class HTTPApi:
 
         return self._json_response(result, status=200)
 
-    async def _handle_consolidate(self, request: web.Request) -> web.Response:
-        """POST /api/v1/consolidate — run memory consolidation."""
-        if not self._handle_consolidate_cb:
-            return self._json_response(
-                {"error": "consolidation not available"}, status=503,
-            )
-
-        try:
-            result = await self._handle_consolidate_cb()
-        except Exception:
-            log.exception("Consolidate endpoint failed")
-            return self._json_response(
-                {"error": "internal error"}, status=500,
-            )
-
-        return self._json_response(result, status=200)
-
     async def _handle_maintain(self, request: web.Request) -> web.Response:
         """POST /api/v1/maintain — run memory maintenance."""
         if not self._handle_maintain_cb:
@@ -1022,6 +1004,23 @@ class HTTPApi:
             result = await self._handle_maintain_cb()
         except Exception:
             log.exception("Maintain endpoint failed")
+            return self._json_response(
+                {"error": "internal error"}, status=500,
+            )
+
+        return self._json_response(result, status=200)
+
+    async def _handle_session_reset(self, request: web.Request) -> web.Response:
+        """POST /api/v1/sessions/auto-reset — gated weekly user-session reset."""
+        if not self._handle_session_reset_cb:
+            return self._json_response(
+                {"error": "session auto-reset not available"}, status=503,
+            )
+
+        try:
+            result = await self._handle_session_reset_cb()
+        except Exception:
+            log.exception("Session auto-reset endpoint failed")
             return self._json_response(
                 {"error": "internal error"}, status=500,
             )

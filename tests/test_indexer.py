@@ -241,6 +241,41 @@ class TestScanWorkspace:
         results = scan_workspace(ws)
         assert results == []
 
+    def test_include_patterns_index_vault_recursively(self, tmp_path: Path) -> None:
+        """A recursive notes/** pattern picks up nested vault notes (e.g. diaries)."""
+        ws = tmp_path / "ws"
+        (ws / "notes" / "nicolas-daily").mkdir(parents=True)
+        (ws / "notes" / "AI.md").write_text("ai note")
+        (ws / "notes" / "nicolas-daily" / "2026-05-31.md").write_text("his day")
+        results = scan_workspace(ws, include_patterns=["notes/**/*.md"])
+        paths = [r[0] for r in results]
+        assert "notes/AI.md" in paths
+        assert "notes/nicolas-daily/2026-05-31.md" in paths
+
+    def test_exclude_dirs_skips_vault_infra(self, tmp_path: Path) -> None:
+        """exclude_dirs drops trashed/infra notes even under a recursive pattern."""
+        ws = tmp_path / "ws"
+        (ws / "notes" / ".trash").mkdir(parents=True)
+        (ws / "notes" / "keep.md").write_text("keep")
+        (ws / "notes" / ".trash" / "gone.md").write_text("trashed")
+        results = scan_workspace(
+            ws, include_patterns=["notes/**/*.md"], exclude_dirs={"notes/.trash"},
+        )
+        paths = [r[0] for r in results]
+        assert "notes/keep.md" in paths
+        assert not any(".trash" in p for p in paths)
+
+    def test_empty_exclude_falls_back_to_default(self, tmp_path: Path) -> None:
+        """Empty exclude_dirs falls back to the default (cache still excluded)."""
+        ws = tmp_path / "ws"
+        (ws / "memory" / "cache").mkdir(parents=True)
+        (ws / "memory" / "2026-05-31.md").write_text("log")
+        (ws / "memory" / "cache" / "c.md").write_text("cache")
+        results = scan_workspace(ws, exclude_dirs=set())
+        paths = [r[0] for r in results]
+        assert "memory/2026-05-31.md" in paths
+        assert not any("cache" in p for p in paths)
+
 
 # ─── TestGetIndexedFiles ─────────────────────────────────────────
 

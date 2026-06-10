@@ -35,7 +35,7 @@ def app_factory(auth_token):
     def build(max_attachment_bytes: int = 52_428_800):
         app = build_outbound_app(
             token=auth_token,
-            chat_id=12345,
+            recipient=12345,
             send_text=fake_send_text,
             send_attachment=fake_send_attachment,
             max_attachment_bytes=max_attachment_bytes,

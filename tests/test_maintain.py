@@ -1,7 +1,7 @@
 """Tests for the self-maintenance heartbeat.
 
-Covers operations.handle_maintain (interval gate, dispatch, brief assembly,
-marker advance) and maintain_state (state round-trip, workspace diff, fact
+Covers operations.handle_maintain (enablement gate, harvest, dispatch, brief
+assembly, marker advance) and maintain_state (state round-trip, workspace diff, fact
 diff, idle query). Boundaries mocked: process_message (the LLM turn), the
 asyncpg pool (facts + idle queries), and memory.run_maintenance (mechanical
 maintenance, exercised in its own suite). The filesystem is real (tmp_path).
@@ -26,7 +26,8 @@ from config import Config
 # ─── Fixtures ────────────────────────────────────────────────────
 
 
-def _config(workspace: Path, data_dir: Path, *, enabled: bool = True) -> Config:
+def _config(workspace: Path, data_dir: Path, *, enabled: bool = True,
+            idle_minutes: int = 360) -> Config:
     """Minimal Config with the [maintain] section and tmp paths."""
     return Config({
         "agent": {"name": "Lucy", "workspace": str(workspace)},
@@ -38,9 +39,7 @@ def _config(workspace: Path, data_dir: Path, *, enabled: bool = True) -> Config:
         "paths": {"data_dir": str(data_dir)},
         "maintain": {
             "enabled": enabled,
-            "interval_min_minutes": 240,
-            "interval_max_minutes": 480,
-            "idle_minutes": 360,
+            "idle_minutes": idle_minutes,
         },
     })
 
@@ -79,10 +78,18 @@ def _pool(*, facts: list[dict[str, str]] | None = None,
     return pool
 
 
-# ─── Interval gate ───────────────────────────────────────────────
+def _session_mgr(contacts: list[str] | None = None) -> AsyncMock:
+    """SessionManager stub: list_contacts → given contacts (none by default, so
+    the harvest finds no user session and the pass runs without harvesting)."""
+    mgr = AsyncMock()
+    mgr.list_contacts = AsyncMock(return_value=contacts or [])
+    return mgr
 
 
-class TestIntervalGate:
+# ─── Pass dispatch (enablement) ──────────────────────────────────
+
+
+class TestPassEnablement:
     @pytest.mark.asyncio
     async def test_first_pass_dispatches(self, workspace, data_dir):
         """No prior marker → the pass dispatches (treated as first pass)."""
@@ -90,39 +97,7 @@ class TestIntervalGate:
         with patch("memory.run_maintenance", AsyncMock(return_value={})):
             result = await ops.handle_maintain(
                 _config(workspace, data_dir), _pool(), None,
-                pm, _lock_factory(),
-            )
-        assert result["outcome"] == "ran"
-        pm.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_too_soon_skips_dispatch(self, workspace, data_dir):
-        """Recent marker (< interval) → too_soon, no LLM dispatch."""
-        path = maintain_state.state_path(data_dir)
-        recent = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=5)
-        maintain_state.save_last_pass(path, recent)
-
-        pm = AsyncMock()
-        with patch("memory.run_maintenance", AsyncMock(return_value={})):
-            result = await ops.handle_maintain(
-                _config(workspace, data_dir), _pool(), None,
-                pm, _lock_factory(),
-            )
-        assert result["outcome"] == "too_soon"
-        pm.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_elapsed_past_interval_dispatches(self, workspace, data_dir):
-        """Marker older than the max interval → always dispatches."""
-        path = maintain_state.state_path(data_dir)
-        old = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=12)
-        maintain_state.save_last_pass(path, old)
-
-        pm = AsyncMock()
-        with patch("memory.run_maintenance", AsyncMock(return_value={})):
-            result = await ops.handle_maintain(
-                _config(workspace, data_dir), _pool(), None,
-                pm, _lock_factory(),
+                _session_mgr(), pm, _lock_factory(),
             )
         assert result["outcome"] == "ran"
         pm.assert_awaited_once()
@@ -135,30 +110,12 @@ class TestIntervalGate:
                    AsyncMock(return_value={"stale": 3})) as rm:
             result = await ops.handle_maintain(
                 _config(workspace, data_dir, enabled=False), _pool(), None,
-                pm, _lock_factory(),
+                _session_mgr(), pm, _lock_factory(),
             )
         assert result["outcome"] == "disabled"
         assert result["maintenance"]["stale"] == 3
         rm.assert_awaited_once()
         pm.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_mechanical_maintenance_runs_even_when_too_soon(
-        self, workspace, data_dir,
-    ):
-        """Mechanical maintenance runs on every call, including too_soon."""
-        path = maintain_state.state_path(data_dir)
-        maintain_state.save_last_pass(
-            path, _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=1),
-        )
-        with patch("memory.run_maintenance",
-                   AsyncMock(return_value={"stale": 1})) as rm:
-            result = await ops.handle_maintain(
-                _config(workspace, data_dir), _pool(), None,
-                AsyncMock(), _lock_factory(),
-            )
-        assert result["outcome"] == "too_soon"
-        rm.assert_awaited_once()
 
 
 # ─── Dispatch shape ──────────────────────────────────────────────
@@ -172,7 +129,7 @@ class TestDispatch:
         with patch("memory.run_maintenance", AsyncMock(return_value={})):
             await ops.handle_maintain(
                 _config(workspace, data_dir), _pool(), None,
-                pm, _lock_factory(),
+                _session_mgr(), pm, _lock_factory(),
             )
         kwargs = pm.await_args.kwargs
         assert kwargs["sender"] == "maintenance"
@@ -188,7 +145,7 @@ class TestDispatch:
         with patch("memory.run_maintenance", AsyncMock(return_value={})):
             await ops.handle_maintain(
                 _config(workspace, data_dir), _pool(), None,
-                pm, _lock_factory(),
+                _session_mgr(), pm, _lock_factory(),
             )
         text = pm.await_args.kwargs["text"]
         assert "# protocol body" in text
@@ -202,7 +159,7 @@ class TestDispatch:
             await ops.handle_maintain(
                 _config(workspace, data_dir),
                 _pool(last_user_epoch=None), None,
-                pm, _lock_factory(),
+                _session_mgr(), pm, _lock_factory(),
             )
         text = pm.await_args.kwargs["text"]
         assert "Last pass: never (first pass)" in text
@@ -217,9 +174,9 @@ class TestDispatch:
         pm = AsyncMock()
         with patch("memory.run_maintenance", AsyncMock(return_value={})):
             await ops.handle_maintain(
-                _config(workspace, data_dir),
-                _pool(last_user_epoch=now - 1800), None,  # 30 min ago
-                pm, _lock_factory(),
+                _config(workspace, data_dir, idle_minutes=10),
+                _pool(last_user_epoch=now - 1800), None,  # 30 min ago (>= 10m gate)
+                _session_mgr(), pm, _lock_factory(),
             )
         assert "minutes ago" in pm.await_args.kwargs["text"]
 
@@ -232,12 +189,63 @@ class TestDispatch:
                    AsyncMock(return_value={"stale": 0})) as rm:
             result = await ops.handle_maintain(
                 _config(workspace, data_dir), _pool(), None,
-                pm, _lock_factory(),
+                _session_mgr(), pm, _lock_factory(),
             )
         assert result["outcome"] == "skipped"
         assert result["reason"] == "MAINTAIN.md missing"
         rm.assert_awaited_once()
         pm.assert_not_awaited()
+
+
+# ─── Idle gate (no reach-out mid-conversation) ───────────────────
+
+
+class TestIdleGate:
+    @pytest.mark.asyncio
+    async def test_skips_when_user_active(self, workspace, data_dir):
+        """User messaged within idle_minutes → LLM pass skipped (so no proactive
+        message can interrupt an active exchange); mechanical maintenance ran."""
+        import time as _t
+        pm = AsyncMock()
+        with patch("memory.run_maintenance",
+                   AsyncMock(return_value={"stale": 0})) as rm:
+            result = await ops.handle_maintain(
+                _config(workspace, data_dir),  # idle_minutes=360
+                _pool(last_user_epoch=_t.time() - 90), None,  # 1.5 min ago
+                _session_mgr(), pm, _lock_factory(),
+            )
+        assert result["outcome"] == "skipped_user_active"
+        assert result["idle_minutes"] < 360
+        rm.assert_awaited_once()   # mechanical maintenance still ran
+        pm.assert_not_awaited()    # no LLM pass, no reach-out
+
+    @pytest.mark.asyncio
+    async def test_runs_once_idle_exceeds_threshold(self, workspace, data_dir):
+        """Idle past the threshold → the pass dispatches normally."""
+        import time as _t
+        pm = AsyncMock()
+        with patch("memory.run_maintenance", AsyncMock(return_value={})):
+            result = await ops.handle_maintain(
+                _config(workspace, data_dir, idle_minutes=10),
+                _pool(last_user_epoch=_t.time() - 1800), None,  # 30 min >= 10m
+                _session_mgr(), pm, _lock_factory(),
+            )
+        assert result["outcome"] == "ran"
+        pm.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_runs_when_no_user_messages(self, workspace, data_dir):
+        """idle None (no user messages on record) → nothing to interrupt, so the
+        pass still runs to tend memory."""
+        pm = AsyncMock()
+        with patch("memory.run_maintenance", AsyncMock(return_value={})):
+            result = await ops.handle_maintain(
+                _config(workspace, data_dir),
+                _pool(last_user_epoch=None), None,
+                _session_mgr(), pm, _lock_factory(),
+            )
+        assert result["outcome"] == "ran"
+        pm.assert_awaited_once()
 
 
 # ─── Marker advance ──────────────────────────────────────────────
@@ -251,23 +259,10 @@ class TestMarkerAdvance:
         with patch("memory.run_maintenance", AsyncMock(return_value={})):
             await ops.handle_maintain(
                 _config(workspace, data_dir), _pool(), None,
-                AsyncMock(), _lock_factory(),
+                _session_mgr(), AsyncMock(), _lock_factory(),
             )
         assert path.exists()
         assert maintain_state.load_state(path).last_pass_at is not None
-
-    @pytest.mark.asyncio
-    async def test_marker_not_advanced_on_too_soon(self, workspace, data_dir):
-        path = maintain_state.state_path(data_dir)
-        marker = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=1)
-        maintain_state.save_last_pass(path, marker)
-        before = path.read_text()
-        with patch("memory.run_maintenance", AsyncMock(return_value={})):
-            await ops.handle_maintain(
-                _config(workspace, data_dir), _pool(), None,
-                AsyncMock(), _lock_factory(),
-            )
-        assert path.read_text() == before
 
 
 # ─── State round-trip ────────────────────────────────────────────
@@ -396,7 +391,7 @@ class TestBriefDiffContent:
         pm = AsyncMock()
         with patch("memory.run_maintenance", AsyncMock(return_value={})):
             await ops.handle_maintain(
-                _config(workspace, data_dir), pool, None, pm, _lock_factory(),
+                _config(workspace, data_dir), pool, None, _session_mgr(), pm, _lock_factory(),
             )
         text = pm.await_args.kwargs["text"]
         assert "MEMORY.md" in text

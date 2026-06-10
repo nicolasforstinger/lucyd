@@ -140,7 +140,7 @@ async def idle_minutes_since_user(
 ) -> float | None:
     """Minutes since the last message in *user_session_key* (``None`` if never).
 
-    The conceptual key (e.g. ``user:nicolas``) lives in
+    The conceptual key (e.g. ``user:<name>``) lives in
     ``sessions.sessions.contact``; ``sessions.messages.session_id`` is the row
     UUID, so the join is required.
     """

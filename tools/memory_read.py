@@ -1,7 +1,7 @@
 """Memory tools — memory_search and memory_get.
 
 Optional: only registered if memory DB is configured.
-memory_search uses structured recall (facts, episodes, commitments)
+memory_search uses structured recall (facts, episodes)
 with vector fallback. memory_get reads chunks by file path.
 """
 
@@ -57,7 +57,7 @@ async def tool_memory_search(query: str, top_k: int = 10) -> str:
     # Try structured recall if configured
     if _pool is not None and _config is not None:
         try:
-            max_tokens = getattr(_config, "recall_max_dynamic_tokens", 1000)
+            max_tokens = _config.recall_max_dynamic_tokens
             blocks = await recall(
                 query, _pool,
                 _memory, _config, top_k,
@@ -103,8 +103,8 @@ TOOLS: list[ToolSpec] = [
         name="memory_search",
         description=(
             "Search long-term memory. Searches indexed workspace files "
-            "(memory/*.md, MEMORY.md) plus structured facts, episodes, "
-            "and open commitments extracted from past sessions."
+            "(memory/*.md, MEMORY.md) plus structured facts and episodes "
+            "extracted from past sessions."
         ),
         input_schema={
             "type": "object",

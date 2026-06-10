@@ -46,10 +46,10 @@ _FULL_CONFIG = {
     "memory": {
         "db": "", "search_top_k": 10, "vector_search_limit": 10000,
         "embedding_timeout": 15,
-        "consolidation": {"enabled": False, "confidence_threshold": 0.6},
+        "consolidation": {"enabled": False},
         "recall": {
-            "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
-            "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
+            "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes": 3, "archive_messages": 20,
+            "personality": {"priority_vector": 35, "priority_episodes": 25, "priority_facts": 15,
                            "fact_format": "natural", "show_emotional_tone": True, "episode_section_header": "Recent conversations"},
         },
         "maintenance": {"stale_threshold_days": 90},
@@ -72,7 +72,7 @@ _FULL_CONFIG = {
                },
     "behavior": {
         "silent_tokens": ["NO_REPLY"], "typing_indicators": True, "error_message": "error",
-        "api_retries": 2, "api_retry_base_delay": 2.0, "message_retries": 2, "message_retry_base_delay": 30.0,
+        "api_retries": 2, "api_retry_base_delay": 2.0,
         "agent_timeout_seconds": 600,
         "max_turns_per_message": 50, "max_cost_per_message": 0.0,
         "compaction": {
@@ -83,7 +83,7 @@ _FULL_CONFIG = {
         },
     },
     "paths": {
-        "state_dir": "/tmp/test-state", "sessions_dir": "/tmp/test-sessions",
+        "state_dir": "/tmp/test-state",
         "log_file": "/tmp/test.log",
     },
 }
@@ -2184,8 +2184,8 @@ class TestQueueRoutingInvariant:
     # the developer to confirm the callback queues.
     _KNOWN_CALLBACK_DELEGATES = frozenset({
         "_handle_index_cb",          # daemon._handle_index → run_blocking
-        "_handle_consolidate_cb",    # daemon._handle_consolidate → direct async
         "_handle_maintain_cb",       # daemon._handle_maintain → run_blocking
+        "_handle_session_reset_cb",  # daemon._handle_session_reset → session-lock-guarded close
     })
 
     # Handlers that legitimately don't queue — they return early with an

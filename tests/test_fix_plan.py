@@ -193,11 +193,9 @@ class TestPreRetrySnapshot:
 
         # The agentic loop will:
         # Call 1: tool_use → execute tool → append tool_result
-        # Call 2: ConnectionError → retry
-        # But we need message-level retry, not API-level retry.
-        # The API-level retry in the loop will raise after exhausting api_retries=0.
-        # Message-level retry is in _run_agentic_with_retries (daemon level).
-        # So we test the loop-level behavior directly.
+        # Call 2: ConnectionError — API-level retry raises after exhausting
+        # api_retries=0; the error propagates to the pipeline, which rolls
+        # the session back (_handle_agentic_error). Test the loop directly.
         cfg = replace(_LOOP_CONFIG, max_turns=5, api_retries=0)
 
         # The loop should raise ConnectionError
@@ -209,8 +207,8 @@ class TestPreRetrySnapshot:
 
         # After the error, messages should have the partial state:
         # [user, assistant(tool_use), tool_result]
-        # The daemon's _run_agentic_with_retries would truncate back.
-        # Here we verify the loop left partial state (which the daemon cleans).
+        # The pipeline's _handle_agentic_error truncates back.
+        # Here we verify the loop left partial state (which the pipeline cleans).
         assert len(messages) > 1  # loop added messages before failing
 
 

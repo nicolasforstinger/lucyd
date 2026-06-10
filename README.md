@@ -65,7 +65,7 @@ Lucyd is an agentic daemon — it exposes an HTTP API, processes messages throug
 - **Priority queue** — User/operator messages processed before system/agent tasks. FIFO within each tier
 - **Persistent sessions** — PostgreSQL-backed sessions, messages, and events; survives restarts
 - **Long-term memory** — PostgreSQL tsvector FTS + pgvector similarity search (pluggable embedding provider)
-- **Structured memory** — Facts, episodes, commitments with automatic consolidation from sessions
+- **Structured memory** — Facts and episodes with automatic consolidation from sessions
 - **Budget-aware context** — Priority-tiered recall with token budget management
 - **Compaction** — Automatic conversation summarization when context fills up
 - **Skill system** — Markdown skill files with YAML frontmatter, loaded on demand

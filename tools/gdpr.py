@@ -4,14 +4,18 @@ Allows the agent to find and remove/pseudonymize personal data
 across all data stores when a data subject requests deletion.
 
 Search scans: knowledge.facts, knowledge.episodes, knowledge.entity_aliases,
-knowledge.commitments, sessions.messages, sessions.events, the search index
-(search.chunks), and workspace files.
+sessions.messages, sessions.events, the search index (search.chunks), workspace
+files, scheduled at-jobs, and download files.
 
-Redact supports: delete (remove row) and redact (text replacement in JSONB/text).
+Redact supports: delete (remove row/file/job) and redact (text replacement in
+JSONB/text). Erasure is complete — fact delete is a hard DELETE, chunk purge also
+clears cached embeddings, and the at-spool + download dir are swept — so no PII
+residue survives a delete.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,6 +31,7 @@ log = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
 _workspace: str = ""
+_download_dir: str = ""
 
 
 def configure(
@@ -34,10 +39,58 @@ def configure(
     config: Config | None = None,
     **_: object,
 ) -> None:
-    global _pool, _workspace
+    global _pool, _workspace, _download_dir
     _pool = pool
     if config is not None:
         _workspace = str(config.workspace)
+        _download_dir = str(config.http_download_dir)
+
+
+# ── at-spool helpers (scheduled reminders / self-tasks hold message text) ──
+
+
+async def _at_job_ids() -> list[str]:
+    """List queued at-job ids. Empty if at/atd is unavailable."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "at", "-l",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+    except (OSError, ValueError) as e:
+        log.debug("at -l unavailable: %s", e)
+        return []
+    ids: list[str] = []
+    for line in out.decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        if parts and parts[0].isdigit():
+            ids.append(parts[0])
+    return ids
+
+
+async def _at_job_text(job_id: str) -> str:
+    """Return the job script for an at-job id (empty on error)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "at", "-c", job_id,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+    except (OSError, ValueError):
+        return ""
+    return out.decode("utf-8", "replace")
+
+
+async def _delete_at_job(job_id: str) -> bool:
+    """Remove an at-job by id. Returns True on success."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "atrm", job_id,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        return await proc.wait() == 0
+    except (OSError, ValueError):
+        return False
 
 
 async def handle_gdpr_search(terms: list[str]) -> str:
@@ -75,26 +128,15 @@ async def handle_gdpr_search(terms: list[str]) -> str:
 
         # ── Knowledge: episodes ──────────────────────────────────
         rows = await _pool.fetch(
-            "SELECT id, summary, topics::text, decisions::text, commitments::text "
+            "SELECT id, summary, topics::text, decisions::text "
             "FROM knowledge.episodes "
             "WHERE (summary ILIKE $1 OR topics::text ILIKE $1 "
-            "OR decisions::text ILIKE $1 OR commitments::text ILIKE $1)",
+            "OR decisions::text ILIKE $1)",
             like,
         )
         for r in rows:
             results.append(
                 f"EPISODE #{r['id']}: {r['summary'][:150]}"
-            )
-
-        # ── Knowledge: commitments ───────────────────────────────
-        rows = await _pool.fetch(
-            "SELECT id, who, what, deadline, status FROM knowledge.commitments "
-            "WHERE (who ILIKE $1 OR what ILIKE $1 OR deadline ILIKE $1)",
-            like,
-        )
-        for r in rows:
-            results.append(
-                f"COMMITMENT #{r['id']} ({r['status']}): {r['who']} — {r['what'][:150]}"
             )
 
         # ── Sessions: messages ───────────────────────────────────
@@ -158,6 +200,36 @@ async def handle_gdpr_search(terms: list[str]) -> str:
                             f"{len(lines)} match(es)\n" + "\n".join(lines[:5])
                         )
 
+    # ── at-spool: scheduled reminders / self-tasks (scanned once over all terms) ──
+    lowered = [t.lower() for t in terms]
+    for job_id in await _at_job_ids():
+        body = await _at_job_text(job_id)
+        if any(t in body.lower() for t in lowered):
+            results.append(
+                f"ATJOB #{job_id}: scheduled job script contains a match "
+                "(redact target='atjob' to remove it)"
+            )
+
+    # ── Downloads: transient attachment files ───────────────────────
+    if _download_dir:
+        dl = Path(_download_dir)
+        if dl.is_dir():
+            for fp in dl.iterdir():
+                if not fp.is_file():
+                    continue
+                hit = any(t in fp.name.lower() for t in lowered)
+                if not hit:
+                    try:
+                        body = fp.read_text(encoding="utf-8", errors="ignore")
+                        hit = any(t in body.lower() for t in lowered)
+                    except OSError:
+                        continue
+                if hit:
+                    results.append(
+                        f"DOWNLOAD {fp.name}: file in download dir matches "
+                        "(redact target='download' to delete it)"
+                    )
+
     # Deduplicate (same row might match multiple terms)
     seen: set[str] = set()
     unique: list[str] = []
@@ -188,13 +260,15 @@ async def handle_gdpr_redact(
 
     if target == "fact":
         if action == "delete":
+            # Erasure is a hard DELETE — not the soft invalidate used for normal
+            # fact superseding (memory_forget) — so the PII value text leaves the
+            # row entirely, not just gets flagged inactive.
             result: str = await _pool.execute(
-                "UPDATE knowledge.facts SET invalidated_at = now() "
-                "WHERE id = $1",
+                "DELETE FROM knowledge.facts WHERE id = $1",
                 id,
             )
             affected = int(result.split()[-1]) if result else 0
-            return f"Fact #{id} invalidated." if affected else f"Fact #{id} not found."
+            return f"Fact #{id} deleted." if affected else f"Fact #{id} not found."
         else:
             # Redact: replace text in entity, attribute, and value
             for col in ("entity", "attribute", "value"):
@@ -228,29 +302,11 @@ async def handle_gdpr_redact(
                 "UPDATE knowledge.episodes SET "
                 "summary = REPLACE(summary, $1, $2), "
                 "topics = REPLACE(topics::text, $1, $2)::jsonb, "
-                "decisions = REPLACE(decisions::text, $1, $2)::jsonb, "
-                "commitments = REPLACE(commitments::text, $1, $2)::jsonb "
+                "decisions = REPLACE(decisions::text, $1, $2)::jsonb "
                 "WHERE id = $3",
                 old, new, id,
             )
             return f"Episode #{id} redacted: '{old}' -> '{new}'."
-
-    elif target == "commitment":
-        if action == "delete":
-            result = await _pool.execute(
-                "DELETE FROM knowledge.commitments WHERE id = $1",
-                id,
-            )
-            affected = int(result.split()[-1]) if result else 0
-            return f"Commitment #{id} deleted." if affected else f"Commitment #{id} not found."
-        else:
-            for col in ("who", "what", "deadline"):
-                await _pool.execute(
-                    f"UPDATE knowledge.commitments SET {col} = REPLACE({col}, $1, $2) "  # noqa: S608  # col is from a fixed set, not user input
-                    f"WHERE id = $3 AND {col} IS NOT NULL",
-                    old, new, id,
-                )
-            return f"Commitment #{id} redacted: '{old}' -> '{new}'."
 
     elif target == "message":
         if action == "delete":
@@ -286,17 +342,54 @@ async def handle_gdpr_redact(
         # Index chunks are derived copies of workspace text. Purge by the file
         # PATH (passed in `old`): the chunks rebuild clean from the (already-
         # redacted) source on the next index pass, so there is no continuity
-        # cost — delete is the only sensible action for the index.
+        # cost — delete is the only sensible action for the index. Also purge the
+        # embedding_cache rows for those chunks (same sha256(text) hash), so the
+        # derived vectors don't survive the erasure.
         if not old:
             return "Error: for target='chunk', 'old' must be the file path whose index chunks to purge."
-        result = await _pool.execute(
-            "DELETE FROM search.chunks WHERE path = $1", old,
-        )
+        async with _pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM search.embedding_cache WHERE hash IN "
+                    "(SELECT hash FROM search.chunks WHERE path = $1)",
+                    old,
+                )
+                result = await conn.execute(
+                    "DELETE FROM search.chunks WHERE path = $1", old,
+                )
         affected = int(result.split()[-1]) if result else 0
-        return f"Purged {affected} index chunk(s) for path '{old}'."
+        return f"Purged {affected} index chunk(s) + cached embeddings for path '{old}'."
+
+    elif target == "atjob":
+        # at-jobs are immutable once queued — removal is the only erasure.
+        if action != "delete":
+            return "Error: at-jobs are immutable; use action='delete' to remove the job."
+        job_id = str(id) if id else old
+        if not job_id:
+            return "Error: for target='atjob', provide the job id (from gdpr_search)."
+        ok = await _delete_at_job(job_id)
+        return f"Removed at-job {job_id}." if ok else f"at-job {job_id}: removal failed (not found or atrm unavailable)."
+
+    elif target == "download":
+        if action != "delete":
+            return "Error: downloads support action='delete' only."
+        if not _download_dir:
+            return "Error: no download dir configured."
+        if not old:
+            return "Error: for target='download', 'old' must be the filename to delete."
+        base = Path(_download_dir).resolve()
+        # Strip any directory components from `old` so a crafted name can't escape.
+        target_path = (base / Path(old).name).resolve()
+        if target_path.parent != base:
+            return "Error: path escapes the download dir."
+        if not target_path.is_file():
+            return f"Download '{old}' not found."
+        target_path.unlink()
+        return f"Deleted download '{target_path.name}'."
 
     else:
-        return f"Error: Unknown target '{target}'. Use: fact, alias, episode, commitment, message, event, chunk."
+        return (f"Error: Unknown target '{target}'. Use: fact, alias, episode, "
+                "message, event, chunk, atjob, download.")
 
 
 TOOLS: list[ToolSpec] = [
@@ -305,9 +398,9 @@ TOOLS: list[ToolSpec] = [
         description=(
             "Search all data stores for personal data matching any of the given terms. "
             "Use when a data subject requests deletion under GDPR Article 17. "
-            "Searches: facts, episodes, aliases, commitments, messages, events, "
-            "the search index (chunks), and workspace files. Case-insensitive. "
-            "Provide all known identifiers "
+            "Searches: facts, episodes, aliases, messages, events, the search "
+            "index (chunks), workspace files, scheduled at-jobs, and download "
+            "files. Case-insensitive. Provide all known identifiers "
             "(name, email, phone, address) for a thorough sweep.\n\n"
             "CRITICAL PROTOCOL:\n"
             "1. Search with ALL known identifiers in one call\n"
@@ -337,19 +430,24 @@ TOOLS: list[ToolSpec] = [
         name="gdpr_redact",
         description=(
             "Delete or redact a specific record found by gdpr_search. "
-            "action='delete' removes the record (facts are soft-deleted, "
-            "messages cannot be deleted — use redact). "
+            "action='delete' removes the record (facts are hard-deleted for "
+            "erasure; messages cannot be deleted — use redact). "
             "action='redact' replaces 'old' text with 'new' (default: [REDACTED]). "
             "For target='chunk', pass the file path in 'old' to purge that file's "
-            "search-index chunks (they rebuild from the redacted source). "
-            "For workspace files, use the edit tool directly, then purge their chunks."
+            "search-index chunks AND their cached embeddings (they rebuild from "
+            "the redacted source). For target='atjob', pass the job id to remove "
+            "a scheduled reminder/task (immutable — delete only). For "
+            "target='download', pass the filename in 'old' to delete a download "
+            "file. For workspace files, use the edit tool directly, then purge "
+            "their chunks."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "target": {
                     "type": "string",
-                    "enum": ["fact", "alias", "episode", "commitment", "message", "event", "chunk"],
+                    "enum": ["fact", "alias", "episode", "message", "event",
+                             "chunk", "atjob", "download"],
                     "description": "The data store containing the record",
                 },
                 "id": {

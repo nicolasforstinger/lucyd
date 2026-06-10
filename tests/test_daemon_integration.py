@@ -90,11 +90,11 @@ def _make_config(tmp_path, **overrides):
         "memory": {
             "db": "", "search_top_k": 10, "vector_search_limit": 10000,
             "embedding_timeout": 15,
-            "consolidation": {"enabled": False, "confidence_threshold": 0.6},
+            "consolidation": {"enabled": False},
             "recall": {
-                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes_at_start": 3, "archive_messages": 20,
+                "decay_rate": 0.03, "max_facts_in_context": 20, "max_dynamic_tokens": 1500, "max_episodes": 3, "archive_messages": 20,
                 "personality": {
-                    "priority_vector": 35, "priority_episodes": 25, "priority_facts": 15, "priority_commitments": 40,
+                    "priority_vector": 35, "priority_episodes": 25, "priority_facts": 15,
                     "fact_format": "natural", "show_emotional_tone": True, "episode_section_header": "Recent conversations",
                 },
             },
@@ -119,7 +119,6 @@ def _make_config(tmp_path, **overrides):
         "behavior": {
             "silent_tokens": ["NO_REPLY"], "typing_indicators": True,
             "api_retries": 2, "api_retry_base_delay": 2.0,
-            "message_retries": 2, "message_retry_base_delay": 30.0,
             "agent_timeout_seconds": 600,
             "max_turns_per_message": 50, "max_cost_per_message": 0.0,
             "compaction": {
@@ -131,7 +130,6 @@ def _make_config(tmp_path, **overrides):
         },
         "paths": {
             "state_dir": str(tmp_path / "state"),
-            "sessions_dir": str(tmp_path / "sessions"),
             "log_file": str(tmp_path / "lucyd.log"),
         },
     }
@@ -433,8 +431,6 @@ class TestResolveIntegration:
         daemon.config.compaction_threshold = 150000
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
-        daemon.config.message_retries = 0
-        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
 
         loop = asyncio.get_running_loop()
@@ -472,8 +468,6 @@ class TestResolveIntegration:
         daemon.config.compaction_threshold = 150000
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
-        daemon.config.message_retries = 0
-        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
 
         loop = asyncio.get_running_loop()
@@ -524,8 +518,6 @@ class TestResolveIntegration:
         daemon.config.compaction_threshold = 150000
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
-        daemon.config.message_retries = 0
-        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
 
         loop = asyncio.get_running_loop()
@@ -820,8 +812,6 @@ class TestProcessMessageIntegration:
         daemon.config.consolidation_enabled = False
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Something went wrong."
-        daemon.config.message_retries = 0
-        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
         daemon.config.vision_max_image_bytes = 5 * 1024 * 1024
         daemon.config.vision_max_dimension = 1568
@@ -1125,8 +1115,6 @@ class TestMessageLoopDebounce:
         daemon.config.consolidation_enabled = False
         daemon.config.always_on_skills = []
         daemon.config.error_message = "Error"
-        daemon.config.message_retries = 0
-        daemon.config.message_retry_base_delay = 0.01
         daemon.config.raw = MagicMock(return_value=0.0)
         # Very short debounce for fast tests
         daemon.config.debounce_ms = 50
@@ -1406,20 +1394,6 @@ class TestMessageLoopDebounce:
         # Loop exited without crash — running state unchanged by CancelledError
         # (CancelledError breaks out of while loop)
 
-    @pytest.mark.asyncio
-    async def test_unknown_item_type_skipped(self, loop_daemon):
-        """Non-dict items are silently skipped."""
-        daemon, session = loop_daemon
-
-        await daemon.queue.put(42)  # Not a dict
-        await daemon.queue.put("stray string")
-        await daemon.queue.put(None)
-
-        with patch("pipeline.run_agentic_loop") as mock_loop:
-            await daemon._message_loop()
-
-        # Nothing was processed
-        mock_loop.assert_not_called()
 
 
 # ─── _build_sessions Tests ────────────────────────────────────────

@@ -27,7 +27,7 @@ Inbound message to response delivery. Source: `api.py` routes, `lucyd.py` `_mess
 | `channels/telegram.py` | `/api/v1/inbound/telegram` |
 | `channels/email.py` | `/api/v1/inbound/email` |
 | agentctl + ad-hoc operators | `/api/v1/chat`, `/api/v1/chat/stream` |
-| Cron (container entrypoint) | `/api/v1/{index, consolidate, compact, maintain}` |
+| Cron (container entrypoint) | `/api/v1/{index, compact, maintain}` |
 | `at` jobs (from `remind_user` / `schedule_self_task`) | `/api/v1/outbound/send` (literal) or `/api/v1/agent/action` (self-task) |
 | n8n / external scripts | `/api/v1/system/event` (sender=`automation`) |
 
@@ -43,7 +43,7 @@ flowchart TD
     end
 
     subgraph Background["System / Agent / Cron"]
-        CRON["cron jobs<br/>POST /api/v1/{index,consolidate,compact,...}"]
+        CRON["cron jobs<br/>POST /api/v1/{index,compact,maintain}"]
         AT["at-jobs (remind_user / schedule_self_task)<br/>POST /api/v1/outbound/send<br/>or /api/v1/agent/action"]
         N8N["n8n / webhooks<br/>POST /api/v1/system/event"]
     end
@@ -71,7 +71,7 @@ flowchart TD
         PREPROC["_run_preprocessors"]
         ATTACH["_process_attachments<br/>fit_image, extract_document_text"]
         SETUP["_setup_session<br/>key = talker:sender"]
-        RECALL["_build_recall<br/>facts, episodes, commitments"]
+        RECALL["_build_recall<br/>facts, episodes"]
         BUILD["_build_context<br/>stable + semi-stable + dynamic tiers<br/>+ get_schemas_for_talker(talker)"]
         BUDGET["_ensure_context_budget<br/>(emergency compact at >80%)"]
         RUN["_run_agentic"]
@@ -124,17 +124,17 @@ The processing pipeline runs identically for both paths.
 
 ### Metrics
 
-Fire at: `_run_preprocessors` (count, duration), `_build_context` (context utilization), `_run_agentic_with_retries` via agentic.py (API calls, latency, tokens, cost), tool execution (count, duration), message completion (count, duration, cost, turns), `_auto_close_if_ephemeral` (session close), `_handle_agentic_error` (errors).
+Fire at: `_run_preprocessors` (count, duration), `_build_context` (context utilization), `_run_agentic` via agentic.py (API calls, latency, tokens, cost), tool execution (count, duration), message completion (count, duration, cost, turns), `_auto_close_if_ephemeral` (session close), `_handle_agentic_error` (errors).
 
 ---
 
 ## 2. Agentic Loop
 
-The core thinking-acting cycle. Source: `pipeline.py` `_run_agentic_with_retries()`, `agentic.py` `run_agentic_loop()`.
+The core thinking-acting cycle. Source: `pipeline.py` `_run_agentic()`, `agentic.py` `run_agentic_loop()`.
 
 ```mermaid
 flowchart TD
-    START["_run_agentic_with_retries"]
+    START["_run_agentic"]
     DISPATCH{"_single_shot?"}
 
     subgraph SingleShot["run_single_shot"]
@@ -157,11 +157,6 @@ flowchart TD
     RETURN["Return LLMResponse<br/>text + attachments + usage + turns"]
     MAX_TURNS["Append stop message<br/>+ fallback text"]
 
-    subgraph Retry["Message-level retry"]
-        ROLLBACK["Rollback session.messages<br/>to pre-attempt state"]
-        BACKOFF["Exponential backoff + jitter"]
-    end
-
     START --> DISPATCH
     DISPATCH -->|yes| SS --> RETURN
     DISPATCH -->|no| TRIM --> CALL --> METER --> COST_CHECK
@@ -175,8 +170,6 @@ flowchart TD
     PRESSURE -->|"no pressure"| TURNS
     TURNS -->|yes| TRIM
     TURNS -->|exhausted| MAX_TURNS --> RETURN
-
-    START -.->|"transient error<br/>+ retries left"| ROLLBACK --> BACKOFF --> START
 ```
 
 ### Key decision: stop vs continue
@@ -192,9 +185,9 @@ if not response.tool_calls or response.stop_reason == "end_turn":
 
 Happens inside `ToolRegistry.execute()`, not as a step in the agentic loop. `_smart_truncate` applies per-tool limits: JSON arrays truncated by items, objects compacted, fallback to head+tail character cut.
 
-### Message-level retry
+### Error handling
 
-`_run_agentic_with_retries` wraps the inner loop. On transient failure with retries remaining: roll back `session.messages` to the pre-attempt snapshot (strip partial turns), sleep with exponential backoff + jitter, and re-enter. Non-transient errors or exhausted retries propagate to `_handle_agentic_error`.
+There is no message-level retry — API-level retry inside `_call_provider_with_retry` handles transient errors. If the loop fails anyway, `_handle_agentic_error` rolls `session.messages` back to the pre-attempt snapshot (strips partial turns and the orphaned user message) and the error propagates to the caller.
 
 ---
 
@@ -209,7 +202,7 @@ flowchart TD
     subgraph Inputs["Gather inputs"]
         TOOLS_DESC["tool_registry.get_brief_descriptions()"]
         SKILLS["skill_loader.build_index()<br/>+ get_bodies(always_on)"]
-        RECALL["_build_recall<br/>SQL: facts, episodes, commitments<br/>→ recall text (or empty if not first msg)"]
+        RECALL["_build_recall<br/>SQL: facts, episodes<br/>→ recall text (or empty if not first msg)"]
     end
 
     subgraph Builder["ContextBuilder.build()"]
@@ -268,7 +261,7 @@ The dynamic tier includes session framing keyed off `talker`:
 
 ### Recall injection
 
-`_build_recall` only fires on the **first message** of a session (`len(session.messages) > 1` → skip). It calls `memory.get_session_start_context()` which queries structured memory: facts ordered by `accessed_at`, episodes by date, open commitments. The result is passed as `extra_dynamic` into `build()` and appended to the dynamic tier.
+`_build_recall` fires on **every user turn** (non-user talkers, consolidation disabled, or no memory subsystem → skip). It calls `memory.recall(query)` keyed to the user's message — with the leading `[timestamp]` and any `[…saved:]` attachment prefix stripped — which retrieves facts, episodes, and vector matches over the indexed workspace. The budgeted result is passed as `extra_dynamic` into `build()` and appended to the dynamic tier.
 
 ### Token cap enforcement
 
@@ -276,23 +269,23 @@ When `max_system_tokens > 0`, blocks are trimmed in priority order: dynamic firs
 
 ---
 
-## 4. Session Start Recall
+## 4. Per-Turn Recall
 
-How structured memory is injected at session start. Source: `pipeline.py` `_build_recall()`, `memory.py` `get_session_start_context()`, `inject_recall()`.
+How structured memory is retrieved and injected on every user turn. Source: `pipeline.py` `_build_recall()`, `memory.py` `recall()`, `inject_recall()`.
 
 ```mermaid
 flowchart TD
-    GUARD{"_build_recall<br/>first message?<br/>consolidation enabled?"}
+    GUARD{"_build_recall<br/>talker == user?<br/>consolidation enabled?<br/>memory subsystem?"}
     SKIP["Return empty string"]
 
-    subgraph Query["get_session_start_context"]
-        FACTS["SELECT facts<br/>WHERE invalidated_at IS NULL<br/>ORDER BY accessed_at DESC<br/>LIMIT max_facts"]
-        EPISODES["SELECT episodes<br/>ORDER BY date DESC<br/>LIMIT max_episodes"]
-        COMMITS["get_open_commitments()<br/>WHERE status = 'open'"]
+    subgraph Query["recall(query) — keyed to the user message"]
+        FACTS["Stage 1: entity lookup<br/>extract_query_entities → lookup_facts"]
+        EPISODES["Stage 2: keyword search<br/>search_episodes(keywords)"]
+        VECTOR["Stage 3: vector search<br/>memory_interface.search(query)<br/>over indexed workspace, decay-scored"]
     end
 
     subgraph Budget["inject_recall"]
-        SORT["Sort by priority DESC<br/>commitments (40) > episodes (25) > facts (15)"]
+        SORT["Sort by priority DESC<br/>vector (35) > episodes (25) > facts (15)"]
         ITER["Add blocks until<br/>max_dynamic_tokens exhausted"]
         DROP["Dropped sections noted<br/>in footer for agent"]
         FOOTER["Append footer:<br/>[Memory loaded: sections | tokens used]"]
@@ -301,11 +294,11 @@ flowchart TD
     OUTPUT["Return as extra_dynamic<br/>→ dynamic context tier"]
     METRIC["MEMORY_OPS_TOTAL<br/>{operation: recall_triggered}"]
 
-    GUARD -->|"no: len(messages) > 1<br/>or consolidation disabled"| SKIP
+    GUARD -->|"no: non-user talker,<br/>consolidation off,<br/>or no memory subsystem"| SKIP
     GUARD -->|yes| Query
     FACTS --> SORT
     EPISODES --> SORT
-    COMMITS --> SORT
+    VECTOR --> SORT
     SORT --> ITER --> FOOTER --> OUTPUT
     ITER -.->|over budget| DROP
     OUTPUT --> METRIC
@@ -313,11 +306,12 @@ flowchart TD
 
 ### Preconditions
 
-`_build_recall` only fires when:
-1. This is the **first message** in the session (`len(session.messages) > 1` → skip)
+`_build_recall` runs when all of:
+1. The turn's talker is `user` (operator/system/agent carry their own context)
 2. `consolidation_enabled` is true in config
+3. A memory subsystem exists (memory tools enabled)
 
-On failure, returns a fallback string directing the agent to use `memory_search` manually.
+The query is the user's message with the leading `[timestamp]` header and any `[…saved: /path]:` attachment prefix stripped, so retrieval keys on content. On failure, returns a fallback string directing the agent to use `memory_search` manually.
 
 ### Priority budgeting
 
@@ -325,15 +319,15 @@ On failure, returns a fallback string directing the agent to use `memory_search`
 
 | Block | Priority | Source |
 |---|---|---|
-| Open commitments | 40 | `commitments WHERE status = 'open'` |
-| Recent episodes | 25 | `episodes ORDER BY date DESC LIMIT max_episodes` |
-| Known facts | 15 | `facts WHERE invalidated_at IS NULL ORDER BY accessed_at DESC LIMIT max_facts` |
+| Vector matches | 35 | `memory_interface.search(query)` over indexed workspace, exp-decay scored |
+| Recent episodes | 25 | `search_episodes(keywords)` from the query |
+| Known facts | 15 | `lookup_facts(entities)` from the query |
 
 When `max_tokens` is 0, all blocks are included (unlimited budget).
 
-### Runtime recall vs session start
+### One engine, two callers
 
-FTS5 keyword search and vector similarity (`memory_search` tool) use a separate path: `_build_recall_blocks()` which adds a 4th block type — vector search results (priority 35) with exponential decay scoring. Session start recall is simpler: SQL lookups only, no FTS/vector.
+`recall()` is the single retrieval path. The pipeline calls it per user turn (above); the `memory_search` tool calls the same function for explicit lookups. Both produce the same four block types and share the priority/budget rules.
 
 ---
 
@@ -425,7 +419,7 @@ flowchart TD
         WARN_CHECK{"input_tokens ><br/>80% of threshold?"}
         WARN["Inject compaction<br/>warning into session"]
         COMPACT_CHECK{"force_compact OR<br/>input_tokens > threshold?"}
-        CONSOLIDATE["consolidation.consolidate_session<br/>extract facts + episode via LLM"]
+        CONSOLIDATE["operations.harvest_conversation<br/>agent harvests facts + episode"]
         COMPACT["_compact_session<br/>LLM summarizes oldest messages,<br/>replace_all_messages"]
         AUTOCLOSE{"talker ∈<br/>system, agent?<br/>+ new session?"}
     end
@@ -433,7 +427,7 @@ flowchart TD
     subgraph Close["close_session"]
         POP["Remove from in-memory cache"]
         MARK["UPDATE sessions.sessions<br/>SET closed_at = now()"]
-        CALLBACKS["Fire on_close callbacks<br/>(consolidate_on_close)"]
+        CALLBACKS["Fire on_close callbacks<br/>(harvest_conversation)"]
     end
 
     LOOKUP -->|yes| LOAD
@@ -466,7 +460,7 @@ Every mutation writes to Postgres:
 
 Triggered in `_finalize_response` when `last_input_tokens > compaction_threshold` OR forced via `POST /api/v1/compact`. A pre-loop emergency compaction also runs in `_ensure_context_budget` if context utilization exceeds 80%. Two phases:
 
-1. **Consolidation** (if `[memory.consolidation] enabled = true`): `consolidation.consolidate_session` extracts facts + episode summary via the `consolidation` model role and writes them to `knowledge` schema. Must succeed before compaction — failure sets `consolidation_pending` and skips compaction.
+1. **Harvest** (if `[memory.consolidation] enabled = true`): `operations.harvest_conversation` dispatches an agentic maintenance turn in which the agent writes facts + an episode in her own voice (no neutral extractor, no auto-aliases). Must succeed before compaction — if it can't (returns `ok_to_compact = false`), compaction is skipped to avoid fact loss.
 2. **Compaction**: splits messages at `keep_recent_pct` (default 33%, adaptive to 50% for ≤32k context). Boundary adjusted to avoid orphaning tool results. Old messages are summarized by the `compaction` model role. Result: `[summary_msg] + recent_messages`. Full audit trail remains in `sessions.events`.
 
 A context warning is injected at 80% of threshold (`_check_compaction_warning`) to give the agent a chance to save important context to memory files.
@@ -562,7 +556,7 @@ Per tool call: `TOOL_CALLS_TOTAL{tool_name, status}` (success/error), `TOOL_DURA
 | `exec` | `tools/shell.py` | Subprocess with timeout, env filtering, process group kill |
 | `web_search` (Brave), `web_fetch` | `tools/web.py` | SSRF: `_is_private_ip`, DNS pin |
 | `memory_search`, `memory_get` | `tools/memory_read.py` | tsvector + vector + structured recall |
-| `memory_write`, `memory_forget`, `commitment_update` | `tools/memory_write.py` | Writes facts, episodes, commitments |
+| `memory_write`, `memory_forget`, `record_episode` | `tools/memory_write.py` | Writes facts and episodes |
 | `sessions_spawn` | `tools/agents.py` | Sub-agent with deny-list, scoped tools |
 | `session_status` | `tools/status.py` | Context utilization, uptime, cost |
 | `load_skill` | `skills.py` | Markdown skill loader |
@@ -648,7 +642,7 @@ Both bridges authenticate to the daemon with `LUCYD_HTTP_TOKEN`; their outbound 
 
 ## 9. Data Directory Layout
 
-Source: `config.py` `_resolve_data_dir_paths`.
+Source: `config.py` `_resolve_data_dir_paths`, the container entrypoint.
 
 ```mermaid
 flowchart LR
@@ -656,7 +650,6 @@ flowchart LR
         PID["lucyd.pid"]
         DOWNLOADS["downloads/<br/>HTTP attachments, 24h TTL"]
         LOGS["logs/lucyd.log<br/>+ rotated backups"]
-        SESSIONS["(sessions_dir is reserved for future on-disk artefacts<br/>— message history lives in PG)"]
     end
 
     subgraph Workspace["$WORKSPACE (configured separately)"]
@@ -676,7 +669,6 @@ flowchart LR
 | Path | Default | Source |
 |------|---------|--------|
 | `state_dir` | `$DATA_DIR` | `[paths] state_dir` |
-| `sessions_dir` | `$DATA_DIR/sessions` | `[paths] sessions_dir` |
 | `log_file` | `$DATA_DIR/logs/lucyd.log` | `[paths] log_file` |
 | `http_download_dir` | `$DATA_DIR/downloads` | `[http] download_dir` |
 | `lucyd.pid` | `$state_dir/lucyd.pid` | derived from `state_dir` |

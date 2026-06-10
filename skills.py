@@ -194,6 +194,12 @@ def tool_load_skill(name: str) -> str:
         return "Error: Skill loader not initialized"
     skill = _skill_loader.get_skill(name)
     if skill is None:
+        # The registry is a startup snapshot; a skill added or edited since
+        # then is absent from it until rescanned. Rescan once on miss so a
+        # newly-added skill is loadable without a daemon restart.
+        _skill_loader.scan()
+        skill = _skill_loader.get_skill(name)
+    if skill is None:
         available = _skill_loader.list_skill_names()
         return f"Error: Skill '{name}' not found. Available: {', '.join(available)}"
     return str(skill["body"])

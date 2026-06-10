@@ -294,7 +294,7 @@ token_env = "LUCYD_TELEGRAM_TOKEN"
 allowed_senders = [123456789]
 
 [telegram.contacts]
-Nicolas = 123456789               # name = chat_id (NOT chat_id = name)
+YourName = 123456789               # name = chat_id (NOT chat_id = name)
 ```
 
 Secrets are never in the TOML file — only env var *names* that point to secrets. Bridges connect back to the daemon at `http://127.0.0.1:8100` and authenticate with `LUCYD_HTTP_TOKEN`.

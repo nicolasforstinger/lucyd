@@ -129,7 +129,8 @@ async def test_cancel_scheduled_reports_failure():
 
 @pytest.mark.asyncio
 async def test_list_scheduled_renders_id_time_and_intent():
-    from tools.reminder import tool_list_scheduled
+    from tools.reminder import configure, tool_list_scheduled
+    configure(http_auth_token="t", http_port=8100, user_timezone="Europe/Vienna")
     at_l = "25\tTue May 26 12:01:00 2026 a lucyd\n"
     at_c = (
         '#!/bin/sh\ncurl -s -X POST http://localhost:8100/api/v1/agent/action '
@@ -149,7 +150,9 @@ async def test_list_scheduled_renders_id_time_and_intent():
          patch("asyncio.create_subprocess_shell", side_effect=fake_subprocess):
         result = await tool_list_scheduled()
     assert "25" in result
-    assert "Tue May 26 12:01:00 2026" in result
+    # `at -l` prints UTC; the listing renders it in the user's tz: 12:01 UTC -> 14:01 CEST
+    assert "14:01" in result
+    assert "CEST" in result
     assert "water the plants" in result
 
 
@@ -205,3 +208,21 @@ def test_resolve_when_naive_defaults_to_user_tz_not_utc():
     assert e1 == "" and e2 == ""
     # Same wall-clock string resolves to different UTC stamps per tz.
     assert stamp_vienna != stamp_utc
+
+
+def test_to_user_tz_display_is_dst_aware():
+    """`at -l` prints UTC; the listing renders it in the user's tz — CET in
+    winter, CEST in summer (DST-aware, no fixed offset)."""
+    from tools.reminder import _to_user_tz_display, configure
+    configure(http_auth_token="t", http_port=8100, user_timezone="Europe/Vienna")
+    winter = _to_user_tz_display("Thu Jan 15 08:00:00 2026")  # 08:00 UTC -> 09:00 CET
+    assert "09:00" in winter and "CET" in winter
+    summer = _to_user_tz_display("Wed Jul 15 07:00:00 2026")  # 07:00 UTC -> 09:00 CEST
+    assert "09:00" in summer and "CEST" in summer
+
+
+def test_to_user_tz_display_returns_raw_on_unparseable():
+    """An unexpected `at` format degrades to the raw string, not a crash."""
+    from tools.reminder import _to_user_tz_display, configure
+    configure(http_auth_token="t", http_port=8100, user_timezone="Europe/Vienna")
+    assert _to_user_tz_display("not a time") == "not a time"

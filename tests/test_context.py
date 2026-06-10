@@ -114,3 +114,21 @@ class TestSkillsAppended:
 
 
 # ─── Context Reload ──────────────────────────────────────────────
+
+
+class TestUserTimezone:
+    def test_dynamic_clock_renders_in_configured_timezone(self, tmp_workspace):
+        """The ambient 'Current date/time' uses the user's tz (CET/CEST), not UTC."""
+        text = ContextBuilder(
+            workspace=tmp_workspace, stable_files=["SOUL.md"], semi_stable_files=[],
+            user_timezone="Europe/Vienna",
+        ).build()[-1]["text"]
+        assert "Current date/time" in text
+        assert "CET" in text or "CEST" in text
+
+    def test_dynamic_clock_defaults_to_utc(self, tmp_workspace):
+        """No user_timezone configured -> ambient clock stays UTC."""
+        text = ContextBuilder(
+            workspace=tmp_workspace, stable_files=["SOUL.md"], semi_stable_files=[],
+        ).build()[-1]["text"]
+        assert "UTC" in text

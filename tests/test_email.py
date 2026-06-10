@@ -988,14 +988,19 @@ class TestMain:
         email_mod.USER = "user@example.com"
         email_mod.PASSWORD = "pass"
 
+        runner = AsyncMock()
         with (
             patch.object(email_mod, "load_config") as mock_load,
+            patch.object(email_mod, "_start_outbound_server",
+                         new_callable=AsyncMock, return_value=runner) as mock_start,
             patch.object(email_mod, "poll_loop", new_callable=AsyncMock) as mock_poll,
         ):
             await email_mod.main()
 
         mock_load.assert_called_once()
+        mock_start.assert_awaited_once()
         mock_poll.assert_called_once()
+        runner.cleanup.assert_awaited_once()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1091,3 +1096,63 @@ class TestDeliveryFailureNotification:
 
         # UID 7 should NOT be in the processed list on the second fetch call
         assert mock_fetch.call_args_list[1] == call([])
+
+
+# ─── Outbound (proactive /send listener) ─────────────────────────
+
+
+class TestOutboundAdapters:
+    """send_text / send_attachment adapt the /send contract onto SMTP send_reply."""
+
+    def test_subject_from_first_line(self) -> None:
+        assert email_mod._subject_for("Hello there\nmore body") == "Hello there"
+
+    def test_subject_clipped(self) -> None:
+        assert len(email_mod._subject_for("x" * 200)) == email_mod._SUBJECT_MAX
+
+    def test_subject_fallback_when_empty(self) -> None:
+        assert email_mod._subject_for("   ") == "Message from your assistant"
+
+    @pytest.mark.asyncio
+    async def test_send_text_calls_send_reply(self) -> None:
+        with patch.object(email_mod, "send_reply") as mock_reply:
+            await email_mod.send_text("you@example.com", "Reminder: standup\nat 10am")
+        mock_reply.assert_called_once()
+        to, subject, body, atts = mock_reply.call_args[0]
+        assert to == "you@example.com"
+        assert subject == "Reminder: standup"
+        assert body == "Reminder: standup\nat 10am"
+        assert atts is None
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_encodes_and_calls_send_reply(self, tmp_path) -> None:
+        f = tmp_path / "report.pdf"
+        f.write_bytes(b"PDF-BYTES")
+        with patch.object(email_mod, "send_reply") as mock_reply:
+            await email_mod.send_attachment("you@example.com", str(f), caption="Your report")
+        to, subject, body, atts = mock_reply.call_args[0]
+        assert to == "you@example.com"
+        assert subject == "Your report"
+        assert body == "Your report"
+        assert len(atts) == 1
+        assert atts[0]["filename"] == "report.pdf"
+        assert base64.b64decode(atts[0]["data"]) == b"PDF-BYTES"
+        assert atts[0]["content_type"] == "application/pdf"
+
+
+class TestOutboundServerWiring:
+    """The shared /send app wires onto email's str recipient + adapters."""
+
+    @pytest.mark.asyncio
+    async def test_refuses_without_user_address(self, monkeypatch) -> None:
+        monkeypatch.setenv("LUCYD_HTTP_TOKEN", "tok")
+        monkeypatch.setattr(email_mod, "USER_ADDRESS", "")
+        with pytest.raises(RuntimeError, match="user_address"):
+            await email_mod._start_outbound_server()
+
+    @pytest.mark.asyncio
+    async def test_refuses_without_token(self, monkeypatch) -> None:
+        monkeypatch.delenv("LUCYD_HTTP_TOKEN", raising=False)
+        monkeypatch.setattr(email_mod, "USER_ADDRESS", "you@example.com")
+        with pytest.raises(RuntimeError, match="LUCYD_HTTP_TOKEN"):
+            await email_mod._start_outbound_server()

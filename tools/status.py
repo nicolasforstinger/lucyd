@@ -25,7 +25,7 @@ MAX_CONTEXT_TOKENS = 0
 
 
 def configure(session_manager: SessionManager | None = None,
-              start_time: float = 0.0, max_context_tokens: int = 0,
+              start_time: float = 0.0,
               session_getter: Callable[[], Session | None] | None = None,
               config: Config | None = None, provider: LLMProvider | None = None,
               **_: object) -> None:
@@ -43,8 +43,6 @@ def configure(session_manager: SessionManager | None = None,
         mct = primary_cfg.get("max_context_tokens", 0)
         if mct > 0:
             MAX_CONTEXT_TOKENS = mct
-    elif max_context_tokens > 0:
-        MAX_CONTEXT_TOKENS = max_context_tokens
     if start_time:
         _daemon_start_time = start_time
     if session_getter is not None:

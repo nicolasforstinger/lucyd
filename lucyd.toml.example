@@ -2,7 +2,7 @@
 # Copy to lucyd.toml and customize for your setup.
 # API keys are loaded from .env via environment variables.
 #
-# REQUIRED sections: [agent], [models.primary], [paths]
+# REQUIRED sections: [agent], [user], [models.primary] (usually loaded via [providers])
 # OPTIONAL sections: everything else — missing sections use sensible defaults.
 # Feature-gated: [vision], [documents], [tools.web_search] — only needed when enabled.
 # Plugin config: each plugin loads its own .toml from plugins.d/ (see plugins.d/*.toml.example).
@@ -21,7 +21,8 @@ workspace = "~/.lucyd/workspace"                               # REQUIRED — wo
 # all appear as the same user.  Session key is always user:<name>.
 
 [user]
-name = "nicolas"                                               # REQUIRED — user identity key (lowercase recommended)
+name = "yourname"                                              # REQUIRED — user identity key (lowercase recommended)
+timezone = "Europe/Vienna"                                     # IANA zone for user-facing times (scheduling tools, ambient clock; default: UTC)
 
 # Context files are injected into the system prompt and consume the model's context window.
 # Stable + semi-stable + tool schemas + recall = system prompt size. The remainder is available
@@ -45,8 +46,8 @@ always_on = []
 load = ["anthropic", "openai"]
 # dir = "providers.d"  # default: providers.d/ relative to this file
 
-# ─── HTTP API (REQUIRED — lucydctl and external integrations) ────
-# REST API for CLI control (lucydctl), n8n, scripts, webhooks.
+# ─── HTTP API (always on — the single operator interface) ───────
+# REST API for operator control (agentctl, curl), n8n, scripts, webhooks.
 # Auth token is loaded from env var named by token_env.
 
 [http]
@@ -77,9 +78,10 @@ search_top_k = 10                                          # Default result limi
 embedding_timeout = 15                                     # Embedding API request timeout (seconds)
 vector_search_limit = 10000                                # Raw DB query cap for vector search
 
+# Gates the pre-compaction / pre-close harvest: the agent writes facts + an
+# episode herself before old messages are summarized away.
 [memory.consolidation]
 enabled = true
-confidence_threshold = 0.6                                 # Minimum confidence for extracted facts
 
 [memory.maintenance]
 # Mechanical maintenance (stale-fact detection + metering retention) runs on every
@@ -87,27 +89,24 @@ confidence_threshold = 0.6                                 # Minimum confidence 
 stale_threshold_days = 90                                  # Remove unaccessed facts older than this
 
 [maintain]
-# Self-maintenance heartbeat. The /maintain cron fires hourly; the LLM pass
-# (reads workspace MAINTAIN.md, runs as a system:maintenance turn with tools)
-# dispatches only when elapsed since the last pass exceeds a randomized interval
-# in [interval_min_minutes, interval_max_minutes]. Mechanical maintenance still
-# runs every call. Disabled by default — no LLM cost until turned on.
+# Self-maintenance pass. The /maintain cron (bin/entrypoint.sh) fires at fixed
+# times (0,6,12,18); each fire dispatches a system:maintenance turn with full
+# tool access on the primary model (harvest the user conversation into facts +
+# an episode, tend memory, optional reach-out). The LLM pass is idle-gated: it
+# runs only once the user has been quiet for idle_minutes, so it never
+# interrupts an active conversation. Mechanical maintenance (stale-fact
+# detection, metering retention) runs on every fire regardless.
 enabled = false
-interval_min_minutes = 240                                 # Earliest the next pass may fire
-interval_max_minutes = 480                                 # Latest the next pass may fire
-idle_minutes = 360                                         # Reported in the brief; the agent gates its reach-out on it
-
-# Evolution: no config keys — behavior defined by the evolution skill file in workspace.
-# Triggered via `lucydctl --evolve` (cron) or `POST /api/v1/evolve`.
+idle_minutes = 30                                          # LLM pass runs only after the user is idle this long
 
 [memory.recall]
 decay_rate = 0.03                                          # Exponential decay factor for relevance scoring
 max_facts_in_context = 20                                  # Maximum facts injected into context
 max_dynamic_tokens = 1500                                  # Token budget for dynamic recall (0 = unlimited)
-max_episodes_at_start = 3                                  # Maximum episodes injected at session start
+max_episodes = 3                                           # Maximum episodes injected per recall
 
 # Recall personality: priority and formatting are hardcoded constants in memory.py.
-# Drop order under budget pressure: facts (15) → episodes (25) → vector (35) → commitments (40).
+# Drop order under budget pressure: facts (15) → episodes (25) → vector (35).
 
 [memory.indexer]
 include_patterns = ["memory/*.md", "MEMORY.md"]
@@ -123,7 +122,7 @@ enabled = [
     "read", "write", "edit", "exec",
     "web_search", "web_fetch",
     "memory_search", "memory_get",
-    "memory_write", "memory_forget", "commitment_update",
+    "memory_write", "memory_forget",
     "session_status",
     "sessions_spawn", "load_skill",
     "tts",
@@ -137,7 +136,6 @@ subagent_deny = ["sessions_spawn"]                         # Tools denied to sub
 subagent_max_turns = 0                                     # Max turns for sub-agents (0 = use max_turns_per_message)
 subagent_timeout = 0                                       # Timeout for sub-agents in seconds (0 = use agent_timeout_seconds)
 # tool_call_retry = false                                    # Retry tool calls with guidance when args are invalid (for small models)
-# tool_success_warn_threshold = 0.5                          # Warn when tool success rate drops below this (0.0–1.0)
 
 [tools.filesystem]
 allowed_paths = ["~/.lucyd/workspace", "/tmp/"]            # Path prefixes the agent can read/write
@@ -179,30 +177,26 @@ jpeg_quality_steps = [85, 60, 40]                          # JPEG quality reduct
 [behavior]
 debounce_ms = 500                                          # Debounce window for queued messages (milliseconds)
 silent_tokens = ["NO_REPLY"]                               # Replies matching these are not delivered
-typing_indicators = true                                   # Send typing indicator before processing
-error_message = "I'm having trouble connecting right now. Try again in a moment."
+error_message = "I'm having trouble connecting right now. Try again in a moment."  # Delivered to the user when the agentic loop fails
 agent_timeout_seconds = 600                                # Timeout per API call in the agentic loop
 max_turns_per_message = 50                                 # Max tool-use iterations per inbound message
 max_cost_per_message = 5.0                                 # EUR circuit breaker per message (0.0 = disabled)
 api_retries = 2                                            # API-level retries for transient errors (429, 5xx, connection)
 api_retry_base_delay = 2.0                                 # Initial backoff delay for API retries (seconds)
-message_retries = 2                                        # Message-level retries on persistent failure
-message_retry_base_delay = 30                              # Base delay between message retries (seconds)
-# max_context_for_tools = 0                                  # Inject wrap-up hint when context exceeds this during tool use (0 = disabled, auto-set by local profiles)
-# thinking_concise_hint = false                              # Inject "respond concisely" hint after tool results to reduce thinking overhead
+# max_context_for_tools = 0                                  # Inject wrap-up hint when context exceeds this during tool use (0 = disabled)
 
-# Compaction — summarizes old messages when tokens exceed threshold
+# Compaction — summarizes old messages when tokens exceed threshold.
+# The 80% warning point, 4-message minimum, and 2000-char tool-result cap
+# are framework constants, not config knobs.
 [behavior.compaction]
 threshold_tokens = 150000                                  # Trigger compaction when input_tokens exceeds this
-warning_pct = 0.8                                          # Fraction of threshold at which to inject context warning
-min_messages = 4                                           # Minimum messages before compaction can trigger
 keep_recent_pct = 0.33                                     # Keep newest fraction of messages verbatim (0.0–1.0)
 keep_recent_pct_min = 0.05                                 # Floor for keep_recent_pct
 keep_recent_pct_max = 0.9                                  # Ceiling for keep_recent_pct
 max_tokens = 2048                                          # Max output tokens for compaction summary
-tool_result_max_chars = 2000                               # Max chars per tool result kept in compacted context
 
-# Compaction prompt — {agent_name} and {max_tokens} substituted prompt = """Summarize this conversation."""
+# Compaction prompt — {agent_name} and {max_tokens} substituted
+# prompt = """Summarize this conversation for {agent_name}. Keep it under {max_tokens} tokens."""
 
 # Diary prompt — used by --compact / POST /compact, {date} substituted
 diary_prompt = """[AUTOMATED DAILY MAINTENANCE] Write a memory log for {date}."""
@@ -227,9 +221,8 @@ log_file = "~/.lucyd/lucyd.log"
 # currency = "EUR"                                             # Display currency for cost reports
 # retention_months = 84                                        # Delete metering records older than this, enforced by the /api/v1/maintain pass. Default 84 (7y, BAO §132).
 
-# ─── Media Lifecycle (OPTIONAL) ───────────────────────────────────
-# [media]
-# ttl_hours = 24                                               # Delete downloaded media files older than this
+# Downloaded media files are swept at startup with a hardcoded 24-hour TTL
+# (lucyd.py::_sweep_expired_media) — there is no [media] config section.
 
 # ─── Model Routing (OPTIONAL) ────────────────────────────────────
 # Route specific tasks to cheaper/different models. Empty = use primary.

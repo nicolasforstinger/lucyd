@@ -41,7 +41,7 @@ class AssistantMessage(TypedDict):
     ``attachments`` and ``source_metadata`` are populated only by
     ``SessionManager.append_outbound_to_user`` for cross-session
     proactive outbounds (e.g. ``send_message`` from agent:self into
-    user:nicolas).
+    user:<name>).
     """
 
     role: Literal["agent"]
@@ -54,14 +54,19 @@ class AssistantMessage(TypedDict):
     source_metadata: NotRequired[dict[str, Any]]
 
 
-class ToolResultsMessage(TypedDict):
-    """Tool execution results, paired with a preceding assistant's ``tool_calls``.
+class ToolResultEntry(TypedDict):
+    """One tool execution result, answering the tool_use id it pairs with."""
 
-    Each result dict contains ``tool_call_id``, ``tool_name``, and ``content``.
-    """
+    tool_call_id: str
+    tool_name: str
+    content: str
+
+
+class ToolResultsMessage(TypedDict):
+    """Tool execution results, paired with a preceding assistant's ``tool_calls``."""
 
     role: Literal["tool_result"]
-    results: list[dict[str, Any]]
+    results: list[ToolResultEntry]
 
 
 Message = UserMessage | AssistantMessage | ToolResultsMessage

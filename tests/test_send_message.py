@@ -64,7 +64,8 @@ async def test_send_message_rejects_oversize_attachment(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_send_message_happy_path_calls_bridge_client_and_appends_to_user_session(tmp_path):
+async def test_send_message_happy_path_calls_bridge_client_and_appends_to_user_session(tmp_path, monkeypatch):
+    import bridge_client
     from tools.send_message import tool_send_message, configure
 
     f = tmp_path / "small.pdf"
@@ -73,6 +74,7 @@ async def test_send_message_happy_path_calls_bridge_client_and_appends_to_user_s
     bridge_calls: list[dict] = []
     async def fake_bridge_send(text, attachments, primary, token, http_client):
         bridge_calls.append({"text": text, "attachments": attachments, "primary": primary})
+    monkeypatch.setattr(bridge_client, "send_to_user", fake_bridge_send)
 
     session_appends: list[dict] = []
     session_mgr = MagicMock()
@@ -99,7 +101,6 @@ async def test_send_message_happy_path_calls_bridge_client_and_appends_to_user_s
         http_client=AsyncMock(),
         session_mgr=session_mgr,
         pipeline_lock_factory=lambda key: FakeLock(),
-        bridge_send_override=fake_bridge_send,
     )
 
     result = await tool_send_message(text="here you go", attachments=[str(f)])
@@ -117,8 +118,9 @@ async def test_send_message_happy_path_calls_bridge_client_and_appends_to_user_s
 
 
 @pytest.mark.asyncio
-async def test_send_message_coerces_json_array_string_attachments(tmp_path):
+async def test_send_message_coerces_json_array_string_attachments(tmp_path, monkeypatch):
     """Models sometimes emit attachments as a JSON-encoded array string; coerce."""
+    import bridge_client
     from tools.send_message import tool_send_message, configure
 
     f = tmp_path / "small.mp3"
@@ -127,6 +129,7 @@ async def test_send_message_coerces_json_array_string_attachments(tmp_path):
     bridge_calls: list[dict] = []
     async def fake_bridge_send(text, attachments, primary, token, http_client):
         bridge_calls.append({"text": text, "attachments": attachments})
+    monkeypatch.setattr(bridge_client, "send_to_user", fake_bridge_send)
 
     class FakeLock:
         async def __aenter__(self):
@@ -147,7 +150,6 @@ async def test_send_message_coerces_json_array_string_attachments(tmp_path):
         http_client=AsyncMock(),
         session_mgr=session_mgr,
         pipeline_lock_factory=lambda key: FakeLock(),
-        bridge_send_override=fake_bridge_send,
     )
 
     # Pass a JSON-encoded array string instead of a list. Tool should coerce.
@@ -181,13 +183,15 @@ async def test_send_message_rejects_nonjson_string_attachments(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_send_message_bridge_failure_returns_partial_error_to_agent(tmp_path):
+async def test_send_message_bridge_failure_returns_partial_error_to_agent(tmp_path, monkeypatch):
     """If bridge delivery fails, tool returns a structured error so the agent can fall back."""
+    import bridge_client
     from tools.send_message import tool_send_message, configure
     from bridge_client import BridgeDeliveryError
 
     async def fake_bridge_fail(*args, **kwargs):
         raise BridgeDeliveryError("connection refused")
+    monkeypatch.setattr(bridge_client, "send_to_user", fake_bridge_fail)
 
     configure(
         bridges_primary="telegram",
@@ -197,7 +201,6 @@ async def test_send_message_bridge_failure_returns_partial_error_to_agent(tmp_pa
         http_client=AsyncMock(),
         session_mgr=AsyncMock(),
         pipeline_lock_factory=lambda key: AsyncMock(),
-        bridge_send_override=fake_bridge_fail,
     )
     result = await tool_send_message(text="x", attachments=[])
     assert "Error" in result["text"]

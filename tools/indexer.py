@@ -159,7 +159,7 @@ def scan_workspace(
     Returns [(relative_path, absolute_path)] sorted by path.
     """
     patterns = include_patterns or INCLUDE_PATTERNS
-    excludes = exclude_dirs if exclude_dirs is not None else EXCLUDE_DIRS
+    excludes = exclude_dirs if exclude_dirs else EXCLUDE_DIRS
     results: dict[str, Path] = {}
     for pattern in patterns:
         for p in workspace.glob(pattern):
@@ -363,6 +363,8 @@ async def index_workspace(
     model: str | None = None,
     force: bool = False,
     embedding_timeout: int = 15,
+    include_patterns: list[str] | None = None,
+    exclude_dirs: set[str] | None = None,
 ) -> dict[str, Any]:
     """Scan workspace, chunk changed files, embed, and write to Postgres.
 
@@ -375,7 +377,9 @@ async def index_workspace(
     model = model if model is not None else EMBEDDING_MODEL
 
     # 1. Scan workspace
-    file_list = scan_workspace(workspace)
+    file_list = scan_workspace(
+        workspace, include_patterns=include_patterns, exclude_dirs=exclude_dirs,
+    )
     scanned_paths = {rel for rel, _ in file_list}
 
     # 2. Get current index state

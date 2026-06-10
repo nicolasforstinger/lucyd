@@ -16,7 +16,7 @@ strategy = "tool_use"                      # Agent strategy: "tool_use" (multi-t
 
 ## [user]
 
-The single user the agent serves. `[user] name` is required and pins the `sender` for `talker=user` inbound messages — session key is always `f"user:{name}"`. `[user] timezone` (IANA name, default `UTC`) is the wall-clock zone the scheduling tools (`remind_user` / `schedule_self_task`) interpret an absolute `when` in, so the model never does timezone/offset math.
+The single user the agent serves. `[user] name` is required and pins the `sender` for `talker=user` inbound messages — session key is always `f"user:{name}"`. `[user] timezone` (IANA name, default `UTC`) is the user's wall-clock zone, DST-aware: the scheduling tools (`remind_user` / `schedule_self_task`) interpret an absolute `when` in it (so the model never does offset math), `list_scheduled` renders pending jobs in it, and the ambient "Current date/time" injected into context reflects it. Infrastructure (container, cron) stays UTC; only the agent's user-facing time is localized.
 
 ```toml
 [user]
@@ -73,6 +73,8 @@ Channel bridges are standalone processes that read their config from the same `l
 
 Both bridges authenticate to the daemon with `LUCYD_HTTP_TOKEN`. The outbound `POST /send` listener uses the same token. The `debounce_ms` setting in `[behavior]` controls message batching for queued messages on the daemon side.
 
+Proactive outbound needs a single destination per bridge: Telegram resolves it from the first `[telegram.contacts]` entry; email reads `[email] user_address` (falling back to the first `allowed_senders` entry). Without one, that bridge's `/send` listener refuses to start.
+
 ### `[telegram.contacts]` format
 
 Contact entries map a name to a Telegram user/chat id. **The format is
@@ -82,8 +84,8 @@ matches against `user_id` from the Telegram API):
 
 ```toml
 [telegram.contacts]
-Nicolas = 8211983408     # correct: name (string key) = chat_id (int value)
-# 8211983408 = "Nicolas" # WRONG: this writes ID_TO_NAME["Nicolas"] = "8211983408",
+YourName = 123456789     # correct: name (string key) = chat_id (int value)
+# 123456789 = "YourName" # WRONG: this writes ID_TO_NAME["YourName"] = "123456789",
                          # contact lookup against user_id (int) silently always fails.
 ```
 
@@ -132,7 +134,7 @@ Auth token is loaded from the environment variable named by `token_env` (default
 
 **`trust_localhost`:** When `true`, requests from `127.0.0.1` / `::1` bypass auth (no token required). Default is `false` — all requests require a bearer token. When `false`, bridges and the entrypoint cron jobs must present a valid token via `LUCYD_HTTP_TOKEN`.
 
-Endpoint definitions live in `api.py` (`HTTPApi.start()`).
+See [architecture — HTTP API](architecture.md#http-api) for endpoint details.
 
 ## [providers]
 
@@ -243,11 +245,10 @@ Structured data extraction from session transcripts and workspace files.
 
 ```toml
 [memory.consolidation]
-enabled = true                        # Enable structured memory extraction (code default: false)
-confidence_threshold = 0.6            # Minimum confidence for extracted facts
+enabled = true                        # Gate the pre-compaction / pre-close harvest (code default: false)
 ```
 
-When enabled, the hourly cron at `:15` calls `POST /api/v1/consolidate` to extract facts, episodes, commitments, and entity aliases from workspace files. Also triggers on session close and pre-compaction. Schema lives in `schema/001_initial.sql` (`knowledge` schema).
+`enabled` gates whether the agent harvests a session's unconsolidated messages **before compaction or session close** (`operations.harvest_conversation`), so no facts are lost when old messages are summarized away. Routine consolidation otherwise happens in the maintenance pass (`POST /api/v1/maintain`): the agent reads the conversation and writes facts + an episode herself via her memory tools, knowing the entities — no neutral LLM extractor, no auto-generated aliases. Schema lives in `schema/001_initial.sql` (`knowledge` schema).
 
 ### [memory.maintenance]
 
@@ -258,52 +259,62 @@ Periodic cleanup of structured memory (the mechanical half of `POST /api/v1/main
 stale_threshold_days = 90             # Remove unaccessed facts older than this (default: 90)
 ```
 
-Runs on every `POST /api/v1/maintain` call (cron hourly at `:35`), independent of the `[maintain]` heartbeat gate below.
+Runs on every `POST /api/v1/maintain` call (cron at `0,6,12,18`), independent of the `[maintain]` enablement switch below.
 
 ### [maintain]
 
-The self-maintenance heartbeat. When enabled, the hourly `POST /api/v1/maintain` cron dispatches a periodic `system:maintenance` LLM turn that reads the agent's workspace `MAINTAIN.md` and tends its own memory (diary, MEMORY.md, USER.md, notes, structured facts) with full tool access on the primary model. The pass fires only when the elapsed time since the last pass exceeds a randomized interval in `[interval_min_minutes, interval_max_minutes]`; the marker lives in `/data/maintain/state.json`.
+The self-maintenance pass. When enabled, the fixed `POST /api/v1/maintain` cron (`0,6,12,18`) dispatches a `system:maintenance` LLM turn that reads the agent's workspace `MAINTAIN.md`, **harvests** the unconsolidated user conversation into facts + an episode (the agent writes them herself, full tool access on the primary model), and tends its own memory (diary, MEMORY.md, USER.md, notes, structured facts). There is no interval gate (the cron owns the cadence), but the LLM pass is **idle-gated**: it only runs once the user has been quiet for `idle_minutes`, so a proactive reach-out can never interrupt an active conversation — a skipped pass simply waits for the next scheduled tick (no catch-up retry). Mechanical maintenance (above) runs on every fire regardless. The marker lives in `/data/maintain/state.json`.
 
 ```toml
 [maintain]
 enabled = false                       # Master switch (default: false — no LLM cost until on)
-interval_min_minutes = 240            # Earliest the next pass may fire (default: 240)
-interval_max_minutes = 480            # Latest the next pass may fire (default: 480)
-idle_minutes = 360                    # Reported in the brief; the agent gates its reach-out on it (default: 360)
+idle_minutes = 30                     # LLM pass runs only after the user is idle this long — no mid-conversation reach-out (default: 30)
 ```
 
 The pass brief is `MAINTAIN.md` preceded by a generated header: current local time, last-pass marker, the diff of changed workspace files + facts created since the last pass, how long since the user last messaged, and the ask-ledger path (`notes/maintenance-log.md`). The agent decides per its protocol whether to fix anything or reach out — most passes end quiet. `MAINTAIN.md` is one of the operator-owned files the agent cannot write (see [tools.filesystem]).
 
+### [session.auto_reset]
+
+Weekly fresh-start for the user session. When enabled, a Monday-morning cron (`0 6-12 * * 1`, installed by the container entrypoint) calls `POST /api/v1/sessions/auto-reset`; the handler (`operations.handle_session_reset`) closes the single `user:<name>` session so the next message opens a clean context, shedding a week of accumulated compaction drift. It is gated to fire only once the day's diary maintenance has written today's entry (continuity captured first), never mid-conversation (`idle_minutes`), and never twice for the same week (a session already opened this week is left alone — idempotent across the morning's hourly retries). The close is taken under the session lock, like compaction.
+
+```toml
+[session.auto_reset]
+enabled = false                       # Master switch (default: false)
+idle_minutes = 60                     # Min minutes since the last user message before resetting (default: 60)
+```
+
+The Monday-morning *schedule* lives in the container's crontab, consistent with the other periodic jobs; this section is the behaviour gate. Durable memory (diary, facts, MEMORY.md) is untouched — only the live conversation context is dropped, and the next session reloads the always-loaded files (SOUL/AGENTS/USER/MEMORY/CONTEXT).
+
 ### [memory.recall]
 
-Controls how structured memory is injected into session context at startup.
+Controls how structured memory is retrieved and injected into context on every user turn.
 
 ```toml
 [memory.recall]
 decay_rate = 0.03                    # Time-decay factor for relevance scoring
 max_facts_in_context = 20            # Maximum facts injected into context
-max_dynamic_tokens = 1500            # Token budget for dynamic recall content (default: 0 = unlimited)
-max_episodes_at_start = 3            # Maximum episodes injected at session start
+max_dynamic_tokens = 1500            # Per-turn token budget for recall content (default: 1500; 0 = unlimited)
+max_episodes = 3                     # Maximum recent episodes injected per recall
 ```
 
-Recall runs at session start and enriches `memory_search` results with structured data. Budget-aware: prioritizes commitments > vector > episodes > facts (under budget pressure, clinical facts drop first).
+Recall runs automatically on every user turn, keyed to the message text: structured facts, recent episodes, and vector search over the indexed workspace. The same engine backs the `memory_search` tool. Budget-aware: prioritizes vector > episodes > facts (under budget pressure, clinical facts drop first).
 
-Recall priority and formatting are hardcoded constants in `memory.py`. Drop order under budget pressure: facts (15) → episodes (25) → vector (35) → commitments (40).
+Recall priority and formatting are hardcoded constants in `memory.py`. Drop order under budget pressure: facts (15) → episodes (25) → vector (35).
 
 ### [memory.indexer]
 
-Controls which workspace files are indexed into the FTS5 + vector memory DB.
+Controls which workspace files are indexed into the FTS + vector memory DB — i.e. what `memory_search` can reach.
 
 ```toml
 [memory.indexer]
-include_patterns = ["memory/*.md", "MEMORY.md"]   # Glob patterns relative to workspace
-exclude_dirs = []                                  # Directories to skip
+include_patterns = ["memory/*.md", "MEMORY.md", "notes/**/*.md"]   # Path.glob patterns; ** recurses a subtree
+exclude_dirs = ["memory/cache", "notes/.trash", "notes/.obsidian"]  # path prefixes to skip
 chunk_size_chars = 1600                            # Characters per text chunk (default: 1600)
 chunk_overlap_chars = 320                          # Overlap between chunks (default: 320)
 embed_batch_limit = 100                            # Max chunks per embedding API batch (default: 100)
 ```
 
-The indexer runs hourly at `:10` via cron (`POST /api/v1/index`). Incremental — skips files whose content hash hasn't changed.
+`include_patterns` are `Path.glob` patterns — `**` recurses, so `notes/**/*.md` indexes the whole Obsidian vault (subdirectories included). `exclude_dirs` are path prefixes dropped from the scan; left empty, it falls back to the built-in default (`memory/cache`). Both drive the live indexer (`index_workspace`), not only the status check. The indexer runs hourly at `:10` via cron (`POST /api/v1/index`). Incremental — skips files whose content hash hasn't changed.
 
 ## [tools]
 
@@ -316,7 +327,7 @@ enabled = [
     "exec",
     "web_search", "web_fetch",
     "memory_search", "memory_get",
-    "memory_write", "memory_forget", "commitment_update",
+    "memory_write", "memory_forget", "record_episode",
     "session_status", "sessions_spawn", "load_skill",
     "remind_user", "schedule_self_task", "list_scheduled", "cancel_scheduled", "send_message",
     "gdpr_search", "gdpr_redact", "pdf_read",
@@ -408,21 +419,17 @@ Runtime behavior tuning.
 ```toml
 [behavior]
 silent_tokens = ["NO_REPLY"]                                           # Replies starting/ending with these are not delivered
-typing_indicators = true                                               # Send typing indicator before processing
-error_message = "I'm having trouble connecting right now. Try again in a moment."  # Sent when agentic loop fails
+error_message = "I'm having trouble connecting right now. Try again in a moment."  # Delivered to the user when the agentic loop fails
 agent_timeout_seconds = 600                                            # Timeout per API call in the agentic loop
 max_turns_per_message = 50                                             # Max tool-use iterations per inbound message
-max_cost_per_message = 5.0                                             # USD circuit breaker per message (0.0 = disabled)
+max_cost_per_message = 5.0                                             # EUR circuit breaker per message (0.0 = disabled)
 api_retries = 2                                                        # Retry attempts for transient API errors (429, 5xx, connection). Default: 2
 api_retry_base_delay = 2.0                                             # Initial backoff delay in seconds (exponential with jitter). Default: 2.0
-message_retries = 2                                                    # Message-level retries on persistent failure (default: 2)
-message_retry_base_delay = 30                                          # Base delay between message retries in seconds (default: 30)
 debounce_ms = 500                                                     # Message batching window in ms (group rapid consecutive inbound messages)
 # max_context_for_tools = 0                                             # Inject wrap-up hint when context exceeds this during tool use (0 = disabled)
-# thinking_concise_hint = false                                         # Inject "respond concisely" hint after tool results to reduce thinking overhead
 ```
 
-**Two-tier retry architecture:** `api_retries` handles transient errors (429, 5xx, connection) within a single agentic loop call (fast, 1–8s backoff). `message_retries` retries the entire message processing when the agentic loop fails after exhausting API retries (slower, 30–60s backoff with jitter).
+**Retry architecture:** `api_retries` handles transient errors (429, 5xx, connection) within a single agentic loop call (exponential backoff with jitter). There is no message-level retry — if the loop fails after exhausting API retries, the session is rolled back to its pre-attempt state (`_handle_agentic_error`) and the error propagates to the caller.
 
 ### [behavior.compaction]
 

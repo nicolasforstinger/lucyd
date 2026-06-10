@@ -1,50 +1,16 @@
-"""Tests for consolidation.py — state tracking, serializer, fact/episode extraction."""
-
-import json
-from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock
+"""Tests for consolidation.py — state tracking, serializer, fact upsert, episode storage."""
 
 import pytest
 
+from memory import _normalize_entity
 from memory import resolve_entity as _resolve_entity
 from consolidation import (
-    _normalize_entity,
-    _strip_json_fences,
-    consolidate_session,
-    extract_facts,
-    extract_from_file,
-    extract_structured_data,
     get_unprocessed_range,
     serialize_messages,
+    store_episode,
     update_consolidation_state,
+    upsert_fact,
 )
-
-
-
-def _make_provider(response_text: str):
-    """Create a mock provider returning the given text."""
-
-    @dataclass
-    class FakeUsage:
-        input_tokens: int = 100
-        output_tokens: int = 50
-        cache_read_tokens: int = 0
-        cache_write_tokens: int = 0
-
-    @dataclass
-    class FakeResponse:
-        text: str
-        usage: FakeUsage = None
-
-        def __post_init__(self):
-            if self.usage is None:
-                self.usage = FakeUsage()
-
-    provider = MagicMock()
-    provider.format_system.return_value = "system"
-    provider.format_messages.return_value = "messages"
-    provider.complete = AsyncMock(return_value=FakeResponse(text=response_text))
-    return provider
 
 
 # ─── State Tracking ──────────────────────────────────────────────
@@ -85,6 +51,20 @@ class TestGetUnprocessedRange:
         start, end = await get_unprocessed_range("sess1", messages, 0, pool)
         assert start == 0
         assert end == 0
+
+    @pytest.mark.asyncio
+    async def test_advance_to_harvested_end_leaves_appended_tail(self, pool):
+        """The harvest advances the watermark to end_idx, not a re-read len.
+
+        A harvester reads [0, 4) and advances to 4; if a user turn appended two
+        messages meanwhile (len now 6), the tail [4, 6) must remain unprocessed
+        for the next harvest — advancing to len would skip it. Guards the
+        double-harvest-race fix (operations.harvest_conversation / handle_maintain).
+        """
+        await update_consolidation_state("sess1", 0, 4, pool)  # harvested [0,4)
+        grown = [{"role": "user"}] * 6  # two appended after the harvest read
+        start, end = await get_unprocessed_range("sess1", grown, 0, pool)
+        assert (start, end) == (4, 6)
 
 
 class TestUpdateConsolidationState:
@@ -210,514 +190,94 @@ class TestHelpers:
     async def test_resolve_entity_no_alias(self, pool):
         assert await _resolve_entity("unknown_entity", pool) == "unknown_entity"
 
-    def test_strip_json_fences(self):
-        assert _strip_json_fences('```json\n{"a":1}\n```') == '{"a":1}'
-        assert _strip_json_fences('```\n{"a":1}\n```') == '{"a":1}'
-        assert _strip_json_fences('{"a":1}') == '{"a":1}'
+
+# ─── Fact Upsert ─────────────────────────────────────────────────
 
 
-# ─── Fact Extraction ─────────────────────────────────────────────
-
-
-class TestExtractFacts:
+class TestUpsertFact:
     @pytest.mark.asyncio
-    async def test_valid_json_stores_facts(self, pool):
-        response = json.dumps({
-            "facts": [
-                {"entity": "nicolas", "attribute": "lives_in", "value": "Austria", "confidence": 0.9},
-                {"entity": "lucy", "attribute": "role", "value": "companion", "confidence": 1.0},
-            ],
-            "aliases": [],
-        })
-        provider = _make_provider(response)
-
-        count, _ = await extract_facts("test text", "sess1", provider, pool)
-        assert count == 2
-
-        rows = await pool.fetch(
-            "SELECT entity, attribute, value FROM knowledge.facts "
-            "WHERE invalidated_at IS NULL",
-            )
-        assert len(rows) == 2
+    async def test_new_fact_inserted(self, pool):
+        result = await upsert_fact("alex", "role", "engineer", pool)
+        assert result == "new"
+        row = await pool.fetchrow(
+            "SELECT value FROM knowledge.facts "
+            "WHERE entity = 'alex' AND attribute = 'role' AND invalidated_at IS NULL",
+        )
+        assert row["value"] == "engineer"
 
     @pytest.mark.asyncio
-    async def test_duplicate_fact_skipped(self, pool):
-        # Insert existing fact
-        await pool.execute(
-            "INSERT INTO knowledge.facts (entity, attribute, value, confidence, source_session) "
-            "VALUES ('nicolas', 'lives_in', 'Austria', 0.9, 'test')",
-            )
-
-        response = json.dumps({
-            "facts": [
-                {"entity": "nicolas", "attribute": "lives_in", "value": "Austria", "confidence": 0.9},
-            ],
-            "aliases": [],
-        })
-        provider = _make_provider(response)
-
-        count, _ = await extract_facts("test text", "sess1", provider, pool)
-        assert count == 0  # duplicate, just touches accessed_at
+    async def test_same_value_unchanged(self, pool):
+        await upsert_fact("alex", "role", "engineer", pool)
+        result = await upsert_fact("alex", "role", "engineer", pool)
+        assert result == "unchanged"
 
     @pytest.mark.asyncio
     async def test_changed_value_invalidates_old(self, pool):
-        await pool.execute(
-            "INSERT INTO knowledge.facts (entity, attribute, value, confidence, source_session) "
-            "VALUES ('nicolas', 'lives_in', 'Germany', 0.9, 'test')",
-            )
-
-        response = json.dumps({
-            "facts": [
-                {"entity": "nicolas", "attribute": "lives_in", "value": "Austria", "confidence": 0.9},
-            ],
-            "aliases": [],
-        })
-        provider = _make_provider(response)
-
-        count, _ = await extract_facts("test text", "sess1", provider, pool)
-        assert count == 1
-
-        # Old fact should be invalidated
-        old = await pool.fetchrow(
-            "SELECT invalidated_at FROM knowledge.facts "
-            "WHERE value = 'Germany'",
-            )
-        assert old["invalidated_at"] is not None
-
-        # New fact should exist
-        new = await pool.fetchrow(
+        await upsert_fact("alex", "role", "engineer", pool)
+        result = await upsert_fact("alex", "role", "manager", pool)
+        assert result == "updated"
+        live = await pool.fetch(
             "SELECT value FROM knowledge.facts "
-            "WHERE TRUE "
-            "AND entity = 'nicolas' AND attribute = 'lives_in' AND invalidated_at IS NULL",
-            )
-        assert new["value"] == "Austria"
-
-    @pytest.mark.asyncio
-    async def test_below_confidence_dropped(self, pool):
-        response = json.dumps({
-            "facts": [
-                {"entity": "test", "attribute": "weak_fact", "value": "maybe", "confidence": 0.3},
-            ],
-            "aliases": [],
-        })
-        provider = _make_provider(response)
-
-        count, _ = await extract_facts("text", "sess1", provider, pool, confidence_threshold=0.6)
-        assert count == 0
-
-    @pytest.mark.asyncio
-    async def test_malformed_json_returns_zero(self, pool):
-        provider = _make_provider("this is not json at all")
-        count, _ = await extract_facts("text", "sess1", provider, pool)
-        assert count == 0
-
-    @pytest.mark.asyncio
-    async def test_aliases_stored(self, pool):
-        response = json.dumps({
-            "facts": [
-                {"entity": "uncle_charles", "attribute": "relation", "value": "uncle", "confidence": 1.0},
-            ],
-            "aliases": [
-                {"alias": "charles", "canonical": "uncle_charles"},
-                {"alias": "uncle", "canonical": "uncle_charles"},
-            ],
-        })
-        provider = _make_provider(response)
-
-        await extract_facts("text", "sess1", provider, pool)
-
-        alias = await pool.fetchrow(
-            "SELECT canonical FROM knowledge.entity_aliases "
-            "WHERE alias = 'charles'",
-            )
-        assert alias["canonical"] == "uncle_charles"
-
-    @pytest.mark.asyncio
-    async def test_alias_resolution_in_same_batch(self, pool):
-        """Aliases stored first, so facts in same batch resolve through them."""
-        response = json.dumps({
-            "facts": [
-                {"entity": "charles", "attribute": "age", "value": "60", "confidence": 1.0},
-            ],
-            "aliases": [
-                {"alias": "charles", "canonical": "uncle_charles"},
-            ],
-        })
-        provider = _make_provider(response)
-
-        await extract_facts("text", "sess1", provider, pool)
-
-        fact = await pool.fetchrow(
-            "SELECT entity FROM knowledge.facts "
-            "WHERE TRUE "
-            "AND attribute = 'age' AND invalidated_at IS NULL",
-            )
-        assert fact["entity"] == "uncle_charles"
-
-    @pytest.mark.asyncio
-    async def test_provider_error_returns_zero(self, pool):
-        provider = _make_provider("")
-        provider.complete.side_effect = RuntimeError("API error")
-        count, _ = await extract_facts("text", "sess1", provider, pool)
-        assert count == 0
-
-    @pytest.mark.asyncio
-    async def test_strips_json_fences(self, pool):
-        response = '```json\n' + json.dumps({
-            "facts": [{"entity": "test", "attribute": "a", "value": "b", "confidence": 1.0}],
-            "aliases": [],
-        }) + '\n```'
-        provider = _make_provider(response)
-
-        count, _ = await extract_facts("text", "sess1", provider, pool)
-        assert count == 1
+            "WHERE entity = 'alex' AND attribute = 'role' AND invalidated_at IS NULL",
+        )
+        assert len(live) == 1
+        assert live[0]["value"] == "manager"
 
 
-# ─── Episode Extraction ──────────────────────────────────────────
+# ─── Episode Storage ─────────────────────────────────────────────
 
 
-class TestExtractEpisode:
+def _episode(**kw):
+    base = {"topics": [], "decisions": [],
+            "summary": "", "emotional_tone": "neutral"}
+    base.update(kw)
+    return {"episode": base}
+
+
+class TestStoreEpisode:
     @pytest.mark.asyncio
     async def test_valid_episode_stored(self, pool):
-        response = json.dumps({
-            "episode": {
-                "topics": ["memory system", "testing"],
-                "decisions": ["use SQLite for facts"],
-                "commitments": [
-                    {"who": "nicolas", "what": "review the PR", "deadline": "2026-02-20"},
-                ],
-                "summary": "We discussed the memory system architecture.",
-                "emotional_tone": "productive",
-            }
-        })
-        provider = _make_provider(response)
-
-        _, episode_id, _ = await extract_structured_data(
-            "test text", "sess1", provider,
-            [{"text": "I am Lucy."}], pool,
+        eid = await store_episode(
+            _episode(topics=["work"], summary="Talked about the launch.",
+                     emotional_tone="focused"),
+            "user:nicolas", pool,
         )
-        assert episode_id is not None
-
-        ep = await pool.fetchrow(
-            "SELECT summary, emotional_tone FROM knowledge.episodes "
-            "WHERE id = $1",
-            episode_id,
+        assert eid is not None
+        row = await pool.fetchrow(
+            "SELECT summary, emotional_tone FROM knowledge.episodes WHERE id = $1", eid,
         )
-        assert "memory system" in ep["summary"]
-        assert ep["emotional_tone"] == "productive"
-
-    @pytest.mark.asyncio
-    async def test_commitments_linked_to_episode(self, pool):
-        response = json.dumps({
-            "episode": {
-                "topics": ["planning"],
-                "decisions": [],
-                "commitments": [
-                    {"who": "lucy", "what": "send morning briefing", "deadline": "2026-02-20"},
-                    {"who": "nicolas", "what": "deploy update", "deadline": None},
-                ],
-                "summary": "Planning session for deployment.",
-                "emotional_tone": "focused",
-            }
-        })
-        provider = _make_provider(response)
-
-        _, episode_id, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], pool,
-        )
-
-        commits = await pool.fetch(
-            "SELECT who, what, deadline FROM knowledge.commitments "
-            "WHERE episode_id = $1",
-            episode_id,
-        )
-        assert len(commits) == 2
-        assert commits[0]["who"] == "lucy"
+        assert row["summary"] == "Talked about the launch."
+        assert row["emotional_tone"] == "focused"
 
     @pytest.mark.asyncio
     async def test_trivial_episode_returns_none(self, pool):
-        response = json.dumps({
-            "episode": {
-                "topics": [],
-                "decisions": [],
-                "commitments": [],
-                "summary": "Brief mechanical exchange.",
-                "emotional_tone": "neutral",
-            }
-        })
-        provider = _make_provider(response)
-
-        _, result, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], pool,
+        eid = await store_episode(
+            _episode(summary="Brief mechanical exchange."), "user:nicolas", pool,
         )
-        assert result is None
+        assert eid is None
 
+
+# ─── record_episode tool ─────────────────────────────────────────
+
+
+class TestRecordEpisodeTool:
     @pytest.mark.asyncio
-    async def test_malformed_json_returns_none(self, pool):
-        provider = _make_provider("not json")
-        _, result, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], pool,
+    async def test_records_episode(self, pool):
+        import tools.memory_write as mw
+        mw.configure(pool=pool)
+        out = await mw.handle_record_episode(
+            summary="Worked through the memory rework.",
+            topics=["memory"], emotional_tone="focused",
         )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_provider_error_returns_none(self, pool):
-        provider = _make_provider("")
-        provider.complete.side_effect = RuntimeError("API fail")
-        _, result, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], pool,
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_null_deadline_handled(self, pool):
-        """deadline: 'null' (string) should be stored as None."""
-        response = json.dumps({
-            "episode": {
-                "topics": ["test"],
-                "decisions": [],
-                "commitments": [
-                    {"who": "lucy", "what": "remember this", "deadline": "null"},
-                ],
-                "summary": "A conversation happened.",
-                "emotional_tone": "warm",
-            }
-        })
-        provider = _make_provider(response)
-
-        _, episode_id, _ = await extract_structured_data(
-            "text", "sess1", provider, [{"text": "persona"}], pool,
-        )
-        commit = await pool.fetchrow(
-            "SELECT deadline FROM knowledge.commitments "
-            "WHERE episode_id = $1",
-            episode_id,
-        )
-        assert commit["deadline"] is None
-
-
-# ─── File Extraction ─────────────────────────────────────────────
-
-
-class TestExtractFromFile:
-    @pytest.mark.asyncio
-    async def test_new_file_extracted(self, pool, tmp_path):
-        f = tmp_path / "test.md"
-        f.write_text("# Nicolas lives in Austria.\n")
-
-        response = json.dumps({
-            "facts": [{"entity": "nicolas", "attribute": "lives_in",
-                        "value": "Austria", "confidence": 1.0}],
-            "aliases": [],
-        })
-        provider = _make_provider(response)
-
-        count = await extract_from_file(str(f), provider, pool)
-        assert count == 1
-
-        # Hash stored
+        assert "recorded" in out
         row = await pool.fetchrow(
-            "SELECT content_hash FROM knowledge.consolidation_file_hashes "
-            "WHERE file_path = $1",
-            str(f),
+            "SELECT summary FROM knowledge.episodes ORDER BY id DESC LIMIT 1",
         )
-        assert row is not None
+        assert row["summary"] == "Worked through the memory rework."
 
     @pytest.mark.asyncio
-    async def test_unchanged_file_skipped(self, pool, tmp_path):
-        f = tmp_path / "test.md"
-        f.write_text("# Some content\n")
-
-        response = json.dumps({"facts": [], "aliases": []})
-        provider = _make_provider(response)
-
-        # First run
-        await extract_from_file(str(f), provider, pool)
-        # Second run — same content, should skip
-        provider.complete.reset_mock()
-        count = await extract_from_file(str(f), provider, pool)
-        assert count == 0
-        provider.complete.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_changed_file_reextracted(self, pool, tmp_path):
-        f = tmp_path / "test.md"
-        f.write_text("# Version 1\n")
-
-        response = json.dumps({"facts": [], "aliases": []})
-        provider = _make_provider(response)
-
-        await extract_from_file(str(f), provider, pool)
-
-        # Change file content
-        f.write_text("# Version 2\n")
-
-        response2 = json.dumps({
-            "facts": [{"entity": "test", "attribute": "version",
-                        "value": "2", "confidence": 1.0}],
-            "aliases": [],
-        })
-        provider2 = _make_provider(response2)
-
-        await extract_from_file(str(f), provider2, pool)
-        # Provider was called (file changed)
-        provider2.complete.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_nonexistent_file_returns_zero(self, pool):
-        provider = _make_provider("")
-        count = await extract_from_file("/nonexistent/path.md", provider, pool)
-        assert count == 0
-
-
-# ─── consolidate_session ─────────────────────────────────────────
-
-
-class TestConsolidateSession:
-    @pytest.mark.asyncio
-    async def test_full_pipeline(self, pool):
-        messages = [
-            {"role": "user", "content": "Nicolas lives in Austria"},
-            {"role": "agent", "content": "Noted!"},
-            {"role": "user", "content": "And he has a cat named Miso"},
-            {"role": "agent", "content": "Got it."},
-            {"role": "user", "content": "Can you remember that?"},
-        ]
-
-        combined_response = json.dumps({
-            "facts": [
-                {"entity": "nicolas", "attribute": "lives_in", "value": "Austria", "confidence": 1.0},
-                {"entity": "nicolas", "attribute": "cat_name", "value": "Miso", "confidence": 0.9},
-            ],
-            "aliases": [],
-            "episode": {
-                "topics": ["personal info"],
-                "decisions": [],
-                "commitments": [],
-                "summary": "Nicolas shared personal details.",
-                "emotional_tone": "warm",
-            },
-        })
-
-        # Single LLM call returns both facts and episode
-        provider = _make_provider(combined_response)
-
-        class FakeContextBuilder:
-            def build_stable(self):
-                return [{"text": "I am Lucy."}]
-
-        class FakeConfig:
-            consolidation_confidence_threshold = 0.6
-            def model_config(self, _role: str) -> dict:
-                return {"cost_per_mtok": [], "model": "fake", "provider": "", "currency": "EUR"}
-
-        result = await consolidate_session(
-            session_id="sess1",
-            messages=messages,
-            compaction_count=0,
-            config=FakeConfig(),
-            provider=provider,
-            context_builder=FakeContextBuilder(),
-            pool=pool,
-        )
-
-        assert result["facts_added"] == 2
-        assert result["episode_id"] is not None
-
-    @pytest.mark.asyncio
-    async def test_too_few_messages_skips(self, pool):
-        messages = [{"role": "user", "content": "hi"}]
-
-        class FakeConfig:
-            consolidation_confidence_threshold = 0.6
-
-        result = await consolidate_session(
-            session_id="sess1",
-            messages=messages,
-            compaction_count=0,
-            config=FakeConfig(),
-            provider=_make_provider(""),
-            context_builder=type("CB", (), {"build_stable": lambda self: []})(),
-            pool=pool,
-        )
-
-        assert result["facts_added"] == 0
-        assert result["episode_id"] is None
-
-
-class TestExtractThenLookupRoundTrip:
-    """End-to-end: extract writes to real PostgreSQL, recall reads them back."""
-
-    @pytest.mark.asyncio
-    async def test_facts_round_trip(self, pool):
-        """extract_facts -> lookup_facts returns matching facts."""
-        from memory import lookup_facts
-
-        response = json.dumps({
-            "facts": [
-                {"entity": "nicolas", "attribute": "lives_in", "value": "Austria", "confidence": 0.9},
-                {"entity": "nicolas", "attribute": "cat_name", "value": "Miso", "confidence": 0.85},
-            ],
-            "aliases": [],
-        })
-        provider = _make_provider(response)
-        count, _ = await extract_facts("test conversation", "sess-rt", provider, pool)
-        assert count == 2
-
-        facts = await lookup_facts({"nicolas"}, pool)
-        assert len(facts) == 2
-        attrs = {f["attribute"] for f in facts}
-        assert attrs == {"lives_in", "cat_name"}
-
-    @pytest.mark.asyncio
-    async def test_episodes_round_trip(self, pool):
-        """extract_structured_data -> search_episodes returns the episode."""
-        from memory import search_episodes
-
-        response = json.dumps({
-            "episode": {
-                "topics": ["memory architecture", "sqlite"],
-                "decisions": ["use WAL mode"],
-                "commitments": [],
-                "summary": "Discussed memory system architecture.",
-                "emotional_tone": "productive",
-            }
-        })
-        provider = _make_provider(response)
-        _, episode_id, _ = await extract_structured_data(
-            "test text", "sess-rt", provider,
-            [{"text": "I am an agent."}], pool,
-        )
-        assert episode_id is not None
-
-        episodes = await search_episodes(["memory"], pool)
-        assert len(episodes) >= 1
-        summaries = [e["summary"] for e in episodes]
-        assert any("memory" in s.lower() for s in summaries)
-
-    @pytest.mark.asyncio
-    async def test_commitments_round_trip(self, pool):
-        """extract_structured_data with commitments -> get_open_commitments returns them."""
-        from memory import get_open_commitments
-
-        response = json.dumps({
-            "episode": {
-                "topics": ["planning"],
-                "decisions": [],
-                "commitments": [
-                    {"who": "nicolas", "what": "review the PR", "deadline": "2026-03-01"},
-                ],
-                "summary": "Planning session.",
-                "emotional_tone": "focused",
-            }
-        })
-        provider = _make_provider(response)
-        _, episode_id, _ = await extract_structured_data(
-            "text", "sess-rt", provider,
-            [{"text": "persona"}], pool,
-        )
-        assert episode_id is not None
-
-        commits = await get_open_commitments(pool)
-        assert len(commits) >= 1
-        assert any(c["what"] == "review the PR" for c in commits)
+    async def test_empty_episode_reports_not_recorded(self, pool):
+        import tools.memory_write as mw
+        mw.configure(pool=pool)
+        out = await mw.handle_record_episode(summary="x", emotional_tone="neutral")
+        assert "not recorded" in out

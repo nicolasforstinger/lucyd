@@ -41,7 +41,7 @@ _default_timeout: float = 600.0
 
 # Memory conventions injected into sub-agent preamble when memory tools are available
 _MEMORY_CONVENTIONS: list[str] = [
-    "- Entity names: lowercase with underscores (e.g., 'nicolas', 'lucy')",
+    "- Entity names: lowercase with underscores (e.g., 'alice', 'acme_corp')",
     "- memory_get paths are workspace-relative (e.g., 'memory/2026-02-23.md')",
     "- Indexed files: memory/*.md, MEMORY.md",
 ]
